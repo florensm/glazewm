@@ -8,6 +8,7 @@ use crate::{
   resize_session::compute_border_inset,
   BackdropOverlayParams, Color, CornerStyle, NativeSurrogate,
   NativeWindow, PeekSurface, Rect, StyleBlend, SurrogateBatch,
+  TabBarPlace,
 };
 
 /// Thumbnail opacity a peek is warmed up at under its still-shown real
@@ -482,6 +483,51 @@ impl WindowPeek {
   #[must_use]
   pub fn carried_ring_rect(&self) -> Option<&Rect> {
     self.copies.ring_rest()
+  }
+
+  /// Draws the window's stack's tab bar, the window `source`, at `place`
+  /// beside it from now on: over its backdrop, under the window, at full
+  /// whatever the window is drawn at, until
+  /// [`drop_tab_bar`](Self::drop_tab_bar) or the peek goes. Called again
+  /// with the same `source`, only updates its place. Returns whether the
+  /// peek does: only a hosted one, whose surface a bar of its own would be
+  /// under with every other tile there.
+  ///
+  /// A new copy goes under the window's own thumbnail, registered anew
+  /// over it, then the fill and ring over that, each new one up before
+  /// its old one goes.
+  pub fn carry_tab_bar(
+    &mut self,
+    source: HWND,
+    place: TabBarPlace,
+  ) -> bool {
+    if !self.is_hosted() {
+      return false;
+    }
+
+    let dest = self.surrogate.hwnd();
+    if self.copies.carry_bar(dest, source, place) {
+      if let Some(window) = self.surrogate.thumbnail_held_anew(self.source)
+      {
+        self.surrogate.put_thumbnail(window);
+      }
+      self.copies.raise_above_window(dest);
+      // Left below the window now, they would stack under it once carried.
+      self.copies.drop_spares();
+    }
+    self.copies.carries_bar()
+  }
+
+  /// Stops drawing the tab bar (see
+  /// [`carry_tab_bar`](Self::carry_tab_bar)).
+  pub fn drop_tab_bar(&mut self) {
+    self.copies.drop_bar();
+  }
+
+  /// Whether the peek draws its window's tab bar.
+  #[must_use]
+  pub fn carries_tab_bar(&self) -> bool {
+    self.copies.carries_bar()
   }
 
   /// Covers the part of the window's frame its content does not reach in

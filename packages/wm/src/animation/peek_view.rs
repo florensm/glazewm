@@ -15,7 +15,7 @@ use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
   PeekSurface, Point, Rect, RectDelta, StyleBlend, SurrogateBatch,
-  WindowPeek, HWND,
+  TabBarPlace, WindowPeek, HWND,
 };
 
 use super::{
@@ -158,6 +158,9 @@ pub(super) struct Entry {
   pub(super) role: Role,
   ring: Handover,
   backdrop: Handover,
+  /// How far a hosted peek has taken over its stack's tab bar (see
+  /// [`bar_handover`]).
+  bar: Handover,
   /// Whether the peek has been composited since it went up over its
   /// still-shown real window, so that window can be cloaked without
   /// waiting for another composition (see [`PeekView::is_composited`]).
@@ -308,10 +311,12 @@ fn rank(stacking: Stacking, pass: u64, order: u64) -> Rank {
 }
 
 /// What a tile's peek draws around its rect: its visible frame, inside the
-/// invisible `shadow_borders`, and its ring, `ring` past that.
+/// invisible `shadow_borders`, its stack's tab bar beside it at `bar`, and
+/// its ring, `ring` past both.
 #[derive(Clone, Debug)]
 struct Reach {
   shadow_borders: RectDelta,
+  bar: Option<TabBarPlace>,
   ring: i32,
 }
 
@@ -319,7 +324,12 @@ impl Reach {
   /// The lane of a tile drawn from `from` to `to`.
   fn lane(&self, from: &Rect, to: &Rect) -> Lane {
     let drawn = |rect: &Rect| {
-      visible_frame(rect, &self.shadow_borders).inset(-self.ring)
+      let frame = visible_frame(rect, &self.shadow_borders);
+      self
+        .bar
+        .as_ref()
+        .map_or(frame.clone(), |bar| frame.union(&bar.rect(rect)))
+        .inset(-self.ring)
     };
     Lane {
       from: drawn(from),
@@ -1181,14 +1191,14 @@ fn allows_motion(live: bool, more_peeks: bool) -> bool {
 /// resize by command ([`move_on_peek`]), a crossing between floating and
 /// tiling, a fullscreen toggle ([`fullscreen_on_peek`]), an open, restore,
 /// close or minimize ([`enter_on_peek`], [`restore_on_peek`],
-/// [`leave_on_peek`]). Not a stack's window, whose tab bar is a window of
-/// its own behind its stand-in that a surface could only put under every
-/// tile on it, a live peek, which moves with its window, nor a scrolling
-/// layout's column, which the scroll view draws. One drawn on two
-/// monitors is, on each one's surface (see [`Trail`]).
+/// [`leave_on_peek`]). A stack's window too, its tab bar drawn by a copy
+/// over the surface's other tiles as it moves (see [`carry_tab_bar`]).
+/// Not a live peek, which moves with its window, nor a scrolling layout's
+/// column, which the scroll view draws. One drawn on two monitors is, on
+/// each one's surface (see [`Trail`]).
 ///
 /// Nor one entering or leaving `beside_own_peek`, a tile of its workspace
-/// moving on a peek of its own (a stack's or a live one): that peek and
+/// moving on a peek of its own (a live one): that peek and
 /// the surface stack by when each was last raised in a pass, so it could
 /// end under the tile, which must stay under every neighbour moving in its
 /// pass. Moving tiles leave the two in that order (`ONE_SURFACE_PLAN.md`,
@@ -1197,12 +1207,11 @@ fn allows_motion(live: bool, more_peeks: bool) -> bool {
 #[allow(clippy::fn_params_excessive_bools)]
 fn hosts_on_surface(
   one_surface: bool,
-  is_stacked: bool,
   live: bool,
   is_column: bool,
   beside_own_peek: bool,
 ) -> bool {
-  one_surface && !is_stacked && !live && !is_column && !beside_own_peek
+  one_surface && !live && !is_column && !beside_own_peek
 }
 
 /// Where a tile moving onto another monitor that [`host_for`] puts on
@@ -1237,20 +1246,16 @@ fn host_for(is_tile: bool, raise: Option<PeekRaise>) -> Option<Host> {
 /// Whether a scrolling layout's column that the scroll view puts on a
 /// pinned peek may be drawn on the `PeekSurface` of its working area
 /// (`onesurface`), its role aside (see [`keeps_rest_hosted`]), a grab
-/// holding it or not. Not a live peek, which moves with its window; a
-/// stack's window, whose tab bar is a window of its own behind its
-/// stand-in; nor any column of a workspace with a column on a peek of its
-/// own (`beside_own_peek`: a stack's or a live one), which stacks against
-/// the surface by where each went last, as for tiles.
-// Independent conditions, each keeping a column on a peek of its own.
-#[allow(clippy::fn_params_excessive_bools)]
+/// holding it or not, a stack's included (see [`carry_tab_bar`]). Not a
+/// live peek, which moves with its window, nor any column of a workspace
+/// with a live column (`beside_own_peek`), which stacks against the
+/// surface by where each went last, as for tiles.
 pub(super) fn hosts_column(
   one_surface: bool,
   live: bool,
-  is_stacked: bool,
   beside_own_peek: bool,
 ) -> bool {
-  one_surface && !live && !is_stacked && !beside_own_peek
+  one_surface && !live && !beside_own_peek
 }
 
 /// Whether a tile a grab resize holds (see [`hold_on_peek`]) is drawn on
@@ -1322,7 +1327,6 @@ fn hosts_transit(
     && has_held_neighbour(window, peeks);
   hosts_on_surface(
     true,
-    is_stacked(window),
     is_live(&peek_styles(window, config)),
     crate::layout::scrolling::column_of(&window.as_container()).is_some(),
     beside_own_peek || beside_held,
@@ -1340,15 +1344,8 @@ fn has_held_neighbour(window: &WindowContainer, peeks: &PeekView) -> bool {
   })
 }
 
-/// Whether `window` is a stack's window.
-pub(super) fn is_stacked(window: &WindowContainer) -> bool {
-  window
-    .parent()
-    .is_some_and(|parent| parent.as_stack().is_some())
-}
-
 /// Whether another tile of `window`'s workspace moves on a peek of its own
-/// when it does: a stack's window, or one whose peek is live.
+/// when it does: one whose peek is live.
 fn has_own_peek_neighbour(
   window: &WindowContainer,
   config: &UserConfig,
@@ -1360,7 +1357,7 @@ fn has_own_peek_neighbour(
       .any(|other| {
         other.id() != window.id()
           && other.state() == WindowState::Tiling
-          && (is_stacked(&other) || is_live(&peek_styles(&other, config)))
+          && is_live(&peek_styles(&other, config))
       })
   })
 }
@@ -1680,6 +1677,16 @@ impl PeekView {
     })
   }
 
+  /// Whether `window_id`'s peek draws its stack's tab bar in the bar's
+  /// place, composited, so the bar itself is cloaked meanwhile (see
+  /// `tab_bars::conceal_copied_bars`).
+  pub fn conceals_tab_bar(&self, window_id: &Uuid) -> bool {
+    self
+      .entries
+      .get(window_id)
+      .is_some_and(|entry| conceals_bar(entry.bar))
+  }
+
   /// Where `window_id`'s peek is headed while its real window is cloaked.
   pub(super) fn owned_target(&self, window_id: &Uuid) -> Option<&Rect> {
     self
@@ -1989,7 +1996,9 @@ impl PeekView {
   pub(super) fn note_composited(&mut self) {
     for entry in self.entries.values_mut() {
       entry.composited = true;
-      for handover in [&mut entry.ring, &mut entry.backdrop] {
+      for handover in
+        [&mut entry.ring, &mut entry.backdrop, &mut entry.bar]
+      {
         if *handover == Handover::Covering {
           *handover = Handover::Covered;
         }
@@ -2848,6 +2857,12 @@ impl PeekView {
   ) -> Option<(usize, Tenancy)> {
     let reach = Reach {
       shadow_borders: window.native_properties().shadow_borders.clone(),
+      bar: crate::tab_bars::tab_bar_place(
+        window,
+        &motion.target_rect,
+        false,
+        config,
+      ),
       ring: ring_reach(window, config),
     };
     let lane = reach.lane(&motion.start_rect, &motion.target_rect);
@@ -4045,7 +4060,6 @@ fn move_host(
   let peeks = &state.animation_manager.peeks;
   let host = hosts_on_surface(
     wm_platform::isolation::current().one_surface,
-    is_stacked(window),
     is_live(&peek_styles(window, config)),
     false,
     false,
@@ -4216,7 +4230,6 @@ pub fn fullscreen_on_peek(
     movement_timing(Motion::Fullscreen, false, config);
   let host = hosts_on_surface(
     wm_platform::isolation::current().one_surface,
-    is_stacked(window),
     is_live(&peek_styles(window, config)),
     false,
     false,
@@ -4486,7 +4499,8 @@ pub fn resizes_relayout(
 /// from `from`, on (see [`move_clips`]). With `morepeeks`, one moving onto
 /// another monitor is drawn on two, unless a peek draws it already (one
 /// handing it back is on its own monitor), it is in a stack, whose tab
-/// bar is cut at one monitor, or its peek is live.
+/// bar's window is cut at one peek's monitor (a hosted copy of it draws
+/// only what that window holds), or its peek is live.
 fn tile_clips(
   state: &WmState,
   window: &WindowContainer,
@@ -4849,6 +4863,7 @@ fn entry_on(
     role,
     ring: Handover::None,
     backdrop: Handover::None,
+    bar: Handover::None,
     composited: false,
     transit: None,
     is_column: true,
@@ -4940,6 +4955,8 @@ pub fn track_overlays(
         }
       }
     }
+
+    carry_tab_bar(state, id, focused_id == Some(id), config);
 
     if !is_live && carry_ring(state, id, border) {
       continue;
@@ -5226,6 +5243,133 @@ fn carry_ring(
   true
 }
 
+/// What a hosted peek does with the copy of its stack's tab bar this
+/// frame, given how far it had taken the bar over (`handover`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarStep {
+  /// Draws it, registered if it isn't, where the bar goes now.
+  Carry,
+  /// Leaves it as it is.
+  Keep,
+  /// Stops drawing it.
+  Drop,
+}
+
+/// How far a hosted peek's copy of its stack's tab bar takes over from the
+/// bar, handed over as its ring is (see [`Handover`]), and what it does
+/// with it this frame: the bar is cloaked while [`conceals_bar`], so the
+/// copy shows it alone, and uncloaked a composited frame before the copy
+/// goes.
+///
+/// `wanted`: the peek may draw the bar (see [`carry_tab_bar`]). Landing,
+/// the bar is shown again under the copy, which stays until the peek goes.
+/// No longer wanted otherwise (its window no longer the active tab, or the
+/// bar hidden), a copy never composited goes at once; one the bar was
+/// cloaked for is revealed first, and goes a tick later.
+fn bar_handover(
+  handover: Handover,
+  wanted: bool,
+  is_landing: bool,
+) -> (Handover, BarStep) {
+  let step = if wanted {
+    BarStep::Carry
+  } else {
+    BarStep::Keep
+  };
+
+  match handover {
+    Handover::None if is_landing || !wanted => {
+      (Handover::None, BarStep::Keep)
+    }
+    Handover::None => (Handover::Covering, BarStep::Carry),
+    Handover::Covering | Handover::Covered | Handover::Parked
+      if is_landing =>
+    {
+      (Handover::Revealed, step)
+    }
+    Handover::Revealed if is_landing => (Handover::Revealed, step),
+    Handover::Covering | Handover::Covered if !wanted => {
+      (Handover::None, BarStep::Drop)
+    }
+    Handover::Parked if !wanted => (Handover::Revealed, BarStep::Keep),
+    Handover::Revealed if !wanted => (Handover::None, BarStep::Drop),
+    Handover::Covering | Handover::Revealed => {
+      (Handover::Covering, BarStep::Carry)
+    }
+    Handover::Covered | Handover::Parked => {
+      (Handover::Parked, BarStep::Carry)
+    }
+  }
+}
+
+/// Whether a tab bar copied by a peek in `handover` is cloaked, shown by
+/// the copy alone.
+fn conceals_bar(handover: Handover) -> bool {
+  handover == Handover::Parked
+}
+
+/// Keeps `id`'s hosted peek drawing its stack's tab bar beside the window,
+/// over the other tiles on its surface as the window is, while the window
+/// is that stack's active tab and moves, lands or rests with no transit,
+/// and hands the bar over to the copy a step at a time (see
+/// [`bar_handover`]).
+///
+/// A peek of its own draws none: the bar goes behind it (see
+/// `tab_bars::shown_tab_frame`), as it always has. So does a window
+/// entering or leaving, which its bar doesn't go along with.
+fn carry_tab_bar(
+  state: &mut WmState,
+  id: Uuid,
+  is_focused: bool,
+  config: &UserConfig,
+) {
+  let Some(entry) = state.animation_manager.peeks.entries.get(&id) else {
+    return;
+  };
+  let is_landing =
+    matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
+  let may_draw = entry.peek.is_hosted()
+    && entry.transit.is_none()
+    && entry.departing.is_none()
+    && !matches!(entry.role, Role::Leaving(_));
+  let target = entry.motion.target_rect.clone();
+
+  let bar = may_draw.then(|| state.window_by_id(id)).flatten().and_then(
+    |window| {
+      let stack = window.parent()?.as_stack().cloned()?;
+      let bar = state
+        .tab_bars
+        .get(&stack.id())
+        .filter(|bar| bar.is_shown())?;
+      let place = crate::tab_bars::tab_bar_place(
+        &window, &target, is_focused, config,
+      )?;
+      Some((bar.hwnd(), place))
+    },
+  );
+
+  let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id)
+  else {
+    return;
+  };
+  let (handover, step) =
+    bar_handover(entry.bar, bar.is_some(), is_landing);
+  entry.bar = match (step, bar) {
+    (BarStep::Carry, Some((source, place))) => {
+      if entry.peek.carry_tab_bar(source, place) {
+        handover
+      } else {
+        Handover::None
+      }
+    }
+    (BarStep::Drop, _) => {
+      entry.peek.drop_tab_bar();
+      handover
+    }
+    _ => handover,
+  };
+}
+
 /// Where `id`'s ring and backdrop go back to as its peek lands, its real
 /// window's visible frame being `frame`: there, unless the window was
 /// sent its size only as it lands (see [`Stretch::deferred`]), whose frame
@@ -5501,13 +5645,13 @@ mod tests {
 
   #[test]
   fn only_plain_tiles_go_on_a_surface() {
-    assert!(hosts_on_surface(true, false, false, false, false));
-    assert!(!hosts_on_surface(false, false, false, false, false));
-    for kept_off in 0..4 {
-      let off: [bool; 4] = std::array::from_fn(|index| index == kept_off);
-      let [is_stacked, live, is_column, beside] = off;
+    assert!(hosts_on_surface(true, false, false, false));
+    assert!(!hosts_on_surface(false, false, false, false));
+    for kept_off in 0..3 {
+      let off: [bool; 3] = std::array::from_fn(|index| index == kept_off);
+      let [live, is_column, beside] = off;
       assert!(
-        !hosts_on_surface(true, is_stacked, live, is_column, beside),
+        !hosts_on_surface(true, live, is_column, beside),
         "{kept_off}"
       );
     }
@@ -5683,17 +5827,90 @@ mod tests {
     assert!(!keeps_ready(true, true, true));
   }
 
-  /// A column goes on a surface, held or not, unless its peek is live or
-  /// a stack's, or a column of its workspace keeps a peek of its own.
+  /// A column goes on a surface, held or not, a stack's too, unless its
+  /// peek is live or a column of its workspace keeps a peek of its own.
   #[test]
   fn only_plain_columns_go_on_a_surface() {
-    assert!(hosts_column(true, false, false, false));
-    assert!(!hosts_column(false, false, false, false));
-    for kept_off in 0..3 {
-      let off: [bool; 3] = std::array::from_fn(|index| index == kept_off);
-      let [live, is_stacked, beside] = off;
-      assert!(!hosts_column(true, live, is_stacked, beside), "{kept_off}");
-    }
+    assert!(hosts_column(true, false, false));
+    assert!(!hosts_column(false, false, false));
+    assert!(!hosts_column(true, true, false));
+    assert!(!hosts_column(true, false, true));
+  }
+
+  /// A hosted peek covers its stack's bar, cloaks it once composited, and
+  /// shows it again before the copy goes: as its window lands, or a
+  /// composited tick ahead once the window no longer has the bar.
+  #[test]
+  fn a_tab_bar_is_handed_over_as_a_ring_is() {
+    use super::{bar_handover, conceals_bar, BarStep, Handover};
+
+    let start = bar_handover(Handover::None, true, false);
+    assert_eq!(start, (Handover::Covering, BarStep::Carry));
+    assert!(!conceals_bar(start.0));
+    // `note_composited` turns `Covering` to `Covered`.
+    let parked = bar_handover(Handover::Covered, true, false);
+    assert_eq!(parked, (Handover::Parked, BarStep::Carry));
+    assert!(conceals_bar(parked.0));
+
+    let landed = bar_handover(Handover::Parked, true, true);
+    assert_eq!(landed, (Handover::Revealed, BarStep::Carry));
+    assert!(!conceals_bar(landed.0));
+    assert_eq!(
+      bar_handover(Handover::Revealed, false, true),
+      (Handover::Revealed, BarStep::Keep)
+    );
+    // Moved on in place after landing: covered again, the bar shown.
+    assert_eq!(
+      bar_handover(Handover::Revealed, true, false),
+      (Handover::Covering, BarStep::Carry)
+    );
+
+    let lost = bar_handover(Handover::Parked, false, false);
+    assert_eq!(lost, (Handover::Revealed, BarStep::Keep));
+    assert_eq!(
+      bar_handover(lost.0, false, false),
+      (Handover::None, BarStep::Drop)
+    );
+    assert_eq!(
+      bar_handover(Handover::Covering, false, false),
+      (Handover::None, BarStep::Drop)
+    );
+    assert_eq!(
+      bar_handover(Handover::None, true, true),
+      (Handover::None, BarStep::Keep)
+    );
+  }
+
+  /// A stacked tile's lane takes in its tab bar.
+  #[test]
+  fn a_stacked_tiles_lane_takes_in_its_bar() {
+    use wm_platform::TabBarPlace;
+
+    use super::Reach;
+
+    let window = Rect::from_ltrb(0, 28, 400, 400);
+    let bar =
+      TabBarPlace::between(&Rect::from_ltrb(0, 0, 400, 36), &window, true);
+    let reach = |bar: Option<TabBarPlace>| Reach {
+      shadow_borders: RectDelta::new(
+        LengthValue::from_px(0),
+        LengthValue::from_px(0),
+        LengthValue::from_px(0),
+        LengthValue::from_px(0),
+      ),
+      bar,
+      ring: 2,
+    };
+
+    let moved = Rect::from_ltrb(500, 28, 900, 400);
+    assert_eq!(
+      reach(Some(bar)).lane(&window, &moved),
+      Lane {
+        from: Rect::from_ltrb(-2, -2, 402, 402),
+        to: Rect::from_ltrb(498, -2, 902, 402),
+      }
+    );
+    assert_eq!(reach(None).lane(&window, &moved).from.top, 26);
   }
 
   /// A held tile goes on its surface unless that is at the top of its
