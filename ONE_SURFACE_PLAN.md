@@ -1808,6 +1808,178 @@ backdrop; three tiles; a floating window with `shown_on_top: true`.
 - Two monitors: each its own band surface.
 - With `readypeeks`: fullscreen on and off within 5 s: no stale frame.
 
+## Step 6c: as built
+
+Branch `os/6c-cross` (from `tryout/one-surface`, `a78d5b2`). Tiles moving
+onto another monitor under `onesurface,morepeeks`. All in
+`peek_view.rs`. Not seen running.
+
+### Today's order, found by reading (two own peeks, `Trail`)
+
+| what | where, when |
+|---|---|
+| admission | `move_on_peek` → `tile_clips`: with `morepeeks`, a tile whose `from` centre is on another monitor than its new one gets `(clip, Some(source))` (`move_clips`), unless a peek draws it already (one landing), it is in a stack, or its peek is live; those and any crossing without `morepeeks` return `None`: not on peeks at all, the engine draws them |
+| build | `move_tile` makes the own peek on the target monitor (just below the window, warmed); `add_trail` a second own peek cut at the source monitor's rect, same motion and role, warmed, drawn at once. If the trail fails, the entry goes and the move stays off peeks |
+| take-over | `take_over`: the trail's `show_window` first, then the own peek's `take_over` (thumbnail full, alpha hidden), then the cloak, in the pass's one flush |
+| raise | `raise_moving`: own peek to the top, then the trail. A band move (`band_moves`) skips that; `raise_in_band` raises the own peek only, the trail stays where it went up |
+| ticks | every peek of the entry: `restore_alpha`, `show_window`, `refresh_companion`, drawn (place, scaled, stretched, filled), ring and backdrop carried, fill carried, on each, cut at its clip |
+| hand-back | only the own peek: at `may_land` the trail is dropped (`entry.trail = None`, its `HiddenAlpha` given back on drop), then `begin_hand_back` on the own peek. Dropped in the tick that last drew it; what it drew at the landing is only what reaches past the tile (a ring at a monitor edge with no gap), which the real ring shows only from the same tick's `track_overlays` |
+| retarget back | `retarget_tile`, `lands_on_trail`: the two peeks and clips swap; the trail's becomes the own one and hands back, the old own one (holding the hidden alpha) is the trail |
+| retarget elsewhere | onto a third monitor, or wholly onto one: nothing changes; still cut at the two clips, the third shows nothing until the hand-back |
+| z-order | each own peek spans its monitor's rect, so the two never overlap; each at the top of its monitor's windows after the raise |
+| DPI | physical pixels throughout; each peek's backdrop copy cut from its own monitor's backdrop (`monitor_bounds(viewport)`), the ring copy one thumbnail of the one ring window at its physical size on both; `platform_sync` sends a window landing on another DPI its rect twice (`has_trail`) |
+| ready store | the own peek is never hosted, so never kept; `keeps_ready`'s `has_trail` is moot at release (dropped at landing) |
+| switch, grab, display change | a switch drops the entry (`drop_strays`), both peeks with it; `is_grabbable` refuses a window a peek owns; a removed monitor leaves its peek spanning a rect off screen to the landing |
+
+### Hosted
+
+| step | own windows | hosted |
+|---|---|---|
+| `move_on_peek` | `hosts_on_surface(.., has_trail)` kept crossings off surfaces | `has_trail` gone; `move_host`: `host_for` as any move, then `crossing_host` (tested): none if a grab holds a tile on either monitor's tiles' surface (`holds_on_surface`), whose raise would top it |
+| ready (`readypeeks`) | none | `take_ready_at` takes the tile's ready peek for the trail only if made for its window at the trail's clip, before `move_tile`, which takes or drops what is left as for any move. So the own part reuses one at its clip, the trail one at its clip (a tile moving back onto the monitor it just landed on), never one elsewhere |
+| `move_tile` | own peek | own part on the target monitor's surface of the host's layer, ranked as any move |
+| `add_trail` | own trail | with the own part hosted: the trail on the source monitor's surface of the same layer (`surface_index`, made if missing, pruning unused off `surface_clips`), reused or new, sharing the entry's `Tenancy`; then `restack_crossings`. No surface: a trail of its own, as before |
+| take-over | as is | as is; `joining_tenants` gives a tile joining two surfaces the lower one (`lowest`, tested), so its overlays go under both |
+| `raise_moving` | both to the top | each part's surface to the top, in the same order, each noting the others covered (`note_raised`), so a later raise of the first in the pass isn't skipped |
+| `raise_in_band` | own peek only | own part's surface, and the hosted trail's, to the top of the band; a trail of its own as before |
+| ticks, retargets | as is | as is; `restack_crossings` per surface (`by_surface`, tested), each part by the tile's rank and lane |
+| retarget back | swap | swap; parts keep their surfaces, the tenancy is the entry's |
+| landing | trail dropped | hosted trail (`keeps_trail_drawing`, tested): alpha given back as the drop did, then kept in `replaced_tiles` to the next tick; own trail dropped as before |
+| hand-back, release | own peek | own part only; kept ready as any hosted peek, the trail never |
+
+No hand-over step reordered or dropped (rule 5): the take-over's order,
+the raise loop, `begin_hand_back`, `Apply`, the alpha's return at the
+landing are where they were.
+
+### Two tenancies for one window
+
+- `entries` stays keyed by window. A part is `(window, Part::Own |
+  Part::Trail)`; `Entry::hosted_parts` gives each with its surface.
+  The own part is hosted while the entry has a tenancy; the trail only
+  then, and only if made on a surface.
+- One `Tenancy`: rank and lane are the tile's, given once per command.
+  The lane is in screen coordinates; on the other surface it reaches
+  past the clip, so `meets` may restack where nothing can overlap
+  (conservative, one registration at most).
+- Restacks per surface: `restack_crossings` groups parts by surface, in
+  rank order, and registers anew the part out of order
+  (`Entry::part_mut`).
+- Every place that asked "is this entry on that surface" now asks
+  `Entry::is_on`: `settle_resting_surfaces` (a crossing trail on a
+  surface shared with a resting column keeps it from going down),
+  `holds_on_surface`.
+
+### Stacking
+
+- On each monitor, the part ranks among that surface's tenants as the
+  tile: over the tiles its pass raised before it, under later ones.
+- Surfaces: one per monitor rect and layer, so the two parts are on two
+  windows that never overlap; their relative z-order doesn't show.
+- Band-raised crossings (floating <-> tiling ending on another monitor):
+  both parts on the band layer's surfaces, both raised in the band.
+  Today the own trail is never raised for a band move; hosted, the
+  source part follows its surface, as the own part does (judgement:
+  the departing part under floating windows on one monitor and over
+  them on the other was not a choice anyone made).
+
+### Edge cases
+
+- Landing: the trail outlives it by one tick, so a ring sliver it draws
+  past the monitor edge is still there when the real ring, revealed in
+  the landing tick's `track_overlays`, is composited: a frame may show
+  both, never neither. Its alpha goes back at the landing, as the drop
+  did, so `prepare_hand_back` (under `latealpha` after a swap) sets
+  aside the real alpha, not a 0.
+- `PeekView::is_active` now counts `replaced_tiles`, so a tick comes to
+  drop one even when its entry is gone (a switch right after the
+  landing); also covers 6b's replaced landing peeks.
+- Retarget back onto the source monitor: the parts swap, each on its
+  surface; the new own part hands back there.
+- Retarget onto a third monitor, or wholly onto one: as today (cut at
+  the two clips; nothing drawn on a third). A third part is not built.
+- Switch mid-crossing: `drop_strays` drops the entry, both tenancies;
+  each surface hides with its last drawing tenant.
+- Grab: none starts on a moving tile. One on either monitor while a part
+  is there: its surface is topped, so held tiles keep their own peeks
+  (`hosts_hold`). A crossing onto or off a monitor whose tiles' surface
+  holds a grab's tile: own, as today (`crossing_host`).
+- Display change, source monitor removed: the trail's surface stays
+  listed while in use, draws off screen, goes unused a tick after the
+  landing and is pruned at the next purge or new surface. Target
+  removed: the tile is retargeted onto a remaining monitor; onto the
+  source one, the parts swap and it hands back there.
+- Two DPIs: as today; each surface spans its monitor rect in physical
+  pixels, each part's backdrop copy cut from its own monitor.
+- Surface creation fails: for the own part, both own as today; for the
+  trail only, the trail is its own window beside a hosted own part
+  (each raise and restack looks at the part).
+- Without `onesurface`: `move_host` gives `None` (no surface, no ready
+  peek), `add_trail` makes the own trail as before, `raise_moving` and
+  `raise_in_band` make the same calls in the same order,
+  `keeps_trail_drawing(false)` drops it at the landing. Without
+  `morepeeks`: no crossing reaches peeks, as before.
+
+### Still on a window of its own, and why
+
+- Live peeks and stacks: no crossing on peeks at all (`tile_clips`): a
+  live peek's real backdrop follows one window, a stack's tab bar is cut
+  at one monitor.
+- A tile still landing from an earlier motion: `tile_clips` doesn't
+  cross it (one peek draws it already); the engine draws it.
+- A crossing beside a grab's held tile on either monitor (above).
+- A trail whose surface couldn't be made.
+
+### Windows functions called by the new code
+
+None new; the new code in `wm` calls no Windows function directly.
+Newly reached for a crossing's two parts, all already called by
+`wm-platform`: `CreateWindowExW`, `DestroyWindow`,
+`DwmSetWindowAttribute` (a surface on the source monitor),
+`ShowWindow` (`note_drawing`), `SetWindowPos` (`admit`, `raise_to_top`,
+`raise_to_top_of_band`), `GetWindowLongPtrW` (`is_topmost`),
+`GetWindow` (`companion::is_above`: `admit`, `is_below` in
+`joining_tenants`), `DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail`,
+`DwmGetWindowAttribute` (`is_cloaked`), `MonitorFromPoint` and
+`GetMonitorInfoW` (`monitor_bounds`, as the own trail),
+`GetLayeredWindowAttributes` and `SetLayeredWindowAttributes`
+(`restore_alpha`, as the drop did).
+
+### To check on screen
+
+`GLAZEWM_ISOLATE=onesurface,morepeeks`, then
+`onesurface,morepeeks,readypeeks`; two monitors, ideally of different
+DPIs; `window_move` at `duration_ms: 2000`, then default; a border and a
+backdrop; a gap of 0 at the shared edge once.
+
+- `move --direction` a tile onto the other monitor: one surrogate-class
+  window per monitor (no extra one per tile), the tile cut cleanly at
+  the edge, its backdrop on each side its own monitor's; no blank or
+  backdrop-only frame at the start; the source monitor's surface hidden
+  a tick after the landing.
+- The same with tiles moving on both monitors in that command (the
+  neighbours closing and opening the gap): the crossing tile over them
+  on both sides; a debug line `Stacking ... over a tile it may cross`
+  at most once per surface.
+- Gap 0 at the edge: at the landing, no frame without the ring's sliver
+  on the source monitor.
+- Move it back before it lands: it turns round and hands back on the
+  source monitor, no blink.
+- On different DPIs: the window at its tile's size during the motion
+  (the rect sent twice), ring and backdrop the same on both sides.
+- `toggle-floating` on a floating window lying across onto another
+  monitor, focused, then shown on top: both parts over the floating
+  windows (the band surfaces with `shown_on_top`).
+- Grab an edge on the target monitor, and with the grab held move a
+  window onto it by keyboard: the crossing on its own peeks (two
+  surrogate-class windows of its own), floating windows still over the
+  held tiles.
+- A switch on the source monitor mid-crossing: nothing left on either
+  surface.
+- Unplug the source monitor mid-crossing: it lands; no stray window.
+- With `readypeeks`: move a tile across and back within 5 s: the move
+  back draws at once (its trail reuses the peek kept where it landed).
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
