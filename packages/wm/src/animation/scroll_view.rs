@@ -39,7 +39,7 @@ use super::{
     can_move_on_peek, has_other_stand_in, hosts_column, is_live,
     is_peek_resize, is_pure_move, is_stacked, peek_styles,
     resizes_on_peeks, restack_joining_overlays, restore_cloaked,
-    track_overlays, PeekView, Role,
+    surface_clips, track_overlays, PeekView, Role,
   },
   transit::Transit,
 };
@@ -665,11 +665,9 @@ fn opening_rect(
   Rect::from_xy(target.x() + scroll, target.y(), 0, target.height())
 }
 
-/// The monitors' rects and working areas, read only for a surface to be
-/// made for a column (`one_surface`) at the clip of one of `workspaces`
-/// (see `PeekView::tenancy`). Both kinds, so a surface made for a column
-/// never drops an unused tile surface as off the monitors, nor the other
-/// way round.
+/// The clips a surface may span (see `surface_clips`), read only for a
+/// surface to be made for a column (`one_surface`) at the clip of one of
+/// `workspaces` (see `PeekView::tenancy`).
 fn surface_monitor_clips(
   state: &WmState,
   one_surface: bool,
@@ -682,17 +680,7 @@ fn surface_monitor_clips(
     return Vec::new();
   }
 
-  state
-    .monitors()
-    .iter()
-    .flat_map(|monitor| {
-      monitor
-        .to_rect()
-        .ok()
-        .into_iter()
-        .chain([monitor.native_properties().working_area])
-    })
-    .collect()
+  surface_clips(state)
 }
 
 /// Displayed scrolling workspaces, with the monitor area their peeks are

@@ -1343,8 +1343,9 @@ fn evicted<K: Copy>(
 }
 
 /// Whether a `PeekSurface` that `is_unused` (no tenant, no ready peek) at
-/// `clip` is dropped as a new one is made: once its clip is no monitor's
-/// of `monitor_clips`.
+/// `clip` is dropped, as a new one is made or at a purge point: once its
+/// clip is none of `monitor_clips` (none at all for a reload, pause or
+/// exit). Never one in use, so its tenants always go before it.
 fn is_stale_surface(
   is_unused: bool,
   clip: &Rect,
@@ -2719,21 +2720,33 @@ impl PeekView {
     self.surfaces.iter().any(|surface| surface.clip() == clip)
   }
 
-  /// Drops the `PeekSurface`s whose clip `keeps` says no longer is a
-  /// monitor's. One still drawing tiles goes once they have landed: each
-  /// of their peeks holds its window.
-  pub fn retain_surfaces(&mut self, keeps: impl Fn(&Rect) -> bool) {
-    self.ready.retain(|_, ready| keeps(&ready.fit.clip));
-    self.surfaces.retain(|surface| keeps(surface.clip()));
+  /// Drops the ready peeks cut at none of `clips`, every monitor's rect
+  /// and working area, then the tiles' and columns' surfaces left unused
+  /// off them (see [`is_stale_surface`]), as the displays change.
+  ///
+  /// One in use stays listed, so what draws on it is still raised,
+  /// restacked and settled with it, and no second surface is made at its
+  /// clip; it goes at a later purge, or as a surface is made, once unused.
+  pub fn retain_surfaces(&mut self, clips: &[Rect]) {
+    self.ready.retain(|_, ready| clips.contains(&ready.fit.clip));
+    self.surfaces.retain(|surface| {
+      !is_stale_surface(surface.is_unused(), surface.clip(), clips)
+    });
   }
 
-  /// Drops every `PeekSurface`, as
-  /// [`retain_surfaces`](Self::retain_surfaces) does, e.g. as the config
-  /// reloads or the WM pauses or exits.
-  pub fn drop_surfaces(&mut self) {
+  /// Drops every ready peek, then every surface left unused, tiles',
+  /// columns' and switches', as the config reloads or the WM pauses or
+  /// exits. One in use stays, as for
+  /// [`retain_surfaces`](Self::retain_surfaces): a switch's tenants live
+  /// in the switch, which plays on to its end.
+  pub fn drop_unused_surfaces(&mut self) {
     self.ready.clear();
-    self.surfaces.clear();
-    self.switch_surfaces.clear();
+    self.surfaces.retain(|surface| {
+      !is_stale_surface(surface.is_unused(), surface.clip(), &[])
+    });
+    self.switch_surfaces.retain(|surface| {
+      !is_stale_surface(surface.is_unused(), surface.clip(), &[])
+    });
   }
 
   /// The surface a workspace switch on the monitor whose working area is
@@ -2773,10 +2786,13 @@ impl PeekView {
     self.switch_surfaces.last()
   }
 
-  /// Drops the switch surfaces whose working area `keeps` says no longer
-  /// is a monitor's. One still drawn on goes with its last tenant.
-  pub fn retain_switch_surfaces(&mut self, keeps: impl Fn(&Rect) -> bool) {
-    self.switch_surfaces.retain(|surface| keeps(surface.clip()));
+  /// Drops the switch surfaces left unused off `areas`, every monitor's
+  /// working area, as [`retain_surfaces`](Self::retain_surfaces) does
+  /// tiles'. One a switch still draws on stays until that has torn down.
+  pub fn retain_switch_surfaces(&mut self, areas: &[Rect]) {
+    self.switch_surfaces.retain(|surface| {
+      !is_stale_surface(surface.is_unused(), surface.clip(), areas)
+    });
   }
 
   /// Opens or closes a pass of `raise_moving` calls, within which a
@@ -3567,22 +3583,36 @@ pub fn move_on_peek(
   moved
 }
 
-/// The monitors' rects, read only for a surface to be made for `clip` if
-/// a tile is to `host` there (see `PeekView::tenancy`).
+/// The clips a tile or column surface may span, read only for a surface
+/// to be made for `clip` if a tile is to `host` there (see
+/// `PeekView::tenancy`).
 fn surface_monitor_clips(
   state: &WmState,
   host: bool,
   clip: &Rect,
 ) -> Vec<Rect> {
   if host && !state.animation_manager.peeks.has_surface(clip) {
-    state
-      .monitors()
-      .iter()
-      .filter_map(|monitor| monitor.to_rect().ok())
-      .collect()
+    surface_clips(state)
   } else {
     Vec::new()
   }
+}
+
+/// Every monitor's rect and working area: the clips tiles' and columns'
+/// surfaces span. Both kinds, so a surface made for a tile never drops an
+/// unused column surface as off the monitors, nor the other way round.
+pub(crate) fn surface_clips(state: &WmState) -> Vec<Rect> {
+  state
+    .monitors()
+    .iter()
+    .flat_map(|monitor| {
+      monitor
+        .to_rect()
+        .ok()
+        .into_iter()
+        .chain([monitor.native_properties().working_area])
+    })
+    .collect()
 }
 
 /// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, with
@@ -5117,7 +5147,7 @@ mod tests {
     assert!(evicted(kept, 3).is_empty());
   }
 
-  /// Only an unused surface off every monitor goes.
+  /// Only an unused surface off every kept clip goes.
   #[test]
   fn only_unused_surfaces_off_the_monitors_go() {
     let monitor = Rect::from_ltrb(0, 0, 1920, 1080);
@@ -5127,6 +5157,9 @@ mod tests {
     assert!(is_stale_surface(true, &gone, &monitors));
     assert!(!is_stale_surface(false, &gone, &monitors));
     assert!(!is_stale_surface(true, &monitor, &monitors));
+    // A reload, pause or exit keeps no clip: only those in use stay.
+    assert!(is_stale_surface(true, &monitor, &[]));
+    assert!(!is_stale_surface(false, &monitor, &[]));
   }
 
   /// On one clock, only lanes that don't stay apart meet; otherwise any
