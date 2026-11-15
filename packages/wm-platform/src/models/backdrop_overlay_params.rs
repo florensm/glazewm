@@ -66,12 +66,9 @@ impl BackdropOverlayParams {
   /// Whether a surrogate can draw this backdrop as copies of it (see
   /// `OverlayCopies::carry_backdrop`): only square, as its copy of the
   /// desktop behind the window is a rectangle, and pinned to the desktop,
-  /// as that copy is cut from a backdrop of the whole monitor. None with
-  /// `GLAZEWM_ISOLATE=live` (see `isolation`).
+  /// as that copy is cut from a backdrop of the whole monitor.
   #[must_use]
   pub fn is_copyable(&self) -> bool {
-    self.corner_radius <= 0.0
-      && (self.parallax - 1.0).abs() < 1e-3
-      && !crate::isolation::current().live
+    self.corner_radius <= 0.0 && (self.parallax - 1.0).abs() < 1e-3
   }
 }

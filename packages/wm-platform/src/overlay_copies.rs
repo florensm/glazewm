@@ -16,7 +16,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   backdrop_source::{BackdropSource, FillSource, VignetteSource},
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
-  isolation, lerp_f32,
+  lerp_f32,
   native_surrogate::{fill_start, placed_rects},
   BackdropOverlayParams, Color, Rect, StyleBlend, TabBarPlace,
 };
@@ -565,10 +565,7 @@ impl BackdropCopy {
   /// thumbnails: those shown more first, so a change of style never
   /// leaves a frame with neither.
   fn apply_opacity(&mut self) {
-    let opacity = left_out(
-      if self.is_shown { self.opacity } else { 0 },
-      isolation::current().no_backdrop,
-    );
+    let opacity = if self.is_shown { self.opacity } else { 0 };
     let weights = self.crop_weights();
 
     let mut order = (0..self.crops.len()).collect::<Vec<_>>();
@@ -700,16 +697,6 @@ fn crop_weights(
     (None, None) => {}
   }
   weights
-}
-
-/// `opacity`, or none for a copy `GLAZEWM_ISOLATE` leaves out (see
-/// `isolation`).
-fn left_out(opacity: u8, is_left_out: bool) -> u8 {
-  if is_left_out {
-    0
-  } else {
-    opacity
-  }
 }
 
 /// Strength of the vignette `params` give, as the overlay composites it,
@@ -1324,14 +1311,14 @@ impl OverlayCopies {
   /// Draws the ring at `opacity`, independently of the backdrop.
   pub(crate) fn set_ring_opacity(&mut self, opacity: u8) {
     if let Some(ring) = &mut self.ring {
-      ring.set_opacity(left_out(opacity, isolation::current().no_ring));
+      ring.set_opacity(opacity);
     }
   }
 
   /// Brings the ring copy to full opacity.
   pub(crate) fn cover_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
-      ring.set_opacity(left_out(u8::MAX, isolation::current().no_ring));
+      ring.set_opacity(u8::MAX);
     }
   }
 
