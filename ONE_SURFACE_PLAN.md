@@ -2029,7 +2029,7 @@ ported first (items below), then this flicker, then the bench.
    after porting, before the bench): the old engine (`ResizeSession`,
    `nopeeks`) and every own-window peek path a surface replaced, so
    `onesurface` is the only engine, on by default with no word. See
-   "Removal plan" once written.
+   "Removal plan" (end of this file).
 3. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
    isolate words and modes that are not compared, so the bench runs only
    what matters; and have the bench script also build and run a second
@@ -2066,3 +2066,115 @@ each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
 `os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`.
+
+## Removal plan (2026-11-15)
+
+Owner's decision: after porting (stacks last), remove the old engine
+and every isolate word, so the surfaces are the only way windows
+animate, with no switch to turn them off. Then step 8, the backdrop
+flicker, and the bench against `origin/main` (a separate checkout:
+there is no engine left on this branch to compare against).
+
+### Decisions (owner, 2026-11-15)
+
+| question | decision |
+|---|---|
+| what goes | `ResizeSession` and everything only it uses; every `GLAZEWM_ISOLATE` word |
+| `onesurface`, `morepeeks`, `readypeeks`, `peeks`, `asynchandback`, `slidepeeks` | always on; word and every `false` branch deleted |
+| `peeksfirst`, `latealpha`, `earlyfill`, `keepfills`, `nobackdrop`, `noring`, `live`, `keepoverlays` | removed with what only they reach (`peeksfirst`: the catch-up order of today's default stays) |
+| a live window (uncopyable backdrop) opening, closing, minimizing | ported first: on an own live peek, as its moves already are |
+| other rows the engine still serves | ported where an existing peek path fits, else snap (no animation); each row listed in its commit |
+| own windows kept by design | live peeks; stacks if the stacks step leaves any; every "still on a window of its own" fallback in the "as built" sections; surface creation failure |
+
+### What still reaches the engine today (from the inventory)
+
+Entry points: `start_animation_if_needed` (`manager.rs`, from
+`platform_sync.rs` redraw), `start_open_animation` (`platform_sync.rs`
+open/restore), `start_away_animation` (`close_window.rs`).
+
+| row | today | after |
+|---|---|---|
+| tile crossing monitors, floating <-> tiling, fullscreen toggle, live move/resize | engine unless `morepeeks` | peeks (`morepeeks` folded on) |
+| live window open, close, minimize | engine, even with `morepeeks` | R2: own live peek |
+| restore of a floating window | engine (`enters_on_peek` needs open or tiling) | R3: port onto 6b's floating-open path |
+| mixed relayout (one window can't go on a peek) | engine for all (`resizes_relayout` returns `None`) | R3: per window; those that can't snap |
+| column on the per-window path (`Motion::Column`) | engine | R3: port if `scroll_view`'s peek path fits, else snap |
+| close/minimize while handing back, releasing, or of a resting column (`leave` → `Unsupported`) | engine | R3: snap (rare) unless `leave` takes it with a small change |
+| peek refused otherwise (`has_other_stand_in`, no monitor, `new_entry` error, still landing) | engine | R3: snap |
+| no thumbnail (elevated window) | snaps already | unchanged |
+
+### Phases, one agent each, in order (they share files)
+
+Branches `os/r<n>-<name>` from `tryout/one-surface`. Each phase
+compiles, passes both checks, and adds its "as built" notes to this
+section (a short subsection per phase, not a new top section).
+
+- **R0, move only.** `compute_border_inset` and the edge-colour sampler
+  (`EdgeColorCache`, `sample_edge_color*`, `dominant_color`, their tests)
+  out of `resize_session.rs` into their own `wm-platform` module; callers
+  in `window_peek.rs`, `workspace_surrogate.rs`, `companion_cover.rs`,
+  `manager.rs`. No behaviour change.
+- **R1, fold the words.** `isolation.rs` loses every word: fold each
+  keeper to true and delete its `false` branches and parameters (the
+  `one_surface`/`more_peeks`/`peeks`/... arguments of `hosts_*`,
+  `host_for`, `move_host`, `allows_motion`, `surface_monitor_clips`,
+  `hands_back_in_step`, ...), delete the experiments and what only they
+  reach (`draw_peeks_first`/`PeeksDrawn`, `late_alpha`, `early_fill`,
+  `keep_fills`, `no_backdrop`, `no_ring`, `live`). Then delete
+  `isolation.rs`, the `GLAZEWM_ISOLATE` read and its warning in
+  `main.rs`. The engine stays reachable for the rows above. Tests: rewrite
+  those passing `false` for a folded word; drop tests of removed words.
+- **R2, live transits.** Open, close and minimize of a live window on an
+  own live peek, built from what `enter_on_peek`/`leave_on_peek` and
+  live moves already do. Reorders no hand-over step; the backdrop
+  overlay follows the moving window as for a live move.
+- **R3, the other rows.** One commit per row in the table: port or
+  snap. After it, nothing calls `start_animation_if_needed`,
+  `start_open_animation` or `start_away_animation`.
+- **R4, delete the engine.** `resize_session.rs`; in `manager.rs`
+  every engine-only constant, field, function, tick section and test
+  (the inventory's list: sessions, warm surrogates, handoff budget,
+  away windows, session fade tail, ...); in `platform_sync.rs`
+  `FrozenStep::Adopt` and the `Some(true)` arm, `mark_session_cloaked`,
+  `has_slide_in`, session overlay tracking and its batch block,
+  `tracks_at_take_over`, `session_overlay_placement`; session arms of
+  `hands_back_to_companion`, `cover_companion_hand_back`,
+  `has_active_surrogate`, `stands_in_for`, `owns_window_position`;
+  `tab_bars.rs` and `wm_state.rs` session calls; engine perf stages.
+  `perf_bench` columns that read removed stages go in step 8.
+- **R5, `NativeSurrogate` leftovers.** Methods only the engine called
+  (`revive`, `update`, `update_thumbnail_dims`, `content_size`,
+  `defer_reposition`, `set_rest_opacity`, fill colour/opacity/covered,
+  `reregister_thumbnail`), the `stretch` field and `create`'s `stretch`
+  parameter. Then a sweep for own-window code left unreachable by R1
+  (keep everything live peeks and the kept fallbacks use).
+- **R6, docs.** `STAND_INS_PLAN.md` 10f marked done; references to
+  removed words in `TODO.md`, `START_LATENCY_PLAN.md`,
+  `ANIMATION_REVIEW.md`, `SWITCH_PEEKS_PLAN.md` noted as historical
+  (not rewritten); `CLAUDE.md` lines that describe `GLAZEWM_ISOLATE`
+  modes proposed to the reviewer, not edited by the agent.
+
+### Rules for the removal agents
+
+- **Hand-over order is untouched.** Where a step has an engine arm and a
+  peek arm, delete the engine arm only and keep the call where it is:
+  `hands_back_to_companion` (keep `companion_covers`, the ws-cleanup arm
+  and `peeks.is_handing_back`), `cover_companion_hand_back` (keep its
+  position after focus), `FrozenStep` (keep `TakeOver`/`Keep` and
+  TakeOver before `pending_cloaks`), `commit_pending_cloaks`' single
+  flush and `preposition_cloaked`, the pass order `cover_moved_overlays`
+  → `commit_pending_cloaks` → `hand_over_moved_overlays` → raise loop,
+  `apply_outgoing_surrogate_opacities` and the transparency flush,
+  `HandoffWait` and the companion waits, every `WindowPeek` and
+  `WorkspaceSurrogate` hand-over step. Say in the commit which arm went.
+- **Delete, don't disable.** No `#[allow(dead_code)]`, no commented-out
+  code, no flags kept "just in case".
+- **No new Windows API.** Removal only takes calls away; R2 and R3 may
+  only call what `wm-platform` already calls. Each report lists the
+  Windows functions no longer called.
+- Each phase: `cargo fmt --all`, `cargo check --workspace --tests` and
+  `cargo clippy --workspace --all-targets -- -D warnings` for
+  `x86_64-pc-windows-msvc`, clean.
+- Not part of the removal: the test-build strip list (`CLAUDE.md`) and
+  the bench scripts, which step 8 reworks to compare against
+  `origin/main`.
