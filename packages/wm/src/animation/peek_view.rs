@@ -1096,6 +1096,61 @@ fn hosts_on_surface(
     && !beside_own_peek
 }
 
+/// Whether a scrolling layout's column that the scroll view puts on a
+/// pinned peek may be drawn on the `PeekSurface` of its working area
+/// (`onesurface`), its role aside (see [`keeps_rest_hosted`]). Not a live
+/// peek, which moves with its window; one a grab holds (`held`, a later
+/// step's); a stack's window, whose tab bar is a window of its own behind
+/// its stand-in; nor any column of a workspace with a column on a peek of
+/// its own (`beside_own_peek`: a stack's, a live or a held one), which
+/// stacks against the surface by where each went last, as for tiles.
+// Independent conditions, each keeping a column on a peek of its own.
+#[allow(clippy::fn_params_excessive_bools)]
+pub(super) fn hosts_column(
+  one_surface: bool,
+  live: bool,
+  held: bool,
+  is_stacked: bool,
+  beside_own_peek: bool,
+) -> bool {
+  one_surface && !live && !held && !is_stacked && !beside_own_peek
+}
+
+/// Whether a column the surface may take (see [`hosts_column`]) is drawn
+/// there in its role: one that `rests` (at rest, or moving to rest hidden)
+/// only if no other tenant of that surface does (`rests_elsewhere`), as
+/// the surface has one place at rest, and not under `slide_peeks`, whose
+/// workspace switches have a resting peek stand by or kept on a window of
+/// its own (`SWITCH_PEEKS_PLAN.md`).
+fn keeps_rest_hosted(
+  rests: bool,
+  slide_peeks: bool,
+  rests_elsewhere: bool,
+) -> bool {
+  !rests || (!slide_peeks && !rests_elsewhere)
+}
+
+/// Whether an entry in `role` rests, or is to once it lands.
+fn rests(role: Role) -> bool {
+  matches!(role, Role::Peek | Role::Moving { ends_shown: false })
+}
+
+/// Of the tenants of a surface, by role and window, the window it goes
+/// just above at rest (see `PeekSurface::rest_above`): the one tenant's,
+/// once every tenant is at rest.
+fn rest_anchor(
+  tenants: impl IntoIterator<Item = (Role, HWND)>,
+) -> Option<HWND> {
+  let mut anchor = None;
+  for (role, window) in tenants {
+    if role != Role::Peek || anchor.is_some() {
+      return None;
+    }
+    anchor = Some(window);
+  }
+  anchor
+}
+
 /// Whether `window`, a tile entering or leaving, is drawn on its monitor's
 /// `PeekSurface` (see [`hosts_on_surface`]).
 fn hosts_transit(window: &WindowContainer, config: &UserConfig) -> bool {
@@ -1116,7 +1171,7 @@ fn hosts_transit(window: &WindowContainer, config: &UserConfig) -> bool {
 }
 
 /// Whether `window` is a stack's window.
-fn is_stacked(window: &WindowContainer) -> bool {
+pub(super) fn is_stacked(window: &WindowContainer) -> bool {
   window
     .parent()
     .is_some_and(|parent| parent.as_stack().is_some())
@@ -1249,16 +1304,13 @@ struct ReadyFit {
 }
 
 /// Whether a landed entry's peek is kept ready under `ready_peeks`: a
-/// tile's, hosted on a surface, drawn on no other peek.
-// Independent conditions, each dropping the peek.
-#[allow(clippy::fn_params_excessive_bools)]
+/// tile's or a column's, hosted on a surface, drawn on no other peek.
 fn keeps_ready(
   ready_peeks: bool,
   is_hosted: bool,
-  is_column: bool,
   has_trail: bool,
 ) -> bool {
-  ready_peeks && is_hosted && !is_column && !has_trail
+  ready_peeks && is_hosted && !has_trail
 }
 
 /// Whether a peek kept ready at `kept_at` has outlived [`READY_LIFETIME`]
@@ -1370,6 +1422,11 @@ pub struct PeekView {
   /// Resting peeks of columns sliding out with a workspace switch, kept
   /// at rest until their surrogates take over, under `slidepeeks`.
   switching_out: HashMap<Uuid, Entry>,
+  /// Peeks of columns that `upsert` replaced with a peek elsewhere (on
+  /// another surface or a window of their own), still drawing until the
+  /// scroll view's flush has composited what replaced them (see
+  /// [`drop_replaced`](Self::drop_replaced)).
+  replaced: Vec<WindowPeek>,
   /// The next [`Rank::order`].
   next_rank: u64,
   /// Raise passes closed so far (see [`Rank::pass`]).
@@ -1605,6 +1662,10 @@ impl PeekView {
               // Raised while its real window is still cloaked, so the
               // uncloak never shows the window over the peek.
               entry.peek.begin_hand_back();
+              // A column's surface is not raised over the tiles it draws.
+              if entry.is_column {
+                entry.peek.stay_over_window();
+              }
               landed.shown.push(*id);
               Role::HandingBack
             } else {
@@ -1692,6 +1753,8 @@ impl PeekView {
     });
     // Its draws may have registered a tenant's fill or companion.
     self.restack_crossings();
+    // The last moving tenant may have landed or gone.
+    self.settle_resting_surfaces();
 
     landed
   }
@@ -1925,9 +1988,21 @@ impl PeekView {
   /// A peek it creates moving and pinned enters by `opening`, if given
   /// (see [`Transit`]); one already drawn keeps its own.
   ///
+  /// With `may_host` (see [`hosts_column`]), a new peek is drawn on the
+  /// `PeekSurface` of `clip` if its role keeps it there (see
+  /// [`keeps_rest_hosted`]), the column's ready peek there if it has one
+  /// and its window shows; a surface made for it drops those left unused
+  /// off `monitor_clips`. A hosted peek no longer drawn so (another clip,
+  /// a surface dropped, or not to be hosted any more) is replaced by a new
+  /// one, its motion, transit and stretch carried over; the old one draws
+  /// on until the flush that follows (see
+  /// [`drop_replaced`](Self::drop_replaced)), so no frame shows neither.
+  /// One of its own stays so.
+  ///
   /// Returns whether a new peek now covers a still-visible real window,
-  /// so it has to be composited before that window is cloaked.
-  #[allow(clippy::too_many_arguments)]
+  /// or replaces one, so it has to be composited before that window is
+  /// cloaked or the old one goes.
+  #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
   pub(super) fn upsert(
     &mut self,
     window: &WindowContainer,
@@ -1938,6 +2013,8 @@ impl PeekView {
     opening: Option<Transit>,
     resize: Option<PeekResize>,
     held: bool,
+    may_host: bool,
+    monitor_clips: &[Rect],
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
@@ -1994,7 +2071,16 @@ impl PeekView {
 
     let actual = || window.native().frame_with_shadows().ok();
 
-    if let Some(entry) = upserted_entry(&mut self.entries, &window.id()) {
+    let id = window.id();
+    let host = may_host
+      && keeps_rest_hosted(
+        rests(role),
+        wm_platform::isolation::current().slide_peeks,
+        self.rests_on_surface(clip, &id),
+      );
+    let moves_on = self.moves_on_in_place(&id, clip, host);
+
+    if let Some(entry) = self.entries.get_mut(&id).filter(|_| moves_on) {
       let headed = std::mem::replace(&mut entry.motion, motion);
       entry.clip = clip.clone();
       entry.opacity = opacity;
@@ -2030,41 +2116,183 @@ impl PeekView {
       if self.standing_by.contains(&window.id()) {
         entry.peek.stand_by();
       }
+      if let Some(tenancy) = &mut entry.tenancy {
+        tenancy.lane = tenancy
+          .reach
+          .lane(&entry.motion.start_rect, &entry.motion.target_rect);
+      }
       let (rect, _) = entry.motion.current_state_at(now);
       entry.draw(&rect, now, batch);
       return covers_shown_window;
     }
 
-    // Drawn as a column, its window has no ready peek of a tile's left.
-    self.ready.remove(&window.id());
-    let Some((mut entry, covers_shown_window)) = new_entry(
-      window,
-      motion,
-      clip,
-      opacity,
-      corner_style,
-      &styles,
-      role,
-      None,
-    ) else {
+    // Drawn as a column, its window has no ready peek of a tile's left,
+    // and one on a surface only for a window still shown, which a ready
+    // peek rejoins its surface by.
+    let ready = if host {
+      self.take_ready(
+        &id,
+        &ReadyFit {
+          source: window.native().hwnd(),
+          clip: clip.clone(),
+        },
+        now,
+      )
+    } else {
+      self.ready.remove(&id);
+      None
+    };
+    // Put on top as its own peek would be: a focused or opening column's
+    // went up just below its window, above its neighbours'.
+    let stacking = if is_focused || opening.is_some() {
+      Stacking::Raised
+    } else {
+      Stacking::InPass
+    };
+    let tenancy = if host {
+      self.tenancy(window, &motion, clip, stacking, config, monitor_clips)
+    } else {
+      None
+    };
+    let surface = tenancy
+      .as_ref()
+      .and_then(|(index, _)| self.surfaces.get(*index));
+    let ready = ready.filter(|peek| {
+      surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
+        && !window.native().is_cloaked().unwrap_or(true)
+    });
+    let made = match ready {
+      Some(peek) => Some(reuse_entry(
+        peek, window, motion, clip, opacity, &styles, role,
+      )),
+      None => new_entry(
+        window,
+        motion,
+        clip,
+        opacity,
+        corner_style,
+        &styles,
+        role,
+        surface,
+      ),
+    };
+    let Some((mut entry, covers_shown_window)) = made else {
       return false;
     };
 
-    // `place_scaled` draws pinned peeks only.
-    entry.transit = opening.filter(|_| is_moving && !entry.peek.is_live());
-    entry.stretch =
-      resizes.map(|resize| Stretch::at(actual(), resize, deferred));
+    let old = self.entries.remove(&id).map(|old| {
+      self.replaced.push(old.peek);
+      (old.transit, old.stretch, old.motion.target_rect)
+    });
+    let replaces = old.is_some();
+    if let Some((transit, stretch, headed)) = old {
+      // Carried on as it was drawn, as if moved on in place.
+      entry.transit = kept_transit(transit, is_moving);
+      let resizes = stretch
+        .as_ref()
+        .filter(|_| is_moving)
+        .map(Stretch::resize)
+        .or(resizes)
+        .filter(|_| entry.transit.is_none());
+      entry.stretch = restretched(
+        stretch,
+        resizes,
+        deferred,
+        actual,
+        &headed,
+        &entry.motion.target_rect,
+        now,
+      );
+    } else {
+      // `place_scaled` draws pinned peeks only.
+      entry.transit =
+        opening.filter(|_| is_moving && !entry.peek.is_live());
+      entry.stretch =
+        resizes.map(|resize| Stretch::at(actual(), resize, deferred));
+    }
     if held {
       entry.hold = Hold::Held;
     }
     if self.standing_by.contains(&window.id()) {
       entry.peek.stand_by();
     }
-    let rect = entry.rect.clone();
+    entry.tenancy = tenancy.map(|(_, tenancy)| tenancy);
+    let rect = if replaces {
+      entry.motion.current_state_at(now).0
+    } else {
+      entry.rect.clone()
+    };
     entry.draw(&rect, now, batch);
-    self.entries.insert(window.id(), entry);
+    self.entries.insert(id, entry);
 
-    covers_shown_window
+    covers_shown_window || replaces
+  }
+
+  /// Whether `window_id`'s entry, if any, is moved on in place by
+  /// [`upsert`](Self::upsert) as a column cut at `clip`, to be hosted or
+  /// not (`host`): one of its own always, and a column's on a surface
+  /// still kept that spans `clip`, if it is to stay hosted. A tile's on a
+  /// surface takes no column's role (see [`Tenancy`]).
+  fn moves_on_in_place(
+    &self,
+    window_id: &Uuid,
+    clip: &Rect,
+    host: bool,
+  ) -> bool {
+    self.entries.get(window_id).is_some_and(|entry| {
+      !entry.peek.is_hosted()
+        || (host
+          && entry.is_column
+          && entry.clip == *clip
+          && self
+            .surfaces
+            .iter()
+            .any(|surface| surface.hwnd() == entry.peek.hwnd()))
+    })
+  }
+
+  /// Whether a column other than `window_id`'s rests, or is to, on the
+  /// surface of `clip` (see [`keeps_rest_hosted`]).
+  fn rests_on_surface(&self, clip: &Rect, window_id: &Uuid) -> bool {
+    let Some(surface) =
+      self.surfaces.iter().find(|surface| surface.clip() == clip)
+    else {
+      return false;
+    };
+
+    self.entries.iter().any(|(id, entry)| {
+      id != window_id
+        && entry.tenancy.is_some()
+        && entry.peek.hwnd() == surface.hwnd()
+        && rests(entry.role)
+    })
+  }
+
+  /// Drops the peeks [`upsert`](Self::upsert) replaced, once what replaced
+  /// them has been composited.
+  pub(super) fn drop_replaced(&mut self) {
+    self.replaced.clear();
+  }
+
+  /// Puts each surface whose tenants all rest just above its resting
+  /// tenant's cloaked window (see [`rest_anchor`]), where that tenant's
+  /// own peek would be, once nothing moving on it needs it higher.
+  pub(super) fn settle_resting_surfaces(&self) {
+    for surface in &self.surfaces {
+      if surface.is_empty() {
+        continue;
+      }
+      let tenants = self
+        .entries
+        .values()
+        .filter(|entry| {
+          entry.tenancy.is_some() && entry.peek.hwnd() == surface.hwnd()
+        })
+        .map(|entry| (entry.role, entry.peek.source()));
+      if let Some(window) = rest_anchor(tenants) {
+        surface.rest_above(window);
+      }
+    }
   }
 
   /// Draws `window`, just opened or restored at `target`, entering on a
@@ -2581,7 +2809,6 @@ impl PeekView {
     if !keeps_ready(
       wm_platform::isolation::current().ready_peeks,
       entry.peek.is_hosted(),
-      entry.is_column,
       entry.trail.is_some(),
     ) {
       return;
@@ -3051,19 +3278,6 @@ impl PeekView {
       .and_then(|entry| entry.departing.as_ref())
       .is_some_and(|departing| departing.awaits_cloak)
   }
-}
-
-/// The entry of `entries` that [`PeekView::upsert`] moves on for
-/// `window_id`, if any: not a tile's on a surface, which takes no column's
-/// role (see [`Tenancy`]), and which a new peek of its own replaces once
-/// drawn.
-fn upserted_entry<'a>(
-  entries: &'a mut HashMap<Uuid, Entry>,
-  window_id: &Uuid,
-) -> Option<&'a mut Entry> {
-  entries
-    .get_mut(window_id)
-    .filter(|entry| !entry.peek.is_hosted())
 }
 
 /// A motion holding a window at `rect`, for one leaving: only its transit
@@ -3775,7 +3989,7 @@ pub fn cover_moved_overlays(state: &mut WmState, config: &UserConfig) {
 /// (see `WindowPeek::hosted`), maybe under the overlays of higher ones,
 /// which would cover their copies there once their windows are cloaked,
 /// until it is raised.
-fn restack_joining_overlays(state: &mut WmState) {
+pub(super) fn restack_joining_overlays(state: &mut WmState) {
   for (window_id, anchor) in
     state.animation_manager.peeks.joining_tenants()
   {
@@ -4711,11 +4925,12 @@ mod tests {
     allows_motion, carries_fill_early, conceals_new_ring,
     crosses_floating, evicted, floating_peek_raise, follow_duration,
     follows_tile, fullscreen_peek_raise, has_landed, has_left,
-    hosts_on_surface, is_departed, is_peek_resize, is_pure_move,
-    is_ready_expired, is_stale_surface, is_stray, keeps_ready,
-    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
-    leaving_transit, move_clips, out_of_order, peek_resize, rank,
-    resizes_at_start, restretched, retargeted_motion, returning_transit,
+    hosts_column, hosts_on_surface, is_departed, is_peek_resize,
+    is_pure_move, is_ready_expired, is_stale_surface, is_stray,
+    keeps_ready, keeps_rest_hosted, kept_transit, lands_on_trail,
+    lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, move_clips,
+    out_of_order, peek_resize, rank, resizes_at_start, rest_anchor,
+    restretched, rests, retargeted_motion, returning_transit,
     sampled_size, settling, state_change_peek_raise, state_change_resize,
     take_left, takes_ready, toggles_tile_fullscreen, visible_frame, Hold,
     Lane, PeekRaise, PeekResize, ReadyFit, Role, Stacking, Stretch,
@@ -4792,15 +5007,73 @@ mod tests {
     assert!(!lanes_stay_apart(&left, &right, false));
   }
 
-  /// Only a hosted tile's peek, drawn on no other, is kept ready, and
-  /// only under `readypeeks`.
+  /// Only a hosted peek, drawn on no other, is kept ready, and only under
+  /// `readypeeks`.
   #[test]
-  fn only_hosted_tiles_keep_a_ready_peek() {
-    assert!(keeps_ready(true, true, false, false));
-    assert!(!keeps_ready(false, true, false, false));
-    assert!(!keeps_ready(true, false, false, false));
-    assert!(!keeps_ready(true, true, true, false));
-    assert!(!keeps_ready(true, true, false, true));
+  fn only_hosted_peeks_are_kept_ready() {
+    assert!(keeps_ready(true, true, false));
+    assert!(!keeps_ready(false, true, false));
+    assert!(!keeps_ready(true, false, false));
+    assert!(!keeps_ready(true, true, true));
+  }
+
+  /// A column goes on a surface unless its peek is live, held or a
+  /// stack's, or a column of its workspace keeps a peek of its own.
+  #[test]
+  fn only_plain_columns_go_on_a_surface() {
+    assert!(hosts_column(true, false, false, false, false));
+    assert!(!hosts_column(false, false, false, false, false));
+    for kept_off in 0..4 {
+      let off: [bool; 4] = std::array::from_fn(|index| index == kept_off);
+      let [live, held, is_stacked, beside] = off;
+      assert!(
+        !hosts_column(true, live, held, is_stacked, beside),
+        "{kept_off}"
+      );
+    }
+  }
+
+  /// A surface has one place at rest: a second resting column, or any
+  /// under `slidepeeks`, keeps a peek of its own; a moving one ending
+  /// shown always goes.
+  #[test]
+  fn one_resting_column_per_surface() {
+    assert!(keeps_rest_hosted(true, false, false));
+    assert!(!keeps_rest_hosted(true, false, true));
+    assert!(!keeps_rest_hosted(true, true, false));
+    for (slide_peeks, elsewhere) in
+      [(false, false), (true, false), (false, true), (true, true)]
+    {
+      assert!(keeps_rest_hosted(false, slide_peeks, elsewhere));
+    }
+    assert!(rests(Role::Peek));
+    assert!(rests(Role::Moving { ends_shown: false }));
+    assert!(!rests(Role::Moving { ends_shown: true }));
+    assert!(!rests(Role::HandingBack));
+  }
+
+  /// A surface goes to its resting tenant's window only once every tenant
+  /// rests, and it has one.
+  #[test]
+  fn a_surface_rests_by_its_one_resting_tenant() {
+    let window = HWND(7);
+    assert_eq!(rest_anchor([(Role::Peek, window)]), Some(window));
+    assert_eq!(rest_anchor([]), None);
+    assert_eq!(
+      rest_anchor([
+        (Role::Peek, window),
+        (Role::Moving { ends_shown: true }, HWND(8)),
+      ]),
+      None
+    );
+    assert_eq!(
+      rest_anchor([(Role::Releasing { settled: true }, HWND(8))]),
+      None
+    );
+    assert_eq!(
+      rest_anchor([(Role::Peek, window), (Role::Peek, HWND(8))]),
+      None
+    );
   }
 
   /// A ready peek draws only its own window's motion on the same surface,

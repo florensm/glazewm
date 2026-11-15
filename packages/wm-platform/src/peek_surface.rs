@@ -107,6 +107,25 @@ impl PeekSurface {
     self.window.on_top.set(false);
   }
 
+  /// Puts it just above `window`, the cloaked window of the one tenant
+  /// left on it, drawn at rest, where that tenant's own peek would be
+  /// (just below a window that shows nothing). Done once until something
+  /// else moves the surface.
+  pub fn rest_above(&self, window: HWND) {
+    if self.window.rests_above.get() == window.0 {
+      return;
+    }
+
+    let _scope = perf::scope(Stage::Surface);
+    self.window.on_top.set(false);
+    match window_class::place_above(self.hwnd(), window) {
+      Ok(()) => self.window.rests_above.set(window.0),
+      Err(err) => {
+        tracing::warn!("Failed to put a peek surface at rest: {err}");
+      }
+    }
+  }
+
   pub(crate) fn window(&self) -> &Rc<SurfaceWindow> {
     &self.window
   }
@@ -134,6 +153,9 @@ pub(crate) struct SurfaceWindow {
   /// Whether it was raised to the top in the open pass, and nothing is
   /// known to have been put above it since.
   on_top: Cell<bool>,
+  /// The window it was last put just above at rest, if nothing moved it
+  /// since (see `PeekSurface::rest_above`).
+  rests_above: Cell<isize>,
 }
 
 impl SurfaceWindow {
@@ -166,6 +188,7 @@ impl SurfaceWindow {
       raised: Cell::new(false),
       in_raise_pass: Cell::new(false),
       on_top: Cell::new(false),
+      rests_above: Cell::new(0),
     })
   }
 
@@ -198,6 +221,7 @@ impl SurfaceWindow {
 
     let _scope = perf::scope(Stage::Surface);
     self.on_top.set(false);
+    self.rests_above.set(0);
     let placed = if admission == Admission::Above {
       window_class::place_above(self.hwnd(), window)
     } else {
@@ -228,6 +252,24 @@ impl SurfaceWindow {
     self.raised.set(true);
   }
 
+  /// Puts the surface just above `window`, unless it is anywhere above it
+  /// already, so it covers the window as that is uncloaked, as a landing
+  /// peek of its own goes just above its window. Never down from then on
+  /// (see [`hold_place`](Self::hold_place)).
+  pub(crate) fn keep_above(&self, window: HWND) {
+    self.hold_place();
+    if companion::is_above(self.hwnd(), window) {
+      return;
+    }
+
+    let _scope = perf::scope(Stage::Surface);
+    self.on_top.set(false);
+    self.rests_above.set(0);
+    if let Err(err) = window_class::place_above(self.hwnd(), window) {
+      tracing::warn!("Failed to put a peek surface above a window: {err}");
+    }
+  }
+
   /// Lets a tenant go. The last one leaving lets the surface take new
   /// ones again.
   pub(crate) fn release(&self) {
@@ -235,6 +277,7 @@ impl SurfaceWindow {
     self.tenants.set(tenants);
     if tenants == 0 {
       self.raised.set(false);
+      self.rests_above.set(0);
     }
   }
 
@@ -291,6 +334,7 @@ impl SurfaceWindow {
   /// `PeekSurface::set_raise_pass`).
   pub(crate) fn raise_to_top(&self) -> crate::Result<()> {
     self.raised.set(true);
+    self.rests_above.set(0);
     if self.on_top.get() {
       return Ok(());
     }
@@ -323,6 +367,7 @@ impl SurfaceWindow {
     let _scope = perf::scope(Stage::Surface);
     self.raised.set(true);
     self.on_top.set(false);
+    self.rests_above.set(0);
     window_class::raise_to_top_of_band(self.hwnd(), topmost)
   }
 }

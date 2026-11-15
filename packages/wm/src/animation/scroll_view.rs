@@ -36,9 +36,10 @@ use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
   peek_view::{
-    can_move_on_peek, has_other_stand_in, is_peek_resize, is_pure_move,
-    peek_styles, resizes_on_peeks, restore_cloaked, track_overlays,
-    PeekView, Role,
+    can_move_on_peek, has_other_stand_in, hosts_column, is_live,
+    is_peek_resize, is_pure_move, is_stacked, peek_styles,
+    resizes_on_peeks, restack_joining_overlays, restore_cloaked,
+    track_overlays, PeekView, Role,
   },
   transit::Transit,
 };
@@ -143,6 +144,12 @@ pub fn sync_scroll_view(
     })
     .collect::<HashSet<_>>();
 
+  // Under `onesurface`, columns draw on the surface of their working area
+  // (see `PeekView::upsert`).
+  let one_surface = wm_platform::isolation::current().one_surface;
+  let monitor_clips =
+    surface_monitor_clips(state, one_surface, &workspaces);
+
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
 
@@ -219,6 +226,15 @@ pub fn sync_scroll_view(
             || (pure_moves.is_none()
               && view.entries.contains_key(&window.id()))
             || opening_ids.contains(&window.id()))
+      });
+
+    // A column on a peek of its own is stacked by where that went, which a
+    // surface can't keep its neighbours in step with (see `hosts_column`).
+    let beside_own_peek = one_surface
+      && moves.iter().any(|(window, _, _)| {
+        is_stacked(window)
+          || is_live(&peek_styles(window, config))
+          || held.contains(&window.id())
       });
 
     for (window, from, target) in moves {
@@ -298,6 +314,14 @@ pub fn sync_scroll_view(
           view.end_stand_by(&window.id());
         }
       }
+      let may_host = one_surface
+        && hosts_column(
+          true,
+          is_live(&peek_styles(&window, config)),
+          is_held,
+          is_stacked(&window),
+          beside_own_peek,
+        );
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -307,6 +331,8 @@ pub fn sync_scroll_view(
         transit.filter(|_| !is_held),
         resizes,
         is_held,
+        may_host,
+        &monitor_clips,
         config,
         focused_id == Some(window.id()),
         now,
@@ -328,6 +354,8 @@ pub fn sync_scroll_view(
       .any(|(_, entry)| entry.peek.visible_rect().is_some());
 
   flush_overlays(state, config, batch, needs_flush || replaces_peek);
+  // Composited by now, what replaced them draws.
+  state.animation_manager.peeks.drop_replaced();
 
   for (id, entry) in gone {
     if let Some(window) =
@@ -336,6 +364,10 @@ pub fn sync_scroll_view(
       state.pending_sync.queue_container_to_redraw(window);
     }
   }
+
+  // Once departed and replaced tenants are gone: a resting one may be
+  // left alone on its surface.
+  state.animation_manager.peeks.settle_resting_surfaces();
 
   drive_moving(state, &started_moving);
 }
@@ -517,6 +549,10 @@ fn flush_overlays(
   flushes: bool,
 ) {
   track_overlays(state, config, batch);
+  // As `cover_moved_overlays` has it for tiles (`onesurface`).
+  if wm_platform::isolation::current().one_surface {
+    restack_joining_overlays(state);
+  }
 
   if flushes {
     wm_platform::dwm_flush();
@@ -627,6 +663,36 @@ fn opening_rect(
     .unwrap_or(0);
 
   Rect::from_xy(target.x() + scroll, target.y(), 0, target.height())
+}
+
+/// The monitors' rects and working areas, read only for a surface to be
+/// made for a column (`one_surface`) at the clip of one of `workspaces`
+/// (see `PeekView::tenancy`). Both kinds, so a surface made for a column
+/// never drops an unused tile surface as off the monitors, nor the other
+/// way round.
+fn surface_monitor_clips(
+  state: &WmState,
+  one_surface: bool,
+  workspaces: &[(Workspace, Rect)],
+) -> Vec<Rect> {
+  let peeks = &state.animation_manager.peeks;
+  if !one_surface
+    || workspaces.iter().all(|(_, clip)| peeks.has_surface(clip))
+  {
+    return Vec::new();
+  }
+
+  state
+    .monitors()
+    .iter()
+    .flat_map(|monitor| {
+      monitor
+        .to_rect()
+        .ok()
+        .into_iter()
+        .chain([monitor.native_properties().working_area])
+    })
+    .collect()
 }
 
 /// Displayed scrolling workspaces, with the monitor area their peeks are

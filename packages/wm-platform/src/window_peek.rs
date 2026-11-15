@@ -987,6 +987,14 @@ impl WindowPeek {
     }
   }
 
+  /// Puts a hosted peek's surface just above its window unless it is above
+  /// it already, as [`begin_hand_back`](Self::begin_hand_back) puts a peek
+  /// of its own, for a surface not raised over every tile it draws (a
+  /// scrolling layout's). None for one of its own.
+  pub fn stay_over_window(&self) {
+    self.surrogate.lift_surface_above(self.source);
+  }
+
   /// Puts the peek at the top of the non-topmost windows, over windows
   /// that came above its real window while that was minimized. Its ring
   /// and backdrop copies are drawn in it, so they go with it. A hosted one

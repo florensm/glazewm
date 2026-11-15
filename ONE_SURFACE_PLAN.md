@@ -734,6 +734,159 @@ All already called by `wm-platform`: `SetWindowPos`, `GetWindow`,
 - A stack on the workspace: opens and closes there keep their own
   peeks, as `default`.
 
+## Step 5: as built
+
+Branch `os/5-scroll`. Not seen running.
+
+### Today's z-order and clip for column peeks, found by reading
+
+- Clip: `displayed_scrolling_workspaces` gives the monitor's working
+  area, and a pinned column peek spans it (`WindowPeek::new`); tiles'
+  surfaces span the monitor rect (`tile_clips`). Not the same, so
+  columns get a surface of their own per working area (shared with tiles
+  only where the two are equal, e.g. an auto-hidden taskbar). A resting
+  surface then spans exactly what a resting peek spans: nothing new for
+  Explorer's fullscreen detection.
+- A clip change (column on another monitor's workspace, a working area
+  change) `repin`s an own peek; a hosted one is replaced (below).
+- Z-order: every column peek goes up just below its real window and is
+  never raised, but for a restored column (`raise_moving`) and at
+  `begin_hand_back` (directly above its window). Columns are not in the
+  raise loop's `peek_moves`. A resting peek stays just below its cloaked
+  window, which `windows_to_bring_to_front` leaves where it is
+  (`is_hidden_in_layout`), so a floating window can cover it while the
+  shown tiles go over that floating window.
+- Clicks: a surface is click-through like a peek. A press on a resting
+  peek is focused by `focus_clicked_peek` through `window_at` (rects of
+  `Role::Peek` entries), moving ones through `moving_rects` and the
+  motion guard: both read `visible_rect`, the same for a hosted peek.
+- Idle: `is_active` is false with only `Role::Peek` entries, so no tick
+  runs for a resting surface; it stays shown with no per-frame work.
+
+### Admission (`hosts_column`, `keeps_rest_hosted`, tested)
+
+A column `upsert` puts on a pinned peek is hosted on the surface of its
+working area unless: its peek is live; a grab holds it; it is a stack's
+window; or its workspace has a column on a peek of its own (stacked,
+live or held), which stacks by where that peek went. And, by role: one
+that rests (`Role::Peek`, or moving to end hidden) only if no other
+tenant of that surface does, and never under `slidepeeks`. Own entries
+stay own for their life; a hosted one no longer admitted (held,
+switch-bound, a second resting one, another clip, its surface dropped)
+is replaced by a new peek (own or on the right surface), its motion,
+transit and stretch carried over, and the old one is kept in
+`PeekView.replaced` until `sync_scroll_view`'s flush has composited the
+new one (`drop_replaced`): a frame may show both, never neither. A
+column taking over a tile's hosted entry goes the same way (it was
+dropped at once before).
+
+### Moving columns
+
+- Joining with its window shown: `admit` as a tile, warmed, then the
+  scroll view's flush, `take_over`, cloak, as before. Overlays of joiners
+  above the surface go behind it (`restack_joining_overlays`, now also in
+  `flush_overlays`). Cloaked (opening, restored behind `restore_cloaked`,
+  resting turning to moving is moved on in place): just above the window
+  and `hold_place`, as step 4.
+- No raise: columns were never raised. Restored ones are, as before
+  (`raise_moving`, the surface).
+- Landing shown: after `begin_hand_back`, `stay_over_window` puts the
+  surface just above the landing window unless it is above it already
+  (`SurfaceWindow::keep_above`), so the uncloak never shows the window
+  over its peek ("keeps its place" untouched).
+- Ranks: given as the entry is made; a focused or opening column
+  `Raised`, others `InPass`, in tree order: a focused column's own peek
+  was over its neighbours' (a swap by `move`), and an opening one's just
+  below its new window, on top. Lanes follow each upsert; columns of one
+  scroll on one clock keep their gap (`lanes_stay_apart`), so no
+  restack. A retarget keeps the rank, as it raised nothing.
+- Retarget before landing: moved on in place (`retargeted`), lane anew.
+  Columns started on different clocks (some retargeted, some new) are
+  checked by hull and restacked by rank if out of order.
+
+### Resting columns
+
+- At most one per surface. Admitted just above its cloaked window.
+- `settle_resting_surfaces` (end of `tick` and of `sync_scroll_view`):
+  once every tenant of a surface rests (`rest_anchor`), it goes just above
+  that tenant's cloaked window (`PeekSurface::rest_above`), once until
+  something else moves it. Just above a window that shows nothing is
+  where its own peek, just below it, draws: what covers it at rest
+  (a floating window over the half-visible column) and what it covers are
+  as today.
+- Resting, then moving (focus scrolls it in): moved on in place, the
+  surface goes up as needed, handed back above its window, then down
+  again for any resting tenant left.
+
+### Ready store (`readypeeks`)
+
+A column's hosted peek released after landing shown is kept ready as a
+tile's (`keeps_ready` no longer excludes columns), with the same
+validity: window, clip, surface, not expired, admitted. Taken only for a
+column whose window shows (a ready peek rejoins its surface as for a
+shown window); otherwise dropped. A resting peek is in use, never ready.
+
+### Edge cases
+
+- Departed columns (`take_departed`): hosted ones drop after the flush,
+  as own ones.
+- A stack's active tab: stacks stay own.
+- Display change: `retain_surfaces` keeps working areas too; a tenant on
+  a dropped surface is replaced at its next upsert (a moving one with an
+  unchanged target only once it lands). Reload, pause, shutdown: surfaces
+  go from `surfaces`; their windows go with the last peek holding them,
+  so tenants always before the surface. A resting tenant left on a
+  dropped surface (pause) draws on until its next upsert.
+
+### Still on a window of its own, and why
+
+- Live peeks: they move with their windows.
+- Held columns (grabs) and every column of a workspace with one: step 6.
+- Stacks and their workspaces: the tab bar (step 3).
+- Resting columns under `slidepeeks`: a workspace switch stands one by
+  or keeps it for its surrogate (`stand_by`, `keep_switching_out`),
+  which needs a window of its own until step 7.
+- A second resting column on one surface (a monitor with neighbours on
+  both sides): one height at rest. Options: an own window (as built), or
+  a second surface per monitor for it.
+
+### Known differences on screen
+
+- While anything moves on a column surface, a resting tenant on it is
+  drawn at the surface's height (below the lowest joiner, or above a
+  landing window): a floating window over it may be covered until the
+  motion ends.
+- As for tiles, joiners' ring copies are drawn over windows between them
+  and the surface until cloaked.
+
+### Windows functions called by the new code
+
+All already called by `wm-platform`: `SetWindowPos`, `GetWindow`,
+`GetWindowLongPtrW` (`window_class::place_above`, `companion::is_above`),
+`DwmGetWindowAttribute` (`is_cloaked`), `DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail`, `ShowWindow`,
+`CreateWindowExW` (a surface for a working area), `DwmFlush` (the scroll
+view's flush).
+
+### To check on screen (`GLAZEWM_ISOLATE=onesurface`)
+
+- Scroll the strip: one surrogate-class window for the monitor's working
+  area, no peek of its own per column; no blank, backdrop-only or
+  ring-less frame at start or end; the surface hidden once landed.
+- Scroll again before it lands: it glides on, no jump, no double ring.
+- Open and close a column mid-strip: the new one grows between its
+  neighbours, over them where rings meet.
+- Two monitors, a column half off each inner edge, at rest, a floating
+  window over each: the floating window stays over the column, as with
+  `default`; the surface stays shown, and the profiler shows no ticks.
+- Click the half-visible column: it is focused and scrolls in, handed
+  back with no flash of the window over its peek.
+- Resize a column (`stretch` and `fill`).
+- Switch workspaces to and from a scrolling one, with and without
+  `slidepeeks`: no column left faint, blank or doubled.
+- Three monitors, columns cut at both edges of the middle one: one on
+  the surface, one on a peek of its own.
+
 ## Full translation (owner's decision, 2026-11-14)
 
 After steps 1 and 2, every stand-in the WM draws with documented
