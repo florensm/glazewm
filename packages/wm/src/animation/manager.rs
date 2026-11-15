@@ -75,43 +75,6 @@ pub(super) const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 /// switching in a single composition.
 const SESSION_FADE_OUT: Duration = Duration::from_millis(100);
 
-/// Maximum number of real-window handoffs (`ResizeSession::maybe_handoff`)
-/// performed per redraw pass.
-///
-/// Each handoff issues a synchronous `SetWindowPos` plus a DWM thumbnail
-/// dims update on the WM thread. When a relayout brings many sessions past
-/// their handoff lead on the same tick (e.g. a workspace-wide resize),
-/// doing all of them in one pass can stack up enough synchronous work to
-/// stall that tick. Capping the count spreads the overflow across the next
-/// few ticks (each ~6-16 ms) instead of widening any individual window's
-/// lead -- deferred windows retry every tick since `remaining_at` stays ≤
-/// the lead until they're handed off, so the extra delay is at most a
-/// couple of frames, not a fraction of the animation's duration.
-const MAX_HANDOFFS_PER_TICK: usize = 3;
-
-/// What is left of a redraw pass's [`MAX_HANDOFFS_PER_TICK`].
-///
-/// Only handoffs that happen are counted: a session already handed off,
-/// e.g. a growing or stretched one, asks again every tick and would
-/// otherwise use up the budget of the sessions after it for good.
-struct HandoffBudget {
-  left: usize,
-}
-
-impl HandoffBudget {
-  fn new(limit: usize) -> Self {
-    Self { left: limit }
-  }
-
-  /// Runs `handoff`, which returns whether it handed off, if any budget
-  /// is left.
-  fn spend(&mut self, handoff: impl FnOnce() -> bool) {
-    if self.left > 0 && handoff() {
-      self.left -= 1;
-    }
-  }
-}
-
 /// How long a sampled surrogate backdrop color stays valid per window.
 ///
 /// Sampling costs two GPU→CPU `BitBlt` readbacks; now always done on a
@@ -288,15 +251,6 @@ struct FrameTimes {
   /// One frame period before `now`, where clocks started this frame
   /// begin, so its first frame already shows motion.
   clock_origin: Instant,
-}
-
-/// A single entry in the surrogate update queue built each redraw pass.
-struct PendingSurrogateUpdate {
-  window_id: Uuid,
-  rect: Rect,
-  opacity: u8,
-  /// `true` when `remaining_at` ≤ the proportional handoff lead.
-  handoff: bool,
 }
 
 /// Why a window is taken off the screen.
@@ -755,18 +709,6 @@ pub struct AnimationManager {
   /// `use_surrogate = true` and is destroyed once the animation completes
   /// and the real window has been moved to its final position.
   pub(crate) resize_sessions: HashMap<Uuid, ResizeSession>,
-  /// Set whenever a new surrogate window is created with `place_at_top:
-  /// true` (workspace-switch, or a resize/move/open session -- see
-  /// `SessionOptions::place_at_top`) -- such surrogates are inserted at
-  /// `HWND_TOP`, which can silently displace *any* other window's static
-  /// backdrop overlay out of its correct just-behind-its-own-window
-  /// z-order slot, not just the surrogate's own window. `sync_overlays`
-  /// checks this to fall back to a full per-window z-order resync for one
-  /// tick instead of its normal narrowly-targeted one, then clears it.
-  /// Not cleared on its own -- callers that create such a surrogate are
-  /// responsible for setting it, `platform_sync` for resetting it once
-  /// both overlay kinds have acted on it.
-  pub(crate) backdrop_overlay_z_order_dirty: bool,
   /// Recently sampled surrogate backdrop colors keyed by window handle.
   ///
   /// Lets `ResizeSession::begin` skip its two-`BitBlt` screen sample for
@@ -785,12 +727,6 @@ pub struct AnimationManager {
   /// paying full `CreateWindowExW`/`DwmRegisterThumbnail` cost again.
   /// See `AnimationManager::stash_warm_surrogate`.
   warm_surrogates: HashMap<Uuid, (NativeSurrogate, Instant)>,
-  /// Surrogate updates queued during this redraw pass; drained into the
-  /// pass's shared `SurrogateBatch` by [`queue_surrogate_updates`] so
-  /// adjacent surrogates land in the same DWM composition frame.
-  ///
-  /// [`queue_surrogate_updates`]: AnimationManager::queue_surrogate_updates
-  pending_surrogate_updates: Vec<PendingSurrogateUpdate>,
   /// Sessions that have been removed from `resize_sessions` after their
   /// animation completed but must outlive the final `platform_sync` call
   /// that repositions the real window. Keyed by window ID so the final
@@ -882,11 +818,9 @@ impl AnimationManager {
         FrameClock::DEFAULT_PERIOD,
       ))),
       resize_sessions: HashMap::new(),
-      backdrop_overlay_z_order_dirty: false,
       edge_color_cache: Arc::new(Mutex::new(HashMap::new())),
       pending_edge_samples: HashSet::new(),
       warm_surrogates: HashMap::new(),
-      pending_surrogate_updates: Vec::new(),
       pending_session_cleanup: Vec::new(),
       slide_in_monitor_rects: HashMap::new(),
       workspace_switch: None,
@@ -1020,22 +954,6 @@ impl AnimationManager {
     };
     self.workspace_switch.as_ref().is_some_and(has_surrogate)
       || self.pending_ws_cleanup.as_ref().is_some_and(has_surrogate)
-  }
-
-  /// Returns `true` if `window_id` has a live `ResizeSession` whose
-  /// overlays the per-tick driver owns. Mirrors `has_live_ws_surrogate`.
-  ///
-  /// Deliberately does *not* cover `pending_session_cleanup`, the tail
-  /// where a finished session's surrogate fades out over the real window.
-  /// By then the real window is uncloaked at its final rect, and the
-  /// overlay driver in `platform_sync` no longer runs for it (that loop
-  /// walks `resize_sessions`) -- so counting the tail here left nobody
-  /// driving the backdrop overlay. It kept the z-anchor it had behind a
-  /// surrogate that was being destroyed, and the window rendered without
-  /// its backdrop until the tail ended: measured as a ~12ms flash at the
-  /// end of a move, in two runs out of three.
-  pub fn has_live_resize_tracker(&self, window_id: &Uuid) -> bool {
-    self.resize_sessions.contains_key(window_id)
   }
 
   /// Returns `true` while an animation still owns `window_id`'s real
@@ -1340,7 +1258,6 @@ impl AnimationManager {
       self.resize_sessions.drain().map(|(_, s)| s).collect();
     sessions
       .extend(self.pending_session_cleanup.drain(..).map(|(_, _, s)| s));
-    self.pending_surrogate_updates.clear();
     self.workspace_switch = None;
     self.pending_ws_cleanup = None;
     self.companion_covers.clear();
@@ -2668,24 +2585,6 @@ impl AnimationManager {
     }
   }
 
-  /// Returns `true` when `window_id`'s animation just completed and
-  /// `pre_commit` synchronously positioned the real window at `rect`.
-  ///
-  /// Used by `platform_sync` on the completion redraw to skip the
-  /// redundant `SetWindowPos` — its `SWP_FRAMECHANGED` would force a
-  /// full frame recalculation and repaint of the window right as it is
-  /// uncloaked, producing a visible flash at the end of move/resize
-  /// animations.
-  pub fn was_pre_committed_at(
-    &self,
-    window_id: &Uuid,
-    rect: &Rect,
-  ) -> bool {
-    self.pending_session_cleanup.iter().any(|(id, _, session)| {
-      id == window_id && session.target_rect() == rect
-    })
-  }
-
   /// Queues a first edge-color sample for a window just shown that has
   /// none, so its first `fill` resize, or grab resize on peeks, has a
   /// fill.
@@ -2776,73 +2675,6 @@ impl AnimationManager {
     );
   }
 
-  /// Queues every surrogate update recorded during the current redraw pass
-  /// into `batch`, leaving the commit to the caller.
-  ///
-  /// Called at the end of each redraw pass. The caller commits `batch`
-  /// only after it has also queued the backdrop/border overlays that ride
-  /// along with these surrogates, so window and overlays land in a single
-  /// `DeferWindowPos` transaction: sequential transactions can straddle a
-  /// composition boundary and let a surrogate move a frame ahead of its
-  /// own border outline, or adjacent windows' edges visibly desync.
-  ///
-  /// Each session's `current_rect` is updated here, at queue time rather
-  /// than at commit time, which is what lets the overlay pass read the
-  /// live rect before the batch is committed.
-  ///
-  /// Real-window handoffs are capped at [`MAX_HANDOFFS_PER_TICK`] per
-  /// pass; see its docs for why. Surrogate position/opacity updates are
-  /// never throttled -- only the real-window handoff is deferred.
-  pub fn queue_surrogate_updates(&mut self, batch: &mut SurrogateBatch) {
-    if self.pending_surrogate_updates.is_empty() {
-      return;
-    }
-
-    let _scope = perf::scope(Stage::SurrogateFlush);
-
-    // Locked only when some session is still waiting on its fill color
-    // (a cache miss at `begin`), so that color shows up the tick its
-    // background sample lands rather than one animation later.
-    let mut edge_colors = None;
-
-    let mut handoffs = HandoffBudget::new(MAX_HANDOFFS_PER_TICK);
-    for update in std::mem::take(&mut self.pending_surrogate_updates) {
-      if let Some(session) =
-        self.resize_sessions.get_mut(&update.window_id)
-      {
-        if session.edge_color().is_none() && !session.is_stretch() {
-          let color = session.window_hwnd().and_then(|hwnd| {
-            edge_colors
-              .get_or_insert_with(|| self.edge_color_cache.lock().ok())
-              .as_ref()?
-              .get(&hwnd.0)
-              .map(|(color, _)| *color)
-          });
-          if let Some(color) = color {
-            session.set_edge_color(color);
-          }
-        }
-
-        if update.handoff {
-          handoffs.spend(|| session.maybe_handoff());
-        }
-        session.defer_update(batch, &update.rect, update.opacity);
-      }
-    }
-  }
-
-  /// Whether any surrogate exists right now, of either kind.
-  ///
-  /// Surrogates are created at `HWND_TOP`, which displaces *other*
-  /// windows' overlays out of their z-order slot -- so while any are
-  /// alive, every overlay has to re-check where it sits rather than
-  /// assume it has not been moved. Losing that check is what stopped
-  /// borders and backdrops tracking their windows through a workspace
-  /// switch.
-  pub fn has_any_surrogate(&self) -> bool {
-    !self.resize_sessions.is_empty() || self.is_workspace_switch_active()
-  }
-
   /// Returns `true` while a workspace-switch slide animation is in
   /// progress or its surrogates are still live during post-animation
   /// cleanup.
@@ -2906,19 +2738,6 @@ impl AnimationManager {
         .resize_sessions
         .get(window_id)
         .is_some_and(|session| session.zoom)
-  }
-
-  /// Shows `window_id`'s stand-in, which is created hidden.
-  ///
-  /// Not one that slides or zooms in: its own frames show it, from where
-  /// it starts, and hide it while that is off its monitor or of no size.
-  pub fn reveal_session(&mut self, window_id: &Uuid) {
-    if self.is_entering(window_id) {
-      return;
-    }
-    if let Some(session) = self.resize_sessions.get_mut(window_id) {
-      session.show();
-    }
   }
 
   /// Where `window_id` is drawn mid move or resize animation, with
@@ -3759,32 +3578,6 @@ mod tests {
       (&right, false),
       Crossing::Anywhere
     ));
-  }
-
-  /// Sessions with nothing left to hand off, asking first every tick,
-  /// leave the budget to the ones after them.
-  #[test]
-  fn every_pending_handoff_lands_within_its_share_of_ticks() {
-    // Already handed off (growing, or done on an earlier tick) first, as
-    // in a relayout where the shrinking windows come last.
-    let mut done = [true, true, true, true, false, false, false, false];
-    let pending = done.iter().filter(|done| !**done).count();
-
-    for _ in 0..pending.div_ceil(MAX_HANDOFFS_PER_TICK) {
-      let mut budget = HandoffBudget::new(MAX_HANDOFFS_PER_TICK);
-      let mut handed_off = 0;
-      for done in &mut done {
-        budget.spend(|| {
-          let handing_off = !*done;
-          *done = true;
-          handed_off += usize::from(handing_off);
-          handing_off
-        });
-      }
-      assert!(handed_off <= MAX_HANDOFFS_PER_TICK);
-    }
-
-    assert!(done.iter().all(|done| *done));
   }
 
   /// A window just shown is queued for a first fill color only while a

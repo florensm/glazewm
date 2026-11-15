@@ -217,21 +217,6 @@ pub fn with_tab_bar_of(
   )
 }
 
-/// [`with_tab_bar_of`] for a window a surrogate draws at `frame` mid
-/// animation: the bar goes along with a move or resize, but not with a
-/// window opening into its stack.
-pub fn animated_with_tab_bar(
-  state: &WmState,
-  window_id: uuid::Uuid,
-  frame: &Rect,
-) -> Rect {
-  if state.animation_manager.is_entering(&window_id) {
-    frame.clone()
-  } else {
-    with_tab_bar_of(state, window_id, frame)
-  }
-}
-
 /// The tab bar of `stack`, or `None` when it has no tab bar, no tabs or
 /// isn't shown. The overview draws the same bar on its cards.
 pub fn tab_frame(

@@ -1,6 +1,5 @@
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, Overlay, OverlayParams,
-  Rect, HWND,
+  NativeBackdropOverlay, NativeBorderOverlay, Rect, HWND,
 };
 
 /// A managed window's overlays, kept in one entry so they are created,
@@ -26,28 +25,6 @@ impl WindowOverlays {
   /// Whether the window has neither overlay.
   pub fn is_empty(&self) -> bool {
     self.backdrop.is_none() && self.border.is_none()
-  }
-
-  /// Hides each shown overlay that `params` has no params for.
-  ///
-  /// Guarded on `is_visible` because `hide` issues a `ShowWindow`
-  /// unconditionally.
-  pub fn hide_untracked(&mut self, params: &OverlayParams) {
-    if let Some(overlay) = self
-      .backdrop
-      .as_mut()
-      .filter(|overlay| params.backdrop.is_none() && overlay.is_visible())
-    {
-      overlay.hide();
-    }
-
-    if let Some(overlay) = self
-      .border
-      .as_mut()
-      .filter(|overlay| params.border.is_none() && overlay.is_visible())
-    {
-      overlay.hide();
-    }
   }
 }
 
