@@ -302,9 +302,7 @@ pub fn handle_window_moved_or_resized(
           // Moved by its app while it enters on a peek, e.g. a dialog
           // centring itself: redrawn, so the peek follows it there rather
           // than landing where it was.
-          if wm_platform::isolation::current().peeks
-            && state.animation_manager.peeks.follows_tile(&window.id())
-          {
+          if state.animation_manager.peeks.follows_tile(&window.id()) {
             state.pending_sync.queue_container_to_redraw(window);
           }
         }

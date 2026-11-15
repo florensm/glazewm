@@ -81,7 +81,7 @@ pub fn handle_display_settings_changed(
     move_bounded_workspaces_to_new_monitor(&new_monitor, state, config)?;
   }
 
-  // Peek surfaces (`onesurface`) span a monitor each, or its working area
+  // Peek surfaces span a monitor each, or its working area
   // for columns; a workspace switch's span a working area each.
   let clips = crate::animation::peek_view::surface_clips(state);
   state.animation_manager.peeks.retain_surfaces(&clips);

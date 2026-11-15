@@ -2396,3 +2396,66 @@ Branch `os/r0-move`. Move only; not seen running.
   if it outlives the engine).
 - Windows functions added: none. Removed: none (the GDI calls of
   `sample_edge_color` moved with it).
+
+#### R1: as built
+
+Branch `os/r1-words`, nine commits, one per word or group. Not seen
+running.
+
+- Folded on (word and every `false` branch gone): `onesurface`,
+  `readypeeks` (`hosts_on_surface`, `hosts_column`, `hosts_hold`,
+  `keeps_ready`, both `surface_monitor_clips`, `hosts_switch_window`
+  lose their word parameter; `hosts_transit`'s early `None` goes),
+  `morepeeks` (`changes_state_on_peek`, `fullscreen_on_peeks`,
+  `hides_ring_for_fullscreen`, `tile_clips`; `can_move_on_peek` and
+  `allows_motion` were then always `true` and go), `peeks`/`nopeeks`
+  (every `isolation::current().peeks` test, `close_window.rs`'s
+  `leave_on_peek` and `grab.rs`' `nopeeks` log line included),
+  `asynchandback` (`hands_back_in_step` goes: `has_surrogate` in the
+  `Apply` arm keeps its session and incoming-switch terms),
+  `slidepeeks` (`settle_switch_peeks` always runs where it did;
+  `slides_with_switch` loses its parameter), `keepoverlays`
+  (`tracks_at_take_over` takes `has_placement` only, its call kept in
+  the `TakeOver` engine arm, before `pending_cloaks`).
+- Removed, their default kept: `peeksfirst` (`PeeksDrawn`,
+  `draw_peeks_first`, `resume_pass`, `Wm::draw_peeks_first`,
+  `Wm::finish_animations`; `finish_frame` folded into
+  `update_internal`; the catch-up stays before every tick), `latealpha`
+  (the landing-hidden `restore_alpha` it added goes: the same tick's
+  `Moving` loop restored the alpha already), `earlyfill`
+  (`carries_fill_early`, `PeekView::carry_fill_early`), `keepfills`
+  (`MAX_IDLE_FILL_SOURCES`, `max_idle_fill_sources`), `nobackdrop` and
+  `noring` (`left_out`), `live` (out of `is_copyable`).
+- Then `isolation.rs`, `pub mod isolation` and `main.rs`' warning.
+  `GLAZEWM_ISOLATE` is read nowhere.
+- Tests rewritten without the `false` word cases: `hosts_on_surface`,
+  `hosts_column`, `hosts_hold`, `keeps_ready`, `hosts_switch_window`,
+  `slides_with_switch`, `tracks_at_take_over`. Dropped: `isolation.rs`'
+  tests, `allows_motion`'s, `hands_back_in_step`'s,
+  `carries_fill_early`'s, `a_frame_drawn_first_resumes_at_its_instants`,
+  `fill_sources_are_kept_per_color_only_under_keepfills`. Two renamed
+  (`pure_column_moves_go_on_peeks`,
+  `without_a_threshold_only_the_strip_moves_columns`).
+- Engine rows now on peeks (`morepeeks`): tile crossing monitors,
+  floating <-> tiling, fullscreen toggle, live moves and resizes. The
+  other rows still reach `start_animation_if_needed`,
+  `start_open_animation` and `start_away_animation` (R2, R3).
+- Left for later: `WindowPeek::carries_ring` has no caller in `wm` any
+  more (R5 sweep); `tracks_at_take_over` (R4); `perf_bench`'s doc
+  comment naming `peeksfirst` and the bench scripts' isolate modes
+  (step 8).
+- For "Rounded backdrops on the surface": `BackdropOverlayParams::is_copyable`
+  is still the one place deciding pinned vs live, read through
+  `peek_view::is_live` (and `WindowPeek::is_live`,
+  `WorkspaceSurrogate::is_live`). What keeps a live window off a
+  surface today, each a distinct branch R1 left as it was: the `live`
+  argument of `hosts_on_surface`, `hosts_column` and
+  `hosts_switch_window`; `beside_own_peek` (tiles:
+  `has_own_peek_neighbour`; columns: any live column of the workspace);
+  `tile_clips` (a live tile crossing monitors gets no trail: its real
+  backdrop overlay follows one peek); the switch's `copied_backdrop`
+  filter; `track_overlays`' live arm (real backdrop moved along, no
+  copy).
+- Windows functions added: none. No longer called: the `earlyfill`
+  `DwmRegisterThumbnail`s from the command (off by default), and the
+  environment read of `GLAZEWM_ISOLATE` (`std::env::var`).

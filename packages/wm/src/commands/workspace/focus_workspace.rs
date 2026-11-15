@@ -187,32 +187,29 @@ fn workspace_switch_axis(
 /// columns scrolled off screen) have no visible content to animate, and
 /// snapshotting them causes flicker.
 fn is_switch_animated(window: &WindowContainer) -> bool {
-  let slide_peeks = wm_platform::isolation::current().slide_peeks;
   let shows_real_window = shows_real_window(&window.as_container());
 
   slides_with_switch(
     window.state() == WindowState::Minimized,
     is_inactive_stack_child(window),
     shows_real_window,
-    slide_peeks && !shows_real_window && is_on_screen(window),
-    slide_peeks,
+    !shows_real_window && is_on_screen(window),
   )
 }
 
 /// Whether a window slides with the switch: one shown by its real window,
-/// unless minimized or an inactive stack tab, or under `slidepeeks` one
-/// whose resting peek shows part of it (`SWITCH_PEEKS_PLAN.md`).
+/// unless minimized or an inactive stack tab, or one whose resting peek
+/// shows part of it (`SWITCH_PEEKS_PLAN.md`).
 #[allow(clippy::fn_params_excessive_bools)]
 fn slides_with_switch(
   is_minimized: bool,
   is_inactive_tab: bool,
   shows_real_window: bool,
   has_part_on_screen: bool,
-  slide_peeks: bool,
 ) -> bool {
   !is_minimized
     && !is_inactive_tab
-    && (shows_real_window || slide_peeks && has_part_on_screen)
+    && (shows_real_window || has_part_on_screen)
 }
 
 /// Whether part of `window`'s tile lies in its monitor's working area,
@@ -268,17 +265,15 @@ mod tests {
   #[test]
   fn only_shown_windows_slide_unless_peeks_do() {
     // Shown by its real window.
-    assert!(slides_with_switch(false, false, true, false, false));
-    assert!(!slides_with_switch(true, false, true, false, false));
-    assert!(!slides_with_switch(false, true, true, false, false));
+    assert!(slides_with_switch(false, false, true, false));
+    assert!(!slides_with_switch(true, false, true, false));
+    assert!(!slides_with_switch(false, true, true, false));
 
-    // Drawn by a resting peek: only under `slidepeeks`, with some of it
-    // on screen.
-    assert!(!slides_with_switch(false, false, false, true, false));
-    assert!(slides_with_switch(false, false, false, true, true));
-    assert!(!slides_with_switch(false, false, false, false, true));
-    assert!(!slides_with_switch(false, true, false, true, true));
-    assert!(!slides_with_switch(true, false, false, true, true));
+    // Drawn by a resting peek: with some of it on screen.
+    assert!(slides_with_switch(false, false, false, true));
+    assert!(!slides_with_switch(false, false, false, false));
+    assert!(!slides_with_switch(false, true, false, true));
+    assert!(!slides_with_switch(true, false, false, true));
   }
 
   #[test]

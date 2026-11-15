@@ -107,9 +107,7 @@ pub fn platform_sync(
   let _tail_scope = perf::scope(Stage::SyncTail);
 
   // Before anything else is drawn: the switch has started or not by now.
-  if wm_platform::isolation::current().slide_peeks {
-    crate::animation::peek_view::settle_switch_peeks(state, config);
-  }
+  crate::animation::peek_view::settle_switch_peeks(state, config);
 
   // Focus is synced after `redraw_containers` so that the workspace-switch
   // animation is already set up when `sync_focus` runs. This lets the
@@ -686,22 +684,19 @@ fn commit_pending_cloaks(
   }
 }
 
-/// Whether `window`, new and floating, opens on a pinned peek: behind the
-/// switch, and not natively maximized, which `reposition_window` restores
-/// first.
+/// Whether `window`, new and floating, opens on a pinned peek: not
+/// natively maximized, which `reposition_window` restores first.
 fn opens_floating_on_peek(window: &WindowContainer) -> bool {
-  wm_platform::isolation::current().peeks
-    && !window.native().is_maximized()
+  !window.native().is_maximized()
 }
 
 /// Whether `window_id` is minimizing on a peek, which a restore turns
 /// round (see `peek_view::restore_on_peek`) rather than ending it.
 fn leaves_on_peek(state: &WmState, window_id: &uuid::Uuid) -> bool {
-  wm_platform::isolation::current().peeks
-    && state
-      .animation_manager
-      .peeks
-      .leaves_by(window_id, AwayTransition::Minimize)
+  state
+    .animation_manager
+    .peeks
+    .leaves_by(window_id, AwayTransition::Minimize)
 }
 
 /// Moves a frozen window, cloaked behind its stand-in, to the
@@ -1031,7 +1026,6 @@ fn redraw_containers(
             surrogate
           };
           let hosts = hosts_switch_window(
-            wm_platform::isolation::current().one_surface,
             is_live,
             window.state() == WindowState::Tiling,
           );
@@ -1320,8 +1314,7 @@ fn redraw_containers(
   // and whether any of them is taken over from at the shared flush.
   let mut peek_moves = Vec::new();
   let mut peeks_take_over = false;
-  // Windows of a finished switch handed to their resting peeks this pass
-  // (`slidepeeks`).
+  // Windows of a finished switch handed to their resting peeks this pass.
   let mut peek_hand_backs = Vec::new();
   // Floating windows opened on peeks this pass, and windows crossing
   // between floating and tiling on them, whose peeks go on top, and of
@@ -1347,9 +1340,8 @@ fn redraw_containers(
     }
   });
 
-  // With `window_resize.style: "stretch"` (or `fill` under
-  // `GLAZEWM_ISOLATE=fillpeeks`) and peeks, the relayout's resizes go on
-  // peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
+  // With `window_resize` enabled, in either style, the relayout's resizes
+  // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
   let resizes = if cycle_has_resize && !suppress_animations {
     crate::animation::peek_view::resizes_relayout(
       state,
@@ -1452,7 +1444,7 @@ fn redraw_containers(
     // minimize ended: natively minimized with a slot in the layout, or
     // restored by the OS with no overlays and where it used to be, until
     // something else redrew it. The restore ends the minimize instead.
-    // Behind the switch, one playing on its peek is turned round below
+    // One playing on its peek is turned round below
     // (`STAND_INS_PLAN.md` task 5), and ended there if it isn't.
     if state.animation_manager.has_minimize_animation(&window.id()) {
       if !state.pending_sync.is_window_restore(&window.id()) {
@@ -1659,7 +1651,7 @@ fn redraw_containers(
     // target position it had before it was minimized -- so it is
     // flagged on `PendingSync` instead. A restore is also allowed for
     // floating windows, which never slide in on open on the old path:
-    // behind the switch, one opens on a pinned peek (`STAND_INS_PLAN.md`
+    // one opens on a pinned peek (`STAND_INS_PLAN.md`
     // task 6b), or not at all.
     //
     // Paired with whether it is an open rather than a restore.
@@ -1708,12 +1700,11 @@ fn redraw_containers(
       })
       .flatten();
 
-    // Behind the switch, an open or a restore of a tiled window enters on
-    // a pinned peek instead (`STAND_INS_PLAN.md` tasks 3 and 5).
+    // An open or a restore of a tiled window enters on a pinned peek
+    // instead (`STAND_INS_PLAN.md` tasks 3 and 5).
     let enters_on_peek = match &entry_transition {
       Some((params, is_open))
         if !is_column
-          && wm_platform::isolation::current().peeks
           && (*is_open || window.state() == WindowState::Tiling) =>
       {
         let is_focused = window.id() == focused_container.id();
@@ -1786,9 +1777,8 @@ fn redraw_containers(
         .get_animation(&window.id())
         .is_some_and(|a| !a.is_complete());
 
-    // A tile that only moves or resizes goes on a peek; with `morepeeks`,
-    // also one crossing between floating and tiling (`STAND_INS_PLAN.md`
-    // 10f).
+    // A tile that only moves or resizes goes on a peek; also one crossing
+    // between floating and tiling (`STAND_INS_PLAN.md` 10f).
     let moves_as_tile = if is_state_change {
       crate::animation::peek_view::changes_state_on_peek(window)
     } else {
@@ -1813,8 +1803,7 @@ fn redraw_containers(
 
     // Where a crossing between floating and tiling, or a fullscreen
     // toggle, on a peek is raised beyond the tiles once its window is
-    // cloaked (`peek_raises`), which also picks its surface under
-    // `onesurface`.
+    // cloaked (`peek_raises`), which also picks its surface.
     let state_change_raise = is_state_change
       .then(|| {
         crate::animation::peek_view::state_change_peek_raise(
@@ -1839,8 +1828,7 @@ fn redraw_containers(
       let native_ref = window.native();
       if is_frozen_by_ws_animation {
         (AnimationPositionResult::Frozen, None)
-      } else if wm_platform::isolation::current().peeks
-        && !is_column
+      } else if !is_column
         && moves_as_tile
         && previous_display_state == DisplayState::Shown
         && previous_target.as_ref().is_some_and(|from| {
@@ -1863,8 +1851,8 @@ fn redraw_containers(
           )
         })
       {
-        // Behind the switch, a tile that only moves does so on a pinned
-        // peek (`STAND_INS_PLAN.md` task 6), frozen behind it from now
+        // A tile that only moves does so on a pinned peek
+        // (`STAND_INS_PLAN.md` task 6), frozen behind it from now
         // on as an entering one is.
         peek_moves.push(window.id());
         if is_state_change {
@@ -1888,9 +1876,9 @@ fn redraw_containers(
           )
         })
       {
-        // Under `morepeeks`, a tile toggled in or out of fullscreen does
-        // so on a pinned peek (`STAND_INS_PLAN.md` 10f), taken over from
-        // as a move on a peek is.
+        // A tile toggled in or out of fullscreen does so on a pinned peek
+        // (`STAND_INS_PLAN.md` 10f), taken over from as a move on a peek
+        // is.
         peek_moves.push(window.id());
         if let Some(raise) = fullscreen_raise {
           peek_raises.push(((*window).clone(), raise));
@@ -1933,9 +1921,7 @@ fn redraw_containers(
         // again, heads for the new one in step with its neighbours: on
         // their timing, from the instant this pass evaluates them at. A
         // floating one jumps there (see `follow_duration`).
-        if wm_platform::isolation::current().peeks
-          && state.animation_manager.peeks.follows_tile(&window.id())
-        {
+        if state.animation_manager.peeks.follows_tile(&window.id()) {
           let (duration_ms, easing) =
             crate::animation::manager::movement_timing(
               motion,
@@ -2025,10 +2011,7 @@ fn redraw_containers(
               session.current_rect(),
             );
 
-            if tracks_at_take_over(
-              placement.is_some(),
-              wm_platform::isolation::current().keep_overlays,
-            ) {
+            if tracks_at_take_over(placement.is_some()) {
               track_overlays(
                 &mut state.window_overlays,
                 window.id(),
@@ -2085,17 +2068,12 @@ fn redraw_containers(
         // animation completion. Without this, the window
         // would be repositioned with `SWP_ASYNCWINDOWPOS` and immediately
         // uncloaked — if its message queue is slow, it appears at its old
-        // position for one frame.
-        // Windows handed back by a scrolling layout's scroll view too: a
-        // just-opened one hasn't been moved into place while cloaked.
+        // position for one frame. A window its peek hands back is not
+        // counted: its move is posted, so the WM never waits on its app.
         let has_surrogate = state
           .animation_manager
           .resize_sessions
           .contains_key(&window.id())
-          || hands_back_in_step(
-            state.animation_manager.peeks.owns_window(&window.id()),
-            wm_platform::isolation::current().async_hand_back,
-          )
           || (is_visible
             && state
               .animation_manager
@@ -2216,8 +2194,7 @@ fn redraw_containers(
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
           state.animation_manager.peeks.release(&window.id());
-        } else if wm_platform::isolation::current().slide_peeks
-          && workspace.is_displayed()
+        } else if workspace.is_displayed()
           && is_hidden_in_layout(*window)
           && state
             .animation_manager
@@ -2322,7 +2299,7 @@ fn redraw_containers(
   // peek's opaque backdrop copy would have hidden it.
   // One a grab holds stays where it went up, just below its window, for
   // the whole resize: it never passes over floating windows.
-  // A surface already on top since a tenant's raise stays (`onesurface`).
+  // A surface already on top since a tenant's raise stays.
   state.animation_manager.peeks.set_raise_pass(true);
   for id in &peek_moves {
     if !state.animation_manager.peeks.is_held(id)
@@ -2620,16 +2597,6 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
       tracing::warn!("Failed to set taskbar visibility: {}", err);
     }
   }
-}
-
-/// Whether a window its peek hands back (`peek_hands_back`) is moved in
-/// step with it, synchronously. Its move is posted, so the WM never waits
-/// on its app, unless `GLAZEWM_ISOLATE=noasynchandback`.
-fn hands_back_in_step(
-  peek_hands_back: bool,
-  async_hand_back: bool,
-) -> bool {
-  peek_hands_back && !async_hand_back
 }
 
 /// Above this duration, `reposition_window`'s synchronous
@@ -3088,12 +3055,11 @@ fn track_overlay<O: SyncableOverlay>(
 /// whether its session's surrogate has a placement yet.
 ///
 /// A new session has none until `queue_surrogate_updates` (later in the
-/// pass), so tracking hides both overlays, two `ShowWindow` calls, and the
-/// session loop has to show them again. With `keep_overlays`, off only
-/// under `GLAZEWM_ISOLATE=nokeepoverlays`, they stay where they are, as on
+/// pass): tracking would hide both overlays, two `ShowWindow` calls, for
+/// the session loop to show again, so they stay where they are, as on
 /// `origin/main`.
-fn tracks_at_take_over(has_placement: bool, keep_overlays: bool) -> bool {
-  has_placement || !keep_overlays
+fn tracks_at_take_over(has_placement: bool) -> bool {
+  has_placement
 }
 
 /// Where the overlays of `window_id` go while its resize session's
@@ -3333,7 +3299,7 @@ fn park_switch_borders(
     let rest = surrogate.rest_frame();
     let anchor = overlay_z_anchor(&window);
     // One whose resting peek drew it would reach onto the monitor beside
-    // at its rest frame (`slidepeeks`): only its copy shows it.
+    // at its rest frame: only its copy shows it.
     let conceal = entry.is_incoming
       || state.animation_manager.peeks.is_switching_out(id);
 
@@ -3367,16 +3333,12 @@ fn park_switch_borders(
 }
 
 /// Whether a window of a starting workspace switch is drawn on its
-/// monitor's switch surface (`onesurface`): only a tile whose backdrop can
-/// be copied. A floating or fullscreen window overlaps others of the
+/// monitor's switch surface: only a tile whose backdrop can be copied. A
+/// floating or fullscreen window overlaps others of the
 /// switch, and its own window just below its real one keeps it over them
 /// through every cloak and uncloak; a `Live` one moves.
-fn hosts_switch_window(
-  one_surface: bool,
-  is_live: bool,
-  is_tiling: bool,
-) -> bool {
-  one_surface && !is_live && is_tiling
+fn hosts_switch_window(is_live: bool, is_tiling: bool) -> bool {
+  !is_live && is_tiling
 }
 
 /// `hwnd`'s surrogate on the switch surface of the working area `area`, if
@@ -4240,26 +4202,17 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    hands_back_in_step, hosts_switch_window, is_unanimated_reveal,
-    should_note_size, tracks_at_take_over, FrozenStep, SyncableOverlay,
+    hosts_switch_window, is_unanimated_reveal, should_note_size,
+    tracks_at_take_over, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
 
-  /// Only copyable tiles go on a switch surface, and only under the word.
+  /// Only copyable tiles go on a switch surface.
   #[test]
   fn only_copyable_tiles_host_on_a_switch_surface() {
-    assert!(hosts_switch_window(true, false, true));
-    assert!(!hosts_switch_window(false, false, true));
-    assert!(!hosts_switch_window(true, true, true));
-    assert!(!hosts_switch_window(true, false, false));
-  }
-
-  #[test]
-  fn a_peek_hand_back_is_in_step_only_if_turned_off() {
-    assert!(hands_back_in_step(true, false));
-    assert!(!hands_back_in_step(true, true));
-    assert!(!hands_back_in_step(false, false));
-    assert!(!hands_back_in_step(false, true));
+    assert!(hosts_switch_window(false, true));
+    assert!(!hosts_switch_window(true, true));
+    assert!(!hosts_switch_window(false, false));
   }
 
   #[test]
@@ -4268,11 +4221,9 @@ mod tests {
   }
 
   #[test]
-  fn a_take_over_without_a_placement_keeps_overlays_unless_turned_off() {
-    assert!(tracks_at_take_over(true, true));
-    assert!(tracks_at_take_over(true, false));
-    assert!(tracks_at_take_over(false, false));
-    assert!(!tracks_at_take_over(false, true));
+  fn a_take_over_without_a_placement_keeps_overlays() {
+    assert!(tracks_at_take_over(true));
+    assert!(!tracks_at_take_over(false));
   }
 
   #[test]
