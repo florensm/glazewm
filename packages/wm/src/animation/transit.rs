@@ -90,8 +90,8 @@ impl Transit {
   /// throughout, which then opens at once.
   ///
   /// A plain fade holds at the start for `OPEN_PAINT_GRACE`, so the app
-  /// paints before it shows, as on the old path. Slides and zooms show
-  /// nothing there, so start at once.
+  /// paints before it shows. Slides and zooms show nothing there, so
+  /// start at once.
   pub fn opening(params: &WindowTransitionParams) -> Option<Self> {
     if shows_nothing(params) {
       return None;

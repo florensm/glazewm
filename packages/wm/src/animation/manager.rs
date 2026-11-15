@@ -71,7 +71,7 @@ pub(super) const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 ///
 /// Sampling costs two GPU→CPU `BitBlt` readbacks; now always done on a
 /// background thread via `sample_edge_color_async` rather than blocking
-/// the WM's main thread, but a miss still means the *current* session
+/// the WM's main thread, but a miss still means the *current* motion
 /// plays with a transparent backdrop instead of a matched color. App
 /// background colors change rarely (theme switches), so a stale hit is a
 /// cosmetic-only risk -- kept generous so a window resized only
@@ -1867,8 +1867,8 @@ impl AnimationManager {
   ///
   /// Shared because a window's animation clock starts at its first
   /// evaluation. Read per window, the reading lands after that window's
-  /// session setup (surrogate creation, fill, preposition) and the ones
-  /// before it, so windows relaid out together started up to a frame
+  /// stand-in setup (peek creation, preposition) and the ones before it,
+  /// so windows relaid out together started up to a frame
   /// apart: measured 11ms between a shrinking window and the growing
   /// neighbour started after it, which the steep start of the easing
   /// curve turned into a ~190px hole between them on the first frame.
@@ -1983,7 +1983,7 @@ impl AnimationManager {
   /// with none yet, since the last idle point.
   ///
   /// Deferred to here because the screen readback stalls DWM: run at a
-  /// session's start, it more than tripled keypress-to-motion latency.
+  /// motion's start, it more than tripled keypress-to-motion latency.
   fn sample_pending_edge_colors(&mut self) {
     for hwnd in self.pending_edge_samples.drain() {
       sample_edge_color_async(
@@ -2003,7 +2003,7 @@ impl AnimationManager {
   /// content in a strip the thumbnail has not reached yet, and an app's
   /// background changes about as often as its theme -- so the previous
   /// sample beats none, which leaves that strip showing the backdrop raw
-  /// and undimmed. Callers re-sample on every session (see
+  /// and undimmed. Callers re-sample after every motion (see
   /// [`sample_edge_color_async`]), so this entry is never more than one
   /// animation behind the window.
   ///

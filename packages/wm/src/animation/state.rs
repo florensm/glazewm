@@ -38,7 +38,7 @@ pub struct WindowAnimationState {
   ///
   /// Progress reads as 0.0 until then. The relayout that creates an
   /// animation also evaluates it, but its first tick only lands after
-  /// that relayout's session setup and cloaking -- measured ~70ms on a
+  /// that relayout's stand-in setup and cloaking -- measured ~70ms on a
   /// 150ms resize. Anchoring the clock at that first evaluation made the
   /// first visible frame jump to ~80% eased progress.
   ///

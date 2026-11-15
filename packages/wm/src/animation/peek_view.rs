@@ -51,7 +51,7 @@ const HOLD_RELEASE_WAIT: Duration = Duration::from_millis(150);
 
 /// How long a window filled on its peek by a keyboard resize may take to
 /// report its size once its motion is done before the peek lands all the
-/// same, as `ResizeSession::pre_commit` waits (see [`Hold::Released`]).
+/// same (see [`Hold::Released`]).
 const FILL_LANDING_WAIT: Duration = Duration::from_millis(500);
 
 /// Whether an entry is kept from landing while its window resizes behind
@@ -98,8 +98,8 @@ pub enum PeekResize {
 /// Whether a window going from `from` to `target`, drawn filled, is sent
 /// its new size as its motion starts: only one growing on both axes,
 /// whose new content then arrives under the cut. One that shrinks on
-/// either axis keeps its size until it lands, cut at its tile, as
-/// `ResizeSession::needs_preposition` has it.
+/// either axis keeps its size until it lands, cut at its tile, so its
+/// content never falls short of the drawn frame.
 fn resizes_at_start(from: &Rect, target: &Rect) -> bool {
   target.width() >= from.width() && target.height() >= from.height()
 }
@@ -395,8 +395,8 @@ enum Part {
 /// arrives, times a cover of 1 or more (see
 /// `WindowPeek::place_stretched`): what it takes a window yet to grow to
 /// reach across the rect. Once it has grown, the cover eases back to 1
-/// over [`STRETCH_SETTLE`] rather than stepping, which was the old path's
-/// zoom.
+/// over [`STRETCH_SETTLE`] rather than stepping, which shows as a zoom at
+/// landing.
 #[derive(Clone, Debug)]
 struct Stretch {
   /// The real window's rect, as last read.
@@ -994,8 +994,8 @@ fn keeps_trail_drawing(hosted: bool) -> bool {
 
 /// How long a window drawn moving or entering by its peek takes to follow
 /// a new rect: `duration_ms`, unless it is floating and stays so, whose
-/// moves the old path doesn't animate. That one jumps there; an entry it
-/// plays plays on.
+/// moves are not animated (a command's move can't be told from an app's
+/// or a drag's). That one jumps there; an entry it plays plays on.
 pub fn follow_duration(
   is_floating: bool,
   is_state_change: bool,
@@ -1059,7 +1059,7 @@ fn crosses_floating(
 }
 
 /// How a window crossing between floating and tiling on its peek draws a
-/// change of size: in `window_resize`'s style, as the old path does.
+/// change of size: in `window_resize`'s style, as a tile's resize is.
 pub fn state_change_resize(
   resize: &WindowResizeConfig,
 ) -> Option<PeekResize> {
@@ -1372,7 +1372,7 @@ pub struct Landed {
   /// Done leaving, whose peeks were dropped (see [`finish_leaving`]).
   pub left: Vec<Left>,
   /// Landed after a resize drawn filled, whose edge color is to be
-  /// sampled again, as after a `fill` session.
+  /// sampled again.
   pub filled: Vec<Uuid>,
 }
 
@@ -2739,7 +2739,8 @@ impl PeekView {
     let Some((mut entry, _)) = made else {
       return false;
     };
-    // Nothing to draw it with: the old path snaps it into place.
+    // Nothing to draw it with (e.g. an elevated window): it snaps into
+    // place.
     if !entry.peek.has_thumbnail() {
       tracing::debug!("No peek of {window} to move on.");
       return false;
@@ -3346,11 +3347,11 @@ impl PeekView {
     true
   }
 
-  /// Puts `window_id`'s moving peek on top, as the old path's stand-ins
-  /// of a move, open or restore are (`place_at_top`). A peek goes up just
-  /// below its real window: a restored one was at the bottom of the
-  /// z-order, under the windows it comes back over, and a moved one may be
-  /// under windows or stand-ins it passes. Not one leaving, which stays
+  /// Puts `window_id`'s moving peek on top, so no window it passes hides
+  /// it. A peek goes up just below its real window: a restored one was at
+  /// the bottom of the z-order, under the windows it comes back over, and
+  /// a moved one may be under windows or stand-ins it passes. Not one
+  /// leaving, which stays
   /// below its neighbours (task 4). A hosted one's surface, raised in the
   /// open pass with nothing raised since, stays (see
   /// [`set_raise_pass`](Self::set_raise_pass)).
@@ -3763,9 +3764,9 @@ pub fn settle_switch_peeks(state: &mut WmState, config: &UserConfig) {
 /// by `params` (see [`PeekView::enter`]), on ticks paced by its monitor's
 /// vblanks as a scroll is. Returns whether it does.
 ///
-/// Clipped to the whole monitor, as the old path's slides are. Drawn on
-/// one of that monitor's `PeekSurface`s if [`hosts_transit`] says so,
-/// given how its pass `raise`s it in a band (see [`floating_peek_raise`]).
+/// Clipped to the whole monitor, not to its tile. Drawn on one of that
+/// monitor's `PeekSurface`s if [`hosts_transit`] says so, given how its
+/// pass `raise`s it in a band (see [`floating_peek_raise`]).
 pub fn enter_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -3819,8 +3820,8 @@ pub fn enter_on_peek(
 /// there on a peek if it only moves (see [`is_pure_move`]) or, given
 /// `resizes` (see [`resizes_on_peeks`]), resizes too (see
 /// [`is_peek_resize`]), on `window_move`'s timing or, when it resizes or
-/// `cycle_has_resize`, `window_resize`'s, as the old path would
-/// (`movement_timing`). Returns whether it does.
+/// `cycle_has_resize`, `window_resize`'s (`movement_timing`). Returns
+/// whether it does.
 ///
 /// Its window is still shown: the redraw that freezes it queues the
 /// take-over into the pass's shared flush (`commit_pending_cloaks`), with
@@ -4017,7 +4018,7 @@ pub(crate) fn surface_clips(state: &WmState) -> Vec<Rect> {
 }
 
 /// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, in
-/// `window_fullscreen`'s own style, as the old path draws it.
+/// `window_fullscreen`'s own style.
 fn fullscreen_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let fullscreen = &config.value.animations.window_fullscreen;
   fullscreen.enabled.then_some(peek_resize(fullscreen.style))
@@ -6261,8 +6262,7 @@ mod tests {
   }
 
   /// Only a move that keeps the window's size, past the threshold, goes
-  /// on a peek alone; a resize, or a move the old path wouldn't animate,
-  /// doesn't.
+  /// on a peek alone; a resize, or a move that isn't animated, doesn't.
   #[test]
   fn a_tile_from_another_monitor_is_drawn_on_two_peeks() {
     let left = Rect::from_ltrb(0, 0, 1920, 1080);
@@ -6698,8 +6698,8 @@ mod tests {
     );
   }
 
-  /// Done moving, a filled window sent its size waits for it at most as
-  /// long as a `fill` session does.
+  /// Done moving, a filled window sent its size waits for it at most
+  /// `FILL_LANDING_WAIT`.
   #[test]
   fn a_filled_landing_waits_for_its_windows_size() {
     let now = Instant::now();
