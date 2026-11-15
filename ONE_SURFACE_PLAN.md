@@ -1483,7 +1483,13 @@ Seen running by the owner (desktop, `onesurface,readypeeks`): steps 1
 and 2 only, a few resizes: "nothing weird, no difference noticed". Not
 seen running: steps 3, 4, 5, the workspace switches, and how they work
 together ("Integration: as built" has the checklist). Nothing has been
-benched. Next: the owner's desktop check and bench, before item 1 below.
+benched.
+
+Seen by the owner on 2026-11-15 (an earlier build of this branch, before
+the integration pass): swaps, resizes and workspace switches "pretty
+alright" and smooth, but **the backdrop flickers away for a moment now
+and then**. Not investigated yet, on the owner's request: everything is
+ported first (items below), then this flicker, then the bench.
 
 ### What draws on a surface, and what still has a window of its own
 
