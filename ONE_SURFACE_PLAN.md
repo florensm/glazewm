@@ -2181,13 +2181,38 @@ ported first (items below), then this flicker, then the bench.
    `nopeeks`) and every own-window peek path a surface replaced, so
    `onesurface` is the only engine, on by default with no word. See
    "Removal plan" (end of this file).
-2. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
+2. **Rounded backdrops on the surface** (owner, 2026-11-15; after the
+   removal, before the flicker and the bench). A backdrop with rounded
+   corners (the window's corner style) or `parallax` != 1 is not
+   copyable (`BackdropOverlayParams::is_copyable`), so the window is live:
+   a stand-in of its own, and with `has_own_peek_neighbour` /
+   `beside_own_peek` much of its workspace too. The owner uses rounded
+   corners with a custom border, so as built one surface mostly does not
+   apply to their setup. Documented thumbnails only:
+   - **A (try first): rounded from rectangles.** Keep today's pinned
+     copy of the monitor backdrop, cut as a middle rect plus a few bands
+     per corner, each narrower toward the corner, so their ends follow
+     the corner's arc; the border ring's copy over the edge hides the
+     steps where the ring is at least a step wide. Same look as at rest,
+     no jump at landing. Cost: about 2k+1 backdrop registrations per
+     tile instead of 1 (kept by `readypeeks`), more per-frame updates.
+     Pick k from the radius and border width; without a border, say what
+     shows.
+   - **B (fallback): a thumbnail of the window's own backdrop overlay**,
+     rounded already. The blur then moves (and stretches) with the
+     window during the motion, and jumps to the new spot's at landing.
+   Built behind a temporary switch (an environment variable read once
+   at start, as `GLAZEWM_ISOLATE` was; it is gone after R1) so the owner
+   can compare A, B and the live stand-in on screen; the switch goes
+   once chosen. `parallax` != 1
+   stays live either way.
+3. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
    isolate words and modes that are not compared, so the bench runs only
    what matters; and have the bench script also build and run a second
    branch, `origin/main` unless the owner names another, from a separate
    checkout, the same scenarios on each), the measuring section.
-3. **The backdrop flicker** on workspace switches (above).
-4. **Bench**.
+4. **The backdrop flicker** on workspace switches (above).
+5. **Bench**.
 
 ### Owner's decisions still open
 
