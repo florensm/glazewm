@@ -4470,7 +4470,10 @@ pub fn hand_over_moved_overlays(state: &mut WmState, config: &UserConfig) {
 /// either.
 ///
 /// A window still natively minimized (`toggle-minimized`) is restored at
-/// `target` behind a cloak first (see [`restore_cloaked`]).
+/// `target` behind a cloak first (see [`restore_cloaked`]). A tile is
+/// raised as it comes back; a floating one enters as one opening does
+/// (see [`floating_peek_raise`]): raised in its band by its pass's
+/// `raise`, if any, else left just below its window.
 pub fn restore_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -4478,9 +4481,11 @@ pub fn restore_on_peek(
   params: &WindowTransitionParams,
   config: &UserConfig,
   is_focused: bool,
+  raise: Option<PeekRaise>,
 ) -> bool {
   let id = window.id();
   let now = state.animation_manager.frame_time();
+  let raises_as_tile = !matches!(window.state(), WindowState::Floating(_));
 
   if state
     .animation_manager
@@ -4488,8 +4493,10 @@ pub fn restore_on_peek(
     .turn_round(&id, params, false, now)
   {
     restore_cloaked(&window.native(), target);
-    state.animation_manager.peeks.raise_moving(&id);
-    restack_live_overlays(state, &id);
+    if raises_as_tile {
+      state.animation_manager.peeks.raise_moving(&id);
+      restack_live_overlays(state, &id);
+    }
     perf::note_animation_start(false);
     state.animation_manager.ensure_timer_running();
     return true;
@@ -4502,11 +4509,15 @@ pub fn restore_on_peek(
   }
 
   restore_cloaked(&window.native(), target);
-  // Raised as a tile, in no band of its own.
-  let entered =
-    enter_on_peek(state, window, target, params, config, is_focused, None);
-  state.animation_manager.peeks.raise_moving(&id);
-  restack_live_overlays(state, &id);
+  // A tile is raised as one, in no band of its own.
+  let raise = raise.filter(|_| !raises_as_tile);
+  let entered = enter_on_peek(
+    state, window, target, params, config, is_focused, raise,
+  );
+  if raises_as_tile {
+    state.animation_manager.peeks.raise_moving(&id);
+    restack_live_overlays(state, &id);
+  }
   entered
 }
 

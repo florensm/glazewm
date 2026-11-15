@@ -1700,12 +1700,15 @@ fn redraw_containers(
       })
       .flatten();
 
-    // An open or a restore of a tiled window enters on a peek, pinned or
-    // live, instead (`STAND_INS_PLAN.md` tasks 3 and 5).
+    // An open or a restore enters on a peek, pinned or live, instead
+    // (`STAND_INS_PLAN.md` tasks 3 and 5); a floating one as a floating
+    // open does, raised in its band by `floating_raise`.
     let enters_on_peek = match &entry_transition {
       Some((params, is_open))
         if !is_column
-          && (*is_open || window.state() == WindowState::Tiling) =>
+          && (*is_open
+            || window.state() == WindowState::Tiling
+            || (is_floating && opens_floating_on_peek(window))) =>
       {
         let is_focused = window.id() == focused_container.id();
         if *is_open {
@@ -1726,6 +1729,7 @@ fn redraw_containers(
             params,
             config,
             is_focused,
+            floating_raise,
           )
         }
       }
