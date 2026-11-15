@@ -1488,7 +1488,10 @@ benched.
 Seen by the owner on 2026-11-15 (an earlier build of this branch, before
 the integration pass): swaps, resizes and workspace switches "pretty
 alright" and smooth, but **the backdrop flickers away for a moment now
-and then**. Not investigated yet, on the owner's request: everything is
+and then**, seen on a workspace switch: the window's opacity looked
+set while its backdrop did not follow it (`restore_alpha`, the hosted
+surrogate's backdrop copies vs the semi-transparent window's alpha
+take-over are the first suspects). Not investigated yet, on the owner's request: everything is
 ported first (items below), then this flicker, then the bench.
 
 ### What draws on a surface, and what still has a window of its own
