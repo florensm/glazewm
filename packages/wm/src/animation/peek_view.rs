@@ -1838,13 +1838,19 @@ impl PeekView {
     &mut self,
     shown: impl Fn(&Uuid) -> Option<bool>,
   ) -> Vec<Uuid> {
-    self
+    let strays = self
       .entries
       .extract_if(|id, entry| {
         is_stray(entry.is_column, entry.role, shown(id))
       })
       .map(|(id, _)| id)
-      .collect()
+      .collect::<Vec<_>>();
+    // A resting column may be left alone on a surface they shared, with no
+    // tick to come to settle it.
+    if !strays.is_empty() {
+      self.settle_resting_surfaces();
+    }
+    strays
   }
 
   /// Drops `window_id`'s peek, if it is entering a tiling layout, and its
@@ -1855,6 +1861,7 @@ impl PeekView {
       !entry.is_column && !matches!(entry.role, Role::Leaving(_))
     }) {
       self.entries.remove(window_id);
+      self.settle_resting_surfaces();
     }
   }
 
@@ -1892,6 +1899,7 @@ impl PeekView {
   pub fn forget_leaving(&mut self, window_id: &Uuid) {
     if self.is_leaving(window_id) {
       self.entries.remove(window_id);
+      self.settle_resting_surfaces();
     }
   }
 
