@@ -1615,8 +1615,8 @@ None new. Newly reached for held peeks, all already called by
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
-steps 1 to 5, the workspace switches, the integration pass and resting
-columns under `slidepeeks`, merged;
+steps 1 to 5, the workspace switches, the integration pass, resting
+columns under `slidepeeks` and step 6a (grab resizes), merged;
 `cargo check
 --workspace --tests` and `cargo clippy --workspace --all-targets -- -D
 warnings` for `x86_64-pc-windows-msvc` are clean. Tests only type-check
@@ -1644,19 +1644,28 @@ ported first (items below), then this flicker, then the bench.
 |---|---|---|
 | tile move, resize | yes | stacks; live peeks |
 | tile open, close, minimize, restore | yes | floating and fullscreen windows; any tile on a workspace with a stack or a live tile; a tile closed while handing back |
-| scrolling column, moving | yes | live; held by a grab; stacks; every column of a workspace with a stack, a live or a held column |
+| scrolling column, moving | yes, held by a grab too | live; stacks; every column of a workspace with a stack or a live column |
 | scrolling column, at rest | one per surface, `slidepeeks` or not | a second resting column on a surface; an incoming one while a peek kept for an outgoing surrogate rests there (that switch only) |
 | workspace switch | tiles whose backdrop can be copied | floating, fullscreen, always-on-top, live, windows with a companion |
-| grab resize, floating <-> tiling, fullscreen toggle, tile crossing monitors | no | all (step 6) |
+| grab resize | yes (6a) | live; a hold starting while its surface is topped (a neighbour still landing from a command); a tile opening or restoring beside a held one |
+| floating <-> tiling, fullscreen toggle, tile crossing monitors | no | all (6b, 6c) |
 
 ### Open, in the order to take them
 
-1. **Step 6**: grab resizes, floating and fullscreen (a top-band
-   surface), tiles crossing monitors.
-2. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
+1. **Step 6b**: floating <-> tiling and fullscreen toggles (a top-band
+   surface).
+2. **Step 6c**: tiles crossing monitors (each monitor's surface draws
+   its part, replacing `Trail`).
+3. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
    what it needs). Until then one stack keeps its whole workspace's
    opens, closes and columns on their own windows.
-3. **Step 8**: duplicated code, bench modes, the measuring section.
+4. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
+   isolate words and modes that are not compared, so the bench runs only
+   what matters; and have the bench script also build and run a second
+   branch, `origin/main` unless the owner names another, from a separate
+   checkout, the same scenarios on each), the measuring section.
+5. **The backdrop flicker** on workspace switches (above).
+6. **Bench**.
 
 ### Owner's decisions still open
 
@@ -1685,4 +1694,4 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`.
