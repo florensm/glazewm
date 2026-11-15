@@ -770,14 +770,6 @@ impl Entry {
   }
 }
 
-/// Whether a peek, drawn `filled`, carries its fill as its motion starts
-/// under `earlyfill`: only before its ring copy is carried. Carried on its
-/// first tick instead, the fill is registered over the ring copy, which is
-/// then registered anew over it (see `OverlayCopies::carry_fill`).
-fn carries_fill_early(filled: bool, carries_ring: bool) -> bool {
-  filled && !carries_ring
-}
-
 /// The size of a window, drawn filled at `rect`, that is sure to be drawn
 /// (see `WindowPeek::place_filled`): per axis, the smallest of its size as
 /// last read, `actual`, the rect's, and those of sizes it was sent and is
@@ -1830,7 +1822,6 @@ impl PeekView {
     batch: &mut SurrogateBatch,
   ) -> Landed {
     let mut landed = Landed::default();
-    let late_alpha = wm_platform::isolation::current().late_alpha;
 
     // A later composition than the one copies were put over rings and
     // backdrops in, and peeks put up in place of others.
@@ -1842,14 +1833,12 @@ impl PeekView {
         Role::Moving { ends_shown } => {
           // Its real window was cloaked a tick ago at least, so needs its
           // alpha no more. One not taken over from, e.g. as it wasn't
-          // redrawn, is drawn all the same. Under `latealpha`, cloaked, it
-          // gets it back as it lands instead.
+          // redrawn, is drawn all the same.
           let draw_scope = perf::scope(Stage::PeekDraw);
           for (peek, _) in entry.peeks_mut() {
-            if !late_alpha {
-              let _scope = perf::scope(Stage::PeekDrawAlpha);
-              peek.restore_alpha();
-            }
+            let alpha_scope = perf::scope(Stage::PeekDrawAlpha);
+            peek.restore_alpha();
+            drop(alpha_scope);
             peek.show_window();
             peek.refresh_companion();
           }
@@ -1901,8 +1890,6 @@ impl PeekView {
               landed.shown.push(*id);
               Role::HandingBack
             } else {
-              // Kept from its window until now under `latealpha`.
-              entry.peek.restore_alpha();
               landed.hidden.push(*id);
               Role::Peek
             };
@@ -3269,28 +3256,6 @@ impl PeekView {
       .retain(|_, ready| !is_ready_expired(ready.kept_at, now));
   }
 
-  /// Has `window_id`'s peeks, if drawn filled, carry their fill in its
-  /// edge color, `color`, as their motion starts (see `earlyfill` and
-  /// [`carries_fill_early`]).
-  fn carry_fill_early(&mut self, window_id: &Uuid, color: Color) {
-    let Some(entry) = self.entries.get_mut(window_id) else {
-      return;
-    };
-    let Some(stretch) = entry.stretch.as_mut() else {
-      return;
-    };
-
-    let peeks =
-      peeks_of(&mut entry.peek, &entry.clip, entry.trail.as_mut());
-    for (peek, _) in peeks {
-      if carries_fill_early(stretch.filled, peek.carries_ring()) {
-        let _scope = perf::scope(Stage::PeekFill);
-        stretch.edge_color = Some(color);
-        peek.carry_fill(color);
-      }
-    }
-  }
-
   /// Has `window`'s peek, just put up by [`move_tile`](Self::move_tile)
   /// on the monitor it moves onto, drawn on `clip`, the monitor it comes
   /// from, too (see [`Trail`]). Returns whether it is: if not, the peek
@@ -4024,20 +3989,6 @@ pub fn move_on_peek(
   batch.commit();
 
   if moved {
-    if let Some(color) = wm_platform::isolation::current()
-      .early_fill
-      .then(|| {
-        state
-          .animation_manager
-          .cached_edge_color(window.native().hwnd().0)
-      })
-      .flatten()
-    {
-      state
-        .animation_manager
-        .peeks
-        .carry_fill_early(&window.id(), color);
-    }
     perf::note_animation_start(is_resize);
     state.animation_manager.ensure_waiter_for(handle);
     state.animation_manager.ensure_timer_running();
@@ -5621,7 +5572,7 @@ mod tests {
   use wm_platform::{LengthValue, Rect, RectDelta, HWND};
 
   use super::{
-    allows_motion, by_surface, carries_fill_early, conceals_new_ring,
+    allows_motion, by_surface, conceals_new_ring,
     crosses_floating, crossing_host, evicted, floating_peek_raise,
     follow_duration, follows_tile, fullscreen_peek_raise, has_landed,
     has_left, host_for, hosts_column, hosts_hold, hosts_on_surface,
@@ -6807,13 +6758,6 @@ mod tests {
         && fresh.deferred
         && fresh.cover_at(t0) == (1.0, 1.0)
     }));
-  }
-
-  #[test]
-  fn only_a_filled_peek_yet_to_carry_its_ring_fills_early() {
-    assert!(carries_fill_early(true, false));
-    assert!(!carries_fill_early(false, false));
-    assert!(!carries_fill_early(true, true));
   }
 
   /// Filled, a window growing on both axes is sent its size as it starts;
