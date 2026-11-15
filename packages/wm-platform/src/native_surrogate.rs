@@ -894,6 +894,14 @@ impl NativeSurrogate {
     }
   }
 
+  /// Puts a hosted one's surface just above `window` unless it is above it
+  /// already (see `SurfaceWindow::keep_above`). None for one of its own.
+  pub(crate) fn lift_surface_above(&self, window: HWND) {
+    if let Host::Shared(surface) = &self.host {
+      surface.keep_above(window);
+    }
+  }
+
   /// Whether its thumbnails are to be kept hidden: hosted and hidden.
   fn is_held(&self) -> bool {
     self.is_hosted() && !self.is_visible
