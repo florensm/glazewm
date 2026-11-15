@@ -102,10 +102,9 @@ pub fn sync_scroll_view(
     None => HashSet::new(),
   };
 
-  // With `window_resize.style: "stretch"` (or `fill` under
-  // `GLAZEWM_ISOLATE=fillpeeks`), a column resized on screen goes on its
-  // peek too (`STAND_INS_PLAN.md` tasks 8 and 10e), where every resized
-  // column can.
+  // With `window_resize` enabled, in either style, a column resized on
+  // screen goes on its peek too (`STAND_INS_PLAN.md` tasks 8 and 10e),
+  // where every resized column can.
   let resizes = resizes_on_peeks(config).filter(|_| pure_moves.is_some());
   let can_stretch = windows
     .iter()

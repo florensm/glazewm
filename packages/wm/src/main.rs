@@ -130,16 +130,6 @@ async fn start_wm(
   setup_logging(&verbosity)?;
   log_panics();
 
-  // Left on by mistake, it would make animations look broken or differ
-  // from the defaults.
-  let isolation = wm_platform::isolation::current();
-  if isolation != wm_platform::isolation::Isolation::default() {
-    tracing::warn!(
-      "GLAZEWM_ISOLATE changes how moving windows are drawn: \
-       {isolation:?}."
-    );
-  }
-
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
 

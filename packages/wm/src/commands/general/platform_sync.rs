@@ -1340,9 +1340,8 @@ fn redraw_containers(
     }
   });
 
-  // With `window_resize.style: "stretch"` (or `fill` under
-  // `GLAZEWM_ISOLATE=fillpeeks`) and peeks, the relayout's resizes go on
-  // peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
+  // With `window_resize` enabled, in either style, the relayout's resizes
+  // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
   let resizes = if cycle_has_resize && !suppress_animations {
     crate::animation::peek_view::resizes_relayout(
       state,

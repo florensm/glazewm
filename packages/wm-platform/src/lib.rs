@@ -18,7 +18,6 @@ mod external_color_source;
 mod frame_clock;
 mod grab_listener;
 mod hidden_alpha;
-pub mod isolation;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;

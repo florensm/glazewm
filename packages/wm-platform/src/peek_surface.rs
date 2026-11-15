@@ -1,5 +1,5 @@
-//! One window per monitor that moving tiles' peeks draw on together,
-//! under `GLAZEWM_ISOLATE=onesurface` (`ONE_SURFACE_PLAN.md`).
+//! One window per monitor that moving tiles' peeks draw on together
+//! (`ONE_SURFACE_PLAN.md`).
 
 use std::{cell::Cell, rc::Rc};
 
