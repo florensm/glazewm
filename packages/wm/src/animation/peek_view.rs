@@ -1118,16 +1118,11 @@ pub(super) fn hosts_column(
 
 /// Whether a column the surface may take (see [`hosts_column`]) is drawn
 /// there in its role: one that `rests` (at rest, or moving to rest hidden)
-/// only if no other tenant of that surface does (`rests_elsewhere`), as
-/// the surface has one place at rest, and not under `slide_peeks`, whose
-/// workspace switches have a resting peek stand by or kept on a window of
-/// its own (`SWITCH_PEEKS_PLAN.md`).
-fn keeps_rest_hosted(
-  rests: bool,
-  slide_peeks: bool,
-  rests_elsewhere: bool,
-) -> bool {
-  !rests || (!slide_peeks && !rests_elsewhere)
+/// only if no other tenant of that surface does (`rests_elsewhere`, one
+/// kept for a workspace switch's surrogate included), as the surface has
+/// one place at rest.
+fn keeps_rest_hosted(rests: bool, rests_elsewhere: bool) -> bool {
+  !rests || !rests_elsewhere
 }
 
 /// Whether an entry in `role` rests, or is to once it lands.
@@ -2082,11 +2077,7 @@ impl PeekView {
 
     let id = window.id();
     let host = may_host
-      && keeps_rest_hosted(
-        rests(role),
-        wm_platform::isolation::current().slide_peeks,
-        self.rests_on_surface(clip, &id),
-      );
+      && keeps_rest_hosted(rests(role), self.rests_on_surface(clip, &id));
     let moves_on = self.moves_on_in_place(&id, clip, host);
 
     if let Some(entry) = self.entries.get_mut(&id).filter(|_| moves_on) {
@@ -2261,7 +2252,10 @@ impl PeekView {
   }
 
   /// Whether a column other than `window_id`'s rests, or is to, on the
-  /// surface of `clip` (see [`keeps_rest_hosted`]).
+  /// surface of `clip` (see [`keeps_rest_hosted`]). One kept for a
+  /// switch's surrogate does until that takes over later in the sync: a
+  /// column joining meanwhile would move the surface it draws on at full
+  /// (see [`keep_switching_out`](Self::keep_switching_out)).
   fn rests_on_surface(&self, clip: &Rect, window_id: &Uuid) -> bool {
     let Some(surface) =
       self.surfaces.iter().find(|surface| surface.clip() == clip)
@@ -2269,12 +2263,16 @@ impl PeekView {
       return false;
     };
 
-    self.entries.iter().any(|(id, entry)| {
-      id != window_id
-        && entry.tenancy.is_some()
-        && entry.peek.hwnd() == surface.hwnd()
-        && rests(entry.role)
-    })
+    self
+      .entries
+      .iter()
+      .chain(&self.switching_out)
+      .any(|(id, entry)| {
+        id != window_id
+          && entry.tenancy.is_some()
+          && entry.peek.hwnd() == surface.hwnd()
+          && rests(entry.role)
+      })
   }
 
   /// Drops the peeks [`upsert`](Self::upsert) replaced, once what replaced
@@ -2285,7 +2283,8 @@ impl PeekView {
 
   /// Puts each surface whose tenants all rest just above its resting
   /// tenant's cloaked window (see [`rest_anchor`]), where that tenant's
-  /// own peek would be, once nothing moving on it needs it higher.
+  /// own peek would be, once nothing moving on it needs it higher. One
+  /// kept for a workspace switch's surrogate is a tenant still.
   pub(super) fn settle_resting_surfaces(&self) {
     for surface in &self.surfaces {
       if surface.is_empty() {
@@ -2294,6 +2293,7 @@ impl PeekView {
       let tenants = self
         .entries
         .values()
+        .chain(self.switching_out.values())
         .filter(|entry| {
           entry.tenancy.is_some() && entry.peek.hwnd() == surface.hwnd()
         })
@@ -5073,19 +5073,15 @@ mod tests {
     }
   }
 
-  /// A surface has one place at rest: a second resting column, or any
-  /// under `slidepeeks`, keeps a peek of its own; a moving one ending
-  /// shown always goes.
+  /// A surface has one place at rest, under `slidepeeks` or not: a second
+  /// resting column keeps a peek of its own; a moving one ending shown
+  /// always goes.
   #[test]
   fn one_resting_column_per_surface() {
-    assert!(keeps_rest_hosted(true, false, false));
-    assert!(!keeps_rest_hosted(true, false, true));
-    assert!(!keeps_rest_hosted(true, true, false));
-    for (slide_peeks, elsewhere) in
-      [(false, false), (true, false), (false, true), (true, true)]
-    {
-      assert!(keeps_rest_hosted(false, slide_peeks, elsewhere));
-    }
+    assert!(keeps_rest_hosted(true, false));
+    assert!(!keeps_rest_hosted(true, true));
+    assert!(keeps_rest_hosted(false, false));
+    assert!(keeps_rest_hosted(false, true));
     assert!(rests(Role::Peek));
     assert!(rests(Role::Moving { ends_shown: false }));
     assert!(!rests(Role::Moving { ends_shown: true }));
