@@ -105,7 +105,6 @@ impl WindowPeek {
         border_inset,
         corner_style,
         hwnd,
-        false,
       )?;
       (surrogate, PeekMode::Live)
     } else {
@@ -119,7 +118,6 @@ impl WindowPeek {
         RECT::default(),
         &CornerStyle::Square,
         hwnd,
-        false,
       )?;
       let viewport = clip.clone();
       (surrogate, PeekMode::Pinned { viewport })
@@ -465,12 +463,6 @@ impl WindowPeek {
       self.copies.cover_ring();
     }
     carries
-  }
-
-  /// Whether the peek draws the window's border ring.
-  #[must_use]
-  pub fn carries_ring(&self) -> bool {
-    self.copies.carries_ring()
   }
 
   /// Draws the ring copy whole, or with `corner_reach` in cells, from now

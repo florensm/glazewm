@@ -52,7 +52,6 @@ impl CompanionCover {
       border_inset,
       corner_style,
       hwnd,
-      false,
     )
     .inspect_err(|err| {
       tracing::warn!("Failed to create a companion cover: {err}");
