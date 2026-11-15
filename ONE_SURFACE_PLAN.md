@@ -1308,7 +1308,8 @@ moves.
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
-steps 1 to 5 and the workspace switches, merged; `cargo check
+steps 1 to 5, the workspace switches and the integration pass, merged;
+`cargo check
 --workspace --tests` and `cargo clippy --workspace --all-targets -- -D
 warnings` for `x86_64-pc-windows-msvc` are clean. Tests only type-check
 on Linux. Everything is behind `onesurface` (and `readypeeks`), off by
@@ -1317,7 +1318,8 @@ default.
 Seen running by the owner (desktop, `onesurface,readypeeks`): steps 1
 and 2 only, a few resizes: "nothing weird, no difference noticed". Not
 seen running: steps 3, 4, 5, the workspace switches, and how they work
-together. Nothing has been benched.
+together ("Integration: as built" has the checklist). Nothing has been
+benched. Next: the owner's desktop check and bench, before item 1 below.
 
 ### What draws on a surface, and what still has a window of its own
 
@@ -1332,39 +1334,26 @@ together. Nothing has been benched.
 
 ### Open, in the order to take them
 
-1. **Integration, before anything new.** The three steps after step 3
-   were built side by side and merged without having run together:
-   - A monitor can now have three surfaces: the tiles' (monitor rect),
-     the columns' (working area) and the switch's (working area, kept
-     below its windows). Decide whether the columns' and the switch's
-     can be one, and whether the tiles' should span the working area
-     too (a monitor-sized window may make Explorer hide app bars; own
-     pinned peeks of tiles span the same rect today, so this is not
-     new, but it is unchecked).
-   - Purge points: `drop_surfaces`, `retain_surfaces`,
-     `retain_switch_surfaces`, `drop_replaced`, the ready store. One
-     pass over them for order (tenants before surfaces) and for a
-     display change, reload, pause and shutdown.
-   - A switch while tiles or columns are on a surface; a tile motion
-     while a switch's surface is up.
-   - The merge fix `1baeb71`: a hosted switch surrogate is admitted as
-     below a shown window (`is_shown: true`), so its surface stays
-     below incoming windows. Check that against the switch step's
-     intent in "Workspace switches: as built".
-2. **Resting columns under `slidepeeks`** (the default). Step 5 hosts
+1. **Resting columns under `slidepeeks`** (the default). Step 5 hosts
    none, so a switch never meets a hosted resting peek. Join the two:
    `stand_by`, `end_stand_by`, `hand_back_to_peek`,
    `take_over_from_peek`, `settle_switch_peeks`, `keep_switching_out`
    for a hosted peek.
-3. **Step 6**: grab resizes, floating and fullscreen (a top-band
+2. **Step 6**: grab resizes, floating and fullscreen (a top-band
    surface), tiles crossing monitors.
-4. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
+3. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
    what it needs). Until then one stack keeps its whole workspace's
    opens, closes and columns on their own windows.
-5. **Step 8**: duplicated code, bench modes, the measuring section.
+4. **Step 8**: duplicated code, bench modes, the measuring section.
 
 ### Owner's decisions still open
 
+- Integration changed a rule: reload and pause now drop only unused
+  surfaces (and every ready peek); one in use stays listed until a later
+  purge or a new surface prunes it. Two cases left as they are: a moving
+  tile retargeted after a clip change keeps its old surface until it
+  lands; with `noslidepeeks` an incoming resting peek shows at once
+  during the slide, as an own peek does today.
 - An opening tile is drawn under its moving neighbours, as today, at
   the cost of restacking them on every open (step 4). The other way
   (opening tile on top) costs nothing and looks different.
@@ -1379,4 +1368,4 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`.
