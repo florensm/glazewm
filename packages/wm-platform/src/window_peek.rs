@@ -105,7 +105,6 @@ impl WindowPeek {
         border_inset,
         corner_style,
         hwnd,
-        false,
       )?;
       (surrogate, PeekMode::Live)
     } else {
@@ -119,7 +118,6 @@ impl WindowPeek {
         RECT::default(),
         &CornerStyle::Square,
         hwnd,
-        false,
       )?;
       let viewport = clip.clone();
       (surrogate, PeekMode::Pinned { viewport })

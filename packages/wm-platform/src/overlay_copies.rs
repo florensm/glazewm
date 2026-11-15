@@ -1195,7 +1195,8 @@ impl OverlayCopies {
   }
 
   /// Draws the fill, while shown, at `opacity`: as faded as the window's
-  /// thumbnail, not at its alpha (see `fade_fraction`).
+  /// thumbnail, not at its alpha, as its color is sampled off the screen,
+  /// already blended with what is behind a see-through window.
   pub(crate) fn set_fill_opacity(&mut self, opacity: u8) {
     if let Some(fill) = &mut self.fill {
       fill.opacity = opacity;

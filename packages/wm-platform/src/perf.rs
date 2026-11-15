@@ -295,7 +295,7 @@ pub enum Stage {
   /// `NativeSurrogate::create`'s window: `CreateWindowExW` and its
   /// corner style. Any surrogate's, peeks' among them.
   SurrogateWindow,
-  /// `NativeSurrogate::create`/`revive`'s companion lookup and thumbnail
+  /// `NativeSurrogate::create`/`reclaim`'s companion lookup and thumbnail
   /// registration (or update). Any surrogate's, peeks' among them.
   SurrogateThumb,
   /// `peek_view::track_overlays`' `carry_ring` of one window.

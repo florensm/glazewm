@@ -817,14 +817,8 @@ fn build_visual_tree(
   })
 }
 
-/// A surrogate's gap fill: a solid color painted over the part of the
-/// surrogate its DWM thumbnail does not cover, standing in for window
-/// content the thumbnail has not caught up to yet mid-resize.
-///
-/// Rooted on the surrogate's own `HWND`, underneath the thumbnail (DWM
-/// draws thumbnails above a non-topmost `DesktopWindowTarget`), so it
-/// moves with the surrogate atomically and never tints the content above
-/// it.
+/// A solid color painted over a window but for a covered area at its
+/// top-left: what a `FillSource` shows, with nothing covered.
 ///
 /// The uncovered area is an L -- the thumbnail is anchored top-left -- so
 /// it is two sprites: a full-height strip right of the covered width, and
@@ -920,13 +914,6 @@ impl SurrogateFill {
       X: width,
       Y: -height,
     })?;
-    Ok(())
-  }
-
-  /// Sets the fill's opacity, which tracks the thumbnail's so the fill
-  /// fades with the content it stands in for.
-  pub(crate) fn set_opacity(&self, opacity: f32) -> crate::Result<()> {
-    self.root.SetOpacity(opacity)?;
     Ok(())
   }
 }
