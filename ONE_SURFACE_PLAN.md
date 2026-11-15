@@ -2459,3 +2459,89 @@ running.
 - Windows functions added: none. No longer called: the `earlyfill`
   `DwmRegisterThumbnail`s from the command (off by default), and the
   environment read of `GLAZEWM_ISOLATE` (`std::env::var`).
+
+#### R2: as built
+
+Branch `os/r2-live`. Not seen running.
+
+A live window (`is_live`: a backdrop `is_copyable` refuses) now opens,
+restores, closes and minimizes on a live peek of its own, by the paths
+step 4 built for own pinned peeks, with the live branches the moves
+already had. It reaches `start_open_animation` or
+`start_away_animation` only when the peek is refused for another reason
+(R3).
+
+- **Admission**: `PeekView::can_enter` (open, restore) and
+  `PeekView::leave` (close, minimize) no longer refuse `is_live`.
+  `hosts_transit` still returns `None` for one (`hosts_on_surface`'s
+  `live` argument), so `new_entry` makes `WindowPeek::new(.., live)`,
+  `Live` mode, as for a live move. `has_own_peek_neighbour` keeps the
+  other transits and moves of its workspace on own peeks, as before.
+- **Motion**: `Entry::draw` calls `place_scaled` for a transit, which
+  now draws a live peek too: moved over the drawn frame's visible part
+  (`live_origin`, shared with `frame_origin`, which `place_stretched`
+  and `place_filled` use), the thumbnail scaled and faded as on a pinned
+  peek (`scaled_rects` from that origin; tested against a pinned one).
+- **Overlays**: `track_overlays`' live arm, as for a live move: the real
+  backdrop and ring follow the peek's drawn frame (backdrop by
+  `upsert_clipped_overlay`, ring pinned and slid), behind the peek; now
+  at the peek's fade (`tracked_blends`: both ends of each blend scaled
+  by `WindowPeek::opacity_fraction` through
+  `OverlayParams::with_opacity_scaled`), as a pinned peek fades its
+  copies. A zoom draws them at full opacity, sized with the frame (the
+  engine kept them at the target rect, faded by zoom progress).
+- **Open**: window cloaked since `manage_window`; live peek up just
+  below it, never raised (a floating one: raised in its band by the
+  `peek_raises` loop); `Frozen` `Keep`; ticks zoom, slide or fade it;
+  lands, `begin_hand_back` (`raise_above(source)`), overlays behind the
+  window (`overlay_anchor`'s live `HandingBack` arm), uncloak
+  (`Normal`), hand back. All as for an own pinned open or a live move.
+- **Restore**: `restore_cloaked`, enter as an open, `raise_moving` in
+  the loop, as before, then `restack_live_overlays`, as after the
+  moves' raise loop. A minimize still playing turns round
+  (`turn_round`), then the same two.
+- **Close, minimize**: peek warmed up just below the still-shown window
+  (`warm_up`), overlays moved behind it by `track_overlays`; a close's
+  first tick takes over and cloaks, a minimize's `dwm_flush` and
+  `take_over_leaving` run before the caller minimizes; ticks shrink,
+  slide or fade it with its overlays; `finish_leaving` drops the
+  overlays and sends `WM_CLOSE`. A live tile moving on its peek turns
+  `Leaving` in place, as a pinned one does.
+- **Band raises**: `restack_live_overlays` now also runs after each
+  `raise_in_band` in the `peek_raises` loop (a no-op for pinned peeks):
+  a live floating open, and a live floating <-> tiling crossing (R1),
+  left their overlays under the raised peek otherwise.
+- **Order**: no hand-over step moved, simplified or dropped; the two
+  new `restack_live_overlays` calls go right after the raises they
+  follow. No engine arm deleted (R4).
+- **For items 2 and 3**: the live branch is keyed on `is_live` alone,
+  in the places it was (`hosts_transit`/`hosts_on_surface`,
+  `new_entry`'s mode, `track_overlays`' and `overlay_anchor`'s live
+  arms), plus `place_scaled`'s `Live` arm and `tracked_blends`' fade. A
+  window made copyable takes its transits onto a surface with no change
+  here; deleting `PeekMode::Live` deletes those arms whole.
+
+Still reaching the engine after R2: restore of a floating window, mixed
+relayouts, `Motion::Column`, `Leave::Unsupported` (handing back,
+releasing, a resting column; no monitor, no frame, a peek that couldn't
+be made), other refused peeks (R3). Left as is: a live column's open in
+`upsert` still has no transit (columns are R3's).
+
+To check on screen (rounded corners with a backdrop, or `parallax` != 1):
+
+- Open a tile with each `window_open` style (zoom, slide, fade): one
+  peek window, no engine surrogate; blur and ring follow the zooming or
+  sliding frame and fade with a fade; no frame without blur at landing.
+- Close and minimize a tile: shrinks under its neighbours, blur and ring
+  with it; no frame showing both the window and its peek, or neither.
+- `toggle-minimized` twice within the animation: turns round, blur and
+  ring stay with it, over its neighbours.
+- A floating window with a rounded backdrop: opens raised in its band,
+  its blur right under it, not left below other windows; then close it.
+- Close during an open; close while neighbours still move.
+
+Windows functions added: none (`live_origin` calls `move_to`, already
+used by live peeks: `SetWindowPos`, or the batch's `DeferWindowPos`).
+No longer called: none; these transits no longer make an engine
+session (its surrogate, per-frame updates and overlay tracking, a zoom
+open's early `set_cloaked`), but each function stays called elsewhere.
