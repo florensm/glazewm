@@ -5,7 +5,7 @@ use windows::Win32::{
 use crate::{
   companion::{self, Companion, COMPANION_OPACITY},
   native_surrogate::to_logical,
-  resize_session::compute_border_inset,
+  window_edges::compute_border_inset,
   CornerStyle, NativeSurrogate, NativeWindow, Rect,
 };
 

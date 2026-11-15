@@ -59,6 +59,7 @@ mod text;
 mod thread_bound;
 mod ui_thread;
 mod window_class;
+mod window_edges;
 mod window_icons;
 mod window_listener;
 mod window_peek;
@@ -95,14 +96,13 @@ pub use particles::{
 };
 pub use peek_surface::PeekSurface;
 pub use platform_event::*;
-pub use resize_session::{
-  sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,
-};
+pub use resize_session::{ResizeSession, SessionOptions};
 pub use single_instance::*;
 pub use system_accent_color::*;
 pub use tab_layout::TabAction;
 pub use thread_bound::*;
 pub use ui_thread::UiThread;
+pub use window_edges::{sample_edge_color_async, EdgeColorCache};
 pub use window_listener::*;
 pub use window_peek::WindowPeek;
 pub use window_placer::WindowPlacer;

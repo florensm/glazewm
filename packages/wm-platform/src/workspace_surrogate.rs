@@ -5,9 +5,10 @@ use crate::{
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
-  resize_session::compute_border_inset,
-  window_class, BackdropOverlayParams, CornerStyle, NativeSurrogate,
-  NativeWindow, PeekSurface, Rect, StyleBlend, SurrogateBatch,
+  window_class,
+  window_edges::compute_border_inset,
+  BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow,
+  PeekSurface, Rect, StyleBlend, SurrogateBatch,
 };
 
 /// Thumbnail opacity a surrogate is warmed up at under its still-shown

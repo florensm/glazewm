@@ -5,7 +5,7 @@ use crate::{
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
   platform_impl::wallpaper_surface,
-  resize_session::compute_border_inset,
+  window_edges::compute_border_inset,
   BackdropOverlayParams, Color, CornerStyle, NativeSurrogate,
   NativeWindow, PeekSurface, Rect, StyleBlend, SurrogateBatch,
   TabBarPlace,
