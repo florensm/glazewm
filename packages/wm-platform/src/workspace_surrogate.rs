@@ -5,6 +5,7 @@ use crate::{
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
+  platform_impl::wallpaper_surface,
   window_class,
   window_edges::compute_border_inset,
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow,
@@ -587,11 +588,14 @@ impl WorkspaceSurrogate {
 
     let is_new = !self.copies.carries_backdrop();
     let (dest, frame) = (self.hwnd(), self.rest_frame());
+    // Cut from a backdrop of the whole monitor, as the overlay is: with
+    // parallax, a cut can reach past the viewport, its work area.
+    let monitor = wallpaper_surface::monitor_bounds(&self.viewport);
     if !self.copies.carry_backdrop(
       dest,
       &[params],
       ring_width,
-      &self.viewport,
+      &monitor,
       &self.rect,
       &frame,
     ) {

@@ -120,7 +120,7 @@ use super::{
   graphics_device::{self, with_graphics_device, GraphicsDevice},
   wallpaper::{DesktopSignature, MonitorWallpaper, WallpaperFit},
 };
-use crate::{BackdropOverlayParams, Rect};
+use crate::{parallax_crop_origin, BackdropOverlayParams, Rect};
 
 /// The subset of [`BackdropOverlayParams`] rendered *into* the baked
 /// image, and so the part that decides whether an existing bake can be
@@ -395,10 +395,11 @@ pub(crate) fn set_crop(
   // monitor, so the image sits still against the desktop. Scaling it down
   // makes the image trail the window rather than track it, which is what
   // reads as the backdrop sitting further away.
+  let (x, y) = parallax_crop_origin(rect, monitor, parallax);
   #[allow(clippy::cast_precision_loss)]
   let offset = Vector2 {
-    X: (monitor.x() - rect.x()) as f32 * parallax,
-    Y: (monitor.y() - rect.y()) as f32 * parallax,
+    X: -x as f32,
+    Y: -y as f32,
   };
 
   if let Err(err) = brush.SetOffset(offset) {
