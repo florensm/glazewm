@@ -903,12 +903,16 @@ fn redraw_containers(
           let hosts = window.state() == WindowState::Tiling;
 
           if is_incoming {
+            // Drawn from the frame the real window shows once handed back,
+            // inside its tile by `border_inset`, not from the tile.
             let surrogate = window
               .to_rect()
-              .and_then(|frame_rect| {
-                window
-                  .total_border_delta()
-                  .map(|d| (frame_rect.apply_delta(&d, None), frame_rect))
+              .and_then(|tile| {
+                window.total_border_delta().map(|delta| {
+                  let rect = tile.apply_delta(&delta, None);
+                  let frame_rect = window.frame_at(&rect);
+                  (rect, frame_rect)
+                })
               })
               .ok()
               .and_then(|(rect, frame_rect)| {
@@ -963,15 +967,13 @@ fn redraw_containers(
             // invisible resize/shadow border -- not the frame rect that
             // steady-state sync reads. Passing it as both would draw the
             // border ring around the inflated rect for the whole slide and
-            // snap it down at settle. Only the `frame()` fallback
+            // snap it down at settle. Nor is it `to_rect()`, the tile,
+            // `border_inset` larger. Only the `frame()` fallback
             // legitimately doubles as both.
             let (current, frame_rect) = if let Some(target) =
               state.window_target_positions.get(&id)
             {
-              (
-                target.clone(),
-                window.to_rect().unwrap_or_else(|_| target.clone()),
-              )
+              (target.clone(), window.frame_at(target))
             } else {
               let frame = window
                 .native()
