@@ -32,6 +32,7 @@
 //! builds of other branches too, as `compare_branches.ps1` does.
 
 mod bench_config;
+mod builds;
 mod compare;
 mod dwm;
 mod ipc;
@@ -504,6 +505,9 @@ async fn switch_workspaces(
 ///   either kind of copy.
 /// - `summary-header [--dwm]`: prints the header of the table rows
 ///   [`print_summary`] ends with, with `--dwm`'s columns if given.
+/// - `builds <against>...`: prints the builds of `compare_branches.ps1`'s
+///   `-Against` (see [`builds`]), one per line as `<label>\t<git
+///   ref>\t<GLAZEWM_ISOLATE value>`, the value empty to leave it unset.
 /// - `compare <rows> <out> <build>...`: appends to `out` the rows file's
 ///   runs, one column per build, in the order given (see [`compare`]).
 async fn run_helper() -> anyhow::Result<bool> {
@@ -555,6 +559,13 @@ async fn run_helper() -> anyhow::Result<bool> {
     }
     Some("summary-header") => {
       print_summary_header(args.get(1).is_some_and(|arg| arg == "--dwm"));
+    }
+    Some("builds") => {
+      let specs = args.iter().skip(1).map(String::as_str);
+      for build in builds::parse(&specs.collect::<Vec<_>>())? {
+        let isolate = build.isolate.unwrap_or_default();
+        println!("{}\t{}\t{isolate}", build.label, build.git_ref);
+      }
     }
     Some("compare") => {
       let rows_path = arg(1)?;
