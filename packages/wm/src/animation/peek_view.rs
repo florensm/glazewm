@@ -1358,6 +1358,19 @@ fn ring_reach(window: &WindowContainer, config: &UserConfig) -> i32 {
     .unwrap_or(0)
 }
 
+/// `window`'s ring overlay and its corner reach (see
+/// `NativeBorderOverlay::corner_reach`), if it has one already.
+fn existing_ring(
+  state: &WmState,
+  window: &WindowContainer,
+) -> Option<(HWND, i32)> {
+  state
+    .window_overlays
+    .get(&window.id())
+    .and_then(|overlays| overlays.border.as_ref())
+    .map(|overlay| (overlay.hwnd(), overlay.corner_reach()))
+}
+
 /// Columns whose move ended on a tick.
 #[derive(Default)]
 pub struct Landed {
@@ -2603,6 +2616,14 @@ impl PeekView {
   /// drawn on: a new one replaces it then, the old one drawing until the
   /// next tick, so no frame shows neither.
   ///
+  /// `ring`: the window's ring overlay and its corner reach, when it has
+  /// one already (see [`existing_ring`]). A new hosted peek then registers
+  /// its ring copy with its window and backdrop (see
+  /// `WindowPeek::reserve_ring`), for [`carry_ring`] to take as it covers
+  /// the ring, so the tile's thumbnails stack together and
+  /// [`restack_crossings`](Self::restack_crossings) finds nothing to
+  /// re-register for it.
+  ///
   /// Returns `false`, creating nothing, for a window already drawn
   /// otherwise (moving, leaving, or as a column), or one DWM can't draw.
   #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -2616,6 +2637,7 @@ impl PeekView {
     easing: EasingFunction,
     resize: Option<PeekResize>,
     host: Option<Host>,
+    ring: Option<(HWND, i32)>,
     monitor_clips: &[Rect],
     config: &UserConfig,
     is_focused: bool,
@@ -2755,7 +2777,14 @@ impl PeekView {
     entry.tenancy = tenancy.map(|(_, tenancy)| tenancy);
     entry.stretch =
       resizes.map(|resize| Stretch::at(actual(), resize, deferred));
+    // Cut as `carry_ring` cuts it: in cells while the window's size
+    // changes on its peek.
+    if let Some((source, corner_reach)) = ring {
+      let corner_reach = entry.stretch.is_some().then_some(corner_reach);
+      entry.peek.reserve_ring(source, corner_reach);
+    }
     let place_scope = perf::scope(Stage::PeekPlace);
+
     entry.draw(from, now, batch);
     drop(place_scope);
     // A landing one it replaces, on another surface, draws until this one
@@ -3904,6 +3933,7 @@ pub fn move_on_peek(
     monitor_clips = surface_monitor_clips(state, host, trail_clip);
   }
   let now = state.animation_manager.frame_time();
+  let ring = existing_ring(state, window);
   let mut batch = SurrogateBatch::new();
   let peeks = &mut state.animation_manager.peeks;
   // Taken before `move_tile` drops it: a tile moving back onto the monitor
@@ -3921,6 +3951,7 @@ pub fn move_on_peek(
     easing,
     resizes,
     host,
+    ring,
     &monitor_clips,
     config,
     is_focused,
@@ -4131,6 +4162,7 @@ pub fn fullscreen_on_peek(
       .flatten();
   let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
+  let ring = existing_ring(state, window);
   let mut batch = SurrogateBatch::new();
   let moved = state.animation_manager.peeks.move_tile(
     window,
@@ -4141,6 +4173,7 @@ pub fn fullscreen_on_peek(
     easing,
     Some(resize),
     host,
+    ring,
     &monitor_clips,
     config,
     is_focused,
@@ -4260,6 +4293,7 @@ pub fn hold_on_peek(
       .then_some(Host::Tiles);
   let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
+  let ring = existing_ring(state, window);
   let mut batch = SurrogateBatch::new();
   let peeks = &mut state.animation_manager.peeks;
   let moved = peeks.move_tile(
@@ -4271,6 +4305,7 @@ pub fn hold_on_peek(
     easing,
     Some(PeekResize::Fill),
     host,
+    ring,
     &monitor_clips,
     config,
     is_focused,
