@@ -3253,6 +3253,7 @@ pub(crate) fn border_overlay_params_for(
     ..effect_cfg.border.to_overlay_params(
       target_color,
       corner_radius,
+      config.value.window_effects.border_inset(),
       &config.value.gaps,
     )
   })

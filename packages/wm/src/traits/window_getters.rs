@@ -64,28 +64,42 @@ pub trait WindowGetters: CommonGetters {
 
   fn set_border_delta(&self, border_delta: RectDelta);
 
+  /// Delta from the window's layout rect to its frame: the configured
+  /// border delta, its shadow borders, and, while tiling, the inset that
+  /// makes room for its border ring (see `Workspace::border_inset`).
   fn total_border_delta(&self) -> anyhow::Result<RectDelta> {
     let border_delta = self.border_delta();
 
     let shadow_border_delta = self.native_properties().shadow_borders;
 
+    let ring_inset = match self.state() {
+      WindowState::Tiling => self
+        .workspace()
+        .map_or(0, |workspace| workspace.border_inset()),
+      _ => 0,
+    };
+
     // TODO: Allow percentage length values.
     Ok(RectDelta {
       left: LengthValue::from_px(
         border_delta.left.to_px(0, None)
-          + shadow_border_delta.left.to_px(0, None),
+          + shadow_border_delta.left.to_px(0, None)
+          - ring_inset,
       ),
       right: LengthValue::from_px(
         border_delta.right.to_px(0, None)
-          + shadow_border_delta.right.to_px(0, None),
+          + shadow_border_delta.right.to_px(0, None)
+          - ring_inset,
       ),
       top: LengthValue::from_px(
         border_delta.top.to_px(0, None)
-          + shadow_border_delta.top.to_px(0, None),
+          + shadow_border_delta.top.to_px(0, None)
+          - ring_inset,
       ),
       bottom: LengthValue::from_px(
         border_delta.bottom.to_px(0, None)
-          + shadow_border_delta.bottom.to_px(0, None),
+          + shadow_border_delta.bottom.to_px(0, None)
+          - ring_inset,
       ),
     })
   }
@@ -338,4 +352,41 @@ macro_rules! impl_window_getters {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_platform::RectDelta;
+
+  use super::WindowGetters;
+  use crate::models::{NonTilingWindow, TilingWindow, Workspace};
+
+  fn sides(delta: &RectDelta) -> [i32; 4] {
+    [&delta.left, &delta.top, &delta.right, &delta.bottom]
+      .map(|side| side.to_px(0, None))
+  }
+
+  #[test]
+  fn tiling_windows_are_inset_by_the_border_space() {
+    let tiling = TilingWindow::mock().call();
+    let floating = NonTilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![tiling.clone().into()])
+      .non_tiling_windows(vec![floating.clone()])
+      .call();
+
+    let tiling_base = sides(&tiling.total_border_delta().unwrap());
+    let floating_base = sides(&floating.total_border_delta().unwrap());
+
+    workspace.set_border_inset(2);
+
+    assert_eq!(
+      sides(&tiling.total_border_delta().unwrap()),
+      tiling_base.map(|side| side - 2)
+    );
+    assert_eq!(
+      sides(&floating.total_border_delta().unwrap()),
+      floating_base
+    );
+  }
 }
