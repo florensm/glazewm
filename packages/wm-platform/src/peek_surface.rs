@@ -53,12 +53,6 @@ impl PeekSurface {
     self.window.hwnd()
   }
 
-  /// Whether any tenant draws on it, which shows it.
-  #[must_use]
-  pub fn is_shown(&self) -> bool {
-    self.window.drawing.get() > 0
-  }
-
   /// Whether no peek is hosted on it, ready ones aside.
   #[must_use]
   pub fn is_empty(&self) -> bool {
@@ -92,13 +86,6 @@ impl PeekSurface {
   #[must_use]
   pub fn is_below(&self, window: HWND) -> bool {
     companion::is_above(window, self.hwnd())
-  }
-
-  /// Puts it at the top of the non-topmost windows.
-  pub fn raise_to_top(&self) {
-    if let Err(err) = self.window.raise_to_top() {
-      tracing::warn!("Failed to raise a peek surface to the top: {err}");
-    }
   }
 
   /// Opens or closes a pass of raises, within which a raise of the

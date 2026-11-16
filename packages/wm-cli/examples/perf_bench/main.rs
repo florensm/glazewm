@@ -109,21 +109,13 @@ const METRICS: &[(&str, &str)] = &[
   ("cross:pd_fill:worst", "pd_fill ms (worst frame)"),
   ("cross:fill_source:worst", "fill_source ms (worst frame)"),
   ("cross:ring_raise:worst", "ring_raise ms (worst frame)"),
-  // `onesurface`'s tiles registered anew over ones they cross.
+  // Tiles on a surface registered anew over ones they cross.
   ("cross:restack:worst", "restack ms (worst frame)"),
-  (
-    "tree:session_overlays:per_frame",
-    "session_overlays ms/frame",
-  ),
   ("cross:batch_commit:per_frame", "batch_commit ms/frame"),
   ("cross:ovl_region:per_frame", "ovl_region ms/frame"),
   ("cross:dwm_flush:calls", "dwm_flush calls (in frames)"),
   ("outside:dwm_flush:total", "dwm_flush ms (outside frames)"),
   ("outside:cloak:total", "cloak ms (outside frames)"),
-  (
-    "outside:session_begin:total",
-    "session_begin ms (outside frames)",
-  ),
   // What the command that starts the animation waits for.
   ("outside:command:total", "command ms (WM side)"),
   ("outside:peek_new:total", "peek_new ms (outside frames)"),
@@ -140,13 +132,9 @@ const METRICS: &[(&str, &str)] = &[
     "peek_handover ms (outside frames)",
   ),
   ("outside:peek_raise:total", "peek_raise ms (outside frames)"),
-  // `onesurface`'s surface windows: made, shown, hidden and raised.
+  // Peek surfaces' windows: made, shown, hidden and raised.
   ("outside:surface:total", "surface ms (outside frames)"),
   ("outside:restack:total", "restack ms (outside frames)"),
-  (
-    "outside:session_overlays:total",
-    "session_overlays ms (outside frames)",
-  ),
   // The workspace switch's pre-pass, under `redraw_prep`.
   (
     "outside:ws_surrogates:total",
