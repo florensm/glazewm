@@ -1,30 +1,41 @@
 <#
 .SYNOPSIS
-Compares this checkout's WM with another branch's (`-Against`, default
-`origin/main`) on this PC, with nothing to set up.
+Compares this checkout's WM with other branches' builds, each in one or
+more `GLAZEWM_ISOLATE` modes (`-Against`), on this PC, with nothing to set
+up.
 
 .DESCRIPTION
-Builds the WM and `perf_bench` here, and the WM of `-Against` from a
-`git worktree` of its own with its own target directory, both under
-`target\compare\`. The worktree is removed once built; its target
+Builds the WM and `perf_bench` here, and the WM of each `-Against` ref
+from a `git worktree` with a target directory of its own, both under
+`target\compare\` (`target\compare\<ref>`). Each ref is built once,
+whatever its modes. The worktree is removed once built; the target
 directory is kept, so the next run only rebuilds what changed.
 
 Then it starts the `-Launch` programs and, for each CPU load, round and
-borders/backdrops setting, runs the two builds back to back, which one
-goes first alternating: each restarts GlazeWM with the frame profiler on
-(`GLAZEWM_PERF=1`) and a copy of your config that draws borders and
-backdrops as asked (and animates minimize), puts every window back on its
-workspace, optionally puts the focused workspace's tiles in a fixed order,
-and runs the same `perf_bench` scenarios on it. This build's `perf_bench`
-drives both: it reads IPC answers without this branch's types.
+borders/backdrops setting, runs every build and mode back to back, which
+goes first rotating: each restarts GlazeWM with the frame profiler on
+(`GLAZEWM_PERF=1`), `GLAZEWM_ISOLATE` set to its mode for that start only
+(unset for this checkout and for `default`), and a copy of your config
+that draws borders and backdrops as asked (and animates minimize), puts
+every window back on its workspace, optionally puts the focused
+workspace's tiles in a fixed order, and runs the same `perf_bench`
+scenarios on it. This build's `perf_bench` drives all of them: it reads
+IPC answers without this branch's types.
+
+Every build gets the same config copy, one file with your `include`d
+files merged in (`origin/main` can't read `include`). Keys a build doesn't
+know are ignored by every build compared so far (none of their config
+types denies unknown fields), but a value it can't parse, e.g. a style
+added since, stops it from starting: the run then stops at that build
+("did not start answering").
 
 An error stops the run. Whether it ends or stops, it then stops the CPU
 load, restarts GlazeWM the way it was running, restores the layout, closes
 the windows it started and deletes the config copies.
 
 Results go to `-ResultsFile`: each run's output, then per scenario a table
-of both builds side by side (`this / against`, medians over rounds, an em
-dash where a build has no such stage), then every column per setting. The raw
+of every build and mode side by side, one column each (medians over
+rounds, an em dash where a build has no such stage), then every column per setting. The raw
 summary rows are kept next to it, in `<name>-rows.md`. Lower is better in
 every column except `frames`; `interval p50 ms` should match the refresh
 period, and the gap to `interval p90 ms` shows how evenly frames land.
@@ -37,8 +48,16 @@ Process name of the tiled window to animate, e.g. `chrome` or `notepad`.
 It needs a tiled neighbour on its workspace for `move` and `resize`.
 
 .PARAMETER Against
-Git ref of the build compared with this checkout. Not fetched: run
-`git fetch` first for an up-to-date `origin/main`.
+Builds compared with this checkout, separated by `;`: each a git ref,
+optionally followed by `:` and its `GLAZEWM_ISOLATE` modes, separated by
+`,`. A mode is `default` (the variable unset) or the variable's words,
+joined by `+` to set several at once (`morepeeks+peeksfirst`); each word
+must appear in the ref's `packages\wm-platform\src\isolation.rs`. Quote
+the value: `;` ends a PowerShell statement. Each build's column is
+labelled with the ref's last path segment, then `:<mode>` unless
+`default`: the default value gives `stand-ins:nopeeks`, `stand-ins`,
+`stand-ins:morepeeks` and `main`. Refs are not fetched: run
+`git fetch origin tryout/stand-ins main` first.
 
 .PARAMETER Scenarios
 `perf_bench` scenarios to run. `minimize` stands in for opening and
@@ -108,11 +127,11 @@ powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\com
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -Scenarios move,resize -Dwm
 
 .EXAMPLE
-powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target notepad -Against tryout/one-surface -Launch notepad,explorer,chrome -TileOrder chrome,notepad,explorer
+powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target notepad -Against "origin/tryout/stand-ins:default,morepeeks+peeksfirst;origin/main" -Launch notepad,explorer,chrome -TileOrder chrome,notepad,explorer
 #>
 param(
   [Parameter(Mandatory)] [string] $Target,
-  [string] $Against = 'origin/main',
+  [string[]] $Against = @('origin/tryout/stand-ins:nopeeks,default,morepeeks;origin/main'),
   [string[]] $Scenarios = @('move', 'resize', 'switch', 'minimize'),
   [int] $Rounds = 3,
   [int] $Bursts = 10,
@@ -183,7 +202,7 @@ function Get-WmProcesses {
 }
 
 # Waits until a WM answers queries.
-function Wait-WmReady([string] $Cli) {
+function Wait-WmReady([string] $Cli, [string] $Name = 'GlazeWM') {
   # Windows PowerShell turns a native command's redirected stderr into a
   # terminating error under 'Stop'.
   $ErrorActionPreference = 'Continue'
@@ -194,7 +213,8 @@ function Wait-WmReady([string] $Cli) {
     if ($LASTEXITCODE -eq 0) { return }
     Start-Sleep -Milliseconds 500
   }
-  throw 'GlazeWM did not start answering within 30 seconds.'
+  throw ("$Name did not start answering within 30 seconds. If it exited, " +
+    'its log may name a config value that build cannot read.')
 }
 
 # Asks every running WM to exit, each through its own executable, and
@@ -212,14 +232,17 @@ function Stop-AllWm([string] $FallbackCli) {
   }
 }
 
-# Starts `$Exe` with `$Arguments`, the profiler on if `$Perf`. The variable
-# is only set for the started process.
-function Start-Wm([string] $Exe, [string] $Arguments, [bool] $Perf) {
+# Starts `$Exe` with `$Arguments`, the profiler on if `$Perf` and
+# `GLAZEWM_ISOLATE` set to `$Isolate` unless empty. The variables are only
+# set for the started process.
+function Start-Wm([string] $Exe, [string] $Arguments, [bool] $Perf, [string] $Isolate = '') {
   $env:GLAZEWM_PERF = $(if ($Perf) { '1' } else { $null })
+  $env:GLAZEWM_ISOLATE = $(if ($Isolate) { $Isolate } else { $null })
   try {
     Start-Process -FilePath $Exe -ArgumentList $Arguments
   } finally {
     Remove-Item Env:GLAZEWM_PERF -ErrorAction SilentlyContinue
+    Remove-Item Env:GLAZEWM_ISOLATE -ErrorAction SilentlyContinue
   }
 }
 
@@ -412,7 +435,7 @@ function Reset-Layout([string] $Bench, [string] $LayoutFile, [string[]] $Order) 
   Start-Sleep -Seconds 2
 }
 
-# Removes the other build's worktree, also one left by an interrupted run.
+# Removes an other build's worktree, also one left by an interrupted run.
 function Remove-AgainstWorktree([string] $Path) {
   $ErrorActionPreference = 'Continue'
   if (Test-Path $Path) {
@@ -431,11 +454,28 @@ function Build-Against([string] $Commit, [string] $Source, [string] $TargetDir) 
   $env:CARGO_TARGET_DIR = $TargetDir
   Push-Location $Source
   try {
-    Invoke-Checked 'Building the other WM' { cargo build --release -p wm -p wm-watcher }
+    Invoke-Checked "Building the WM at $Commit" { cargo build --release -p wm -p wm-watcher }
   } finally {
     Pop-Location
     $env:CARGO_TARGET_DIR = $savedTarget
     Remove-AgainstWorktree $Source
+  }
+}
+
+# Throws unless every word of `$Isolate` (comma-separated) is one
+# `$Commit`'s `GLAZEWM_ISOLATE` reads: a build ignores, with a warning in
+# its log, words it doesn't know, which would bench its default unnoticed.
+function Assert-IsolateWords([string] $Ref, [string] $Commit, [string] $Isolate) {
+  $file = 'packages/wm-platform/src/isolation.rs'
+  $ErrorActionPreference = 'Continue'
+  $source = git show "${Commit}:$file" 2>$null | Out-String
+  if ($LASTEXITCODE) {
+    throw "'$Ref' has no $file, so no GLAZEWM_ISOLATE modes."
+  }
+  foreach ($word in ($Isolate -split ',')) {
+    if ($source -notmatch ('"' + [regex]::Escape($word) + '"')) {
+      throw "'$Ref' has no GLAZEWM_ISOLATE word '$word' (see its $file)."
+    }
   }
 }
 
@@ -469,7 +509,6 @@ if ($userArgs -match '(?:-c|--config)[\s=]+(?:"([^"]+)"|(\S+))') {
 
 $thisCommit = Invoke-Checked 'Reading HEAD' { git rev-parse --short HEAD }
 $thisDirty = [bool] (Invoke-Checked 'Reading the status' { git status --porcelain --untracked-files=no })
-$againstCommit = Invoke-Checked "Resolving '$Against'" { git rev-parse --verify --quiet "$Against^{commit}" }
 
 $targetDir = $(if ($env:CARGO_TARGET_DIR) {
   $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:CARGO_TARGET_DIR)
@@ -477,20 +516,47 @@ $targetDir = $(if ($env:CARGO_TARGET_DIR) {
   Join-Path $repo 'target'
 })
 $againstSource = Join-Path $targetDir 'compare\src'
-$againstTarget = Join-Path $targetDir 'compare\target'
 
 Write-Host "Building this checkout ($thisCommit$(if ($thisDirty) { ', modified' }))..."
 Invoke-Checked 'Building the WM' { cargo build --release -p wm -p wm-watcher }
 Invoke-Checked 'Building perf_bench' { cargo build --release -p wm-cli --example perf_bench }
-Write-Host "Building '$Against' ($($againstCommit.Substring(0, 7)))..."
-Build-Against $againstCommit $againstSource $againstTarget
 
 $wm = Join-Path $targetDir 'release\glazewm.exe'
 $bench = Join-Path $targetDir 'release\examples\perf_bench.exe'
-$builds = @(
-  [pscustomobject]@{ Name = 'this'; Exe = $wm },
-  [pscustomobject]@{ Name = 'against'; Exe = (Join-Path $againstTarget 'release\glazewm.exe') }
-)
+
+# `perf_bench builds` checks `-Against` and labels its builds; each line
+# is `<label>\t<ref>\t<GLAZEWM_ISOLATE value>`.
+$specs = @(Invoke-Checked 'Reading -Against' { & $bench builds @Against })
+$refs = [ordered]@{}
+$builds = @([pscustomobject]@{ Name = 'this'; Ref = $null; Isolate = ''; Exe = $wm })
+foreach ($line in $specs) {
+  $label, $ref, $isolate = $line -split "`t"
+  if (-not $refs.Contains($ref)) {
+    $commit = Invoke-Checked "Resolving '$ref'" { git rev-parse --verify --quiet "$ref^{commit}" }
+    $key = $ref -replace '[^A-Za-z0-9._-]', '-'
+    foreach ($other in $refs.Values) {
+      if ($other.Key -eq $key) { throw "'$ref' and '$($other.Ref)' would share target\compare\$key." }
+    }
+    $refs[$ref] = [pscustomobject]@{
+      Ref = $ref
+      Commit = $commit
+      Key = $key
+      Target = (Join-Path $targetDir "compare\$key")
+    }
+  }
+  if ($isolate) { Assert-IsolateWords $ref $refs[$ref].Commit $isolate }
+  $builds += [pscustomobject]@{
+    Name = $label
+    Ref = $ref
+    Isolate = [string] $isolate
+    Exe = (Join-Path $refs[$ref].Target 'release\glazewm.exe')
+  }
+}
+
+foreach ($entry in $refs.Values) {
+  Write-Host "Building '$($entry.Ref)' ($($entry.Commit.Substring(0, 7)))..."
+  Build-Against $entry.Commit $againstSource $entry.Target
+}
 
 $known = @(Invoke-Checked 'Listing the scenarios' { & $bench scenarios })
 foreach ($scenario in $Scenarios) {
@@ -540,10 +606,16 @@ try {
     }
   }
 
+  $refList = @($refs.Values | ForEach-Object {
+    "$($_.Ref) ($($_.Commit.Substring(0, 7)))"
+  }) -join ', '
+  $buildList = @($builds | ForEach-Object {
+    if ($_.Isolate) { "$($_.Name) (GLAZEWM_ISOLATE=$($_.Isolate))" } else { $_.Name }
+  }) -join ', '
   Set-Content -Path $ResultsFile -Encoding UTF8 -Value (
     "Branch comparison, $(Get-Date -Format s): this = $thisCommit" +
-    "$(if ($thisDirty) { ' (modified)' }), against = $Against " +
-    "($($againstCommit.Substring(0, 7))). Target $Target, $Rounds round(s) " +
+    "$(if ($thisDirty) { ' (modified)' }), against $refList; builds " +
+    "$buildList. Target $Target, $Rounds round(s) " +
     "of $Bursts bursts per scenario, build and setting, IPC load $Load, " +
     "CPU load $($cpuLoads -join ',') thread(s) of " +
     "$([Environment]::ProcessorCount), $(if ($Dwm) { 'with' } else { 'without' }) " +
@@ -555,8 +627,8 @@ try {
   Invoke-Checked 'Writing the summary header' { & $bench summary-header @dwmArgs } |
     Set-Content -Path $rowsFile -Encoding UTF8
 
-  # Which build goes first, alternating so neither always runs on the
-  # fresher system.
+  # Which build goes first, rotating so none always runs on the fresher
+  # system.
   $slot = 0
   foreach ($threads in $cpuLoads) {
     if ($threads -gt 0) {
@@ -566,17 +638,20 @@ try {
 
     for ($round = 1; $round -le $Rounds; $round++) {
       foreach ($set in $effectSets) {
-        $pair = $(if ($slot % 2) { @($builds[1], $builds[0]) } else { $builds })
+        $first = $slot % $builds.Count
+        $order = @(for ($i = 0; $i -lt $builds.Count; $i++) {
+          $builds[($first + $i) % $builds.Count]
+        })
         $slot++
 
-        foreach ($build in $pair) {
+        foreach ($build in $order) {
           $setting = "cpu$threads $($set.Name)"
           $label = "$($build.Name) $setting #$round"
           Write-Host "Round $round/$Rounds, ${setting}: restarting GlazeWM as '$($build.Name)'..."
           $wmRestarted = $true
           Stop-AllWm $wm
-          Start-Wm $build.Exe "start --config `"$($set.Config)`"" $true
-          Wait-WmReady $build.Exe
+          Start-Wm $build.Exe "start --config `"$($set.Config)`"" $true $build.Isolate
+          Wait-WmReady $build.Exe "GlazeWM '$($build.Name)'"
 
           Reset-Layout $bench $layoutFile $TileOrder
           $tileLine = "tiles $label $(Get-TileOrder $build.Exe)"
@@ -643,7 +718,7 @@ try {
 if ($completed) {
   $before = @(Get-Content -Path $ResultsFile -Encoding UTF8).Count
   Invoke-Checked 'Comparing the builds' {
-    & $bench compare $rowsFile $ResultsFile 'this' 'against'
+    & $bench compare $rowsFile $ResultsFile @($builds | ForEach-Object { $_.Name })
   }
   Get-Content -Path $ResultsFile -Encoding UTF8 |
     Select-Object -Skip $before | Write-Host
