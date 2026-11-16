@@ -2879,7 +2879,10 @@ Done: the removal (R0..R6), rounded backdrops (A, always on), the ring
 fixes (glow jump, ring registered with its window, ring under a new
 fill), the scroll focus flicker, step 8 part A (never-called peek and
 surface methods, dead `perf_bench` columns), step 8 part B
-(`compare_branches.ps1`, merged; not seen running). Owner's laptop checks all
+(`compare_branches.ps1`, merged; not seen running), item 3 (parallax
+backdrop copies, live peeks deleted; `os/18-parallax`, not seen running:
+see "Item 3: as built" for what to check), borders inside the tiling
+layout (`774413e`). Owner's laptop checks all
 fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
 
 1. **Smoke run of `compare_branches.ps1`** on the desktop (never
@@ -2891,22 +2894,14 @@ fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
    p90/p99, `peek_new`, `restack`, dwm gpu busy p90. Owner's feel so
    far: overview much smoother, workspace switching fine, borders
    lagged before `os/15-ring-fixes` (re-check).
-3. **Item 3: parallax backdrops on the surface, then no live peeks**
-   (owner, 2026-11-15). A pinned backdrop copy is cut from one blurred
-   image of the whole monitor; parallax only changes where it is cut
-   (window offset within the monitor times `parallax`), so shift the
-   copy's `rcSource` by that, clamped at the monitor's edges as the real
-   overlay is (check its code for what it does there). Read the overlay
-   first and stop if it can't match. If it holds, every backdrop is
-   copyable: delete live peeks (`Live` modes of `WindowPeek` and
-   `WorkspaceSurrogate`, `is_live`, the live arms of the admission rules,
-   `restack_live_overlays`, R2's live arms in `track_overlays` /
-   `overlay_anchor` / `place_scaled`) and `has_own_peek_neighbour`,
-   `beside_own_peek`. Own windows stay for the other fallbacks
-   (unfocused floating not on top, floating closes, switch floating,
-   fullscreen and topmost, a topped surface, surface failure). The owner
-   uses `parallax: 1.0`, so this is a simplification, not a visible
-   change for them.
+3. **Border shift on workspace switches** (owner, laptop, 2026-11-16,
+   `774413e` cherry-picked): during a switch the layout shifts, as if
+   the border sits outside the window again. Likely cause (item 3's
+   agent): `platform_sync.rs`'s switch block passes `window.to_rect()`
+   (the tile rect) as the surrogate's frame, so with `border_inset` the
+   window sample, ring copy and backdrop copy are each `border_inset` too
+   large per side. Peeks take the frame from the window's own rect and
+   are unaffected. Next to fix (one agent, own branch).
 4. **The backdrop flicker on workspace switches** (seen 2026-11-15, before
    the integration pass; not seen since by the owner). Check whether it
    still shows; the scroll focus flicker was a different cause, fixed.
@@ -2948,7 +2943,7 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`, `os/r6-docs`, `os/12-rounded`, `os/fix-rounded-1`, `os/13-rounded-a`, `os/14-ring`, `os/15-ring-fixes`, `os/16-scroll-flicker`, `os/17-step8`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`, `os/r6-docs`, `os/12-rounded`, `os/fix-rounded-1`, `os/13-rounded-a`, `os/14-ring`, `os/15-ring-fixes`, `os/16-scroll-flicker`, `os/17-step8`, `claude/sharp-davinci-n25tw0`, `os/18-parallax`.
 
 Laptop test build: `test/one-surface`, re-cut 2026-11-15 from `0c841473`
 (R0..R3 merged: nothing starts the engine; R4's deletion of the then
