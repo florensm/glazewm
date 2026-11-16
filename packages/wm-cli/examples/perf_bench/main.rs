@@ -26,10 +26,15 @@
 //!
 //! `--load <n>` queues `n` IPC queries as each animation starts, so the
 //! main loop has a backlog to catch up on between frames, as it would
-//! with busy apps. It is what `GLAZEWM_ISOLATE=peeksfirst` is for.
+//! with busy apps.
+//!
+//! IPC answers are read as JSON (see `ipc.rs`), so one `perf_bench` drives
+//! builds of other branches too, as `compare_branches.ps1` does.
 
 mod bench_config;
+mod compare;
 mod dwm;
+mod ipc;
 mod layout;
 
 use std::{
@@ -40,7 +45,6 @@ use std::{
 
 use anyhow::{bail, Context};
 use uuid::Uuid;
-use wm_common::{ClientResponseData, ContainerDto, WindowState};
 use wm_ipc_client::IpcClient;
 
 /// Reversible scenarios, each a pair of steps applied alternately.
@@ -116,6 +120,20 @@ const METRICS: &[(&str, &str)] = &[
   ("cross:dwm_flush:calls", "dwm_flush calls (in frames)"),
   ("outside:dwm_flush:total", "dwm_flush ms (outside frames)"),
   ("outside:cloak:total", "cloak ms (outside frames)"),
+  // The old engine (`ResizeSession`), which only builds without peek
+  // surfaces have, e.g. `origin/main`: its counterpart of `peek_new`.
+  (
+    "outside:session_begin:total",
+    "session_begin ms (outside frames)",
+  ),
+  (
+    "outside:session_overlays:total",
+    "session_overlays ms (outside frames)",
+  ),
+  (
+    "tree:session_overlays:per_frame",
+    "session_overlays ms/frame",
+  ),
   // What the command that starts the animation waits for.
   ("outside:command:total", "command ms (WM side)"),
   ("outside:peek_new:total", "peek_new ms (outside frames)"),
@@ -167,6 +185,13 @@ const LOAD_QUERY: &str = "query workspaces";
 
 /// Per-burst DWM summaries, as `(label, values)` for the summary table.
 type DwmColumns = Vec<(&'static str, Vec<f64>)>;
+
+/// Labels of `--dwm`'s columns, in the order the summary table has them.
+const DWM_COLUMNS: [&str; 3] = [
+  "dwm missed vblanks/burst",
+  "dwm display interval p90 ms",
+  "dwm gpu busy p90 ms",
+];
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -303,19 +328,11 @@ fn dwm_columns(
     .filter_map(|span| capture.burst_stats(span[0], span[1], period_ms))
     .collect();
 
+  let [missed, interval, gpu_busy] = DWM_COLUMNS;
   vec![
-    (
-      "dwm missed vblanks/burst",
-      stats.iter().map(|s| s.missed_vblanks).collect(),
-    ),
-    (
-      "dwm display interval p90 ms",
-      stats.iter().map(|s| s.interval_p90_ms).collect(),
-    ),
-    (
-      "dwm gpu busy p90 ms",
-      stats.iter().map(|s| s.gpu_busy_p90_ms).collect(),
-    ),
+    (missed, stats.iter().map(|s| s.missed_vblanks).collect()),
+    (interval, stats.iter().map(|s| s.interval_p90_ms).collect()),
+    (gpu_busy, stats.iter().map(|s| s.gpu_busy_p90_ms).collect()),
   ]
 }
 
@@ -377,29 +394,14 @@ async fn find_tiled_window(
   client: &mut IpcClient,
   process: &str,
 ) -> anyhow::Result<Uuid> {
-  let message = "query windows";
-  client.send(message).await?;
-  let response = client
-    .client_response(message)
-    .await
-    .context("No response to window query.")?;
-
-  let Some(ClientResponseData::Windows(data)) = response.data else {
-    bail!("Unexpected response to window query.");
-  };
-
-  data
-    .windows
+  ipc::query_windows(client)
+    .await?
     .iter()
-    .find_map(|container| match container {
-      ContainerDto::Window(window)
-        if window.state == WindowState::Tiling
-          && window.process_name.eq_ignore_ascii_case(process) =>
-      {
-        Some(window.id)
-      }
-      _ => None,
+    .find(|window| {
+      window.is_tiling()
+        && window.process_name.eq_ignore_ascii_case(process)
     })
+    .map(|window| window.id)
     .with_context(|| format!("No tiled window of process '{process}'."))
 }
 
@@ -408,11 +410,11 @@ async fn find_workspace_of(
   client: &mut IpcClient,
   window: Uuid,
 ) -> anyhow::Result<Uuid> {
-  layout::query_workspaces(client)
+  ipc::query_workspaces(client)
     .await?
     .iter()
     .find(|workspace| {
-      layout::windows_in(&workspace.children)
+      ipc::windows_in(&workspace.children)
         .iter()
         .any(|dto| dto.id == window)
     })
@@ -430,7 +432,7 @@ async fn switch_workspaces(
   client: &mut IpcClient,
   other: Option<&str>,
 ) -> anyhow::Result<(String, String)> {
-  let workspaces = layout::query_workspaces(client).await?;
+  let workspaces = ipc::query_workspaces(client).await?;
   let home = workspaces
     .iter()
     .find(|workspace| workspace.has_focus)
@@ -446,12 +448,12 @@ async fn switch_workspaces(
   if let Some(other) = workspaces.iter().find(|workspace| {
     workspace.parent_id == home.parent_id
       && !workspace.is_displayed
-      && !layout::windows_in(&workspace.children).is_empty()
+      && !ipc::windows_in(&workspace.children).is_empty()
   }) {
     return Ok((home.name.clone(), other.name.clone()));
   }
 
-  let moved: Vec<Uuid> = layout::tiled_windows(home)
+  let moved: Vec<Uuid> = ipc::tiled_windows(home)
     .iter()
     .skip(1)
     .step_by(2)
@@ -466,14 +468,14 @@ async fn switch_workspaces(
 
   for id in &moved {
     let message = format!("command --id {id} move --next-workspace");
-    layout::send_command(client, &message).await?;
+    ipc::send_command(client, &message).await?;
   }
 
-  let other = layout::query_workspaces(client)
+  let other = ipc::query_workspaces(client)
     .await?
     .into_iter()
     .find(|workspace| {
-      layout::windows_in(&workspace.children)
+      ipc::windows_in(&workspace.children)
         .iter()
         .any(|window| window.id == first_moved)
     })
@@ -487,25 +489,40 @@ async fn switch_workspaces(
   Ok((home.name.clone(), other.name))
 }
 
-/// Runs a helper the `*_modes.ps1` scripts call around the benchmark, if
-/// the arguments name one, returning whether one ran:
+/// Runs a helper the bench scripts call around the benchmark, if the
+/// arguments name one, returning whether one ran:
 ///
+/// - `scenarios`: prints the scenario names, one per line.
 /// - `save-layout <file>` / `restore-layout <file>`: see [`layout`].
 /// - `write-switch-config <style> [config]`: prints the main file of a
 ///   copy of the config that switches workspaces in `style`.
-/// - `clean-switch-config [config]`: removes those copies.
-/// - `summary-header`: prints the header of the table rows
-///   [`print_summary`] ends with, without `--dwm`'s columns.
+/// - `write-bench-config <tag> <borders> <backdrops> [config]`: prints the
+///   main file of a copy of the config, its files named after `tag`, that
+///   draws borders and backdrops as `config`, `on` or `off` say, with
+///   minimize animated.
+/// - `clean-switch-config [config]`, `clean-bench-config [config]`: remove
+///   either kind of copy.
+/// - `summary-header [--dwm]`: prints the header of the table rows
+///   [`print_summary`] ends with, with `--dwm`'s columns if given.
+/// - `compare <rows> <out> <this> <other>`: appends to `out` the rows
+///   file's runs of build `this` beside those of `other` (see
+///   [`compare`]).
 async fn run_helper() -> anyhow::Result<bool> {
   let args = std::env::args().skip(1).collect::<Vec<_>>();
+  let helper = args.first().map_or("", String::as_str);
   let arg = |index: usize| {
     args
       .get(index)
       .map(String::as_str)
-      .with_context(|| format!("'{}' is missing an argument.", args[0]))
+      .with_context(|| format!("'{helper}' is missing an argument."))
   };
 
   match args.first().map(String::as_str) {
+    Some("scenarios") => {
+      for (name, ..) in SCENARIOS {
+        println!("{name}");
+      }
+    }
     Some("save-layout") => {
       let mut client = IpcClient::connect().await?;
       layout::save(&mut client, std::path::Path::new(arg(1)?)).await?;
@@ -517,15 +534,36 @@ async fn run_helper() -> anyhow::Result<bool> {
     Some("write-switch-config") => {
       let user_main =
         bench_config::user_main_config(args.get(2).map(String::as_str))?;
-      let path = bench_config::write(&user_main, arg(1)?)?;
+      let overrides = bench_config::switch_overrides(arg(1)?)?;
+      let path = bench_config::write(&user_main, "switch", &overrides)?;
       println!("{}", path.display());
     }
-    Some("clean-switch-config") => {
+    Some("write-bench-config") => {
+      let user_main =
+        bench_config::user_main_config(args.get(4).map(String::as_str))?;
+      let overrides = bench_config::effect_overrides(
+        &user_main,
+        bench_config::Effect::parse(arg(2)?)?,
+        bench_config::Effect::parse(arg(3)?)?,
+      )?;
+      let path = bench_config::write(&user_main, arg(1)?, &overrides)?;
+      println!("{}", path.display());
+    }
+    Some("clean-switch-config" | "clean-bench-config") => {
       let user_main =
         bench_config::user_main_config(args.get(1).map(String::as_str))?;
       bench_config::clean(&user_main)?;
     }
-    Some("summary-header") => print_summary_header(),
+    Some("summary-header") => {
+      print_summary_header(args.get(1).is_some_and(|arg| arg == "--dwm"));
+    }
+    Some("compare") => {
+      let rows_path = arg(1)?;
+      let rows = std::fs::read_to_string(rows_path)
+        .with_context(|| format!("Failed to read {rows_path}."))?;
+      let text = compare::tables(&rows, arg(3)?, arg(4)?)?;
+      compare::append(std::path::Path::new(arg(2)?), &text)?;
+    }
     _ => return Ok(false),
   }
 
@@ -546,7 +584,7 @@ async fn send_step(
       }
       _ => format!("command {command}"),
     };
-    layout::send_command(client, &message).await?;
+    ipc::send_command(client, &message).await?;
   }
 
   Ok(())
@@ -565,10 +603,7 @@ async fn send_load(
   }
 
   for _ in 0..count {
-    client
-      .client_response(LOAD_QUERY)
-      .await
-      .context("No response to load query.")?;
+    ipc::response(client, LOAD_QUERY).await?;
   }
 
   Ok(())
@@ -712,11 +747,12 @@ fn percentile(mut values: Vec<f64>, q: f64) -> Option<f64> {
 }
 
 /// Column names of the row [`print_summary`] ends with, as a Markdown
-/// table header.
-fn print_summary_header() {
+/// table header, with `--dwm`'s columns if `dwm`.
+fn print_summary_header(dwm: bool) {
   let mut names =
     vec!["label", "scenario", "command p50 ms", "command p90 ms"];
   names.extend(METRICS.iter().map(|(_, label)| *label));
+  names.extend(DWM_COLUMNS.iter().filter(|_| dwm));
   println!("| {} |", names.join(" | "));
   println!("|{}", " --- |".repeat(names.len()));
 }
@@ -747,31 +783,67 @@ fn print_summary(
     cells.push(format!("{value:.2}"));
   }
 
-  for (key, label) in METRICS {
-    let value = median(
-      reports
-        .iter()
-        .map(|report| report.get(*key).copied().unwrap_or(0.0))
-        .collect(),
+  let dwm_values = DWM_COLUMNS.iter().filter(|_| args.dwm).map(|label| {
+    let values = dwm_columns
+      .iter()
+      .find(|(column, _)| column == label)
+      .map(|(_, values)| values.clone());
+    (*label, values.and_then(median))
+  });
+  let metric_values = METRICS
+    .iter()
+    .map(|(key, label)| (*label, metric_median(reports, key)));
+
+  for (label, value) in metric_values.chain(dwm_values) {
+    let cell = value.map_or_else(
+      || compare::ABSENT_CELL.to_string(),
+      |v| format!("{v:.2}"),
     );
-    let cell =
-      value.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"));
     println!("  {label:<36}{cell:>9}");
     cells.push(cell);
-  }
-
-  for (label, values) in dwm_columns {
-    let value = median(values.clone()).unwrap_or(0.0);
-    println!("  {label:<36}{value:>9.2}");
-    cells.push(format!("{value:.2}"));
   }
 
   println!("| {} |", cells.join(" | "));
 }
 
+/// Median of `key` over `reports`, a report without it counting as 0, or
+/// `None` if none has it: the stage did not run, or the build has no such
+/// stage.
+fn metric_median(
+  reports: &[HashMap<String, f64>],
+  key: &str,
+) -> Option<f64> {
+  if !reports.iter().any(|report| report.contains_key(key)) {
+    return None;
+  }
+
+  median(
+    reports
+      .iter()
+      .map(|report| report.get(key).copied().unwrap_or(0.0))
+      .collect(),
+  )
+}
+
 #[cfg(test)]
 mod tests {
-  use super::parse_reports;
+  use std::collections::HashMap;
+
+  use super::{metric_median, parse_reports};
+
+  /// A stage missing from some reports counts as 0 there; one missing
+  /// from all, e.g. on a build without it, has no value.
+  #[test]
+  fn tells_a_missing_stage_from_an_idle_one() {
+    let reports = [
+      HashMap::from([("tree:restack:worst".to_string(), 3.0)]),
+      HashMap::new(),
+      HashMap::new(),
+    ];
+
+    assert_eq!(metric_median(&reports, "tree:restack:worst"), Some(0.0));
+    assert_eq!(metric_median(&reports, "tree:peek_new:worst"), None);
+  }
 
   #[test]
   fn reads_peek_frames_intervals_and_hitches() {

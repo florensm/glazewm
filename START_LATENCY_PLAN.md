@@ -5,7 +5,8 @@ plan"), `GLAZEWM_ISOLATE` and every word it took (`onesurface`,
 `readypeeks`, `morepeeks`, `nopeeks`, `slidepeeks`, `peeksfirst`, ...)
 and `ResizeSession` (the old engine) are gone: windows animate on peeks
 and peek surfaces only, with no switch. References to them below are
-historical, not rewritten.
+historical, not rewritten. `perf_bench/isolate_modes.ps1` is now
+`compare_branches.ps1` (step 8), which compares two branches, not modes.
 
 Written 2026-11-12 from a reading of `cd04e3c` (`tryout/start-latency`,
 = `tryout/stand-ins` `65a60de` plus the bench results) and

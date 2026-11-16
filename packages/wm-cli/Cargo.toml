@@ -22,6 +22,8 @@ wm-ipc-client = { path = "../wm-ipc-client" }
 
 [dev-dependencies]
 uuid = { workspace = true }
+# `perf_bench`'s IPC answers, read without `wm-common`'s types.
+serde = { workspace = true }
 # `perf_bench`'s config copies for `switch_modes.ps1`.
 serde_yaml = "0.9"
 
