@@ -12,6 +12,11 @@
 //! With `--dwm`, also reports what DWM actually displayed per
 //! burst, through the `PresentMon` service; see `dwm.rs`.
 //!
+//! With `--shots <path prefix>`, first runs one burst outside the
+//! measured ones and takes two screenshots of the target's monitor:
+//! `<prefix>-mid.png`, `--shot-delay-ms` (default 60) after the command
+//! was sent, and `<prefix>-rest.png` once settled; see `shots.rs`.
+//!
 //! # Example usage
 //!
 //! ```text
@@ -32,10 +37,12 @@
 //! builds of other branches too, as `compare_branches.ps1` does.
 
 mod bench_config;
+mod builds;
 mod compare;
 mod dwm;
 mod ipc;
 mod layout;
+mod shots;
 
 use std::{
   collections::HashMap,
@@ -177,6 +184,10 @@ struct Args {
   other_workspace: Option<String>,
   /// IPC queries queued as each animation starts.
   load: usize,
+  /// Path prefix of the two screenshots to take, if any.
+  shots: Option<PathBuf>,
+  /// Time from sending the shot burst's command to the mid shot.
+  shot_delay: Duration,
 }
 
 /// The query `--load` queues. It walks and serializes the whole tree, so
@@ -238,6 +249,11 @@ async fn main() -> anyhow::Result<()> {
       (Some(window), (*forward).to_string(), (*back).to_string())
     }
   };
+
+  if let Some(prefix) = &args.shots {
+    take_shots(&mut client, &args, subject, (&forward, &back), prefix)
+      .await?;
+  }
 
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
   let started = Instant::now();
@@ -346,6 +362,8 @@ fn parse_args() -> anyhow::Result<Args> {
     dwm: false,
     other_workspace: None,
     load: 0,
+    shots: None,
+    shot_delay: Duration::from_millis(60),
   };
 
   let mut iter = std::env::args().skip(1);
@@ -366,6 +384,10 @@ fn parse_args() -> anyhow::Result<Args> {
       "--label" => args.label = value,
       "--other-workspace" => args.other_workspace = Some(value),
       "--load" => args.load = value.parse()?,
+      "--shots" => args.shots = Some(PathBuf::from(value)),
+      "--shot-delay-ms" => {
+        args.shot_delay = Duration::from_millis(value.parse()?);
+      }
       _ => bail!("Unknown flag '{flag}'."),
     }
   }
@@ -383,6 +405,82 @@ fn perf_log_path() -> anyhow::Result<PathBuf> {
       .context("Unable to get home directory.")?
       .join(".glzr/glazewm/perf.log"),
   )
+}
+
+/// Runs `forward` then `back` once, before the measured bursts so the
+/// capture costs them nothing, and takes the two shots of the target's
+/// monitor: mid-animation, `args.shot_delay` after sending `forward`, and
+/// at rest once settled.
+///
+/// The WM answers a command once it has run, so if that takes longer than
+/// the delay, the mid shot is taken on the answer; the offset printed
+/// says when it was.
+async fn take_shots(
+  client: &mut IpcClient,
+  args: &Args,
+  subject: Option<Uuid>,
+  (forward, back): (&str, &str),
+  prefix: &std::path::Path,
+) -> anyhow::Result<()> {
+  shots::use_physical_pixels();
+  let area = target_monitor(client, subject).await?;
+
+  let sent = Instant::now();
+  send_step(client, subject, forward).await?;
+  tokio::time::sleep(args.shot_delay.saturating_sub(sent.elapsed())).await;
+  let mid_offset = sent.elapsed();
+  let mid = shots::capture(area)?;
+  tokio::time::sleep(args.settle.saturating_sub(sent.elapsed())).await;
+  let rest = shots::capture(area)?;
+
+  send_step(client, subject, back).await?;
+  let returned = Instant::now();
+
+  let path = |kind: &str| {
+    let mut name = prefix.as_os_str().to_owned();
+    name.push(format!("-{kind}.png"));
+    PathBuf::from(name)
+  };
+  shots::save(&mid, &path("mid"))?;
+  shots::save(&rest, &path("rest"))?;
+  println!(
+    "shots {} (mid at {:.0} ms), {}",
+    path("mid").display(),
+    mid_offset.as_secs_f64() * 1000.0,
+    path("rest").display()
+  );
+
+  tokio::time::sleep(args.settle.saturating_sub(returned.elapsed())).await;
+  Ok(())
+}
+
+/// Rect of the monitor showing `subject` (a window or workspace), or the
+/// focused workspace's if `None`.
+async fn target_monitor(
+  client: &mut IpcClient,
+  subject: Option<Uuid>,
+) -> anyhow::Result<shots::Area> {
+  ipc::query_monitors(client)
+    .await?
+    .iter()
+    .find(|monitor| {
+      monitor.workspaces().any(|workspace| match subject {
+        Some(id) => {
+          workspace.id == id
+            || ipc::windows_in(&workspace.children)
+              .iter()
+              .any(|window| window.id == id)
+        }
+        None => workspace.has_focus,
+      })
+    })
+    .map(|monitor| shots::Area {
+      x: monitor.x,
+      y: monitor.y,
+      width: monitor.width,
+      height: monitor.height,
+    })
+    .context("No monitor shows the target.")
 }
 
 /// Returns the ID of a tiled window owned by `process`.
@@ -494,19 +592,21 @@ async fn switch_workspaces(
 ///
 /// - `scenarios`: prints the scenario names, one per line.
 /// - `save-layout <file>` / `restore-layout <file>`: see [`layout`].
-/// - `write-switch-config <style> [config]`: prints the main file of a
+/// - `write-switch-config <style> [config]`: prints the path of a one-file
 ///   copy of the config that switches workspaces in `style`.
 /// - `write-bench-config <tag> <borders> <backdrops> [config]`: prints the
-///   main file of a copy of the config, its files named after `tag`, that
-///   draws borders and backdrops as `config`, `on` or `off` say, with
-///   minimize animated.
+///   path of a one-file copy of the config, named after `tag`, that draws
+///   borders and backdrops as `config`, `on` or `off` say, with minimize
+///   animated.
 /// - `clean-switch-config [config]`, `clean-bench-config [config]`: remove
 ///   either kind of copy.
 /// - `summary-header [--dwm]`: prints the header of the table rows
 ///   [`print_summary`] ends with, with `--dwm`'s columns if given.
-/// - `compare <rows> <out> <this> <other>`: appends to `out` the rows
-///   file's runs of build `this` beside those of `other` (see
-///   [`compare`]).
+/// - `builds <against>...`: prints the builds of `compare_branches.ps1`'s
+///   `-Against` (see [`builds`]), one per line as `<label>\t<git
+///   ref>\t<GLAZEWM_ISOLATE value>`, the value empty to leave it unset.
+/// - `compare <rows> <out> <build>...`: appends to `out` the rows file's
+///   runs, one column per build, in the order given (see [`compare`]).
 async fn run_helper() -> anyhow::Result<bool> {
   let args = std::env::args().skip(1).collect::<Vec<_>>();
   let helper = args.first().map_or("", String::as_str);
@@ -557,11 +657,19 @@ async fn run_helper() -> anyhow::Result<bool> {
     Some("summary-header") => {
       print_summary_header(args.get(1).is_some_and(|arg| arg == "--dwm"));
     }
+    Some("builds") => {
+      let specs = args.iter().skip(1).map(String::as_str);
+      for build in builds::parse(&specs.collect::<Vec<_>>())? {
+        let isolate = build.isolate.unwrap_or_default();
+        println!("{}\t{}\t{isolate}", build.label, build.git_ref);
+      }
+    }
     Some("compare") => {
       let rows_path = arg(1)?;
       let rows = std::fs::read_to_string(rows_path)
         .with_context(|| format!("Failed to read {rows_path}."))?;
-      let text = compare::tables(&rows, arg(3)?, arg(4)?)?;
+      let builds = args.iter().skip(3).map(String::as_str);
+      let text = compare::tables(&rows, &builds.collect::<Vec<_>>())?;
       compare::append(std::path::Path::new(arg(2)?), &text)?;
     }
     _ => return Ok(false),

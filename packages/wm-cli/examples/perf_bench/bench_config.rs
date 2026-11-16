@@ -3,8 +3,8 @@
 //! drawn, for `compare_branches.ps1`.
 //!
 //! Written next to the config's main file, so the relative paths it holds
-//! still resolve, under a prefix only these files use. The original files
-//! are only read.
+//! still resolve, under a prefix only these files use, as one file with
+//! the included ones merged in. The original files are only read.
 
 use std::path::{Path, PathBuf};
 
@@ -156,12 +156,13 @@ pub fn effect_overrides(
   Ok(overrides)
 }
 
-/// Writes a copy of the config at `main` with `overrides` set, its files
-/// named after `tag`, and returns the path of its main file.
+/// Writes a copy of the config at `main` with `overrides` set, named after
+/// `tag`, and returns its path.
 ///
-/// A setting set in two files is an error, so each overridden setting is
-/// removed from every file that sets it, which is then copied, and set in
-/// the main file's copy. A config without `include` is one file.
+/// The copy is one file: the main file merged with every file it
+/// includes, as the WM merges them (a setting set in two files is an
+/// error), so builds that can't read `include` (`origin/main`) get the
+/// whole config too.
 pub fn write(
   main: &Path,
   tag: &str,
@@ -174,36 +175,19 @@ pub fn write(
   let dir = main
     .parent()
     .context("Config path has no parent directory.")?;
-  let mut documents = documents(main)?.into_iter();
-  let (_, mut main_document) =
-    documents.next().context("No main config file.")?;
 
-  let mut includes = Vec::new();
-  for (index, (entry, mut document)) in documents.enumerate() {
-    let mut changed = false;
-    for setting in overrides {
-      changed |= remove(&mut document, &setting.path);
-    }
-
-    if changed {
-      let name = format!("{PREFIX}{tag}-{index}.yaml");
-      write_mapping(&dir.join(&name), &document)?;
-      includes.push(Value::String(name));
-    } else {
-      includes.push(Value::String(entry));
-    }
+  let mut merged = Mapping::new();
+  for (_, mut document) in documents(main)? {
+    document.remove("include");
+    merge_into(&mut merged, document, "")?;
   }
-
   for setting in overrides {
-    set(&mut main_document, &setting.path, setting.value.clone());
-  }
-  if !includes.is_empty() {
-    main_document.insert("include".into(), Value::Sequence(includes));
+    set(&mut merged, &setting.path, setting.value.clone());
   }
 
-  let main_path = dir.join(format!("{PREFIX}{tag}-config.yaml"));
-  write_mapping(&main_path, &main_document)?;
-  Ok(main_path)
+  let path = dir.join(format!("{PREFIX}{tag}-config.yaml"));
+  write_mapping(&path, &merged)?;
+  Ok(path)
 }
 
 /// Removes every file [`write`] wrote next to `main`, whatever its tag.
@@ -256,6 +240,38 @@ fn documents(main: &Path) -> anyhow::Result<Vec<(String, Mapping)>> {
   Ok(documents)
 }
 
+/// Merges `source` into `target` key by key, mappings recursively; a
+/// setting `target` already has is an error.
+fn merge_into(
+  target: &mut Mapping,
+  source: Mapping,
+  prefix: &str,
+) -> anyhow::Result<()> {
+  for (key, value) in source {
+    let path = match &key {
+      Value::String(key) if prefix.is_empty() => key.clone(),
+      Value::String(key) => format!("{prefix}.{key}"),
+      _ => {
+        bail!("The config has a key that isn't a string under `{prefix}`.")
+      }
+    };
+
+    match (target.get_mut(&key), value) {
+      (Some(Value::Mapping(existing)), Value::Mapping(incoming)) => {
+        merge_into(existing, incoming, &path)?;
+      }
+      (Some(_), _) => {
+        bail!("`{path}` is set in more than one config file.")
+      }
+      (None, value) => {
+        target.insert(key, value);
+      }
+    }
+  }
+
+  Ok(())
+}
+
 /// The value at `path` in `document`, if set.
 fn lookup<'a>(document: &'a Mapping, path: &[&str]) -> Option<&'a Value> {
   let (last, parents) = path.split_last()?;
@@ -264,25 +280,6 @@ fn lookup<'a>(document: &'a Mapping, path: &[&str]) -> Option<&'a Value> {
     mapping = mapping.get(*key)?.as_mapping()?;
   }
   mapping.get(*last)
-}
-
-/// Removes the value at `path` from `document`, returning whether it was
-/// set.
-fn remove(document: &mut Mapping, path: &[String]) -> bool {
-  let Some((last, parents)) = path.split_last() else {
-    return false;
-  };
-  let mut mapping = document;
-  for key in parents {
-    let Some(child) = mapping
-      .get_mut(key.as_str())
-      .and_then(Value::as_mapping_mut)
-    else {
-      return false;
-    };
-    mapping = child;
-  }
-  mapping.remove(last.as_str()).is_some()
 }
 
 /// Sets `value` at `path` in `document`, making the mappings on the way.
@@ -330,16 +327,15 @@ mod tests {
     dir
   }
 
-  /// The switch settings move out of the file that set them into the main
-  /// file's copy; the user's files are left as they were.
+  /// The copy is one file: included settings merged in, the switch
+  /// settings replaced wherever they were set; the user's files are left
+  /// as they were.
   #[test]
-  fn replaces_switch_settings_across_files() {
+  fn merges_included_files_into_one() {
     let dir = test_dir("switch");
     let main = dir.join("config.yaml");
-    let user_main =
-      "include: ['animations.yaml']\ngaps:\n  inner_gap: '10px'\n";
-    let user_animations =
-      "animations:\n  workspace_switch:\n    style: 'slide'\n  window_move:\n    enabled: true\n";
+    let user_main = "include: ['animations.yaml']\ngaps:\n  inner_gap: '10px'\nanimations:\n  window_close:\n    enabled: false\n";
+    let user_animations = "animations:\n  workspace_switch:\n    style: 'slide'\n  window_move:\n    enabled: true\n";
     std::fs::write(&main, user_main).unwrap();
     std::fs::write(dir.join("animations.yaml"), user_animations).unwrap();
 
@@ -347,22 +343,41 @@ mod tests {
     let bench_main = write(&main, "switch", &overrides).unwrap();
 
     let bench = read_mapping(&bench_main).unwrap();
-    let includes = bench.get("include").unwrap().as_sequence().unwrap();
-    assert_eq!(includes.len(), 1);
+    assert!(bench.get("include").is_none());
     let style =
       lookup(&bench, &["animations", "workspace_switch", "style"]);
     assert_eq!(style.and_then(Value::as_str), Some("drift"));
-
-    let copied =
-      read_mapping(&dir.join(format!("{PREFIX}switch-0.yaml"))).unwrap();
-    assert!(lookup(&copied, &["animations", "workspace_switch"]).is_none());
-    assert!(lookup(&copied, &["animations", "window_move"]).is_some());
+    let moves = lookup(&bench, &["animations", "window_move", "enabled"]);
+    assert_eq!(moves.and_then(Value::as_bool), Some(true));
+    let closes =
+      lookup(&bench, &["animations", "window_close", "enabled"]);
+    assert_eq!(closes.and_then(Value::as_bool), Some(false));
+    let gap = lookup(&bench, &["gaps", "inner_gap"]);
+    assert_eq!(gap.and_then(Value::as_str), Some("10px"));
 
     assert_eq!(std::fs::read_to_string(&main).unwrap(), user_main);
 
     clean(&main).unwrap();
     let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
     assert_eq!(left.len(), 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+  }
+
+  /// A setting two files set is refused, as the WM refuses it.
+  #[test]
+  fn refuses_a_setting_set_twice() {
+    let dir = test_dir("twice");
+    let main = dir.join("config.yaml");
+    std::fs::write(
+      &main,
+      "include: ['gaps.yaml']\ngaps:\n  inner_gap: '1px'\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("gaps.yaml"), "gaps:\n  inner_gap: '2px'\n")
+      .unwrap();
+
+    assert!(write(&main, "twice", &[]).is_err());
+
     std::fs::remove_dir_all(&dir).unwrap();
   }
 

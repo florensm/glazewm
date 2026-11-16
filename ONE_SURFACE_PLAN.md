@@ -138,21 +138,48 @@ report.
 
 ## To measure (desktop)
 
-`tryout/one-surface` against `origin/main`, with
+`tryout/one-surface` (`this`) against `tryout/stand-ins` in its three
+animation modes of the 2026-11-12 bench (`stand-ins:nopeeks`, the old
+`ResizeSession` engine; `stand-ins`, peeks, its default;
+`stand-ins:morepeeks`) and `origin/main` (`main`), with
 `packages\wm-cli\examples\perf_bench\compare_branches.ps1` (see "Step 8
-part B: as built"; `Get-Help <script> -Full` lists every parameter).
+part B: as built" and "Bench modes: as built"; `Get-Help <script> -Full`
+lists every parameter). That set is the script's default `-Against`.
 Desktop only. From a PowerShell prompt at the repository root, with
 GlazeWM running as usual:
 
 ```
-git fetch origin
+git fetch origin tryout/stand-ins main
 git checkout tryout/one-surface
 git pull --ff-only
 ```
 
-1. Main run: `move`, `resize`, `switch` and `minimize` (open/close),
-   load 0 and CPU 8, backdrops and borders each on and off. 48 WM
-   restarts, about an hour:
+Run time: about 75 s per WM restart (4 scenarios of 10 bursts; the
+2026-11-15 estimate, 48 restarts in about an hour), and restarts =
+`-CpuLoad` values x `-Rounds` x (`-Backdrops` x `-Borders` values) x 5
+builds/modes. The first run also builds `tryout/stand-ins` and
+`origin/main` in release from scratch (their own target dirs under
+`target\compare\`), several minutes each; later runs rebuild only what
+changed.
+
+1. Smoke run, 5 restarts, a few minutes after the builds:
+
+   ```
+   powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -Rounds 1 -Bursts 2 -Scenarios move
+   ```
+
+2. Main run, short: backdrops and borders as configured, CPU 0 and 8,
+   3 rounds. 30 restarts, about 40 minutes:
+
+   ```
+   powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -CpuLoad 0,8 -TileOrder Notepad,WindowsTerminal,WindowsTerminal,chrome,chrome,FPilot
+   ```
+
+   Shorter still: drop `-CpuLoad 0,8` (CPU 0 only), 15 restarts, about
+   20 minutes.
+
+3. Main run, full: also backdrops and borders each on and off. 120
+   restarts, about 2.5 hours:
 
    ```
    powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -CpuLoad 0,8 -Backdrops on,off -Borders on,off -TileOrder Notepad,WindowsTerminal,WindowsTerminal,chrome,chrome,FPilot
@@ -161,23 +188,39 @@ git pull --ff-only
    Results: `~\.glzr\glazewm\compare-bench.md`, rows in
    `compare-bench-rows.md` beside it.
 
-2. GPU: one `--dwm` run (the `PresentMon` service installed), backdrops
-   and borders as configured:
+4. GPU: one `--dwm` run (the `PresentMon` service installed), backdrops
+   and borders as configured, 15 restarts, about 15 minutes:
 
    ```
    powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -Scenarios move,resize,switch -Dwm -TileOrder Notepad,WindowsTerminal,WindowsTerminal,chrome,chrome,FPilot -ResultsFile $HOME\.glzr\glazewm\compare-bench-dwm.md
    ```
 
+5. Screenshots: add `-Screenshots` to the smoke run or to run 2 (two PNGs
+   per build, setting and scenario, round 1 only by default: 40 for run
+   2 with its two CPU loads; a few seconds per scenario run more).
+   `-ShotDelayMs` (default 60) is the mid shot's time after the command;
+   the console's `shots` lines say when it was taken. They land in
+   `~\.glzr\glazewm\compare-shots\<run start>\`. To share them, commit
+   the ones that show something (a few, not the whole folder: each is a
+   few MB) under `packages\wm-cli\examples\perf_bench\results\<date>\shots\`
+   with the results file, or attach them to the conversation.
+
+Other builds or modes: `-Against` takes `;`-separated refs, each with
+optional `:` and `,`-separated `GLAZEWM_ISOLATE` modes (`default` =
+unset, `a+b` = both words), quoted, e.g. `-Against
+"origin/tryout/stand-ins:default,morepeeks+peeksfirst;origin/main"`.
+
 `-TileOrder` is the one of 2026-11-13 (`explorer`'s window is File
 Pilot's there); the `tiles` lines in the results show the order each run
-had. Read first, per scenario table (`this / against`): `input->first
-frame ms`, `frame p90 ms`, `interval p90 ms`, `interval p99 ms`,
-`peek_new ms (outside frames)` here against `session_begin ms (outside
-frames)` on `origin/main` (where each build starts a motion), `restack ms
-(outside frames)`, and from the `--dwm` run `dwm gpu busy p90 ms` and
-`dwm missed vblanks/burst`. A dash (`—`) is a stage that build has no
-report of: `origin/main` has no peek stages, `command` or `ws_*`; this
-branch has no `session_*`.
+had. Read first, per scenario table (one column per build/mode, rows per
+setting and metric): `input->first frame ms`, `frame p90 ms`, `interval
+p90 ms`, `interval p99 ms`, `peek_new ms (outside frames)` here against
+`session_begin ms (outside frames)` on `main` and `stand-ins:nopeeks`
+(where each build starts a motion), `restack ms (outside frames)`, and
+from the `--dwm` run `dwm gpu busy p90 ms` and `dwm missed
+vblanks/burst`. A dash (`—`) is a stage that build has no report of:
+`main` has no peek stages, `command` or `ws_*`; this branch has no
+`session_*`.
 
 ## Step 1: as built
 
@@ -2828,6 +2871,69 @@ script is unrun and `perf_bench` only type-checks.
 Windows functions added: none. Removed: none. `dwm.rs` (the `PresentMon`
 loader) is unchanged.
 
+## Bench modes: as built
+
+Branch `os/20-bench-modes` (2026-11-16). Bench code only, under
+`packages/wm-cli/examples/perf_bench/` (plus `png` and two `windows`
+features in `wm-cli`'s Windows dev-dependencies, both stripped from test
+builds); nothing in `wm` or `wm-platform` changed. Not seen running: the
+script is unparsed (no PowerShell here) and `perf_bench` only
+type-checks; the pure parts (`builds.rs`, `compare.rs`,
+`bench_config.rs`) were unit-tested on Linux.
+
+- **`-Against`** (`[string[]]`, default
+  `origin/tryout/stand-ins:nopeeks,default,morepeeks;origin/main`):
+  builds separated by `;` (or separate array values in-process), each
+  `<ref>[:<mode>,...]`, a mode `default` (`GLAZEWM_ISOLATE` unset) or
+  words joined by `+`. `perf_bench builds` parses it (`builds.rs`,
+  tested) and labels each column with the ref's last path segment plus
+  `:<mode>` unless `default`; duplicate labels (also `this`) are
+  refused. Each mode word must appear as a string literal in the ref's
+  `packages/wm-platform/src/isolation.rs` (`git show`), so a typo isn't
+  benched as the default (stand-ins only warns on unknown words). Words
+  checked against `tryout/stand-ins` `65a60de`: `nopeeks` (old
+  `ResizeSession` engine), `morepeeks`, `peeksfirst`, `live`,
+  `nobackdrop`, `noring`; `peeks`/`fillpeeks` accepted, no-ops.
+- Each distinct ref is built once, in the shared worktree
+  `target\compare\src`, into `target\compare\<ref with / as ->` (the
+  old single `target\compare\target` is no longer used; delete it). Every
+  WM start sets `GLAZEWM_ISOLATE` to its mode and clears it after, as
+  `GLAZEWM_PERF`; `this` always runs with it unset.
+- Within each (CPU load, round, setting), all builds/modes run back to
+  back, the first rotating by one each time.
+- `compare <rows> <out> <build>...` (`compare.rs`, tested) takes any
+  number of builds: per scenario a headline table with rows per setting
+  and metric (and `runs`) and one column per build, then per setting
+  every metric, one column per build. A build without runs gets `0` runs
+  and `—` cells.
+- **Config copies are one file** (`bench_config::write`): the main file
+  merged with its `include`d files key by key, a setting in two files an
+  error, as the WM merges them. `origin/main` has no `include` (no
+  `config_files.rs`) and would have silently read only the main file.
+  Unknown keys: none of `main`, `stand-ins`, `one-surface` sets
+  `deny_unknown_fields`, so keys a build lacks (`reserve_border_space`
+  etc.) are ignored. A *value* a build can't parse (e.g. a style added
+  since) would stop it from starting; the run then stops with "GlazeWM
+  '<label>' did not start answering". Not seen: depends on the owner's
+  config.
+- **`-Screenshots`** (off by default; `-ShotDelayMs 60`, `-ShotRounds
+  1`): `perf_bench --shots <prefix> --shot-delay-ms <n>` runs one extra
+  forward/back before the measured bursts (and before the profiler log
+  offset is read, so the numbers don't include it), and takes exactly two
+  captures of the target's monitor (from `query monitors`; for `switch`,
+  the focused workspace's): `-mid` at the delay after sending the
+  command (on the answer if that comes later; the offset is printed),
+  `-rest` once `--settle-ms` passed. `shots.rs`, saved as PNG (`png`
+  crate, fast compression).
+
+Windows functions added (bench code only, `shots.rs`):
+`SetProcessDpiAwarenessContext` (per-monitor v2, so monitor rects are
+physical pixels; called only with `--shots`), `GetDC`,
+`CreateCompatibleDC`, `CreateCompatibleBitmap`, `SelectObject`, `BitBlt`
+(`SRCCOPY | CAPTUREBLT`), `GetDIBits`, `DeleteObject`, `DeleteDC`,
+`ReleaseDC`. Removed: none. Nothing in `wm`, `wm-platform` or the other
+crates calls anything new.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
@@ -2886,10 +2992,14 @@ layout (`774413e`). Owner's laptop checks all
 fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
 
 1. **Smoke run of `compare_branches.ps1`** on the desktop (never
-   parsed: no PowerShell here), e.g. `-Rounds 1 -Bursts 2 -Scenarios
-   move`. Open/close is the `minimize` scenario (no spawn per burst,
-   per `CLAUDE.md`'s endpoint rules). Desktop only.
-2. **Bench** on the desktop (`tryout/one-surface` against `origin/main`,
+   parsed: no PowerShell here), against `tryout/stand-ins` in modes
+   `nopeeks`, `default`, `morepeeks` and `origin/main` (the default
+   `-Against`): `-Rounds 1 -Bursts 2 -Scenarios move`, optionally
+   `-Screenshots` (see "Bench modes: as built"). Open/close is the
+   `minimize` scenario (no spawn per burst, per `CLAUDE.md`'s endpoint
+   rules). Desktop only.
+2. **Bench** on the desktop (`tryout/one-surface` against
+   `tryout/stand-ins` `nopeeks`/`default`/`morepeeks` and `origin/main`,
    the commands in "To measure (desktop)"), then read the numbers: `input->first frame`, frame p90, interval
    p90/p99, `peek_new`, `restack`, dwm gpu busy p90. Owner's feel so
    far: overview much smoother, workspace switching fine, borders
