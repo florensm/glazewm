@@ -120,6 +120,20 @@ const METRICS: &[(&str, &str)] = &[
   ("cross:dwm_flush:calls", "dwm_flush calls (in frames)"),
   ("outside:dwm_flush:total", "dwm_flush ms (outside frames)"),
   ("outside:cloak:total", "cloak ms (outside frames)"),
+  // The old engine (`ResizeSession`), which only builds without peek
+  // surfaces have, e.g. `origin/main`: its counterpart of `peek_new`.
+  (
+    "outside:session_begin:total",
+    "session_begin ms (outside frames)",
+  ),
+  (
+    "outside:session_overlays:total",
+    "session_overlays ms (outside frames)",
+  ),
+  (
+    "tree:session_overlays:per_frame",
+    "session_overlays ms/frame",
+  ),
   // What the command that starts the animation waits for.
   ("outside:command:total", "command ms (WM side)"),
   ("outside:peek_new:total", "peek_new ms (outside frames)"),

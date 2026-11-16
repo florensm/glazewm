@@ -128,7 +128,8 @@ One agent per step, in order: each builds on the last.
    it. Unit tests for the pure decisions.
 2. **Kept registrations** (`readypeeks`).
 3. **Bench**: modes and columns in `isolate_modes.ps1`/`perf_bench`,
-   and a measuring section here.
+   and a measuring section here. (Became step 8 part B: the modes are
+   gone, and `compare_branches.ps1` compares this branch with another.)
 
 Checks per step: `cargo check --workspace --tests` and `cargo clippy
 --workspace --all-targets -- -D warnings` for
@@ -137,10 +138,46 @@ report.
 
 ## To measure (desktop)
 
-`resize` and `move`, load 0 and CPU 8, backdrops on and off:
-`-Modes nopeeks,default,onesurface,onesurface+readypeeks`, then the same
-with `earlyfill+latealpha+keepfills` added to the last two. One
-`--dwm` run (elevated) of `default` against `onesurface` for GPU.
+`tryout/one-surface` against `origin/main`, with
+`packages\wm-cli\examples\perf_bench\compare_branches.ps1` (see "Step 8
+part B: as built"; `Get-Help <script> -Full` lists every parameter).
+Desktop only. From a PowerShell prompt at the repository root, with
+GlazeWM running as usual:
+
+```
+git fetch origin
+git checkout tryout/one-surface
+git pull --ff-only
+```
+
+1. Main run: `move`, `resize`, `switch` and `minimize` (open/close),
+   load 0 and CPU 8, backdrops and borders each on and off. 48 WM
+   restarts, about an hour:
+
+   ```
+   powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -CpuLoad 0,8 -Backdrops on,off -Borders on,off -TileOrder Notepad,WindowsTerminal,WindowsTerminal,chrome,chrome,FPilot
+   ```
+
+   Results: `~\.glzr\glazewm\compare-bench.md`, rows in
+   `compare-bench-rows.md` beside it.
+
+2. GPU: one `--dwm` run (the `PresentMon` service installed), backdrops
+   and borders as configured:
+
+   ```
+   powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -Scenarios move,resize,switch -Dwm -TileOrder Notepad,WindowsTerminal,WindowsTerminal,chrome,chrome,FPilot -ResultsFile $HOME\.glzr\glazewm\compare-bench-dwm.md
+   ```
+
+`-TileOrder` is the one of 2026-11-13 (`explorer`'s window is File
+Pilot's there); the `tiles` lines in the results show the order each run
+had. Read first, per scenario table (`this / against`): `input->first
+frame ms`, `frame p90 ms`, `interval p90 ms`, `interval p99 ms`,
+`peek_new ms (outside frames)` here against `session_begin ms (outside
+frames)` on `origin/main` (where each build starts a motion), `restack ms
+(outside frames)`, and from the `--dwm` run `dwm gpu busy p90 ms` and
+`dwm missed vblanks/burst`. A dash (`—`) is a stage that build has no
+report of: `origin/main` has no peek stages, `command` or `ws_*`; this
+branch has no `session_*`.
 
 ## Step 1: as built
 
