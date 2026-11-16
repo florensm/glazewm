@@ -67,6 +67,7 @@ pub fn activate_workspace(
     config.value.layouts.scrolling.clone(),
     config.is_special_workspace_name(&workspace_config.name),
   );
+  workspace.set_border_inset(config.value.window_effects.border_inset());
 
   // Attach the created workspace to the specified monitor.
   attach_container(

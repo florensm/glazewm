@@ -32,6 +32,8 @@ struct WorkspaceInner {
   child_focus_order: VecDeque<Uuid>,
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
+  /// See `WindowEffectsConfig::border_inset`.
+  border_inset: i32,
   tiling_direction: TilingDirection,
   layout: Layout,
   scrolling_config: ScrollingLayoutConfig,
@@ -58,6 +60,7 @@ impl Workspace {
       child_focus_order: VecDeque::new(),
       config,
       gaps_config,
+      border_inset: 0,
       tiling_direction,
       layout,
       scrolling_config,
@@ -147,6 +150,16 @@ impl Workspace {
 
   pub fn set_gaps_config(&self, gaps_config: GapsConfig) {
     self.0.borrow_mut().gaps_config = gaps_config;
+  }
+
+  /// How far tiling windows are inset from their layout rect to make room
+  /// for their border.
+  pub fn border_inset(&self) -> i32 {
+    self.0.borrow().border_inset
+  }
+
+  pub fn set_border_inset(&self, border_inset: i32) {
+    self.0.borrow_mut().border_inset = border_inset;
   }
 
   /// Effective outer gaps for this workspace.

@@ -935,7 +935,7 @@ impl Default for FullscreenStateConfig {
   }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowEffectsConfig {
   /// Visual effects to apply to the focused window.
@@ -955,6 +955,23 @@ pub struct WindowEffectsConfig {
   /// monitor-sized window it is drawn over content rather than beside
   /// it.
   pub hide_border_on_fullscreen: bool,
+
+  /// Whether tiling windows are shrunk by the widest border so their
+  /// rings fit within the tiling layout, rather than reaching past it
+  /// over neighbors and off the monitor.
+  pub reserve_border_space: bool,
+}
+
+impl Default for WindowEffectsConfig {
+  fn default() -> Self {
+    WindowEffectsConfig {
+      focused_window: WindowEffectConfig::default(),
+      other_windows: WindowEffectConfig::default(),
+      urgent_window: None,
+      hide_border_on_fullscreen: false,
+      reserve_border_space: true,
+    }
+  }
 }
 
 /// Which of the `window_effects` sets a window takes.
@@ -1006,15 +1023,37 @@ impl WindowEffectsConfig {
   /// glow, as a blend lerps the width while drawing the farther glow.
   #[must_use]
   pub fn border_reserve(&self, gaps: &GapsConfig) -> f32 {
+    let inset = self.border_inset();
     let (width, reach) = [&self.focused_window, &self.other_windows]
       .into_iter()
       .chain(&self.urgent_window)
-      .filter_map(|set| set.border.reaches(gaps))
+      .filter_map(|set| set.border.reaches(inset, gaps))
       .fold((0.0, 0.0), |(width, reach): (f32, f32), (w, r)| {
         (width.max(w), reach.max(r))
       });
 
     (width + reach).ceil()
+  }
+
+  /// How far tiling windows are inset from their layout rect to make room
+  /// for their border: the widest border of any set, or `0` with
+  /// `reserve_border_space` off or no border on.
+  ///
+  /// The widest rather than the window's own, so a focus change doesn't
+  /// resize the windows whose style it changes.
+  #[must_use]
+  pub fn border_inset(&self) -> i32 {
+    if !self.reserve_border_space {
+      return 0;
+    }
+
+    [&self.focused_window, &self.other_windows]
+      .into_iter()
+      .chain(&self.urgent_window)
+      .filter(|set| set.border.enabled)
+      .map(|set| set.border.width.to_px(0, None).max(0))
+      .max()
+      .unwrap_or(0)
   }
 }
 
@@ -1420,12 +1459,18 @@ impl BorderGlowConfig {
   /// of it: a glow over a window takes that window's edge from apps that
   /// look up the window under the cursor.
   ///
+  /// `border_inset` (see `WindowEffectsConfig::border_inset`) widens the
+  /// room by the space it reserves on both windows' sides of the gap, and
+  /// is the widest a neighbor's border can be. Without it, a neighbor's
+  /// border is taken to be as wide as this one.
+  ///
   /// The gap is taken unscaled, which DPI scaling only widens, and as
   /// none when given in percent, which depends on the monitor.
   #[must_use]
   pub fn to_border_glow(
     &self,
     border_width: f32,
+    border_inset: i32,
     gaps: &GapsConfig,
   ) -> BorderGlow {
     if !self.enabled {
@@ -1437,7 +1482,14 @@ impl BorderGlowConfig {
       self.reach.to_px(0, None) as f32,
       gaps.inner_gap.to_px(0, None) as f32,
     );
-    let room = gap - 2.0 * border_width.max(0.0);
+    let border_width = border_width.max(0.0);
+    #[allow(clippy::cast_precision_loss)]
+    let (inset, neighbor_width) = if border_inset > 0 {
+      (border_inset as f32, border_inset as f32)
+    } else {
+      (0.0, border_width)
+    };
+    let room = gap - border_width - neighbor_width + 2.0 * inset;
 
     BorderGlow {
       reach: reach.min(room).max(0.0).floor(),
@@ -1463,7 +1515,8 @@ impl BorderEffectConfig {
   /// Builds a [`BorderOverlayParams`] from this config, given the
   /// already-resolved `color` (see [`abgr_color`]), the tracked window's
   /// *own* corner radius (derived from the sibling `corner_style` effect,
-  /// not stored on this type), and the `gaps` the glow is kept within.
+  /// not stored on this type), and the `border_inset` and `gaps` the glow
+  /// is kept within.
   ///
   /// The overlay's own outer corner radius is `self.radius` when set,
   /// otherwise `window_corner_radius + width` so the ring lines up
@@ -1475,6 +1528,7 @@ impl BorderEffectConfig {
     &self,
     color: Color,
     window_corner_radius: f32,
+    border_inset: i32,
     gaps: &GapsConfig,
   ) -> BorderOverlayParams {
     #[allow(clippy::cast_precision_loss)]
@@ -1493,7 +1547,7 @@ impl BorderEffectConfig {
       opacity: 1.0,
       highlight: self.highlight.clamp(0.0, 1.0),
       rim: self.rim.clamp(0.0, 1.0),
-      glow: self.glow.to_border_glow(width, gaps),
+      glow: self.glow.to_border_glow(width, border_inset, gaps),
       reserve: 0.0,
     }
   }
@@ -1502,7 +1556,11 @@ impl BorderEffectConfig {
   /// [`to_overlay_params`](Self::to_overlay_params) resolves them, or
   /// `None` when disabled.
   #[must_use]
-  pub fn reaches(&self, gaps: &GapsConfig) -> Option<(f32, f32)> {
+  pub fn reaches(
+    &self,
+    border_inset: i32,
+    gaps: &GapsConfig,
+  ) -> Option<(f32, f32)> {
     if !self.enabled {
       return None;
     }
@@ -1510,7 +1568,10 @@ impl BorderEffectConfig {
     #[allow(clippy::cast_precision_loss)]
     let width = self.width.to_px(0, None) as f32;
 
-    Some((width, self.glow.to_border_glow(width, gaps).reach))
+    Some((
+      width,
+      self.glow.to_border_glow(width, border_inset, gaps).reach,
+    ))
   }
 }
 
@@ -3013,17 +3074,23 @@ mod tests {
   #[test]
   fn border_glow_stays_within_the_inner_gap() {
     // 20px gap, less both windows' 2px borders.
-    assert_eq!(glow(30).to_border_glow(2.0, &gaps("20px")).reach, 16.0);
-    assert_eq!(glow(8).to_border_glow(2.0, &gaps("20px")).reach, 8.0);
-    assert_eq!(glow(8).to_border_glow(2.0, &gaps("3px")).reach, 0.0);
-    assert_eq!(glow(8).to_border_glow(2.0, &gaps("5%")).reach, 0.0);
+    assert_eq!(glow(30).to_border_glow(2.0, 0, &gaps("20px")).reach, 16.0);
+    assert_eq!(glow(8).to_border_glow(2.0, 0, &gaps("20px")).reach, 8.0);
+    assert_eq!(glow(8).to_border_glow(2.0, 0, &gaps("3px")).reach, 0.0);
+    assert_eq!(glow(8).to_border_glow(2.0, 0, &gaps("5%")).reach, 0.0);
+
+    // Borders within the reserved space leave the whole gap.
+    assert_eq!(glow(30).to_border_glow(2.0, 2, &gaps("20px")).reach, 20.0);
+    // A thinner border than the inset leaves room in its own space, up
+    // to a neighbor's border as wide as the inset.
+    assert_eq!(glow(30).to_border_glow(1.0, 2, &gaps("20px")).reach, 21.0);
 
     let off = BorderGlowConfig {
       enabled: false,
       ..glow(8)
     };
     assert_eq!(
-      off.to_border_glow(2.0, &gaps("20px")),
+      off.to_border_glow(2.0, 0, &gaps("20px")),
       BorderGlow::default()
     );
   }
@@ -3037,7 +3104,7 @@ mod tests {
     };
 
     let params =
-      config.to_overlay_params(Color::from_abgr(0), 0.0, &gaps("20px"));
+      config.to_overlay_params(Color::from_abgr(0), 0.0, 0, &gaps("20px"));
     assert_eq!(params.rim, 1.0);
     assert_eq!(params.glow.reach, 6.0);
     assert_eq!(params.glow.opacity, 0.5);
@@ -3066,6 +3133,7 @@ mod tests {
           border,
           ..WindowEffectConfig::default()
         }),
+        reserve_border_space: false,
         ..WindowEffectsConfig::default()
       }
     };
@@ -3098,6 +3166,45 @@ mod tests {
       .border_reserve(&gaps),
       0.0
     );
+  }
+
+  #[test]
+  fn border_inset_is_the_widest_border_on() {
+    let border = |enabled: bool, width: i32| WindowEffectConfig {
+      border: BorderEffectConfig {
+        enabled,
+        width: LengthValue::from_px(width),
+        ..BorderEffectConfig::default()
+      },
+      ..WindowEffectConfig::default()
+    };
+    let effects = WindowEffectsConfig {
+      focused_window: border(true, 1),
+      other_windows: border(true, 3),
+      urgent_window: Some(border(false, 8)),
+      ..WindowEffectsConfig::default()
+    };
+    assert_eq!(effects.border_inset(), 3);
+
+    // With reserved space, a glow may fill the whole gap.
+    let glowing = WindowEffectsConfig {
+      focused_window: WindowEffectConfig {
+        border: BorderEffectConfig {
+          glow: glow(30),
+          ..border(true, 3).border
+        },
+        ..WindowEffectConfig::default()
+      },
+      ..effects.clone()
+    };
+    assert_eq!(glowing.border_reserve(&gaps("20px")), 23.0);
+
+    let unreserved = WindowEffectsConfig {
+      reserve_border_space: false,
+      ..effects
+    };
+    assert_eq!(unreserved.border_inset(), 0);
+    assert_eq!(WindowEffectsConfig::default().border_inset(), 0);
   }
 
   /// `overlay_tint` doubles as the "does this window get a
