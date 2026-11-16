@@ -2989,7 +2989,9 @@ surface methods, dead `perf_bench` columns), step 8 part B
 backdrop copies, live peeks deleted; `os/18-parallax`, not seen running:
 see "Item 3: as built" for what to check), borders inside the tiling
 layout (`774413e`). Owner's laptop checks all
-fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
+fine so far (see above). Laptop build: `test/one-surface` at `d5b8d3f` (re-cut 2026-11-16 from
+`4a9d55b`: border inside, switch inset fix, item 3; same Windows
+imports and `Cargo.lock` as `6353eeab`).
 
 1. **Smoke run of `compare_branches.ps1`** on the desktop (never
    parsed: no PowerShell here), against `tryout/stand-ins` in modes
@@ -3149,6 +3151,17 @@ gaps 0 and > 0, `backdrop` on with a semi-transparent window):
 - Switch back mid-slide (cut-short): the same.
 - A scrolling layout with a column cut at the edge: no shift either.
 - `reserve_border_space: false`: as before the fix.
+
+### Other paths, checked by reading (owner: border inside everywhere)
+
+Rest placement, moves and resizes on surfaces, open/close/minimize,
+tiles crossing monitors, scrolling columns (resting ones too), grab
+resizes and hand-back end frames all place from `to_rect() +
+total_border_delta()` (inset included) and take frame and ring from that
+less the shadow borders, or from the real window's frame: ok. Workspace
+switches were the one path at tile size: fixed. Stacks: windows ok; how
+the ring meets the tab bar not seen on screen. `motion_clicks.rs` uses
+the tile for hit-testing only.
 
 ## Removal plan (2026-11-15)
 
