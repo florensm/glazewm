@@ -999,6 +999,23 @@ impl WindowEffectsConfig {
       .chain(&self.urgent_window)
       .any(effect)
   }
+
+  /// How far a window's border overlay may reach past it, whichever sets
+  /// with a border on it takes or blends between, or `0.0` with none (see
+  /// `BorderOverlayParams::reserve`): the widest border plus the farthest
+  /// glow, as a blend lerps the width while drawing the farther glow.
+  #[must_use]
+  pub fn border_reserve(&self, gaps: &GapsConfig) -> f32 {
+    let (width, reach) = [&self.focused_window, &self.other_windows]
+      .into_iter()
+      .chain(&self.urgent_window)
+      .filter_map(|set| set.border.reaches(gaps))
+      .fold((0.0, 0.0), |(width, reach): (f32, f32), (w, r)| {
+        (width.max(w), reach.max(r))
+      });
+
+    (width + reach).ceil()
+  }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1477,7 +1494,23 @@ impl BorderEffectConfig {
       highlight: self.highlight.clamp(0.0, 1.0),
       rim: self.rim.clamp(0.0, 1.0),
       glow: self.glow.to_border_glow(width, gaps),
+      reserve: 0.0,
     }
+  }
+
+  /// The ring's width and its glow's reach past it, as
+  /// [`to_overlay_params`](Self::to_overlay_params) resolves them, or
+  /// `None` when disabled.
+  #[must_use]
+  pub fn reaches(&self, gaps: &GapsConfig) -> Option<(f32, f32)> {
+    if !self.enabled {
+      return None;
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let width = self.width.to_px(0, None) as f32;
+
+    Some((width, self.glow.to_border_glow(width, gaps).reach))
   }
 }
 
@@ -2634,7 +2667,8 @@ mod tests {
     GrabAndMoveConfig, GrabDraw, GrabModifier, LengthValue,
     OverviewConfig, OverviewEffects, OverviewLayout, OverviewSwitchStyle,
     OverviewZoomStyle, ParticlesConfig, ScrollingLayoutConfig,
-    SpringParams, WorkspaceSwitchAnimationConfig, WorkspaceSwitchStyle,
+    SpringParams, WindowEffectConfig, WindowEffectsConfig,
+    WorkspaceSwitchAnimationConfig, WorkspaceSwitchStyle,
   };
 
   /// Grabbing is off by default, and only `alt` and `win` are modifiers.
@@ -3007,6 +3041,63 @@ mod tests {
     assert_eq!(params.rim, 1.0);
     assert_eq!(params.glow.reach, 6.0);
     assert_eq!(params.glow.opacity, 0.5);
+  }
+
+  /// The owner's style: a glow on the focused window only.
+  #[test]
+  fn border_reserve_is_the_farthest_set_with_a_border() {
+    let border = |width: i32, glow: Option<i32>| BorderEffectConfig {
+      enabled: true,
+      width: LengthValue::from_px(width),
+      glow: glow.map_or_else(BorderGlowConfig::default, self::glow),
+      ..BorderEffectConfig::default()
+    };
+    let effects = |focused, other, urgent: Option<BorderEffectConfig>| {
+      WindowEffectsConfig {
+        focused_window: WindowEffectConfig {
+          border: focused,
+          ..WindowEffectConfig::default()
+        },
+        other_windows: WindowEffectConfig {
+          border: other,
+          ..WindowEffectConfig::default()
+        },
+        urgent_window: urgent.map(|border| WindowEffectConfig {
+          border,
+          ..WindowEffectConfig::default()
+        }),
+        ..WindowEffectsConfig::default()
+      }
+    };
+
+    let gaps = gaps("20px");
+    assert_eq!(
+      effects(border(2, Some(10)), border(2, None), None)
+        .border_reserve(&gaps),
+      12.0
+    );
+    // A blend from the urgent set draws its glow at a width up to 4.
+    assert_eq!(
+      effects(border(2, None), border(4, None), Some(border(3, Some(8))))
+        .border_reserve(&gaps),
+      12.0
+    );
+
+    // Clamped to the gap like the glow it takes in.
+    assert_eq!(
+      effects(border(2, Some(30)), border(2, None), None)
+        .border_reserve(&gaps),
+      18.0
+    );
+    assert_eq!(
+      effects(
+        BorderEffectConfig::default(),
+        BorderEffectConfig::default(),
+        None
+      )
+      .border_reserve(&gaps),
+      0.0
+    );
   }
 
   /// `overlay_tint` doubles as the "does this window get a

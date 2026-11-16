@@ -1342,7 +1342,8 @@ fn lanes_stay_apart(a: &Lane, b: &Lane, overshoots: bool) -> bool {
   .any(holds)
 }
 
-/// How far `window`'s ring reaches past its visible frame, focused or not.
+/// How far `window`'s ring window reaches past its visible frame, focused
+/// or not (see `BorderOverlayParams::extent`).
 fn ring_reach(window: &WindowContainer, config: &UserConfig) -> i32 {
   #[allow(clippy::cast_possible_truncation)]
   [true, false]
@@ -1352,7 +1353,7 @@ fn ring_reach(window: &WindowContainer, config: &UserConfig) -> i32 {
         .2
         .border
     })
-    .map(|border| border.outset().ceil() as i32)
+    .map(|border| border.extent().ceil() as i32)
     .max()
     .unwrap_or(0)
 }
@@ -5077,8 +5078,9 @@ fn carry_ring(
   };
   let outer_before = overlay.outer_rect();
   overlay.apply_blend(blend);
-  // A width or glow change re-places the ring's window and resizes its
-  // visual by separate routes, which may reach DWM in different frames.
+  // The ring's window is sized for all of its window's styles, so only a
+  // new reserve (a reload) re-places it and resizes its visual, by
+  // separate routes, which may reach DWM in different frames.
   if overlay.outer_rect() != outer_before {
     tracing::debug!(
       "Ring of {id} resized by its style from {outer_before:?} to {:?}, \
