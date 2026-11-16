@@ -540,12 +540,6 @@ impl WindowPeek {
     self.copies.drop_bar();
   }
 
-  /// Whether the peek draws its window's tab bar.
-  #[must_use]
-  pub fn carries_tab_bar(&self) -> bool {
-    self.copies.carries_bar()
-  }
-
   /// Covers the part of the window's frame its content does not reach in
   /// `color` from now on, while the peek draws it filled (see
   /// [`place_filled`](Self::place_filled)) and draws the window at all.
