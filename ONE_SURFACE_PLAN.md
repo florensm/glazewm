@@ -2134,6 +2134,161 @@ default.
 - With `readypeeks`: move the stack twice within 5 s: the second carries
   the copy anew, no frame without the bar.
 
+## Rounded backdrops: as built
+
+Branch `os/12-rounded` (item 2 of "Open" below). Not seen running.
+
+### The switch
+
+`GLAZEWM_ROUNDED_BACKDROP`, read once per process (`wm-platform`'s
+`rounded_backdrop`, `std::env` in a `OnceLock`), temporary: it goes once
+the owner has chosen.
+
+| value | a rounded backdrop with `parallax` == 1 |
+|---|---|
+| `live`, unset, unknown (warned once) | live peek of its own, as before: today's behaviour exactly |
+| `a` | on the surface, its monitor copy cut in rows |
+| `b` | on the surface, a copy of a rounded backdrop of its own |
+
+The switch only changes `BackdropOverlayParams::is_copyable` (still the
+one place deciding live vs pinned; `peek_view::is_live` and the switch's
+`copied_backdrop` filter read it) and how `OverlayCopies` draws such a
+copy. With `a` or `b` the window is copyable, so it is pinned, goes on
+its surface, and stops making its neighbours own peeks
+(`has_own_peek_neighbour`, `beside_own_peek` count live peeks only), as a
+square-cornered one does. `parallax` != 1 stays live under every value.
+The live path (`PeekMode::Live`, `SurrogateMode::Live`, the live arms) is
+untouched; item 3 deletes it.
+
+### A: rows (`a`)
+
+- **Radius**: `BackdropOverlayParams::corner_radius`, which
+  `NativeBackdropOverlay` hands `SetCornerRadius` as is
+  (`pixels_to_dips` is the identity), from
+  `window_corner_radius_px()`. No DPI step of its own, as the overlay has
+  none. Scaled with the window's thumbnail per axis (frame drawn / frame
+  at rest); 1:1 when the visible frame is drawn as it is.
+- **Cut** (`corner_bands::band_rects`): 2k+1 full-width rows: k at the
+  top, cut at equal angles of the arc, each inset at both ends to where
+  the arc is at its inner edge (floored), so the rows cover all of the
+  rounded shape and reach past it only by a step at each row's outer
+  end; the middle row whole; k at the bottom, mirrored. Radius cut to
+  half the frame, so top and bottom never overlap. Tested: every pixel
+  inside covered once, none past the arc by more than the step plus
+  1.5 px of rounding.
+- **k** (`band_count`): the fewest rows whose step,
+  `r * (sqrt(1 + sin(90°/k)) - 1)`, is at most the ring's width, the
+  narrowest of the window's focus states (none if either has no ring, or
+  `hide_border_on_fullscreen` applies), else 1.5 px; at most 8 and at
+  most one per pixel row of the corner. Examples: r 8 px with a 2 px ring
+  k = 3 (7 thumbnails); r 8 px bare k = 4 (9); r 12 px, 2 px ring k = 5;
+  r 4 px bare k = 2.
+- **Registrations**: per tile, each distinct style's crop 2k+1 instead
+  of 1, and the vignette copy (if any style has a vignette) cut the same
+  way, with the finest crop's k. E.g. r 8, 2 px ring, focused and
+  unfocused styles differing, vignette on: 21 thumbnails instead of 3.
+  Each updated per frame where the one copy was (`BackdropCopy::place`),
+  faded and crossfaded with the same weights.
+- **Order**: the rows replace the one thumbnail in place in `CropCopy` /
+  the vignette copy, so they register where it did, under the window,
+  and `BackdropCopy::thumbnails` yields them in order for `readypeeks`
+  (`orders`, `backdrop_held_anew`, `put_backdrop_anew`). `WindowPeek::draw`
+  acts on the backdrop copy as a whole: still first out, last in. A copy
+  is rebuilt when its cut changes (`carries_backdrop_styles`,
+  `reclaim_backdrop` compare it): styles (the radius is in them), ring
+  width, or the switch.
+- **Ring width**: `WindowPeek::carry_styles` and `reclaim` take it
+  (`peek_view::PeekStyles`, `carried_styles`); `WorkspaceSurrogate::
+  carry_backdrop` takes the copied style's ring (`platform_sync`).
+- **Without a border**: each corner's rows reach up to 1.5 px past the
+  arc, so during the motion the blur shows in small steps just outside
+  the window's rounded corner, over the desktop or gap; at landing the
+  real overlay, exactly round, takes over and the steps go. A ring
+  narrower than 1.5 px, or a `border.radius` not concentric with the
+  window's corners, leaves steps showing too.
+
+### B: own backdrop (`b`)
+
+Each rounded style's crop is one thumbnail of an `OwnBackdropSource`: a
+`BackdropSource`-class window sized to the window's resting frame, at the
+bottom, hidden by its alpha (as `VignetteSource`), holding a
+`BackdropVisual` built from the same params as the window's overlay
+(rounded, tinted, its vignette included, so the vignette copy leaves
+such a crop out). The copy is stretched over the window's drawn frame,
+in the backdrop copy's place, order and fades. `move_backdrop` moves the
+source with the real window (as the vignette source); `readypeeks` keeps
+it and refreshes its wallpaper on reclaim. Costs a window and a visual
+tree per rounded style per tile, made at carry.
+
+Not a thumbnail of the window's `NativeBackdropOverlay` itself, as the
+plan had it: the backdrop's handover (`peek_view::carry_backdrop`) hides
+that overlay once the copy is composited (`Covered`/`Parked`), a hidden
+window's thumbnail shows nothing, and concealing it by alpha instead
+would change a tuned hand-over step; an opening window has no overlay
+yet.
+
+So the blur is the one behind wherever the real window is: a command's
+tile is cloaked and moved to its target at take-over
+(`preposition_cloaked`), so the copy shows the target spot's blur
+stretched along the whole way and the real overlay revealed at landing
+matches it. The change of spot shows at the start instead, when the
+real overlay hides under the copy. A shrinking `fill` resize, whose
+window keeps its size until landing (`defers_resize`), changes at
+landing. Its rounded corners scale and stretch with the window.
+
+### What it covers, what stays live
+
+With `a` or `b`, everything `is_copyable` gates: moves and resizes by
+command, open, close, minimize, restore (transits), workspace switches
+(the switch surrogate's `carry_backdrop`, through `OverlayCopies`, both
+cuts), grab resizes, scrolling columns, crossings between monitors,
+floating <-> tiling and fullscreen toggles, stacks' tiles, on their
+surfaces or own pinned peeks by the existing rules. Stays live: any
+backdrop with `parallax` != 1, and every rounded one under `live`.
+
+Not covered: a filled tile's fill strips (`FillCopy`) stay square at the
+trailing corners of a rounded window (the ring covers part of them).
+
+### Windows functions called by the new code
+
+None new. `a`: more `DwmRegisterThumbnail`, `DwmUpdateThumbnailProperties`,
+`DwmUnregisterThumbnail` (`dwm_thumbnail.rs`). `b`: those, plus what
+`BackdropSource` and `VignetteSource` already call to make their windows
+(`OverlayWindow::create`, `set_alpha`, `place_at_bottom`: `CreateWindowExW`,
+`SetLayeredWindowAttributes`, `SetWindowPos`) and `BackdropVisual`'s
+composition calls. No window regions in the new code (`SetWindowRgn`,
+`CreateRoundRectRgn` stay the border overlay's only), no
+`LoadLibrary`/`GetProcAddress`, no private exports.
+
+### To check on screen
+
+Config: rounded corners (`corner_radius` or `corner_style`), a backdrop
+with `parallax: 1` and a vignette, a border 2 px wide; a few tiles with
+semi-transparent windows; `window_move`/`window_resize`/`window_open` at
+`duration_ms: 2000`, then default. Each of `live`, `a`, `b` in turn
+(`GLAZEWM_ROUNDED_BACKDROP`, WM restarted):
+
+- Move, swap and resize tiles: `a` and `b` one surface per monitor and no
+  own peek for the tile or its neighbours (`live`: own peeks, as before);
+  blur and ring glued to the window every frame.
+- Corners while moving: `a` the same shape as at rest, no steps showing
+  past the ring, no jump at landing; `b` round, the target spot's blur
+  from the start (a change of blur as the motion starts), stretched with
+  a resize, nothing changing at landing.
+- Same without a border: `a` small steps outside each corner while
+  moving, gone at landing; `b` unchanged.
+- Zoom open, close, minimize: corners scale with the window; fade: blur
+  fades with it, no frame without it.
+- Focus change mid-move between styles with different corners or tints:
+  crossfade, no frame without blur.
+- Workspace switch: rounded tiles slide on the switch surface with their
+  blur (`live`: on their own surrogates).
+- `readypeeks`: move a tile twice within 5 s; change border width and
+  reload between: copies rebuilt, no stale cut.
+- A window with `parallax` != 1: live under all three.
+- `perf_bench` `peek_new`, `peek_draw` against `live` and square corners:
+  `a`'s extra registrations, `b`'s source creation.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds

@@ -565,18 +565,23 @@ impl WorkspaceSurrogate {
   }
 
   /// Draws the window's backdrop, as `params` show it, under its copy from
-  /// now on (see `OverlayCopies::carry_backdrop`). Returns whether it
-  /// does: only a surrogate pinned to the viewport can, as for the ring,
-  /// and only a backdrop that can be copied (see
+  /// now on, its rounded corners cut for a ring `ring_width` wide over
+  /// them (see `OverlayCopies::carry_backdrop`). Returns whether it does:
+  /// only a surrogate pinned to the viewport can, as for the ring, and
+  /// only a backdrop that can be copied (see
   /// `BackdropOverlayParams::is_copyable`).
   ///
   /// Before [`carry_ring`](Self::carry_ring), which goes over the window
   /// that this puts back on top of the backdrop.
-  pub fn carry_backdrop(&mut self, params: BackdropOverlayParams) -> bool {
+  pub fn carry_backdrop(
+    &mut self,
+    params: BackdropOverlayParams,
+    ring_width: Option<f32>,
+  ) -> bool {
     if self.is_live() || !params.is_copyable() {
       return false;
     }
-    if self.copies.carries_backdrop_styles(&[params]) {
+    if self.copies.carries_backdrop_styles(&[params], ring_width) {
       return true;
     }
 
@@ -585,6 +590,7 @@ impl WorkspaceSurrogate {
     if !self.copies.carry_backdrop(
       dest,
       &[params],
+      ring_width,
       &self.viewport,
       &self.rect,
       &frame,

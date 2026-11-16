@@ -14,10 +14,14 @@ use std::rc::Rc;
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
-  backdrop_source::{BackdropSource, FillSource, VignetteSource},
+  backdrop_source::{
+    BackdropSource, FillSource, OwnBackdropSource, VignetteSource,
+  },
+  corner_bands::{band_count, band_rects},
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   lerp_f32,
   native_surrogate::{fill_start, placed_rects},
+  rounded_backdrop::{self, RoundedBackdrop},
   BackdropOverlayParams, Color, Rect, StyleBlend, TabBarPlace,
 };
 
@@ -34,9 +38,65 @@ struct Placement {
   visible_frame: Option<Rect>,
 }
 
-/// A thumbnail of a window drawn around another one.
+/// How a copy of a window's backdrop is cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cut {
+  /// One rectangle: square corners.
+  Whole,
+  /// `2 * n + 1` rows following its rounded corners (see `corner_bands`).
+  Rows(usize),
+  /// One copy of the window's own rounded backdrop, stretched with it
+  /// (see `OwnBackdropSource`).
+  Own,
+}
+
+impl Cut {
+  /// How a copy of `params`' backdrop is cut, with `rounded` saying how
+  /// rounded corners are drawn, under a ring `ring_width` wide.
+  fn of(
+    params: &BackdropOverlayParams,
+    ring_width: Option<f32>,
+    rounded: RoundedBackdrop,
+  ) -> Self {
+    match rounded {
+      RoundedBackdrop::Bands if params.corner_radius > 0.0 => {
+        Self::Rows(band_count(params.corner_radius, ring_width))
+      }
+      RoundedBackdrop::Own if params.corner_radius > 0.0 => Self::Own,
+      _ => Self::Whole,
+    }
+  }
+
+  /// Thumbnails it is drawn with.
+  fn thumbnails(self) -> usize {
+    match self {
+      Self::Whole | Self::Own => 1,
+      Self::Rows(bands) => 2 * bands + 1,
+    }
+  }
+
+  /// The parts of a window's frame at `frame` it draws, one per
+  /// thumbnail, for corners `radius` round at rest, scaled by `scale`.
+  fn rows(
+    self,
+    frame: &Rect,
+    radius: f32,
+    scale: (f32, f32),
+  ) -> Vec<Option<Rect>> {
+    match self {
+      Self::Whole | Self::Own => vec![Some(frame.clone())],
+      Self::Rows(bands) => {
+        band_rects(frame, (radius * scale.0, radius * scale.1), bands)
+      }
+    }
+  }
+}
+
+/// A thumbnail of a window drawn around another one, whole or in rows.
 struct OverlayCopy {
-  thumbnail: Thumbnail,
+  /// One per row of `cut`.
+  thumbnails: Vec<Thumbnail>,
+  cut: Cut,
   /// Where the window the thumbnail is of is.
   rest: Rect,
   /// Where the window it is drawn around was when `source` was put at
@@ -45,37 +105,49 @@ struct OverlayCopy {
 }
 
 impl OverlayCopy {
-  /// Draws the copy around its window as `placement` places it.
-  fn place(&mut self, placement: &Placement) {
+  /// Draws the copy around its window as `placement` places it, stretched
+  /// over the window's visible frame when that is drawn as it is, in
+  /// `rows` (see [`Cut::rows`]).
+  fn place(&mut self, placement: &Placement, rows: &[Option<Rect>]) {
     let Placement {
       frame,
       clip,
       origin,
-      ..
+      visible_frame,
     } = placement;
 
-    match copy_rects(&self.rest, &self.window_rest, frame, clip, *origin) {
-      Some((rc_src, rc_dst)) => {
-        let _ = self.thumbnail.show(rc_src, rc_dst);
+    let whole = match visible_frame {
+      Some(visible_frame) => {
+        copy_rects(&self.rest, &self.rest, visible_frame, clip, *origin)
       }
-      None => self.thumbnail.hide(),
-    }
-  }
+      None => {
+        copy_rects(&self.rest, &self.window_rest, frame, clip, *origin)
+      }
+    };
+    let Some((rc_src, rc_dst)) = whole else {
+      for thumbnail in &mut self.thumbnails {
+        thumbnail.hide();
+      }
+      return;
+    };
 
-  /// Draws the copy stretched over `rect`, cut and placed as `placement`
-  /// says.
-  fn place_over(&mut self, rect: &Rect, placement: &Placement) {
-    match copy_rects(
-      &self.rest,
-      &self.rest,
-      rect,
-      &placement.clip,
-      placement.origin,
-    ) {
-      Some((rc_src, rc_dst)) => {
-        let _ = self.thumbnail.show(rc_src, rc_dst);
+    let Cut::Rows(_) = self.cut else {
+      if let Some(thumbnail) = self.thumbnails.first_mut() {
+        let _ = thumbnail.show(rc_src, rc_dst);
       }
-      None => self.thumbnail.hide(),
+      return;
+    };
+
+    for (thumbnail, row) in self.thumbnails.iter_mut().zip(rows) {
+      match row
+        .as_ref()
+        .and_then(|row| clip_rects(rc_src, rc_dst, &shifted(row, *origin)))
+      {
+        Some((rc_src, rc_dst)) => {
+          let _ = thumbnail.show(rc_src, rc_dst);
+        }
+        None => thumbnail.hide(),
+      }
     }
   }
 }
@@ -421,30 +493,97 @@ fn keeps_fill(kept: Color, color: Color) -> bool {
   kept == color
 }
 
-/// The part behind a window of a backdrop spanning its monitor, in one
-/// style.
+/// What a [`CropCopy`] is drawn from.
+enum CropSource {
+  /// A backdrop spanning the monitor, of which the part behind the window
+  /// is drawn.
+  Monitor(Rc<BackdropSource>),
+  /// The window's own, stretched with it ([`Cut::Own`]).
+  Own(Box<OwnBackdropSource>),
+}
+
+impl CropSource {
+  fn hwnd(&self) -> HWND {
+    match self {
+      Self::Monitor(source) => source.hwnd(),
+      Self::Own(source) => source.hwnd(),
+    }
+  }
+
+  /// The monitor the backdrop is drawn on.
+  fn monitor(&self) -> &Rect {
+    match self {
+      Self::Monitor(source) => source.monitor(),
+      Self::Own(source) => source.monitor(),
+    }
+  }
+
+  /// Picks up a changed wallpaper, as the source is put to use again.
+  fn refresh(&mut self) {
+    match self {
+      Self::Monitor(source) => source.refresh(),
+      Self::Own(source) => source.refresh(),
+    }
+  }
+}
+
+/// The part behind a window of its backdrop, in one style.
 struct CropCopy {
-  /// Declared before `source`, so it is unregistered before that window
-  /// goes.
-  thumbnail: Thumbnail,
-  source: Rc<BackdropSource>,
+  /// One per row of `cut`. Declared before `source`, so they are
+  /// unregistered before that window goes.
+  thumbnails: Vec<Thumbnail>,
+  source: CropSource,
   params: BackdropOverlayParams,
+  cut: Cut,
 }
 
 impl CropCopy {
-  /// Draws the crop for a window with its frame at `window_frame`, cut and
-  /// placed as `placement` says.
-  fn place(&mut self, window_frame: &Rect, placement: &Placement) {
-    let monitor = self.source.monitor();
-
-    match window_frame.intersection(&placement.clip) {
-      Some(shown) => {
-        let _ = self.thumbnail.show(
-          shifted(&shown, (monitor.left, monitor.top)),
-          shifted(&shown, placement.origin),
+  /// Draws the crop for a window with its frame at `window_frame`, its
+  /// corners scaled by `scale` from where it rested, cut and placed as
+  /// `placement` says.
+  fn place(
+    &mut self,
+    window_frame: &Rect,
+    scale: (f32, f32),
+    placement: &Placement,
+  ) {
+    let monitor = match &self.source {
+      CropSource::Monitor(source) => source.monitor(),
+      CropSource::Own(source) => {
+        let rest = source.rect();
+        let copy = copy_rects(
+          rest,
+          rest,
+          window_frame,
+          &placement.clip,
+          placement.origin,
         );
+        if let Some(thumbnail) = self.thumbnails.first_mut() {
+          match copy {
+            Some((rc_src, rc_dst)) => {
+              let _ = thumbnail.show(rc_src, rc_dst);
+            }
+            None => thumbnail.hide(),
+          }
+        }
+        return;
       }
-      None => self.thumbnail.hide(),
+    };
+    let rows =
+      self
+        .cut
+        .rows(window_frame, self.params.corner_radius, scale);
+
+    for (thumbnail, row) in self.thumbnails.iter_mut().zip(rows) {
+      match row.and_then(|row| row.intersection(&placement.clip)) {
+        Some(shown) => {
+          let _ = thumbnail.show(
+            shifted(&shown, (monitor.left, monitor.top)),
+            shifted(&shown, placement.origin),
+          );
+        }
+        None => thumbnail.hide(),
+      }
     }
   }
 }
@@ -506,19 +645,30 @@ impl BackdropCopy {
       placement.visible_frame.clone().unwrap_or_else(|| {
         map_rect(&self.frame_rest, &self.window_rest, &placement.frame)
       });
+    // Rounded corners are scaled with the window's thumbnail, which a
+    // window drawn 1:1 isn't.
+    let scale = if placement.visible_frame.is_some() {
+      (1.0, 1.0)
+    } else {
+      frame_scale(&self.frame_rest, &window_frame)
+    };
 
     for index in [self.from, self.current].into_iter().flatten() {
       if let Some(crop) = self.crops.get_mut(index) {
-        crop.place(&window_frame, placement);
+        crop.place(&window_frame, scale, placement);
       }
     }
+
+    let radius_of = |index: Option<usize>| {
+      index
+        .and_then(|index| self.crops.get(index))
+        .map_or(0.0, |crop| crop.params.corner_radius)
+    };
+    let radius =
+      lerp_f32(radius_of(self.from), radius_of(self.current), self.t);
     if let Some(vignette) = &mut self.vignette {
-      match &placement.visible_frame {
-        Some(visible_frame) => {
-          vignette.copy.place_over(visible_frame, placement);
-        }
-        None => vignette.copy.place(placement),
-      }
+      let rows = vignette.copy.cut.rows(&window_frame, radius, scale);
+      vignette.copy.place(placement, &rows);
     }
   }
 
@@ -571,33 +721,43 @@ impl BackdropCopy {
     let mut order = (0..self.crops.len()).collect::<Vec<_>>();
     order.sort_by(|a, b| weights[*b].total_cmp(&weights[*a]));
     for index in order {
-      let _ = self.crops[index]
-        .thumbnail
-        .set_opacity(scale_alpha(opacity, weights[index]));
+      let alpha = scale_alpha(opacity, weights[index]);
+      for thumbnail in &mut self.crops[index].thumbnails {
+        let _ = thumbnail.set_opacity(alpha);
+      }
     }
 
+    // A window's own backdrop draws its vignette itself.
     let strength_of = |index: Option<usize>| {
       index
         .and_then(|index| self.crops.get(index))
+        .filter(|crop| crop.cut != Cut::Own)
         .map_or(0.0, |crop| vignette_strength(&crop.params))
     };
     let strength =
       lerp_f32(strength_of(self.from), strength_of(self.current), self.t);
     if let Some(vignette) = &mut self.vignette {
-      let _ = vignette
-        .copy
-        .thumbnail
-        .set_opacity(scale_alpha(opacity, strength));
+      let alpha = scale_alpha(opacity, strength);
+      for thumbnail in &mut vignette.copy.thumbnails {
+        let _ = thumbnail.set_opacity(alpha);
+      }
     }
   }
 
   fn set_held(&mut self, held: bool) {
-    for crop in &mut self.crops {
-      crop.thumbnail.set_held(held);
+    for thumbnail in self.thumbnails_mut() {
+      thumbnail.set_held(held);
     }
-    if let Some(vignette) = &mut self.vignette {
-      vignette.copy.thumbnail.set_held(held);
-    }
+  }
+
+  /// Whether each crop is cut as one carried now for a ring `ring_width`
+  /// wide would be.
+  fn is_cut_for(&self, ring_width: Option<f32>) -> bool {
+    let rounded = rounded_backdrop::current();
+    self
+      .crops
+      .iter()
+      .all(|crop| crop.cut == Cut::of(&crop.params, ring_width, rounded))
   }
 
   /// Draws nothing, as one just carried: in no style, not shown, at no
@@ -618,23 +778,37 @@ impl BackdropCopy {
   /// Its thumbnails in the order registered: the crops', then the
   /// vignette's.
   fn thumbnails_mut(&mut self) -> impl Iterator<Item = &mut Thumbnail> {
-    self.crops.iter_mut().map(|crop| &mut crop.thumbnail).chain(
-      self
-        .vignette
-        .as_mut()
-        .map(|vignette| &mut vignette.copy.thumbnail),
-    )
+    self
+      .crops
+      .iter_mut()
+      .flat_map(|crop| &mut crop.thumbnails)
+      .chain(
+        self
+          .vignette
+          .iter_mut()
+          .flat_map(|vignette| &mut vignette.copy.thumbnails),
+      )
   }
 
   /// [`thumbnails_mut`](Self::thumbnails_mut), each with its source.
   fn thumbnails(&self) -> impl Iterator<Item = (&Thumbnail, HWND)> {
-    self
-      .crops
-      .iter()
-      .map(|crop| (&crop.thumbnail, crop.source.hwnd()))
-      .chain(self.vignette.as_ref().map(|vignette| {
-        (&vignette.copy.thumbnail, vignette.source.hwnd())
-      }))
+    let crops = self.crops.iter().flat_map(|crop| {
+      let source = crop.source.hwnd();
+      crop
+        .thumbnails
+        .iter()
+        .map(move |thumbnail| (thumbnail, source))
+    });
+    let vignette = self.vignette.iter().flat_map(|vignette| {
+      let source = vignette.source.hwnd();
+      vignette
+        .copy
+        .thumbnails
+        .iter()
+        .map(move |thumbnail| (thumbnail, source))
+    });
+
+    crops.chain(vignette)
   }
 }
 
@@ -929,8 +1103,9 @@ impl OverlayCopies {
   /// Draws the backdrops `styles` give a window at `window_rest`, with its
   /// frame at `frame`, on `monitor`, on `dest` from now on, in whichever
   /// of them [`show_backdrop_blend`](Self::show_backdrop_blend) picks,
-  /// once [`show_backdrop`](Self::show_backdrop) says so. Returns whether
-  /// it does; the same `styles` again keep what is drawn.
+  /// once [`show_backdrop`](Self::show_backdrop) says so. Rounded corners
+  /// are cut as [`Cut::of`] says, under a ring `ring_width` wide. Returns
+  /// whether it does; the same `styles` and cut again keep what is drawn.
   ///
   /// Before anything else is registered on `dest`, as it goes under the
   /// window: the caller then registers the window's own thumbnail anew,
@@ -939,11 +1114,12 @@ impl OverlayCopies {
     &mut self,
     dest: HWND,
     styles: &[BackdropOverlayParams],
+    ring_width: Option<f32>,
     monitor: &Rect,
     window_rest: &Rect,
     frame: &Rect,
   ) -> bool {
-    if self.carries_backdrop_styles(styles) {
+    if self.carries_backdrop_styles(styles, ring_width) {
       return true;
     }
 
@@ -975,24 +1151,36 @@ impl OverlayCopies {
         )
       });
 
+    let rounded = rounded_backdrop::current();
     let mut crops = Vec::<CropCopy>::new();
     for &params in styles {
       if crops.iter().any(|crop| crop.params == params) {
         continue;
       }
 
-      let source = match BackdropSource::acquire(monitor, params) {
+      let cut = Cut::of(&params, ring_width, rounded);
+      let source = match cut {
+        Cut::Own => OwnBackdropSource::create(frame, monitor, params)
+          .map(|source| CropSource::Own(Box::new(source))),
+        Cut::Whole | Cut::Rows(_) => {
+          BackdropSource::acquire(monitor, params).map(CropSource::Monitor)
+        }
+      };
+      let source = match source {
         Ok(source) => source,
         Err(err) => {
           tracing::warn!("Failed to draw a window's backdrop: {err}");
           continue;
         }
       };
-      if let Some(thumbnail) = self.register_hidden(dest, source.hwnd()) {
+      if let Some(thumbnails) =
+        self.register_rows(dest, source.hwnd(), cut)
+      {
         crops.push(CropCopy {
-          thumbnail,
+          thumbnails,
           source,
           params,
+          cut,
         });
       }
     }
@@ -1000,30 +1188,7 @@ impl OverlayCopies {
       return false;
     }
 
-    let has_vignette = crops
-      .iter()
-      .any(|crop| vignette_strength(&crop.params) > 0.0);
-    let vignette = has_vignette
-      .then(|| VignetteSource::create(frame, 1.0))
-      .and_then(|source| {
-        source
-          .inspect_err(|err| {
-            tracing::warn!("Failed to draw a window's vignette: {err}");
-          })
-          .ok()
-      })
-      .and_then(|source| {
-        self.register_hidden(dest, source.hwnd()).map(|thumbnail| {
-          VignetteCopy {
-            copy: OverlayCopy {
-              thumbnail,
-              rest: source.rect().clone(),
-              window_rest: window_rest.clone(),
-            },
-            source,
-          }
-        })
-      });
+    let vignette = self.carry_vignette(dest, &crops, window_rest, frame);
 
     let mut backdrop = BackdropCopy {
       styles: styles.to_vec(),
@@ -1044,6 +1209,50 @@ impl OverlayCopies {
     true
   }
 
+  /// A copy of the vignette of a window at `window_rest`, its frame at
+  /// `frame`, under `crops` on `dest`, if any of them has one: cut in as
+  /// many rows as the finest crop, following whichever corners are drawn
+  /// (see `BackdropCopy::place_current`).
+  fn carry_vignette(
+    &self,
+    dest: HWND,
+    crops: &[CropCopy],
+    window_rest: &Rect,
+    frame: &Rect,
+  ) -> Option<VignetteCopy> {
+    let cut = crops
+      .iter()
+      .filter_map(|crop| match crop.cut {
+        Cut::Rows(bands) => Some(bands),
+        Cut::Whole | Cut::Own => None,
+      })
+      .max()
+      .map_or(Cut::Whole, Cut::Rows);
+    // A window's own backdrop draws its vignette itself.
+    if !crops.iter().any(|crop| {
+      crop.cut != Cut::Own && vignette_strength(&crop.params) > 0.0
+    }) {
+      return None;
+    }
+
+    let source = VignetteSource::create(frame, 1.0)
+      .inspect_err(|err| {
+        tracing::warn!("Failed to draw a window's vignette: {err}");
+      })
+      .ok()?;
+    let thumbnails = self.register_rows(dest, source.hwnd(), cut)?;
+
+    Some(VignetteCopy {
+      copy: OverlayCopy {
+        thumbnails,
+        cut,
+        rest: source.rect().clone(),
+        window_rest: window_rest.clone(),
+      },
+      source,
+    })
+  }
+
   /// Registers a hidden thumbnail of `source` on `dest`, held while these
   /// copies are.
   fn register_hidden(
@@ -1054,19 +1263,33 @@ impl OverlayCopies {
     Thumbnail::register_held(dest, source, Look::default(), self.held)
   }
 
+  /// [`register_hidden`](Self::register_hidden) once per row of `cut`, in
+  /// order, or none if any fails.
+  fn register_rows(
+    &self,
+    dest: HWND,
+    source: HWND,
+    cut: Cut,
+  ) -> Option<Vec<Thumbnail>> {
+    (0..cut.thumbnails())
+      .map(|_| self.register_hidden(dest, source))
+      .collect()
+  }
+
   pub(crate) fn carries_backdrop(&self) -> bool {
     self.backdrop.is_some()
   }
 
-  /// Whether the backdrop is drawn in exactly `styles`.
+  /// Whether the backdrop is drawn in exactly `styles`, cut for a ring
+  /// `ring_width` wide (see [`Cut::of`]).
   pub(crate) fn carries_backdrop_styles(
     &self,
     styles: &[BackdropOverlayParams],
+    ring_width: Option<f32>,
   ) -> bool {
-    self
-      .backdrop
-      .as_ref()
-      .is_some_and(|backdrop| same_set(&backdrop.styles, styles))
+    self.backdrop.as_ref().is_some_and(|backdrop| {
+      same_set(&backdrop.styles, styles) && backdrop.is_cut_for(ring_width)
+    })
   }
 
   /// Draws the backdrop in the style `blend` fades to, over the one it
@@ -1097,8 +1320,9 @@ impl OverlayCopies {
     }
   }
 
-  /// Moves the backdrop's vignette over the window's `frame` while the
-  /// window is at `window_rest`, which the backdrop then follows from.
+  /// Moves the backdrop's vignette, and the window's own backdrop where it
+  /// is drawn from that, over the window's `frame` while the window is at
+  /// `window_rest`, which the backdrop then follows from.
   pub(crate) fn move_backdrop(
     &mut self,
     window_rest: &Rect,
@@ -1111,6 +1335,13 @@ impl OverlayCopies {
     backdrop.window_rest = window_rest.clone();
     backdrop.frame_rest = frame.clone();
 
+    for crop in &mut backdrop.crops {
+      if let CropSource::Own(source) = &mut crop.source {
+        if let Err(err) = source.set_frame(frame) {
+          tracing::warn!("Failed to move a window's backdrop: {err}");
+        }
+      }
+    }
     if let Some(vignette) = &mut backdrop.vignette {
       if let Err(err) = vignette.source.set_frame(frame) {
         tracing::warn!("Failed to move a window's vignette: {err}");
@@ -1365,13 +1596,14 @@ impl OverlayCopies {
 
   /// Keeps the backdrop for a window at `window_rest`, its frame at
   /// `frame`, to be drawn in `styles` on `monitor` (given with any
-  /// `styles`), if it can (see [`keeps_backdrop`]), as
-  /// [`carry_backdrop`](Self::carry_backdrop) would carry it there; else
-  /// drops it. Returns whether nothing is to be registered anew for it:
-  /// kept, or none carried nor wanted.
+  /// `styles`) under a ring `ring_width` wide, if it can (see
+  /// [`keeps_backdrop`]), as [`carry_backdrop`](Self::carry_backdrop)
+  /// would carry it there; else drops it. Returns whether nothing is to
+  /// be registered anew for it: kept, or none carried nor wanted.
   pub(crate) fn reclaim_backdrop(
     &mut self,
     styles: &[BackdropOverlayParams],
+    ring_width: Option<f32>,
     monitor: Option<&Rect>,
     window_rest: &Rect,
     frame: &Rect,
@@ -1387,14 +1619,16 @@ impl OverlayCopies {
         styles,
         monitor,
       )
-    });
+    }) && backdrop.is_cut_for(ring_width);
     if !keeps {
       self.backdrop = None;
       return styles.is_empty();
     }
 
-    for crop in &backdrop.crops {
-      crop.source.refresh();
+    if let Some(backdrop) = &mut self.backdrop {
+      for crop in &mut backdrop.crops {
+        crop.source.refresh();
+      }
     }
     self.move_backdrop(window_rest, frame);
     true
@@ -1728,6 +1962,23 @@ fn fill_strips(
   ]
 }
 
+/// How much `frame` is stretched from `rest` along each axis.
+#[allow(clippy::cast_precision_loss)]
+fn frame_scale(rest: &Rect, frame: &Rect) -> (f32, f32) {
+  let scale = |to: i32, from: i32| {
+    if from > 0 {
+      to as f32 / from as f32
+    } else {
+      1.0
+    }
+  };
+
+  (
+    scale(frame.width(), rest.width()),
+    scale(frame.height(), rest.height()),
+  )
+}
+
 /// `rect`, which goes with a window resting at `window_rest`, moved and
 /// stretched along with that window to `frame`.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
@@ -1736,17 +1987,7 @@ pub(crate) fn map_rect(
   window_rest: &Rect,
   frame: &Rect,
 ) -> Rect {
-  let scale = |to: i32, from: i32| {
-    if from > 0 {
-      to as f32 / from as f32
-    } else {
-      1.0
-    }
-  };
-  let (scale_x, scale_y) = (
-    scale(frame.width(), window_rest.width()),
-    scale(frame.height(), window_rest.height()),
-  );
+  let (scale_x, scale_y) = frame_scale(window_rest, frame);
   let x = |x: i32| {
     frame.left + ((x - window_rest.left) as f32 * scale_x).round() as i32
   };
@@ -1773,9 +2014,10 @@ mod tests {
     bar_rects, copy_rects, crop_fade, crop_weights, fill_strips,
     keeps_backdrop, keeps_fill, keeps_ring, map_rect, ring_part_rects,
     same_set, scale_alpha, shifted, vignette_strength,
-    BackdropOverlayParams, Band, Rect, RingPart, RECT,
+    BackdropOverlayParams, Band, Cut, Rect, RingPart, RoundedBackdrop,
+    RECT,
   };
-  use crate::Color;
+  use crate::{corner_bands::band_count, Color};
 
   /// Uncut, a bar is drawn whole and 1:1; cut, from its window's top-left,
   /// which holds only the part inside the clip.
@@ -1957,6 +2199,50 @@ mod tests {
   #[test]
   fn copy_off_the_clip_is_not_drawn() {
     assert_eq!(ring_at(&Rect::from_xy(2000, 100, 800, 600)), None);
+  }
+
+  #[test]
+  fn only_rounded_corners_in_rows_are_cut() {
+    let square = backdrop(20.0);
+    let rounded = BackdropOverlayParams {
+      corner_radius: 8.0,
+      ..square
+    };
+
+    assert_eq!(
+      Cut::of(&square, Some(2.0), RoundedBackdrop::Bands),
+      Cut::Whole
+    );
+    assert_eq!(
+      Cut::of(&rounded, Some(2.0), RoundedBackdrop::Live),
+      Cut::Whole
+    );
+    assert_eq!(
+      Cut::of(&rounded, Some(2.0), RoundedBackdrop::Bands),
+      Cut::Rows(band_count(8.0, Some(2.0)))
+    );
+    assert_eq!(Cut::of(&rounded, None, RoundedBackdrop::Own), Cut::Own);
+    assert_eq!(Cut::of(&square, None, RoundedBackdrop::Own), Cut::Whole);
+    assert_eq!(Cut::Own.thumbnails(), 1);
+    assert_eq!(Cut::Whole.thumbnails(), 1);
+    assert_eq!(Cut::Rows(3).thumbnails(), 7);
+  }
+
+  /// Whole, a crop is the window's frame; in rows, they are cut for its
+  /// corners as the window is scaled.
+  #[test]
+  fn crop_rows_scale_their_corners_with_the_window() {
+    let frame = Rect::from_ltrb(0, 0, 200, 100);
+    assert_eq!(
+      Cut::Whole.rows(&frame, 8.0, (2.0, 2.0)),
+      [Some(frame.clone())]
+    );
+
+    // 16 px across, 4 px down.
+    let rows = Cut::Rows(2).rows(&frame, 8.0, (2.0, 0.5));
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0], Some(Rect::from_ltrb(4, 0, 196, 1)));
+    assert_eq!(rows[2], Some(Rect::from_ltrb(0, 4, 200, 96)));
   }
 
   #[test]

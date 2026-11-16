@@ -1,4 +1,4 @@
-use crate::Color;
+use crate::{rounded_backdrop::RoundedBackdrop, Color};
 
 /// Tint, blur radius, corner radius, opacity, saturation and grading knobs
 /// for a `NativeBackdropOverlay`, bundled so the growing set of overlay
@@ -64,11 +64,69 @@ pub struct BackdropOverlayParams {
 
 impl BackdropOverlayParams {
   /// Whether a surrogate can draw this backdrop as copies of it (see
-  /// `OverlayCopies::carry_backdrop`): only square, as its copy of the
-  /// desktop behind the window is a rectangle, and pinned to the desktop,
-  /// as that copy is cut from a backdrop of the whole monitor.
+  /// `OverlayCopies::carry_backdrop`): pinned to the desktop, as the copy
+  /// is cut from a backdrop of the whole monitor, and square unless
+  /// `GLAZEWM_ROUNDED_BACKDROP` says how to draw rounded corners (see
+  /// `rounded_backdrop`).
   #[must_use]
   pub fn is_copyable(&self) -> bool {
-    self.corner_radius <= 0.0 && (self.parallax - 1.0).abs() < 1e-3
+    self.is_copyable_with(crate::rounded_backdrop::current())
+  }
+
+  /// [`is_copyable`](Self::is_copyable), drawing rounded corners as
+  /// `rounded` says.
+  fn is_copyable_with(&self, rounded: RoundedBackdrop) -> bool {
+    (self.corner_radius <= 0.0 || rounded.is_copied())
+      && (self.parallax - 1.0).abs() < 1e-3
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{BackdropOverlayParams, RoundedBackdrop};
+  use crate::Color;
+
+  fn backdrop(corner_radius: f32, parallax: f32) -> BackdropOverlayParams {
+    BackdropOverlayParams {
+      tint: Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+      },
+      blur_amount: 20.0,
+      corner_radius,
+      opacity: 1.0,
+      saturation: 1.0,
+      exposure: 0.0,
+      contrast: 0.0,
+      highlights: 0.0,
+      shadows: 0.0,
+      vignette: 0.0,
+      grain: 0.0,
+      parallax,
+    }
+  }
+
+  #[test]
+  fn rounded_corners_are_copied_only_when_switched_on() {
+    let rounded = backdrop(8.0, 1.0);
+
+    assert!(!rounded.is_copyable_with(RoundedBackdrop::Live));
+    assert!(rounded.is_copyable_with(RoundedBackdrop::Bands));
+    assert!(rounded.is_copyable_with(RoundedBackdrop::Own));
+    assert!(backdrop(0.0, 1.0).is_copyable_with(RoundedBackdrop::Live));
+  }
+
+  #[test]
+  fn parallax_is_never_copied() {
+    for rounded in [
+      RoundedBackdrop::Live,
+      RoundedBackdrop::Bands,
+      RoundedBackdrop::Own,
+    ] {
+      assert!(!backdrop(0.0, 0.5).is_copyable_with(rounded));
+      assert!(!backdrop(8.0, 0.5).is_copyable_with(rounded));
+    }
   }
 }

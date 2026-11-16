@@ -203,6 +203,81 @@ impl VignetteSource {
   }
 }
 
+/// A window's own backdrop, rounded and with its vignette, as its overlay
+/// draws it at rest, in a window of its own sized to the window's frame
+/// and hidden by its alpha, for a copy of it to stretch with the window
+/// (`RoundedBackdrop::Own`).
+///
+/// Not the window's overlay itself, which the backdrop's handover hides
+/// while a copy draws it (see `peek_view::carry_backdrop`): a thumbnail
+/// of a hidden window shows nothing.
+pub(crate) struct OwnBackdropSource {
+  /// Declared before `window`, which its visual tree is rooted to.
+  composition: BackdropVisual,
+  window: OverlayWindow,
+  rect: Rect,
+  /// The monitor the backdrop was asked for on.
+  monitor: Rect,
+}
+
+impl OwnBackdropSource {
+  /// Draws `params`' backdrop for a window with its frame at `frame`, on
+  /// `monitor`.
+  pub(crate) fn create(
+    frame: &Rect,
+    monitor: &Rect,
+    params: BackdropOverlayParams,
+  ) -> crate::Result<Self> {
+    let mut window = OverlayWindow::create(
+      OverlayKind::BackdropSource,
+      frame,
+      HWND_BOTTOM,
+    )?;
+    window.set_alpha(0)?;
+    let composition =
+      BackdropVisual::create(window.hwnd(), frame, params)?;
+    window.place_at_bottom(frame)?;
+
+    Ok(Self {
+      composition,
+      window,
+      rect: frame.clone(),
+      monitor: monitor.clone(),
+    })
+  }
+
+  /// Moves the backdrop behind a window with its frame at `frame`.
+  pub(crate) fn set_frame(&mut self, frame: &Rect) -> crate::Result<()> {
+    if &self.rect == frame {
+      return Ok(());
+    }
+
+    self.window.place_at_bottom(frame)?;
+    self.composition.set_layout(frame, frame, frame)?;
+    self.rect = frame.clone();
+    Ok(())
+  }
+
+  /// Picks up a changed wallpaper, as the source is put to use.
+  pub(crate) fn refresh(&mut self) {
+    if let Err(err) = self.composition.sync_backdrop() {
+      tracing::warn!("Own backdrop source refresh failed: {err}.");
+    }
+  }
+
+  pub(crate) fn hwnd(&self) -> windows::Win32::Foundation::HWND {
+    self.window.hwnd()
+  }
+
+  pub(crate) fn rect(&self) -> &Rect {
+    &self.rect
+  }
+
+  pub(crate) fn monitor(&self) -> &Rect {
+    &self.monitor
+  }
+}
+
 /// A few pixels of one color, in a window hidden by its alpha, which
 /// thumbnails of it leave out: what a surrogate stretches over the part of
 /// a window's frame its app has yet to fill (see

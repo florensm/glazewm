@@ -211,10 +211,10 @@ impl WindowPeek {
 
   /// Has a peek kept by [`set_ready`](Self::set_ready) draw `window`, at
   /// `rect`, for a new motion as [`hosted`](Self::hosted) makes one anew,
-  /// before [`carry_styles`](Self::carry_styles) with `styles`: every
-  /// field as there, every registration kept while what it was made from
-  /// holds, and back on its surface, which goes just below `window` as
-  /// `SurfaceWindow::admit` decides.
+  /// before [`carry_styles`](Self::carry_styles) with `styles` and
+  /// `ring_width`: every field as there, every registration kept while
+  /// what it was made from holds, and back on its surface, which goes just
+  /// below `window` as `SurfaceWindow::admit` decides.
   ///
   /// A tile's registrations stack backdrop, window, fill, ring. Those
   /// kept keep their order; a window thumbnail or backdrop registered
@@ -225,6 +225,7 @@ impl WindowPeek {
     window: &NativeWindow,
     rect: &Rect,
     styles: &[Option<BackdropOverlayParams>],
+    ring_width: Option<f32>,
   ) {
     let PeekMode::Pinned { viewport } = &self.mode else {
       return;
@@ -238,6 +239,7 @@ impl WindowPeek {
       .then(|| wallpaper_surface::monitor_bounds(viewport));
     let keeps_backdrop = self.copies.reclaim_backdrop(
       &backdrops,
+      ring_width,
       monitor.as_ref(),
       rect,
       &frame,
@@ -349,13 +351,16 @@ impl WindowPeek {
   ///
   /// Only a peek that never moves carries them, in styles that can be
   /// copied (see `BackdropOverlayParams::is_copyable`), and shown while
-  /// [`show_backdrop`](Self::show_backdrop) says so.
+  /// [`show_backdrop`](Self::show_backdrop) says so. Rounded corners are
+  /// cut for a ring `ring_width` wide over them (see
+  /// `OverlayCopies::carry_backdrop`).
   ///
   /// Before [`carry_ring`](Self::carry_ring), which goes over the window
   /// that this may put back on top of the backdrop.
   pub fn carry_styles(
     &mut self,
     styles: &[Option<BackdropOverlayParams>],
+    ring_width: Option<f32>,
   ) {
     let PeekMode::Pinned { viewport } = &self.mode else {
       return;
@@ -366,16 +371,15 @@ impl WindowPeek {
     let backdrops = copyable(styles);
 
     if !backdrops.is_empty()
-      && !self.copies.carries_backdrop_styles(&backdrops)
+      && !self.copies.carries_backdrop_styles(&backdrops, ring_width)
     {
       // Cut from a backdrop of the whole monitor, which the clip, its work
       // area, is part of.
       let monitor = wallpaper_surface::monitor_bounds(viewport);
 
-      if self
-        .copies
-        .carry_backdrop(dest, &backdrops, &monitor, &self.rest, &frame)
-      {
+      if self.copies.carry_backdrop(
+        dest, &backdrops, ring_width, &monitor, &self.rest, &frame,
+      ) {
         self.surrogate.raise_thumbnail(self.source);
         // Under the window now, they would stack below it once carried.
         self.copies.drop_spares();
