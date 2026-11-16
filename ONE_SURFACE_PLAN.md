@@ -2307,7 +2307,7 @@ semi-transparent windows; `window_move`/`window_resize`/`window_open` at
 
 Reviewer's note: the owner then checked report 2 with `GLAZEWM_ROUNDED_BACKDROP=live` and it still flickers in scrolling layouts, so it is not (or not only) item 2's: the older backdrop flicker (open item) is the first suspect, in the scroll view's resting or live column peeks across a focus fade.
 
-Branch `os/fix-rounded-1`, `os/13-rounded-a`, `os/14-ring`, `os/15-ring-fixes`, `os/16-scroll-flicker`. The owner's two reports with rounded corners,
+Branch `os/fix-rounded-1`, `os/13-rounded-a`, `os/14-ring`, `os/15-ring-fixes`, `os/16-scroll-flicker`, `os/17-step8` (part A only). The owner's two reports with rounded corners,
 a custom border and `GLAZEWM_ROUNDED_BACKDROP=a`. Reading did not settle
 either cause, so no behaviour is changed: two `debug` log lines are added
 to tell the suspects apart. No hand-over step moved, no new Windows API.
@@ -2788,65 +2788,63 @@ Seen by the owner on the laptop, 2026-11-16 (`test/one-surface` up to `6353eeab`
 with A look fine; the border jump with glow is gone (`os/15-ring-fixes`); the scroll focus flicker
 with a semi-transparent focused window is "pretty alright now" (`os/16-scroll-flicker`).
 
-### Open, in the order to take them
+### Open, in the order to take them (updated 2026-11-16)
 
-1. **Removal of the old code**: done 2026-11-15 (R0..R6, see "Removal
-   plan"). Left from it for step 8: uncalled `WindowPeek::carries_tab_bar`,
-   `PeekSurface::is_shown`, `PeekSurface::raise_to_top` (never called,
-   not orphaned by the removal); `perf_bench` columns reading removed
-   stages (`session_begin`, `session_overlays`, now zero); the
-   `isolate_modes.ps1` modes (inert); `CLAUDE.md`'s `isolate_modes.ps1`
-   description (R6 proposed wording, owner to decide). To check: the
-   `catch_up_before_frame` doc in `main.rs` (window events during peek
-   moves, "not checked yet" since R4's guard went).
-2. **Rounded backdrops on the surface**: done (built 2026-11-16, `os/12-rounded`; the owner chose A on the laptop, and the switch and B went in `os/13-rounded-a`, see "Rounded backdrops: as built", "Chosen: A") (owner, 2026-11-15; after the
-   removal, before the flicker and the bench). A backdrop with rounded
-   corners (the window's corner style) or `parallax` != 1 is not
-   copyable (`BackdropOverlayParams::is_copyable`), so the window is live:
-   a stand-in of its own, and with `has_own_peek_neighbour` /
-   `beside_own_peek` much of its workspace too. The owner uses rounded
-   corners with a custom border, so as built one surface mostly does not
-   apply to their setup. Documented thumbnails only:
-   - **A (try first): rounded from rectangles.** Keep today's pinned
-     copy of the monitor backdrop, cut as a middle rect plus a few bands
-     per corner, each narrower toward the corner, so their ends follow
-     the corner's arc; the border ring's copy over the edge hides the
-     steps where the ring is at least a step wide. Same look as at rest,
-     no jump at landing. Cost: about 2k+1 backdrop registrations per
-     tile instead of 1 (kept by `readypeeks`), more per-frame updates.
-     Pick k from the radius and border width; without a border, say what
-     shows.
-   - **B (fallback): a thumbnail of the window's own backdrop overlay**,
-     rounded already. The blur then moves (and stretches) with the
-     window during the motion, and jumps to the new spot's at landing.
-   Built behind a temporary switch (an environment variable read once
-   at start, as `GLAZEWM_ISOLATE` was; it is gone after R1) so the owner
-   can compare A, B and the live stand-in on screen; the switch goes
-   once chosen. `parallax` != 1
-   stays live either way.
-3. **Parallax backdrops on the surface, then no live peeks** (owner,
-   2026-11-15; after item 2). A pinned backdrop copy is cut from one
-   blurred image of the whole monitor; parallax only changes where it is
-   cut (window offset within the monitor times `parallax`), so shift the
+Done: the removal (R0..R6), rounded backdrops (A, always on), the ring
+fixes (glow jump, ring registered with its window, ring under a new
+fill), the scroll focus flicker, step 8 part A (never-called peek and
+surface methods, dead `perf_bench` columns). Owner's laptop checks all
+fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
+
+1. **Step 8 part B, the bench rework** (unfinished, branch
+   `os/17-step8`, pushed, WIP commit `39fa722f` on top of the two part A
+   commits already merged here). Started in `perf_bench`: config and IPC
+   reading for a second build (`bench_config.rs`, new `compare.rs`,
+   `ipc.rs`, `wm-ipc-client`'s `IpcClient::next_text`, `serde` dev-dep).
+   Left: the PowerShell driver (`isolate_modes.ps1` renamed, e.g.
+   `compare_branches.ps1`): build this branch and `-Against <ref>`
+   (default `origin/main`) from a separate `git worktree` with its own
+   `target`, alternate builds per round, restart the WM per build with
+   `GLAZEWM_PERF`, scenarios `move`, `resize`, `switch`, open/close
+   (`-Launch`), load 0 and `-CpuLoad 8`, backdrops and borders on/off,
+   optional `--dwm`; the dwm columns and `print_summary` (side by side,
+   "—" for a stage one side lacks); "To measure (desktop)" rewritten
+   with the exact commands; proposed `CLAUDE.md` wording for the
+   script. Merge only once it compiles and the script is complete.
+   Desktop only (strip list: the whole `perf_bench/` dir).
+2. **Bench** on the desktop (`tryout/one-surface` against `origin/main`),
+   then read the numbers: `input->first frame`, frame p90, interval
+   p90/p99, `peek_new`, `restack`, dwm gpu busy p90. Owner's feel so
+   far: overview much smoother, workspace switching fine, borders
+   lagged before `os/15-ring-fixes` (re-check).
+3. **Item 3: parallax backdrops on the surface, then no live peeks**
+   (owner, 2026-11-15). A pinned backdrop copy is cut from one blurred
+   image of the whole monitor; parallax only changes where it is cut
+   (window offset within the monitor times `parallax`), so shift the
    copy's `rcSource` by that, clamped at the monitor's edges as the real
-   overlay is (check its code for what it does there). Not checked yet:
-   read the overlay first and stop if it can't match. If items 2 and 3
-   both hold, every backdrop is copyable: delete live peeks (`Live` modes
-   of `WindowPeek` and `WorkspaceSurrogate`, `is_live`, `allows_motion`,
-   the live arms of the admission rules) and the rules that keep tiles,
-   transits and columns beside an own peek on their own
-   (`has_own_peek_neighbour`, `beside_own_peek`), which only count live
-   peeks since stacks. Own windows stay for the other fallbacks
+   overlay is (check its code for what it does there). Read the overlay
+   first and stop if it can't match. If it holds, every backdrop is
+   copyable: delete live peeks (`Live` modes of `WindowPeek` and
+   `WorkspaceSurrogate`, `is_live`, the live arms of the admission rules,
+   `restack_live_overlays`, R2's live arms in `track_overlays` /
+   `overlay_anchor` / `place_scaled`) and `has_own_peek_neighbour`,
+   `beside_own_peek`. Own windows stay for the other fallbacks
    (unfocused floating not on top, floating closes, switch floating,
-   fullscreen and topmost, a topped surface, surface failure).
-4. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
-   isolate words and modes that are not compared, so the bench runs only
-   what matters; and have the bench script also build and run a second
-   branch, `origin/main` unless the owner names another, from a separate
-   checkout, the same scenarios on each), the measuring section.
-5. **The backdrop flicker** on workspace switches (above). The scroll-layout focus flicker: alpha handed back late on
-   scrolling focus changes, fixed, see "Scroll focus flicker: as built".
-6. **Bench**.
+   fullscreen and topmost, a topped surface, surface failure). The owner
+   uses `parallax: 1.0`, so this is a simplification, not a visible
+   change for them.
+4. **The backdrop flicker on workspace switches** (seen 2026-11-15, before
+   the integration pass; not seen since by the owner). Check whether it
+   still shows; the scroll focus flicker was a different cause, fixed.
+5. **Small open items**: `catch_up_before_frame` doc in `main.rs`
+   (window events during peek moves "not checked yet" since R4's guard
+   went; nothing reported); the solid look of `fill` resizes over no
+   backdrop is by design; `CLAUDE.md`'s `isolate_modes.ps1` description
+   (R6's interim wording, or step 8 part B's, owner to decide); debug
+   lines added for laptop checks (`overlay_copies`, `peek_view`
+   `carry_ring`, `scroll_view`, `peek_surface`, `overlay_window`,
+   `hidden_alpha`, `native_window` z-order retry) can stay or go once
+   the owner is happy.
 
 ### Owner's decisions still open
 
