@@ -8,8 +8,6 @@
 //!   its own, its real backdrop overlay following it, as before.
 //! - `a`: copied as the monitor's backdrop is for a square one, cut into
 //!   rows whose ends follow the corners' arcs (see `corner_bands`).
-//! - `b`: copied from a rounded backdrop of the window's own, stretched
-//!   with it (see `OwnBackdropSource`).
 //!
 //! A backdrop with `parallax` != 1 moves live whatever this says.
 //!
@@ -23,7 +21,6 @@ pub(crate) enum RoundedBackdrop {
   #[default]
   Live,
   Bands,
-  Own,
 }
 
 impl RoundedBackdrop {
@@ -37,7 +34,6 @@ impl RoundedBackdrop {
   fn parse(value: &str) -> (Self, bool) {
     match value.trim().to_ascii_lowercase().as_str() {
       "a" => (Self::Bands, true),
-      "b" => (Self::Own, true),
       "live" | "" => (Self::Live, true),
       _ => (Self::Live, false),
     }
@@ -83,7 +79,6 @@ mod tests {
       RoundedBackdrop::parse(" A "),
       (RoundedBackdrop::Bands, true)
     );
-    assert_eq!(RoundedBackdrop::parse("B"), (RoundedBackdrop::Own, true));
     assert_eq!(
       RoundedBackdrop::parse("Live"),
       (RoundedBackdrop::Live, true)
@@ -108,6 +103,5 @@ mod tests {
   fn only_live_draws_no_copy() {
     assert!(!RoundedBackdrop::Live.is_copied());
     assert!(RoundedBackdrop::Bands.is_copied());
-    assert!(RoundedBackdrop::Own.is_copied());
   }
 }

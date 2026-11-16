@@ -114,17 +114,12 @@ mod tests {
 
     assert!(!rounded.is_copyable_with(RoundedBackdrop::Live));
     assert!(rounded.is_copyable_with(RoundedBackdrop::Bands));
-    assert!(rounded.is_copyable_with(RoundedBackdrop::Own));
     assert!(backdrop(0.0, 1.0).is_copyable_with(RoundedBackdrop::Live));
   }
 
   #[test]
   fn parallax_is_never_copied() {
-    for rounded in [
-      RoundedBackdrop::Live,
-      RoundedBackdrop::Bands,
-      RoundedBackdrop::Own,
-    ] {
+    for rounded in [RoundedBackdrop::Live, RoundedBackdrop::Bands] {
       assert!(!backdrop(0.0, 0.5).is_copyable_with(rounded));
       assert!(!backdrop(8.0, 0.5).is_copyable_with(rounded));
     }
