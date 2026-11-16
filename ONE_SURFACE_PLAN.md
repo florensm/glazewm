@@ -2585,6 +2585,106 @@ To check on screen:
 - Workspace switch with the glow on (slide ring), and the overview's
   border previews: ring in place.
 
+## Scroll focus flicker: as built
+
+Branch `os/16-scroll-flicker`, from `e6022f7d`. Read off the code, not
+seen running. Cause not found by reading, so no behaviour is changed:
+`debug` lines are added to tell the suspects apart. No hand-over step
+moved, no new Windows API, live path untouched.
+
+### Observations (owner, laptop, 2026-11-16)
+
+Scrolling layout, two tiles side by side, both fully on screen (x=67
+w=1670, x=1749 w=1670 on 3440), Alt+H / Alt+L: the backdrop flickers.
+Same config in a non-scrolling layout: none. Rounded or square corners,
+backdrop on both or only focused: flickers either way; it did under
+`GLAZEWM_ROUNDED_BACKDROP=live` too. Focused: 60% transparency, glow;
+other: opaque, no glow; tint and vignette differ. Debug log per switch:
+`Setting focus to window`, `FocusChanged`, `Updating window z-order`
+for both, `Applying transparency` (153, 255), then `query monitors` and
+`ZOrderChanged`. No `Updating window position`, no peek or ring lines:
+the switch is at rest.
+
+### What a focus change at rest does, read
+
+Two passes. The command's (`focus --direction` / `focus_column` only
+queue a focus change): `start_focus_fades` starts both windows' style
+fades; `sync_scroll_offsets` (no scroll, so no redraw);
+`sync_scroll_view`; no `redraw_containers` (nothing queued);
+`sync_focus` (`SetForegroundWindow`, the `Setting focus` line);
+`sync_overlays` restacks the focused window's overlays (forced). The OS
+focus event's (`handle_window_focused` queues the workspace's reorder and
+the focused effects): `redraw_containers` restacks every tile (the two
+`Updating window z-order` lines: focused `Normal`, which is
+`HWND_NOTOPMOST`, a no-op for a non-topmost window; the other just after
+it), then `apply_focus_effects` (the alpha lines), then `sync_overlays`
+restacks both windows' overlays (forced), then each animation tick
+`advance_focus_fades` crossfades tint and vignette.
+
+All of that is the same in every layout: `windows_to_bring_to_front`
+takes every tile of the workspace in any layout, so the non-scrolling
+path logs `Updating window z-order` for both windows too. The only
+scrolling-only step is `sync_scroll_view`, and at rest it does nothing
+on screen if it holds no peek: each shown column at rest drops its entry
+(`scroll_view.rs`, the `ends_shown` arm), `track_overlays`,
+`restack_crossings`, `restack_joining_overlays` and
+`settle_resting_surfaces` all walk entries or tenants only, and no flush
+runs. Resting columns (`slidepeeks`) only exist for a column cut at a
+monitor edge with another monitor behind it; neither tile is. The alpha
+order is safe as read: the newly see-through window's backdrop is
+already shown in the other style (`shows_at_once` only applies to a
+style with no backdrop), and the crossfade fades one bake layer over an
+opaque one (`BackdropVisual::set_bake_blend`), never two against each
+other.
+
+### Suspects, and the lines that tell them apart
+
+1. **A peek the scroll view still holds at rest** (left from an earlier
+   scroll: a `Releasing` one not settled, a resting `Peek`): its window's
+   overlays are then drawn by `track_overlays`, anchored to the peek, and
+   `sync_overlays` skips them. `Scroll view at a focus change holds
+   peeks: [...]`, `Scroll view dropped the <role> peek of <id>, shown at
+   rest.`, `Scroll view flushing its peeks' overlays.` If any shows up at
+   a plain switch, this is it.
+2. **A peek surface shown, or moved, at the switch** (one per monitor,
+   kept between motions; ready peeks hold hidden registrations on it).
+   `Peek surface <hwnd> shown.` / `hidden.`, `put at rest above <hwnd>`,
+   `put Below|Above <hwnd> for a tenant`.
+3. **A backdrop hidden for a frame, or stacked out of place.**
+   `Backdrop overlay <hwnd> hidden.` / `shown behind <hwnd>.` /
+   `restacked behind <anchor> (forced: .., was after <prev>).` In a
+   plain switch only `restacked` lines are expected, each with the
+   backdrop's own window as anchor. A `hidden` then `shown` pair is the
+   flicker.
+4. **The real window's alpha set aside or given back** by a stand-in
+   (`HiddenAlpha`, `restore_alpha`): `Hiding window <hwnd> by its alpha,
+   setting <a> aside.`, `Giving window <hwnd> its alpha <a> back:
+   restored | set again since, left.` None are expected at rest.
+5. **The other window's z-order set again 10 ms later**, after its
+   overlays were restacked: `Z-order of <hwnd> set again 10 ms later.`
+   (and `already as asked` for a skipped call). Seen in both layouts it
+   rules this out; seen only in the scrolling one it is the lead.
+
+Since every step but suspect 1 also runs in a non-scrolling layout, the
+quickest read is a diff: the same two-window switch, logged in both
+layouts, and the lines that only the scrolling log has.
+
+### Windows functions called by the new code
+
+None. Logging only.
+
+### To check on screen
+
+- `start --verbose`, scrolling layout, the owner's config, a few
+  Alt+H / Alt+L switches at rest; then the same in a non-scrolling
+  layout. Send both logs around the switches.
+- If the flicker shows only right after a scroll or a new window
+  (within a few seconds), and stops after waiting, note it: that points
+  at suspects 1 and 2 (state left by the last motion).
+- Same config with `transparency` off for the focused window: if the
+  flicker goes, it is the alpha against the backdrop (3, 4); if it
+  stays, it is the backdrop itself (1, 2, 3).
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
@@ -2682,7 +2782,8 @@ ported first (items below), then this flicker, then the bench.
    what matters; and have the bench script also build and run a second
    branch, `origin/main` unless the owner names another, from a separate
    checkout, the same scenarios on each), the measuring section.
-5. **The backdrop flicker** on workspace switches (above).
+5. **The backdrop flicker** on workspace switches (above). The scroll-layout focus flicker at rest: logs added, see
+   "Scroll focus flicker: as built".
 6. **Bench**.
 
 ### Owner's decisions still open
