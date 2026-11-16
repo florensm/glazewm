@@ -504,9 +504,8 @@ async fn switch_workspaces(
 ///   either kind of copy.
 /// - `summary-header [--dwm]`: prints the header of the table rows
 ///   [`print_summary`] ends with, with `--dwm`'s columns if given.
-/// - `compare <rows> <out> <this> <other>`: appends to `out` the rows
-///   file's runs of build `this` beside those of `other` (see
-///   [`compare`]).
+/// - `compare <rows> <out> <build>...`: appends to `out` the rows file's
+///   runs, one column per build, in the order given (see [`compare`]).
 async fn run_helper() -> anyhow::Result<bool> {
   let args = std::env::args().skip(1).collect::<Vec<_>>();
   let helper = args.first().map_or("", String::as_str);
@@ -561,7 +560,8 @@ async fn run_helper() -> anyhow::Result<bool> {
       let rows_path = arg(1)?;
       let rows = std::fs::read_to_string(rows_path)
         .with_context(|| format!("Failed to read {rows_path}."))?;
-      let text = compare::tables(&rows, arg(3)?, arg(4)?)?;
+      let builds = args.iter().skip(3).map(String::as_str);
+      let text = compare::tables(&rows, &builds.collect::<Vec<_>>())?;
       compare::append(std::path::Path::new(arg(2)?), &text)?;
     }
     _ => return Ok(false),

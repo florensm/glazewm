@@ -1,8 +1,9 @@
-//! Side-by-side tables of two builds' runs, from the summary rows
+//! Side-by-side tables of several builds' runs, from the summary rows
 //! `compare_branches.ps1` collects.
 //!
 //! A row's label is `<build> <config> #<round>`; rows are grouped by
-//! scenario and config, and each build's rounds summarised as a median.
+//! scenario and config, and each build's rounds summarised as a median,
+//! one column per build.
 
 use std::{fmt::Write as _, io::Write as _, path::Path};
 
@@ -15,7 +16,7 @@ pub const ABSENT_CELL: &str = "-";
 /// lacks, or one that never ran.
 const ABSENT: &str = "\u{2014}";
 
-/// Columns of the per-scenario table, those of the header that has them.
+/// Metrics of the per-scenario table, those of the header that has them.
 const HEADLINE: &[&str] = &[
   "input->first frame ms",
   "frame p90 ms",
@@ -36,13 +37,20 @@ struct Run<'a> {
   cells: Vec<Option<f64>>,
 }
 
+/// A build's runs of one scenario and config: how many, and each column's
+/// median over them.
+struct Summary {
+  runs: usize,
+  medians: Vec<Option<f64>>,
+}
+
 /// Markdown tables of `rows` (a `summary-header` line and rows of
-/// `print_summary`), build `this` beside build `other`.
-pub fn tables(
-  rows: &str,
-  this: &str,
-  other: &str,
-) -> anyhow::Result<String> {
+/// `print_summary`), one column per build of `builds`, in that order.
+pub fn tables(rows: &str, builds: &[&str]) -> anyhow::Result<String> {
+  if builds.is_empty() {
+    bail!("No builds to compare.");
+  }
+
   let mut header = None;
   let mut runs = Vec::new();
 
@@ -83,6 +91,16 @@ pub fn tables(
     bail!("The header has no metric columns.");
   };
 
+  let headline = HEADLINE
+    .iter()
+    .filter_map(|name| {
+      columns
+        .iter()
+        .position(|column| column == name)
+        .map(|i| (*name, i))
+    })
+    .collect::<Vec<_>>();
+
   let mut text = String::new();
   for scenario in first_seen(runs.iter().map(|run| run.scenario)) {
     let configs = first_seen(
@@ -94,58 +112,45 @@ pub fn tables(
     let summaries = configs
       .iter()
       .map(|config| {
-        let of = |build: &str| {
+        let of_build = |build: &&str| {
           summarise(runs.iter().filter(|run| {
             run.scenario == scenario
               && run.config == *config
-              && run.build == build
+              && run.build == *build
           }))
         };
-        (*config, of(this), of(other))
-      })
-      .collect::<Vec<_>>();
-
-    let headline = HEADLINE
-      .iter()
-      .filter_map(|name| {
-        columns
-          .iter()
-          .position(|column| column == name)
-          .map(|i| (*name, i))
+        (*config, builds.iter().map(of_build).collect::<Vec<_>>())
       })
       .collect::<Vec<_>>();
 
     // Writing into a `String` is infallible, so the results are discarded.
     let _ = write!(
       text,
-      "\n## {scenario}\n\nCells `{this} / {other}`, medians over rounds; \
-       {ABSENT}: in no report of that build (no such stage, or it never \
-       ran).\n\n| config | runs |"
+      "\n## {scenario}\n\nMedians over rounds; {ABSENT}: in no report of \
+       that build (no such stage, or it never ran).\n\n"
     );
-    for (name, _) in &headline {
-      let _ = write!(text, " {name} |");
-    }
-    let _ = writeln!(text, "\n|{}", " --- |".repeat(headline.len() + 2));
-    for (config, ours, theirs) in &summaries {
-      let _ = write!(text, "| {config} | {} / {} |", ours.0, theirs.0);
-      for (_, index) in &headline {
-        let ours = cell(&ours.1, *index);
-        let theirs = cell(&theirs.1, *index);
-        let _ = write!(text, " {ours} / {theirs} |");
+    write_header(&mut text, &["config", "metric"], builds);
+    for (config, summaries) in &summaries {
+      write_row(&mut text, &[config, "runs"], summaries, |summary| {
+        summary.runs.to_string()
+      });
+      for (name, index) in &headline {
+        write_row(&mut text, &[config, name], summaries, |summary| {
+          cell(&summary.medians, *index)
+        });
       }
-      text.push('\n');
     }
 
-    for (config, ours, theirs) in &summaries {
-      let _ = write!(
-        text,
-        "\n### {scenario}, {config}\n\n| metric | {this} | {other} |\n\
-         | --- | --- | --- |\n"
-      );
+    for (config, summaries) in &summaries {
+      let _ = write!(text, "\n### {scenario}, {config}\n\n");
+      write_header(&mut text, &["metric"], builds);
+      write_row(&mut text, &["runs"], summaries, |summary| {
+        summary.runs.to_string()
+      });
       for (index, name) in columns.iter().enumerate() {
-        let ours = cell(&ours.1, index);
-        let theirs = cell(&theirs.1, index);
-        let _ = writeln!(text, "| {name} | {ours} | {theirs} |");
+        write_row(&mut text, &[name], summaries, |summary| {
+          cell(&summary.medians, index)
+        });
       }
     }
   }
@@ -161,6 +166,29 @@ pub fn append(path: &Path, text: &str) -> anyhow::Result<()> {
     .open(path)
     .and_then(|mut file| file.write_all(text.as_bytes()))
     .with_context(|| format!("Failed to write {}.", path.display()))
+}
+
+/// Writes a table's header: the `lead` columns, then one per build.
+fn write_header(text: &mut String, lead: &[&str], builds: &[&str]) {
+  let names = lead.iter().chain(builds).copied().collect::<Vec<_>>();
+  let _ = writeln!(text, "| {} |", names.join(" | "));
+  let _ = writeln!(text, "|{}", " --- |".repeat(names.len()));
+}
+
+/// Writes a table row: the `lead` cells, then `cell` of each build's
+/// summary.
+fn write_row(
+  text: &mut String,
+  lead: &[&str],
+  summaries: &[Summary],
+  cell: impl Fn(&Summary) -> String,
+) {
+  let cells = lead
+    .iter()
+    .map(ToString::to_string)
+    .chain(summaries.iter().map(cell))
+    .collect::<Vec<_>>();
+  let _ = writeln!(text, "| {} |", cells.join(" | "));
 }
 
 /// `(build, config)` of a `<build> <config> #<round>` label.
@@ -186,9 +214,7 @@ fn first_seen<'a>(values: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
 
 /// The number of `runs`, and each column's median over them: a run
 /// without a value counts as 0, unless none has one.
-fn summarise<'a>(
-  runs: impl Iterator<Item = &'a Run<'a>>,
-) -> (usize, Vec<Option<f64>>) {
+fn summarise<'a>(runs: impl Iterator<Item = &'a Run<'a>>) -> Summary {
   let runs = runs.collect::<Vec<_>>();
   let width = runs.iter().map(|run| run.cells.len()).max().unwrap_or(0);
 
@@ -210,7 +236,10 @@ fn summarise<'a>(
     })
     .collect();
 
-  (runs.len(), medians)
+  Summary {
+    runs: runs.len(),
+    medians,
+  }
 }
 
 fn cell(values: &[Option<f64>], index: usize) -> String {
@@ -230,26 +259,50 @@ mod tests {
 | --- | --- | --- | --- |
 | this cpu0 bd-on bo-on #1 | move | 2.00 | 1.00 |
 | main cpu0 bd-on bo-on #1 | move | 3.00 | - |
+| stand-ins:nopeeks cpu0 bd-on bo-on #1 | move | 6.00 | - |
 | this cpu0 bd-on bo-on #2 | move | 4.00 | - |
 | main cpu0 bd-on bo-on #2 | move | 5.00 | - |
+| stand-ins:nopeeks cpu0 bd-on bo-on #2 | move | 8.00 | - |
 ";
 
-  /// Each build's rounds are summarised side by side; a stage one build
-  /// never reported shows as absent, not as 0.
+  /// Each build's rounds are summarised in a column of its own, in the
+  /// order given; a stage one build never reported shows as absent, not
+  /// as 0.
   #[test]
   fn sets_builds_side_by_side() {
-    let text = tables(ROWS, "this", "main").unwrap();
+    let text =
+      tables(ROWS, &["this", "stand-ins:nopeeks", "main"]).unwrap();
 
     assert!(text.contains("## move"));
-    assert!(text.contains("| cpu0 bd-on bo-on | 2 / 2 | 4.00 / 5.00 |"));
+    assert!(text.contains(
+      "| config | metric | this | stand-ins:nopeeks | main |\n\
+       | --- | --- | --- | --- | --- |\n\
+       | cpu0 bd-on bo-on | runs | 2 | 2 | 2 |\n\
+       | cpu0 bd-on bo-on | frame p90 ms | 4.00 | 8.00 | 5.00 |\n"
+    ));
     assert!(text.contains(&format!(
-      "| restack ms (outside frames) | 1.00 | {ABSENT} |"
+      "| restack ms (outside frames) | 1.00 | {ABSENT} | {ABSENT} |"
     )));
+  }
+
+  /// A build with no runs gets a column of absent cells, not an error.
+  #[test]
+  fn shows_a_build_without_runs_as_absent() {
+    let text = tables(ROWS, &["this", "stand-ins"]).unwrap();
+
+    assert!(text.contains("| runs | 2 | 0 |"));
+    assert!(text.contains(&format!("| frame p90 ms | 4.00 | {ABSENT} |")));
+  }
+
+  #[test]
+  fn needs_a_build() {
+    assert!(tables(ROWS, &[]).is_err());
   }
 
   #[test]
   fn reads_rows_after_a_bom() {
-    let text = tables(&format!("\u{feff}{ROWS}"), "this", "main").unwrap();
+    let text =
+      tables(&format!("\u{feff}{ROWS}"), &["this", "main"]).unwrap();
 
     assert!(text.contains("## move"));
   }
@@ -259,6 +312,10 @@ mod tests {
     assert_eq!(
       split_label("this cpu8 bd-off bo-on #3"),
       Some(("this", "cpu8 bd-off bo-on".to_string()))
+    );
+    assert_eq!(
+      split_label("stand-ins:morepeeks cpu0 #1"),
+      Some(("stand-ins:morepeeks", "cpu0".to_string()))
     );
     assert_eq!(split_label("main #1"), Some(("main", String::new())));
   }
