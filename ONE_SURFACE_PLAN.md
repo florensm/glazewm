@@ -2901,7 +2901,8 @@ fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
    (the tile rect) as the surrogate's frame, so with `border_inset` the
    window sample, ring copy and backdrop copy are each `border_inset` too
    large per side. Peeks take the frame from the window's own rect and
-   are unaffected. Next to fix (one agent, own branch).
+   are unaffected. Fixed on `os/19-switch-inset` (see "Switch border
+   inset fix: as built"), not seen running.
 4. **The backdrop flicker on workspace switches** (seen 2026-11-15, before
    the integration pass; not seen since by the owner). Check whether it
    still shows; the scroll focus flicker was a different cause, fixed.
@@ -3003,6 +3004,41 @@ that large, and its ring rest and backdrop copy (`carry_backdrop`'s
 `frame_rest`) sit outside the window by `border_inset`. Peeks are not
 affected: they take the frame from the window's own rect
 (`compute_border_inset`).
+
+## Switch border inset fix: as built (`os/19-switch-inset`, 2026-11-16)
+
+Not seen running. Fixes "Open" item 3.
+
+**Cause** (confirmed by reading): as item 3's agent found. The switch
+block in `platform_sync.rs` is the only place a `WorkspaceSurrogate` is
+made (hosted or own window, the same rects either way), and both its
+branches passed the tile (`to_rect()`) as `frame_rect`. So `rest_frame()`
+was `border_inset` too large per side: the window sample
+(`frame_rects`), the ring parked by `park_switch_borders` and its copy,
+and the backdrop copy all sat around the tile for the whole switch. At
+the end, `final_overlay_rects` and steady sync place overlays from the
+real `frame()`, inside the tile: the snap in. Cut-short slides hand over
+to the surrogates the same block makes; resting peeks, scroll and peek
+paths already took the frame from the window's own rect.
+
+**Fix**: `WindowGetters::frame_at(rect)` (placed rect less shadow
+borders, as `frame()` reads it; unit tested). Incoming:
+`(to_rect + total_border_delta, frame_at(that))`; outgoing with a target:
+`(target, frame_at(target))`, so the frame always comes from the rect
+the window is placed at. The `frame()` fallback is unchanged. No
+hand-over step touched. Windows functions: none added or removed.
+`grab.rs`'s `frame_at` and `peek_view.rs`'s `visible_frame` compute the
+same and could use the method; left as they are.
+
+**To check on screen** (`reserve_border_space` on, a border width > 0,
+gaps 0 and > 0, `backdrop` on with a semi-transparent window):
+
+- Each switch style: the ring stays inside the window and nothing
+  shifts at start, during or at the hand-back; no seam between window
+  and ring; the backdrop fills exactly under the window.
+- Switch back mid-slide (cut-short): the same.
+- A scrolling layout with a column cut at the edge: no shift either.
+- `reserve_border_space: false`: as before the fix.
 
 ## Removal plan (2026-11-15)
 
