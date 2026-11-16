@@ -927,6 +927,7 @@ impl NativeWindow {
     // This avoids invalidating (and repainting) every window in the
     // workspace on each focus change.
     if Self::is_z_order_correct(self.handle, z_order_hwnd) {
+      tracing::debug!("Z-order of {:#x} already as asked.", self.handle);
       return Ok(());
     }
 
@@ -961,6 +962,7 @@ impl NativeWindow {
       // SAFETY: A stale handle just returns false.
       let is_shown = unsafe { IsWindowVisible(HWND(handle)) }.as_bool();
       if is_shown && !Self::is_z_order_correct(handle, z_order_hwnd) {
+        tracing::debug!("Z-order of {handle:#x} set again 10 ms later.");
         // SAFETY: A stale `handle` (window destroyed during the 10ms
         // delay) just makes the call fail, which is discarded
         // below.
