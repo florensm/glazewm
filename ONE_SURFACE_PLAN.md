@@ -2588,9 +2588,9 @@ To check on screen:
 ## Scroll focus flicker: as built
 
 Branch `os/16-scroll-flicker`, from `e6022f7d`. Read off the code, not
-seen running. Cause not found by reading, so no behaviour is changed:
-`debug` lines are added to tell the suspects apart. No hand-over step
-moved, no new Windows API, live path untouched.
+seen running. Cause not found by reading, so `debug` lines were added
+first; the owner's log then settled it (see "Cause and fix" below).
+No hand-over step moved, no new Windows API, live path untouched.
 
 ### Observations (owner, laptop, 2026-11-16)
 
@@ -2669,9 +2669,67 @@ Since every step but suspect 1 also runs in a non-scrolling layout, the
 quickest read is a diff: the same two-window switch, logged in both
 layouts, and the lines that only the scrolling log has.
 
+### Cause and fix, from the owner's log (2026-11-16)
+
+The owner's `--verbose` log (laptop, six windows on the scrolling
+workspace) shows the switch was **not** at rest: `Updating window
+position` for all six windows, the surface shown, backdrops handed over
+to copies (`restacked behind` the surface, flush, `hidden`), the focused
+semi-transparent window hidden by its alpha at the take-over, the strip
+landing, hand-back (alpha hidden and given back again), and only then
+`Applying transparency` for the two windows, about 95 ms after the
+hand-back and 300 ms after the focus change.
+
+Peeks were not stuck. `Scroll view at a focus change holds peeks` fires
+in the landing pass too: `queue_landed` queues a focus change for every
+landed column (focus deferred while they moved lands then). The six
+`HandingBack` / `Releasing { settled: true }` entries at 28.462 and the
+four `HandingBack` at 29.383 are two motions, each in its landing pass,
+before the redraw releases them; the role sequence is the usual one
+(`Moving` -> `HandingBack` -> `Releasing` -> `settled` -> ready peek).
+The `Backdrop overlay hidden` / `Peek surface hidden` lines near 28.53
+and 29.42 come with the workspace switch in the excerpt.
+
+**Cause.** `sync_focus` defers `SetForegroundWindow` while a peek draws
+the focused window (`platform_sync.rs`, the `owns_window` check), so a
+focus change that scrolls gets its OS focus event only after the strip
+lands, and the focused effects, transparency among them, only from that
+event (`handle_window_focused` -> `queue_focused_effect_update` ->
+`apply_focus_effects`). Meanwhile everything else follows the WM's focus
+from the command on: the style fades of rings and backdrops
+(`start_focus_fades`) and the opacity each peek draws its window at. So
+each window was handed back at its old alpha: the newly focused one
+opaque, the one losing focus still see-through over its backdrop fading
+to the other style (or out, with no backdrop unfocused), then both
+switched a few frames later. Scrolling only, because only there does a
+focus change move the focused window on a peek. A workspace switch had
+the same problem and already applies the effects at its end, while the
+windows are still cloaked (`update_internal`).
+
+**Fix** (`7913c594`, `AnimationManager::apply_landing_focus_effects`,
+`manager.rs`). In the tick a column lands, right after `tick_peeks` and
+before the sync that uncloaks it: if the focused window is among those
+landing shown and the effects are still on another window
+(`prev_effects_window`, tested `lands_unconfirmed_focus`),
+`apply_focus_effects` runs then. The focus event later applies the same
+values again (no-ops). No hand-over step changed: `prepare_hand_back`
+and `hand_back` set aside and give back whatever alpha they find, now
+the new one; `restore_alpha` on a `Moving` peek has run earlier in the
+same tick. Debug line: `Focus effects applied to <id> as it lands, ahead
+of its focus event.`
+
+To check on screen: scrolling layout, the owner's config, focus changes
+that scroll the strip (Alt+H / Alt+L across columns off screen): no
+opaque-then-see-through blink on the window gaining focus, none
+see-through-then-opaque on the one losing it; the new debug line once
+per landing, and the `Applying transparency` lines right after it, not
+after the hand-back. Focus changes at rest and non-scrolling layouts:
+unchanged (the line never shows).
+
 ### Windows functions called by the new code
 
-None. Logging only.
+None new. The fix calls what `apply_focus_effects` already calls
+(`SetLayeredWindowAttributes`, `DwmSetWindowAttribute`), earlier.
 
 ### To check on screen
 
@@ -2782,8 +2840,8 @@ ported first (items below), then this flicker, then the bench.
    what matters; and have the bench script also build and run a second
    branch, `origin/main` unless the owner names another, from a separate
    checkout, the same scenarios on each), the measuring section.
-5. **The backdrop flicker** on workspace switches (above). The scroll-layout focus flicker at rest: logs added, see
-   "Scroll focus flicker: as built".
+5. **The backdrop flicker** on workspace switches (above). The scroll-layout focus flicker: alpha handed back late on
+   scrolling focus changes, fixed, see "Scroll focus flicker: as built".
 6. **Bench**.
 
 ### Owner's decisions still open
