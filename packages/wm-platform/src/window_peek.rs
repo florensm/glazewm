@@ -872,6 +872,15 @@ impl WindowPeek {
       content,
     } = filled_rects(sampled, rect, clip, self.border_inset, origin);
     self.frame_rect = Some(drawn.clone());
+    // The fill is flat, over the backdrop copy: logged to tell it from a
+    // copy drawing nothing where a resize shows no blur.
+    if covered != (drawn.width(), drawn.height()) {
+      tracing::debug!(
+        "Filled {covered:?} of a {}x{} frame.",
+        drawn.width(),
+        drawn.height()
+      );
+    }
 
     let Some(visible) = drawn.intersection(clip) else {
       self.set_shown(false);

@@ -1122,6 +1122,14 @@ impl OverlayCopies {
     if self.carries_backdrop_styles(styles, ring_width) {
       return true;
     }
+    // A copy replaced mid-motion leaves frames without it: logged to tell
+    // a rebuild on every focus change from one per motion.
+    tracing::debug!(
+      "Backdrop copy carried in {} styles, ring {ring_width:?}, replacing \
+       one: {}.",
+      styles.len(),
+      self.backdrop.is_some(),
+    );
 
     // Unregistered before the new ones are, so they don't stack under
     // them.

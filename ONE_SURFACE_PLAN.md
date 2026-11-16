@@ -2289,6 +2289,63 @@ semi-transparent windows; `window_move`/`window_resize`/`window_open` at
 - `perf_bench` `peek_new`, `peek_draw` against `live` and square corners:
   `a`'s extra registrations, `b`'s source creation.
 
+### Fixes after the first laptop test (2026-11-16)
+
+Branch `os/fix-rounded-1`. The owner's two reports with rounded corners,
+a custom border and `GLAZEWM_ROUNDED_BACKDROP=a`. Reading did not settle
+either cause, so no behaviour is changed: two `debug` log lines are added
+to tell the suspects apart. No hand-over step moved, no new Windows API.
+Not seen running.
+
+1. **"No backdrop on resize actions, it's solid."** Read from
+   `move_on_peek` through `Entry::draw_stretched`,
+   `WindowPeek::place_stretched` / `place_filled`, `OverlayCopies::place`
+   / `place_backdrop`, `BackdropCopy::place_current` to `CropCopy::place`:
+   on every resize path the rows are placed as on a move, from the same
+   frame (`place_filled` the visible frame at 1:1, `place_stretched` the
+   window's rect as a move does), cut at the clip, from inside the
+   monitor's `BackdropSource`, at the move's opacity. Nothing was found
+   that leaves them undrawn. What a resize alone draws flat over the copy
+   is the `fill` style's strips (`FillCopy`: the edge color sampled off
+   the screen, opaque, "flat" by design), wherever the content falls short
+   of the frame (`sampled_size`, `filled_rects`): the whole motion for a
+   tile growing on one axis and shrinking on the other
+   (`resizes_at_start`), else until the app repaints at its new size.
+   Under `live` a rounded window's own peek carried no fill and its real
+   backdrop showed there, so the strips are new on the owner's windows.
+   And in the owner's config a focused window has no backdrop and is
+   opaque, so a resized focused tile is solid by its own style.
+   To check: the same resize with `window_resize.style: "stretch"` (no
+   fill), with `corner_style: "square"` (cut whole, as square backdrops
+   always were), and under `b`. In the debug log, `Filled (w, h) of a WxH
+   frame.` during the resize means the strips cover the rest.
+2. **Flicker in scrolling layouts only, with a backdrop unfocused and
+   none focused.** Read: `carried_styles` is the same whatever the focus
+   (both states' styles, the narrowest ring of those with a backdrop), so
+   a focus change neither rebuilds a column's copy
+   (`carries_backdrop_styles`, `is_cut_for`) nor flips `is_copyable`, and
+   the crossfade to and from no backdrop (`StyleBlend::between`,
+   `crop_fade`, `crop_weights`, `shows_at_once`) never draws a see-through
+   window with neither. Only scrolling shows it because there a focus
+   change moves the strip, so the focus fade runs on peeks and their
+   copies; elsewhere it runs at rest on the real overlays. Suspects: (a) a
+   window with no backdrop since it opened (opened focused) gets its real
+   backdrop overlay made only as it lands (`peek_view::carry_backdrop`,
+   the `Revealed` arm's `overlay_entry`), a tick or two before the copy
+   goes; (b) a border whose width differs by focus: its overlay is
+   re-parked and resized every frame of the fade while its copy is drawn
+   from it (`peek_view::carry_ring`, the `Covered | Parked` arm); (c)
+   restacks (`restack_crossings`) registering whole peeks anew when the
+   scroll easing overshoots. A rounded window under `live` reaches none of
+   these (its live peek carries no copies, its real overlays follow it),
+   so this is this item, not the older backdrop flicker; square corners in
+   the same config would show it too.
+   To check: square corners in the same config (still there: not the
+   rows); the same border in both focus states (gone: b); only on a
+   window's first unfocus after it opened (a: the debug log has `Backdrop
+   overlay created for <id>.` as it lands); `Backdrop copy carried ...
+   replacing one: true.` on focus changes (a rebuild after all).
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
