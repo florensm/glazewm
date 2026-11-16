@@ -144,6 +144,19 @@ pub fn sync_scroll_view(
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
 
+  // Tells a focus change at rest that still has peeks to act on apart
+  // from one that has none (`ONE_SURFACE_PLAN.md` "Scroll focus flicker").
+  if state.pending_sync.needs_focus_update() && !view.entries.is_empty() {
+    let held = view
+      .entries
+      .iter()
+      .map(|(id, entry)| format!("{id} {:?}", entry.role))
+      .collect::<Vec<_>>();
+    tracing::debug!(
+      "Scroll view at a focus change holds peeks: {held:?}."
+    );
+  }
+
   // Windows that left the displayed scrolling layouts lose their peeks;
   // their real windows are handled like any other window's. One the
   // scroll view held cloaked is redrawn, which shows or hides it for good.
@@ -250,7 +263,13 @@ pub fn sync_scroll_view(
         // At rest on screen: the real window shows it, once a peek still
         // covering it after a move lets go.
         if !view.is_releasing(&window.id()) {
-          view.entries.remove(&window.id());
+          if let Some(entry) = view.entries.remove(&window.id()) {
+            tracing::debug!(
+              "Scroll view dropped the {:?} peek of {}, shown at rest.",
+              entry.role,
+              window.id()
+            );
+          }
         }
         continue;
       } else if is_on_screen(&target) {
@@ -524,6 +543,7 @@ fn flush_overlays(
   restack_joining_overlays(state);
 
   if flushes {
+    tracing::debug!("Scroll view flushing its peeks' overlays.");
     wm_platform::dwm_flush();
     state.animation_manager.peeks.note_composited();
     track_overlays(state, config, SurrogateBatch::new());

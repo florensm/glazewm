@@ -127,6 +127,11 @@ impl PeekSurface {
     let _scope = perf::scope(Stage::Surface);
     self.window.on_top.set(false);
     self.window.topped.set(false);
+    tracing::debug!(
+      "Peek surface {:#x} put at rest above {:#x}.",
+      self.hwnd().0,
+      window.0
+    );
     match window_class::place_above(self.hwnd(), window) {
       Ok(()) => self.window.rests_above.set(window.0),
       Err(err) => {
@@ -233,6 +238,11 @@ impl SurfaceWindow {
     }
 
     let _scope = perf::scope(Stage::Surface);
+    tracing::debug!(
+      "Peek surface {:#x} put {admission:?} {:#x} for a tenant.",
+      self.hwnd,
+      window.0
+    );
     self.on_top.set(false);
     self.rests_above.set(0);
     let placed = if admission == Admission::Above {
@@ -327,6 +337,11 @@ impl SurfaceWindow {
 
     if (before == 0) != (after == 0) {
       let _scope = perf::scope(Stage::Surface);
+      tracing::debug!(
+        "Peek surface {:#x} {}.",
+        self.hwnd,
+        if after > 0 { "shown" } else { "hidden" }
+      );
       self.on_top.set(false);
       // SAFETY: `self.hwnd` is valid until drop.
       unsafe {

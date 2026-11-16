@@ -214,6 +214,14 @@ impl OverlayWindow {
       return false;
     }
 
+    if !self.is_visible {
+      tracing::debug!(
+        "{} {:#x} shown behind {:#x}.",
+        self.kind.label(),
+        self.hwnd,
+        anchor.0
+      );
+    }
     self.anchor = anchor.0;
     self.is_visible = true;
     true
@@ -316,6 +324,14 @@ impl OverlayWindow {
         && unsafe { GetWindow(prev, GW_HWNDPREV) } == insert_after);
 
     if force || !is_settled {
+      tracing::debug!(
+        "{} {:#x} restacked behind {:#x} (forced: {force}, was after \
+         {:#x}).",
+        self.kind.label(),
+        self.hwnd,
+        anchor.0,
+        prev.0
+      );
       // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
       unsafe {
         SetWindowPos(
@@ -351,6 +367,9 @@ impl OverlayWindow {
   }
 
   pub(crate) fn hide(&mut self) {
+    if self.is_visible {
+      tracing::debug!("{} {:#x} hidden.", self.kind.label(), self.hwnd);
+    }
     self.is_visible = false;
 
     // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
@@ -394,6 +413,13 @@ pub(crate) fn swap(
     });
 
   if swapped {
+    tracing::debug!(
+      "{} {:#x} swapped in for {:#x}, behind {:#x}.",
+      show.kind.label(),
+      show.hwnd,
+      hide.hwnd,
+      anchor.0
+    );
     show.anchor = anchor.0;
     show.is_visible = true;
     hide.is_visible = false;
