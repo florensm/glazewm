@@ -2341,7 +2341,7 @@ ported first (items below), then this flicker, then the bench.
    description (R6 proposed wording, owner to decide). To check: the
    `catch_up_before_frame` doc in `main.rs` (window events during peek
    moves, "not checked yet" since R4's guard went).
-2. **Rounded backdrops on the surface** (owner, 2026-11-15; after the
+2. **Rounded backdrops on the surface** (built 2026-11-16, `os/12-rounded`, see "Rounded backdrops: as built"; owner to compare `GLAZEWM_ROUNDED_BACKDROP=a`, `b`, `live` on the laptop and choose, then the switch goes) (owner, 2026-11-15; after the
    removal, before the flicker and the bench). A backdrop with rounded
    corners (the window's corner style) or `parallax` != 1 is not
    copyable (`BackdropOverlayParams::is_copyable`), so the window is live:
@@ -2416,7 +2416,7 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`, `os/r6-docs`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`, `os/r6-docs`, `os/12-rounded`.
 
 Laptop test build: `test/one-surface`, re-cut 2026-11-15 from `0c841473`
 (R0..R3 merged: nothing starts the engine; R4's deletion of the then
