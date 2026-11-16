@@ -1258,6 +1258,38 @@ impl AnimationManager {
     (landed, batch)
   }
 
+  /// Applies the focus effects (transparency among them) while the
+  /// focused window, landing in `shown`, is still cloaked, if the OS
+  /// hasn't confirmed its focus yet.
+  ///
+  /// `sync_focus` defers `SetForegroundWindow` while a peek draws the
+  /// focused window, so a focus change that scrolls only gets its effects
+  /// from the focus event after the hand-back, while peeks, rings and
+  /// backdrops wore the new styles all along: each window was handed back
+  /// at its old alpha, the one losing focus still see-through over its
+  /// faded-out backdrop for a few frames. As a workspace switch's end
+  /// does (see `update_internal`).
+  fn apply_landing_focus_effects(
+    state: &mut WmState,
+    shown: &[Uuid],
+    config: &UserConfig,
+  ) {
+    let Some(focused) = state.focused_container() else {
+      return;
+    };
+    let effects_on =
+      state.prev_effects_window.as_ref().map(CommonGetters::id);
+    if !lands_unconfirmed_focus(focused.id(), effects_on, shown) {
+      return;
+    }
+
+    tracing::debug!(
+      "Focus effects applied to {} as it lands, ahead of its focus event.",
+      focused.id()
+    );
+    apply_focus_effects(state, &focused, false, config);
+  }
+
   /// Moved columns that end shown get their real window back in the
   /// redraw below, and focus deferred while they moved lands then. Ones
   /// that end hidden have their real window put where it stays cloaked,
@@ -1329,6 +1361,7 @@ impl AnimationManager {
       .filter(|_| state.animation_manager.peeks.is_active())
       .map(|at| perf::scope_since(Stage::PeekFrame, Some(at)));
     let (landed, batch) = Self::tick_peeks(state, times);
+    Self::apply_landing_focus_effects(state, &landed.shown, config);
     Self::queue_landed(state, landed);
     // Under `peek_frame` only, which a frame with no peek moving lacks.
     let track_scope =
@@ -2780,11 +2813,32 @@ fn tick_wake(
     .unwrap_or(now)
 }
 
+/// Whether `focused` lands among `shown` with the focus effects still on
+/// `effects_on`, the window the OS last confirmed focus for (see
+/// `AnimationManager::apply_landing_focus_effects`).
+fn lands_unconfirmed_focus(
+  focused: Uuid,
+  effects_on: Option<Uuid>,
+  shown: &[Uuid],
+) -> bool {
+  effects_on != Some(focused) && shown.contains(&focused)
+}
+
 #[cfg(test)]
 mod tests {
   use wm_common::ParsedConfig;
 
   use super::*;
+
+  #[test]
+  fn landing_focus_takes_its_effects_only_if_unconfirmed() {
+    let (focused, other) = (Uuid::new_v4(), Uuid::new_v4());
+
+    assert!(lands_unconfirmed_focus(focused, Some(other), &[focused]));
+    assert!(lands_unconfirmed_focus(focused, None, &[other, focused]));
+    assert!(!lands_unconfirmed_focus(focused, Some(focused), &[focused]));
+    assert!(!lands_unconfirmed_focus(focused, Some(other), &[other]));
+  }
 
   fn motion(
     distance: i32,
