@@ -2496,6 +2496,7 @@ name = "wm-cli"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "png",
  "serde",
  "serde_json",
  "serde_yaml",

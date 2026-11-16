@@ -35,6 +35,26 @@ pub struct Workspace {
   pub children: Vec<Node>,
 }
 
+/// A monitor, its rect in physical pixels.
+#[derive(Deserialize)]
+pub struct Monitor {
+  pub x: i32,
+  pub y: i32,
+  pub width: i32,
+  pub height: i32,
+  pub children: Vec<Node>,
+}
+
+impl Monitor {
+  /// Its workspaces.
+  pub fn workspaces(&self) -> impl Iterator<Item = &Workspace> {
+    self.children.iter().filter_map(|node| match node {
+      Node::Workspace(workspace) => Some(workspace),
+      _ => None,
+    })
+  }
+}
+
 /// A split or stack container.
 #[derive(Deserialize)]
 pub struct Branch {
@@ -124,6 +144,15 @@ pub async fn query_workspaces(
   )
 }
 
+/// Every monitor, with its workspaces.
+pub async fn query_monitors(
+  client: &mut IpcClient,
+) -> anyhow::Result<Vec<Monitor>> {
+  let mut data = request(client, "query monitors").await?;
+  serde_json::from_value(data["monitors"].take())
+    .context("Unexpected answer to 'query monitors'.")
+}
+
 /// Every window the WM manages.
 pub async fn query_windows(
   client: &mut IpcClient,
@@ -208,5 +237,24 @@ mod tests {
     assert_eq!(tiled.len(), 1);
     assert_eq!(tiled[0].handle, 42);
     assert_eq!(tiled[0].process_name, "notepad");
+  }
+
+  #[test]
+  fn reads_monitors() {
+    let json = r#"[{
+      "type": "monitor", "id": "6f9619ff-8b86-d011-b42d-00c04fc964fc",
+      "x": -2560, "y": 0, "width": 2560, "height": 1440, "dpi": 96,
+      "children": [{
+        "type": "workspace", "id": "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+        "name": "1", "hasFocus": false, "isDisplayed": true,
+        "parentId": "6f9619ff-8b86-d011-b42d-00c04fc964fc", "children": []
+      }]
+    }]"#;
+
+    let monitors: Vec<Monitor> = serde_json::from_str(json).unwrap();
+
+    assert_eq!(monitors[0].x, -2560);
+    assert_eq!(monitors[0].width, 2560);
+    assert_eq!(monitors[0].workspaces().next().unwrap().name, "1");
   }
 }

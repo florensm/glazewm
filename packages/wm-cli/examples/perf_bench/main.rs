@@ -12,6 +12,11 @@
 //! With `--dwm`, also reports what DWM actually displayed per
 //! burst, through the `PresentMon` service; see `dwm.rs`.
 //!
+//! With `--shots <path prefix>`, first runs one burst outside the
+//! measured ones and takes two screenshots of the target's monitor:
+//! `<prefix>-mid.png`, `--shot-delay-ms` (default 60) after the command
+//! was sent, and `<prefix>-rest.png` once settled; see `shots.rs`.
+//!
 //! # Example usage
 //!
 //! ```text
@@ -37,6 +42,7 @@ mod compare;
 mod dwm;
 mod ipc;
 mod layout;
+mod shots;
 
 use std::{
   collections::HashMap,
@@ -178,6 +184,10 @@ struct Args {
   other_workspace: Option<String>,
   /// IPC queries queued as each animation starts.
   load: usize,
+  /// Path prefix of the two screenshots to take, if any.
+  shots: Option<PathBuf>,
+  /// Time from sending the shot burst's command to the mid shot.
+  shot_delay: Duration,
 }
 
 /// The query `--load` queues. It walks and serializes the whole tree, so
@@ -239,6 +249,11 @@ async fn main() -> anyhow::Result<()> {
       (Some(window), (*forward).to_string(), (*back).to_string())
     }
   };
+
+  if let Some(prefix) = &args.shots {
+    take_shots(&mut client, &args, subject, (&forward, &back), prefix)
+      .await?;
+  }
 
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
   let started = Instant::now();
@@ -347,6 +362,8 @@ fn parse_args() -> anyhow::Result<Args> {
     dwm: false,
     other_workspace: None,
     load: 0,
+    shots: None,
+    shot_delay: Duration::from_millis(60),
   };
 
   let mut iter = std::env::args().skip(1);
@@ -367,6 +384,10 @@ fn parse_args() -> anyhow::Result<Args> {
       "--label" => args.label = value,
       "--other-workspace" => args.other_workspace = Some(value),
       "--load" => args.load = value.parse()?,
+      "--shots" => args.shots = Some(PathBuf::from(value)),
+      "--shot-delay-ms" => {
+        args.shot_delay = Duration::from_millis(value.parse()?);
+      }
       _ => bail!("Unknown flag '{flag}'."),
     }
   }
@@ -384,6 +405,82 @@ fn perf_log_path() -> anyhow::Result<PathBuf> {
       .context("Unable to get home directory.")?
       .join(".glzr/glazewm/perf.log"),
   )
+}
+
+/// Runs `forward` then `back` once, before the measured bursts so the
+/// capture costs them nothing, and takes the two shots of the target's
+/// monitor: mid-animation, `args.shot_delay` after sending `forward`, and
+/// at rest once settled.
+///
+/// The WM answers a command once it has run, so if that takes longer than
+/// the delay, the mid shot is taken on the answer; the offset printed
+/// says when it was.
+async fn take_shots(
+  client: &mut IpcClient,
+  args: &Args,
+  subject: Option<Uuid>,
+  (forward, back): (&str, &str),
+  prefix: &std::path::Path,
+) -> anyhow::Result<()> {
+  shots::use_physical_pixels();
+  let area = target_monitor(client, subject).await?;
+
+  let sent = Instant::now();
+  send_step(client, subject, forward).await?;
+  tokio::time::sleep(args.shot_delay.saturating_sub(sent.elapsed())).await;
+  let mid_offset = sent.elapsed();
+  let mid = shots::capture(area)?;
+  tokio::time::sleep(args.settle.saturating_sub(sent.elapsed())).await;
+  let rest = shots::capture(area)?;
+
+  send_step(client, subject, back).await?;
+  let returned = Instant::now();
+
+  let path = |kind: &str| {
+    let mut name = prefix.as_os_str().to_owned();
+    name.push(format!("-{kind}.png"));
+    PathBuf::from(name)
+  };
+  shots::save(&mid, &path("mid"))?;
+  shots::save(&rest, &path("rest"))?;
+  println!(
+    "shots {} (mid at {:.0} ms), {}",
+    path("mid").display(),
+    mid_offset.as_secs_f64() * 1000.0,
+    path("rest").display()
+  );
+
+  tokio::time::sleep(args.settle.saturating_sub(returned.elapsed())).await;
+  Ok(())
+}
+
+/// Rect of the monitor showing `subject` (a window or workspace), or the
+/// focused workspace's if `None`.
+async fn target_monitor(
+  client: &mut IpcClient,
+  subject: Option<Uuid>,
+) -> anyhow::Result<shots::Area> {
+  ipc::query_monitors(client)
+    .await?
+    .iter()
+    .find(|monitor| {
+      monitor.workspaces().any(|workspace| match subject {
+        Some(id) => {
+          workspace.id == id
+            || ipc::windows_in(&workspace.children)
+              .iter()
+              .any(|window| window.id == id)
+        }
+        None => workspace.has_focus,
+      })
+    })
+    .map(|monitor| shots::Area {
+      x: monitor.x,
+      y: monitor.y,
+      width: monitor.width,
+      height: monitor.height,
+    })
+    .context("No monitor shows the target.")
 }
 
 /// Returns the ID of a tiled window owned by `process`.
