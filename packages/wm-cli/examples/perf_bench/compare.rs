@@ -45,6 +45,8 @@ pub fn tables(
   let mut header = None;
   let mut runs = Vec::new();
 
+  // Windows PowerShell's `-Encoding UTF8` starts a file with a BOM.
+  let rows = rows.trim_start_matches('\u{feff}');
   for line in rows.lines().map(str::trim) {
     let Some(inner) = line
       .strip_prefix('|')
@@ -242,6 +244,13 @@ mod tests {
     assert!(text.contains(&format!(
       "| restack ms (outside frames) | 1.00 | {ABSENT} |"
     )));
+  }
+
+  #[test]
+  fn reads_rows_after_a_bom() {
+    let text = tables(&format!("\u{feff}{ROWS}"), "this", "main").unwrap();
+
+    assert!(text.contains("## move"));
   }
 
   #[test]

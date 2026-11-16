@@ -478,6 +478,7 @@ async fn switch_workspaces(
 /// Runs a helper the bench scripts call around the benchmark, if the
 /// arguments name one, returning whether one ran:
 ///
+/// - `scenarios`: prints the scenario names, one per line.
 /// - `save-layout <file>` / `restore-layout <file>`: see [`layout`].
 /// - `write-switch-config <style> [config]`: prints the main file of a
 ///   copy of the config that switches workspaces in `style`.
@@ -494,14 +495,20 @@ async fn switch_workspaces(
 ///   [`compare`]).
 async fn run_helper() -> anyhow::Result<bool> {
   let args = std::env::args().skip(1).collect::<Vec<_>>();
+  let helper = args.first().map_or("", String::as_str);
   let arg = |index: usize| {
     args
       .get(index)
       .map(String::as_str)
-      .with_context(|| format!("'{}' is missing an argument.", args[0]))
+      .with_context(|| format!("'{helper}' is missing an argument."))
   };
 
   match args.first().map(String::as_str) {
+    Some("scenarios") => {
+      for (name, ..) in SCENARIOS {
+        println!("{name}");
+      }
+    }
     Some("save-layout") => {
       let mut client = IpcClient::connect().await?;
       layout::save(&mut client, std::path::Path::new(arg(1)?)).await?;
