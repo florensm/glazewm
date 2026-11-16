@@ -1,5 +1,5 @@
 //! The rows a rectangular copy of a rounded backdrop is cut into, so its
-//! ends follow the corners' arcs (`RoundedBackdrop::Bands`).
+//! ends follow the corners' arcs (`Cut::Rows`).
 //!
 //! Each row at a corner is inset to where the arc is at the row's edge
 //! nearer the middle, so the rows cover all of the rounded shape and

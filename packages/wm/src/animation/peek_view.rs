@@ -4224,7 +4224,7 @@ pub fn hold_refusal(
   } else if has_other_stand_in(&state.animation_manager, &window.id()) {
     Some("drawn by another animation")
   } else if is_live(&peek_styles(window, config)) {
-    Some("its backdrop can't be copied (rounded or parallax)")
+    Some("its backdrop can't be copied (parallax)")
   } else {
     None
   }
