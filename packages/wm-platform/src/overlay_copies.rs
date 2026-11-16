@@ -19,7 +19,8 @@ use crate::{
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   lerp_f32,
   native_surrogate::{fill_start, placed_rects},
-  BackdropOverlayParams, Color, Rect, StyleBlend, TabBarPlace,
+  parallax_crop_origin, BackdropOverlayParams, Color, Rect, StyleBlend,
+  TabBarPlace,
 };
 
 /// Where a surrogate draws its window: at `frame`, cut at `clip`, into a
@@ -509,17 +510,54 @@ impl CropCopy {
         .rows(window_frame, self.params.corner_radius, scale);
 
     for (thumbnail, row) in self.thumbnails.iter_mut().zip(rows) {
-      match row.and_then(|row| row.intersection(&placement.clip)) {
-        Some(shown) => {
-          let _ = thumbnail.show(
-            shifted(&shown, (monitor.left, monitor.top)),
-            shifted(&shown, placement.origin),
-          );
+      match row
+        .and_then(|row| row.intersection(&placement.clip))
+        .and_then(|shown| {
+          crop_rects(
+            &shown,
+            window_frame,
+            monitor,
+            self.params.parallax,
+            placement.origin,
+          )
+        }) {
+        Some((rc_src, rc_dst)) => {
+          let _ = thumbnail.show(rc_src, rc_dst);
         }
         None => thumbnail.hide(),
       }
     }
   }
+}
+
+/// `(rcSource, rcDestination)` drawing the part `shown` of the backdrop of
+/// a window at `frame`, from a source spanning `monitor` whose image the
+/// backdrop is cut from (see `parallax_crop_origin`), into a surrogate
+/// whose top-left is at `origin`.
+///
+/// Past the image's edges, which parallax can bring into the frame, the
+/// overlay draws nothing, and so does the copy.
+fn crop_rects(
+  shown: &Rect,
+  frame: &Rect,
+  monitor: &Rect,
+  parallax: f32,
+  origin: (i32, i32),
+) -> Option<(RECT, RECT)> {
+  let (x, y) = parallax_crop_origin(frame, monitor, parallax);
+  // Where on screen the image lies for this frame.
+  let image = Rect::from_xy(
+    frame.left - x,
+    frame.top - y,
+    monitor.width(),
+    monitor.height(),
+  );
+  let shown = shown.intersection(&image)?;
+
+  Some((
+    shifted(&shown, (image.left, image.top)),
+    shifted(&shown, origin),
+  ))
 }
 
 /// A window's backdrop in each style it may be drawn in, of which one is
@@ -1972,9 +2010,9 @@ fn shifted(rect: &Rect, origin: (i32, i32)) -> RECT {
 #[cfg(test)]
 mod tests {
   use super::{
-    bar_rects, copy_rects, crop_fade, crop_weights, fill_strips,
-    keeps_backdrop, keeps_fill, keeps_ring, map_rect, ring_part_rects,
-    same_set, scale_alpha, shifted, vignette_strength,
+    bar_rects, copy_rects, crop_fade, crop_rects, crop_weights,
+    fill_strips, keeps_backdrop, keeps_fill, keeps_ring, map_rect,
+    ring_part_rects, same_set, scale_alpha, vignette_strength,
     BackdropOverlayParams, Band, Cut, Rect, RingPart, RECT,
   };
   use crate::{corner_bands::band_count, Color};
@@ -2133,11 +2171,65 @@ mod tests {
     let window = Rect::from_xy(93, 100, 814, 607);
     let frame = Rect::from_xy(100, 100, 800, 600);
 
-    map_rect(&frame, &window, rect)
-      .intersection(&MONITOR)
-      .map(|shown| {
-        (ltrb(shifted(&shown, (0, 0))), ltrb(shifted(&shown, (0, 0))))
-      })
+    let frame = map_rect(&frame, &window, rect);
+    frame.intersection(&MONITOR).and_then(|shown| {
+      crop_rects(&shown, &frame, &MONITOR, 1.0, (0, 0))
+        .map(|(src, dst)| (ltrb(src), ltrb(dst)))
+    })
+  }
+
+  /// `(rcSource, rcDestination)` of a backdrop with `parallax` for a frame
+  /// at `frame`, shown where it is inside a monitor at (1920, 0), drawn
+  /// into a surrogate spanning that monitor.
+  fn parallax_crop_at(
+    frame: &Rect,
+    parallax: f32,
+  ) -> Option<(Edges, Edges)> {
+    let monitor = Rect::from_xy(1920, 0, 1920, 1080);
+    frame.intersection(&monitor).and_then(|shown| {
+      crop_rects(&shown, frame, &monitor, parallax, (1920, 0))
+        .map(|(src, dst)| (ltrb(src), ltrb(dst)))
+    })
+  }
+
+  /// The image trails the window: the frame's top-left is cut at its
+  /// offset within the monitor times the parallax, rounded.
+  #[test]
+  fn parallax_cuts_the_backdrop_nearer_the_monitors_origin() {
+    let frame = Rect::from_xy(2120, 101, 800, 600);
+    assert_eq!(
+      parallax_crop_at(&frame, 0.5),
+      Some(((100, 51, 900, 651), (200, 101, 1000, 701)))
+    );
+    assert_eq!(
+      parallax_crop_at(&frame, 1.0),
+      Some(((200, 101, 1000, 701), (200, 101, 1000, 701)))
+    );
+  }
+
+  /// Past the image, as a frame running off the monitor's left edge with
+  /// parallax brings its right edge, nothing is drawn, as by the overlay.
+  #[test]
+  fn parallax_crop_leaves_out_what_is_past_the_image() {
+    let frame = Rect::from_xy(1720, 0, 2120, 1080);
+    // Cut from -100: what shows from x = 1920 on is the image from 100
+    // on, which runs out 100 px before the monitor's right edge.
+    assert_eq!(
+      parallax_crop_at(&frame, 0.5),
+      Some(((100, 0, 1920, 1080), (0, 0, 1820, 1080)))
+    );
+  }
+
+  /// Above full parallax the image leads the window, and runs out past
+  /// the frame's far edge.
+  #[test]
+  fn parallax_above_one_runs_out_past_the_far_edge() {
+    let frame = Rect::from_xy(2520, 0, 800, 100);
+    // Cut from 1200: the image runs out 80 px before the frame's right.
+    assert_eq!(
+      parallax_crop_at(&frame, 2.0),
+      Some(((1200, 0, 1920, 100), (600, 0, 1320, 100)))
+    );
   }
 
   #[test]

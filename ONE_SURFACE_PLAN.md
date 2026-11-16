@@ -2955,6 +2955,60 @@ Laptop test build: `test/one-surface`, re-cut 2026-11-15 from `0c841473`
 unreachable engine not in it). No `GLAZEWM_ISOLATE` any more: the
 surfaces are always on. Same Windows functions as the build before it.
 
+## Item 3: as built (`os/18-parallax`, 2026-11-16)
+
+Not seen running. Two commits on `tryout/one-surface` (`ff59826`).
+
+**Parallax.** The real overlay (`wallpaper_surface::set_crop`) offsets an
+unstretched, top-left-anchored brush over one baked image of the monitor
+(`rcMonitor`) by the window's offset within it times `parallax`. It does
+not clamp: past the image's edges it draws nothing. Two things a
+thumbnail's source rect could not reproduce, both settled:
+
+- the offset was fractional (sampled between pixels); both now take it
+  from `parallax_crop_origin`, rounded to whole pixels, so the overlay
+  moves by at most half a pixel at `parallax` != 1, and not at all at 1;
+- past the image: `crop_rects` leaves that part out of the copy too.
+
+A switch surrogate's copy is now cut from a source spanning the monitor,
+as a peek's is, not its work area (a cut can reach past it). Unit tests:
+`parallax_crop_origin` and `crop_rects`.
+
+**Live peeks deleted.** Every backdrop is copyable, so the `Live` modes of
+`WindowPeek` and `WorkspaceSurrogate`, `is_copyable`, `is_live`,
+`hosts_column`, `hosts_switch_window`, `has_own_peek_neighbour`,
+`restack_live_overlays`, `note_live_size`, `upsert_live_backdrop_overlay`
+and R2's live arms in `track_overlays` / `overlay_anchor` /
+`tracked_blends` are gone, with what only they used
+(`NativeSurrogate::show_clipped`, `move_to`, `defer_reposition`, the
+batches only live peeks pushed into). Each removed step was a no-op for
+a pinned peek, so no hand-over step changed. Own windows stay for the
+other fallbacks. Windows functions: none added; `SetWindowPos` /
+`DeferWindowPos` calls per frame of live peeks and surrogates are gone.
+
+**To check on screen** (`backdrop` on, a semi-transparent window):
+
+- `parallax: 0.5`: moves, resizes, opens, closes, scrolls and workspace
+  switches now draw on surfaces; the backdrop under a moving window
+  trails it as the real one does, and does not jump at the take-over or
+  hand-back. A window near the monitor's right or bottom edge shows the
+  same (or no) backdrop at its far edge before, during and after.
+- `parallax: 1.0` (the owner's): nothing different; a workspace switch
+  with the taskbar on top or left still shows the right backdrop.
+
+**Seen while reading, not fixed** (the switch layout shift on the
+laptop after `774413e`): the workspace-switch block in
+`platform_sync.rs` passes `window.to_rect()` as the surrogate's
+`frame_rect` (incoming: `(to_rect + total_border_delta, to_rect)`;
+outgoing with a target position: `(target, to_rect)`). `to_rect()` is the
+layout rect, which `total_border_delta` now also insets by
+`Workspace::border_inset`, so the surrogate's `rest_frame()` is the tile
+rather than the window's frame: the window is drawn from a source rect
+that large, and its ring rest and backdrop copy (`carry_backdrop`'s
+`frame_rest`) sit outside the window by `border_inset`. Peeks are not
+affected: they take the frame from the window's own rect
+(`compute_border_inset`).
+
 ## Removal plan (2026-11-15)
 
 Owner's decision: after porting (stacks last), remove the old engine
