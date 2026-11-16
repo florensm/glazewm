@@ -495,12 +495,12 @@ async fn switch_workspaces(
 ///
 /// - `scenarios`: prints the scenario names, one per line.
 /// - `save-layout <file>` / `restore-layout <file>`: see [`layout`].
-/// - `write-switch-config <style> [config]`: prints the main file of a
+/// - `write-switch-config <style> [config]`: prints the path of a one-file
 ///   copy of the config that switches workspaces in `style`.
 /// - `write-bench-config <tag> <borders> <backdrops> [config]`: prints the
-///   main file of a copy of the config, its files named after `tag`, that
-///   draws borders and backdrops as `config`, `on` or `off` say, with
-///   minimize animated.
+///   path of a one-file copy of the config, named after `tag`, that draws
+///   borders and backdrops as `config`, `on` or `off` say, with minimize
+///   animated.
 /// - `clean-switch-config [config]`, `clean-bench-config [config]`: remove
 ///   either kind of copy.
 /// - `summary-header [--dwm]`: prints the header of the table rows
