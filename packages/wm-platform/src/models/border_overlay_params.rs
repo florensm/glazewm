@@ -32,6 +32,12 @@ pub struct BorderOverlayParams {
   pub rim: f32,
   /// A soft glow of the ring's color around it.
   pub glow: BorderGlow,
+  /// How far past the window its overlay's window reaches whatever style
+  /// the window takes, in whole physical pixels: at least the largest
+  /// `outset` of its styles and of any blend between them, so a style
+  /// change redraws the ring inside that window rather than moving it.
+  /// `0.0` keeps it to this style's own `outset`.
+  pub reserve: f32,
 }
 
 /// A soft glow of a border ring's color, fading out away from the ring.
@@ -121,13 +127,36 @@ impl BorderOverlayParams {
       highlight: crate::lerp_f32(self.highlight, to.highlight, t),
       rim: crate::lerp_f32(self.rim, to.rim, t),
       glow: self.glow.lerp(&to.glow, t),
+      // As the glow's reach: the overlay is only resized as a blend starts
+      // or ends.
+      reserve: if t <= 0.0 {
+        self.reserve
+      } else if t >= 1.0 {
+        to.reserve
+      } else {
+        self.reserve.max(to.reserve)
+      },
     }
   }
 
-  /// How far its overlay reaches past the window: the ring and its glow.
+  /// How far the ring and its glow reach past the window.
   #[must_use]
   pub fn outset(&self) -> f32 {
     self.width + self.glow.reach
+  }
+
+  /// How far its overlay's window reaches past the window: its `reserve`,
+  /// or further if this style's ring and glow do.
+  #[must_use]
+  pub fn extent(&self) -> f32 {
+    self.outset().max(self.reserve)
+  }
+
+  /// Room between the overlay's outer edge and the glow's, where a style
+  /// reaching less far than `reserve` leaves the window empty.
+  #[must_use]
+  pub fn margin(&self) -> f32 {
+    (self.reserve - self.outset()).max(0.0)
   }
 
   /// The ring's color at its top edge, lightened by `highlight`.
@@ -177,6 +206,7 @@ mod tests {
       highlight,
       rim: 0.0,
       glow: BorderGlow::default(),
+      reserve: 0.0,
     }
   }
 
@@ -270,5 +300,57 @@ mod tests {
     };
 
     assert!((params.outset() - 8.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn extent_keeps_the_reserve_whatever_the_style_draws() {
+    let bare = BorderOverlayParams {
+      reserve: 12.0,
+      ..params(0.0)
+    };
+    let glowing = BorderOverlayParams {
+      glow: glow(10.0, 0.5),
+      ..bare
+    };
+
+    assert!((bare.extent() - 12.0).abs() < f32::EPSILON);
+    assert!((bare.margin() - 10.0).abs() < f32::EPSILON);
+    assert!((glowing.extent() - 12.0).abs() < f32::EPSILON);
+    assert!(glowing.margin().abs() < f32::EPSILON);
+
+    // Mid-blend the drawn ring's outer edge stays `margin` in from it.
+    let mid = bare.lerp(&glowing, 0.5);
+    assert!((mid.extent() - 12.0).abs() < f32::EPSILON);
+    assert!((mid.margin() + mid.outset() - 12.0).abs() < f32::EPSILON);
+
+    // Without one, a style keeps to its own outset.
+    assert!((glow_only().extent() - glow_only().outset()).abs() < 1e-6);
+    assert!(glow_only().margin().abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn reserve_takes_the_larger_mid_blend() {
+    let (near, far) = (
+      BorderOverlayParams {
+        reserve: 4.0,
+        ..params(0.0)
+      },
+      BorderOverlayParams {
+        reserve: 12.0,
+        ..params(0.0)
+      },
+    );
+
+    assert!((near.lerp(&far, 0.0).reserve - 4.0).abs() < f32::EPSILON);
+    assert!((near.lerp(&far, 0.5).reserve - 12.0).abs() < f32::EPSILON);
+    assert!((far.lerp(&near, 0.5).reserve - 12.0).abs() < f32::EPSILON);
+    assert!((far.lerp(&near, 1.0).reserve - 4.0).abs() < f32::EPSILON);
+  }
+
+  fn glow_only() -> BorderOverlayParams {
+    BorderOverlayParams {
+      glow: glow(6.0, 0.5),
+      ..params(0.0)
+    }
   }
 }

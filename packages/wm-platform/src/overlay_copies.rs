@@ -991,6 +991,43 @@ impl OverlayCopies {
     self.ring.is_some()
   }
 
+  /// Registers a copy of the ring of `source`, cut by `corner_reach`, on
+  /// `dest` now, held and drawing nothing, as the spare
+  /// [`carry_ring`](Self::carry_ring) takes: so it stacks right over what
+  /// is registered there so far, as a ready peek's does, rather than over
+  /// whatever comes before it is carried. A spare that already draws it
+  /// is kept. Returns whether there is one; none once a ring is carried.
+  pub(crate) fn reserve_ring(
+    &mut self,
+    dest: HWND,
+    source: HWND,
+    corner_reach: Option<i32>,
+  ) -> bool {
+    if self.ring.is_some() {
+      return false;
+    }
+    if self.spare_ring.as_ref().is_some_and(|ring| {
+      keeps_ring(ring.source, source.0, &ring.part_kinds(), corner_reach)
+    }) {
+      return true;
+    }
+
+    // Where the two are is set as it is carried.
+    let looks = RingPart::all(corner_reach)
+      .into_iter()
+      .map(|part| (part, Look::default()))
+      .collect();
+    self.spare_ring =
+      register_all(dest, source, looks, true).map(|parts| RingCopy {
+        parts,
+        source: source.0,
+        rest: Rect::from_ltrb(0, 0, 0, 0),
+        window_rest: Rect::from_ltrb(0, 0, 0, 0),
+        corner_reach,
+      });
+    self.spare_ring.is_some()
+  }
+
   /// Cuts the ring copy by `corner_reach` from now on, as
   /// [`carry_ring`](Self::carry_ring) does, leaving where it is as it is.
   pub(crate) fn cut_ring(
@@ -1329,6 +1366,9 @@ impl OverlayCopies {
       is_shown,
       opacity,
     });
+    // A spare ring is under the new strips now: it is registered anew
+    // over them as it is carried.
+    self.spare_ring = None;
     self.raise_ring(dest);
     true
   }

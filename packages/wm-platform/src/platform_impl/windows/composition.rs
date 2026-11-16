@@ -1021,13 +1021,22 @@ const RIM_WIDTH: f32 = 1.0;
 /// The inputs a stroked ring's geometry is derived from: the overlay's own
 /// (already-outset) size in pixels, the border width the stroke is drawn
 /// at, the ring's *outer* corner radius, and how far its glow reaches
-/// past it, which the ring is inset by.
+/// past it and the empty `margin` past that (see
+/// `BorderOverlayParams::margin`), which the ring is inset by.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Ring {
   size: Vector2,
   width: f32,
   corner_radius: f32,
   glow_reach: f32,
+  margin: f32,
+}
+
+impl Ring {
+  /// How far in from the overlay's edge the ring's outer edge is.
+  fn inset(self) -> f32 {
+    self.margin.max(0.0) + self.glow_reach.max(0.0)
+  }
 }
 
 /// The rounded rectangle a stroke follows -- its offset, size and corner
@@ -1080,11 +1089,7 @@ fn set_path(
 fn ring_geometry(ring: Ring) -> (Vector2, Vector2, f32) {
   let half = ring.width.max(0.0) / 2.0;
 
-  inset_path(
-    ring.size,
-    ring.glow_reach.max(0.0) + half,
-    ring.corner_radius - half,
-  )
+  inset_path(ring.size, ring.inset() + half, ring.corner_radius - half)
 }
 
 /// The path and thickness of the hairline along `ring`'s inner edge: the
@@ -1098,7 +1103,7 @@ fn rim_geometry(ring: Ring) -> ((Vector2, Vector2, f32), f32) {
   (
     inset_path(
       ring.size,
-      ring.glow_reach.max(0.0) + depth,
+      ring.inset() + depth,
       ring.corner_radius - depth,
     ),
     thickness,
@@ -1113,7 +1118,7 @@ fn glow_band_geometry(ring: Ring, band: usize) -> (Vector2, Vector2, f32) {
 
   inset_path(
     ring.size,
-    ring.glow_reach - distance,
+    ring.margin.max(0.0) + ring.glow_reach - distance,
     ring.corner_radius + distance,
   )
 }
@@ -1150,7 +1155,7 @@ impl BorderVisual {
   /// Lays out the glow bands made so far, leaving any more it reaches to
   /// [`grow_glow`](Self::grow_glow).
   fn apply_ring(&self, ring: Ring) -> windows::core::Result<()> {
-    let reach = ring.glow_reach.max(0.0);
+    let reach = ring.inset();
 
     self.root.SetSize(ring.size)?;
     self
@@ -1265,24 +1270,26 @@ impl BorderVisual {
     Ok(())
   }
 
-  /// Updates the border width, i.e. the stroke's thickness, and how far
-  /// the glow reaches past it.
+  /// Updates the border width, i.e. the stroke's thickness, how far the
+  /// glow reaches past it, and the empty `margin` past the glow.
   ///
-  /// The overlay's `HWND` is outset by both, so callers must resize the
-  /// window (and hence call [`set_rect`]) to match -- this only updates
-  /// what is drawn inside it.
+  /// The overlay's `HWND` is outset by all three, so callers must resize
+  /// the window (and hence call [`set_rect`]) when their sum changes --
+  /// this only updates what is drawn inside it.
   ///
   /// [`set_rect`]: BorderVisual::set_rect
   pub(crate) fn set_widths(
     &self,
     width: f32,
     glow_reach: f32,
+    margin: f32,
   ) -> crate::Result<()> {
     self.grow_glow(glow_bands(glow_reach))?;
 
     Ok(self.apply_ring(Ring {
       width,
       glow_reach,
+      margin,
       ..self.ring.get()
     })?)
   }
@@ -1416,6 +1423,7 @@ fn build_border_visual_tree(
       width: params.width,
       corner_radius: params.corner_radius,
       glow_reach: 0.0,
+      margin: 0.0,
     }),
   };
 
@@ -1429,6 +1437,7 @@ fn build_border_visual_tree(
     width: params.width,
     corner_radius: params.corner_radius,
     glow_reach: params.glow.reach,
+    margin: params.margin(),
   })?;
   visual.color_glow(
     params.color,
@@ -2321,6 +2330,7 @@ mod tests {
       width: 4.0,
       corner_radius: 10.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 2.0, Y: 2.0 });
@@ -2337,6 +2347,7 @@ mod tests {
       width: 0.0,
       corner_radius: 10.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
@@ -2354,6 +2365,7 @@ mod tests {
       width: 40.0,
       corner_radius: 2.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(size, Vector2 { X: 0.0, Y: 0.0 });
@@ -2369,6 +2381,7 @@ mod tests {
       width: -8.0,
       corner_radius: 4.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
@@ -2381,6 +2394,7 @@ mod tests {
       width,
       corner_radius,
       glow_reach,
+      margin: 0.0,
     }
   }
 
@@ -2425,5 +2439,39 @@ mod tests {
       glow_band_geometry(ring(2.0, 2.0, 6.0), 5);
     assert_eq!(offset, Vector2 { X: 0.5, Y: 0.5 });
     assert!((corner_radius - 7.5).abs() < f32::EPSILON);
+  }
+
+  /// An overlay sized for a style reaching further draws a nearer one
+  /// inset by the margin, where it would be in an overlay of its own.
+  #[test]
+  fn margin_insets_ring_rim_and_glow_alike() {
+    let own = ring(2.0, 4.0, 3.0);
+    let wider = Ring {
+      size: Vector2 {
+        X: own.size.X + 14.0,
+        Y: own.size.Y + 14.0,
+      },
+      margin: 7.0,
+      ..own
+    };
+    let moved = |(offset, size, radius): (Vector2, Vector2, f32)| {
+      (
+        Vector2 {
+          X: offset.X - 7.0,
+          Y: offset.Y - 7.0,
+        },
+        size,
+        radius,
+      )
+    };
+
+    assert_eq!(moved(ring_geometry(wider)), ring_geometry(own));
+    assert_eq!(moved(rim_geometry(wider).0), rim_geometry(own).0);
+    for band in 0..3 {
+      assert_eq!(
+        moved(glow_band_geometry(wider, band)),
+        glow_band_geometry(own, band)
+      );
+    }
   }
 }

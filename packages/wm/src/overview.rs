@@ -1514,6 +1514,7 @@ mod tests {
       highlight: 0.0,
       rim: 0.0,
       glow: BorderGlow::default(),
+      reserve: 0.0,
     };
 
     let bounds = NativeBorderOverlay::bounds(&frame, &params);
@@ -1529,6 +1530,14 @@ mod tests {
     };
     let bounds = NativeBorderOverlay::bounds(&frame, &glowing);
     assert_eq!(outset(&frame, &bounds), [9, 9, 9, 9]);
+
+    // Sized for a farther-reaching style of the window's.
+    let reserved = BorderOverlayParams {
+      reserve: 12.0,
+      ..params
+    };
+    let bounds = NativeBorderOverlay::bounds(&frame, &reserved);
+    assert_eq!(outset(&frame, &bounds), [12, 12, 12, 12]);
   }
 
   #[test]

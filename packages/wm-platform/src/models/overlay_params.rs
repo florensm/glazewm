@@ -67,6 +67,7 @@ mod tests {
       highlight: 0.0,
       rim: 0.0,
       glow: BorderGlow::default(),
+      reserve: 0.0,
     }
   }
 

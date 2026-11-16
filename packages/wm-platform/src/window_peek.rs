@@ -469,6 +469,26 @@ impl WindowPeek {
     carries
   }
 
+  /// Registers the copy of its window's ring, `source`, cut by
+  /// `corner_reach`, now, held, right over the window and backdrop
+  /// registered so far, for [`carry_ring`](Self::carry_ring) to take (see
+  /// `OverlayCopies::reserve_ring`): a tile's thumbnails then stack
+  /// together on its surface, over the tiles registered before it, as
+  /// they would be restacked. Only a hosted peek. Returns whether it did.
+  pub fn reserve_ring(
+    &mut self,
+    source: HWND,
+    corner_reach: Option<i32>,
+  ) -> bool {
+    if !self.is_hosted() {
+      return false;
+    }
+
+    self
+      .copies
+      .reserve_ring(self.surrogate.hwnd(), source, corner_reach)
+  }
+
   /// Draws the ring copy whole, or with `corner_reach` in cells, from now
   /// on, where it was carried (see [`carry_ring`](Self::carry_ring)).
   pub fn cut_ring(&mut self, corner_reach: Option<i32>) {

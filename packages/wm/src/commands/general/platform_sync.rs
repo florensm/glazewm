@@ -3243,11 +3243,19 @@ pub(crate) fn border_overlay_params_for(
   // the real managed window's own DWM-rendered corners.
   let corner_radius = effect_cfg.window_corner_radius_px();
 
-  Some(effect_cfg.border.to_overlay_params(
-    target_color,
-    corner_radius,
-    &config.value.gaps,
-  ))
+  // Sized for every style the window may take, so a focus change only
+  // redraws the ring inside its window.
+  Some(BorderOverlayParams {
+    reserve: config
+      .value
+      .window_effects
+      .border_reserve(&config.value.gaps),
+    ..effect_cfg.border.to_overlay_params(
+      target_color,
+      corner_radius,
+      &config.value.gaps,
+    )
+  })
 }
 
 /// Resolves the backdrop overlay params of a window taking `set`, or

@@ -2511,6 +2511,80 @@ None. Logging only.
   and without a border, to confirm cost 1's share before building the
   reservation.
 
+### Fixes (2026-11-16)
+
+Branch `os/15-ring-fixes`, from `c0374f4f`. Read off the code, not seen
+running. No hand-over step reordered or dropped other than the one the
+owner approved (fix 2), no new Windows API, live path untouched.
+
+1. **Ring offset up/left for a frame in scrolling layouts** (suspect (b)
+   above, confirmed by the owner: gone with the focused glow off).
+   `BorderOverlayParams` gains `reserve`, set in
+   `border_overlay_params_for` from `WindowEffectsConfig::border_reserve`:
+   the widest border plus the farthest glow of every set with a border
+   on (focused, other, urgent), so any blend between them fits too. The
+   ring's window is outset by `extent()` (`reserve`, or `outset` if
+   larger) and `BorderVisual` draws the ring inset by `margin()`
+   (`reserve - outset`), so a focus fade only changes the visual's
+   content; `set_widths` re-places the window only when the extent
+   changes (a reload). Read from the extent alike: `outer_rect` (ring
+   copies, `RingPart` cells via `corner_reach`, parking, `carry_ring`'s
+   carried-rect check), the hit-test region's hole, bounds clipping, the
+   slide ring, the overview's overlay bounds, `ring_reach` (lanes). Glow
+   clamping to the inner gap is per style, unchanged; the window reaches
+   past the drawn glow only into the gap. Params built elsewhere
+   (overview scenes, tests) keep `reserve` 0: today's sizing.
+   On screen: the ring is drawn where it was; a focus fade between
+   styles of different reach or width no longer moves or resizes the
+   ring's window, so no offset frame, and no `SetWindowPos` per frame of
+   a width fade. Registrations: unchanged.
+2. **Ring copy registered with its window.** `move_tile` takes the
+   ring overlay that exists before the command (`existing_ring`: its
+   window and corner reach) and a new hosted peek registers the ring
+   copy held, as `spare_ring` (`WindowPeek::reserve_ring`,
+   `OverlayCopies::reserve_ring`), right after its window and backdrop,
+   cut as `carry_ring` will cut it. `carry_ring`'s `Handover::None` arm
+   takes it through `keeps_ring`. Its `Role` transitions and `Handover`
+   steps are unchanged; only the registration moves to the command.
+   Overlay made or replaced in the cover pass, a new tab bar copy, a new
+   fill or a backdrop anew before it is carried: the spare goes and
+   today's path runs. Own and live peeks: unchanged.
+   4-tile swap, borders, rounded rows (B backdrop rows per tile, 7 to 21
+   with r 8 px under a 2 px ring): before, command 4 × (B + 2), cover
+   pass 4 rings, then `restack_crossings` re-registered the 3 tiles
+   ranked above another, 3 × (B + 2) more (21 to 69, 1.5 to 4 ms) and as
+   many unregistrations. After: command 4 × (B + 3), cover pass none,
+   restacks none, since each tile's thumbnails are contiguous in rank
+   order, which is what `restack_crossings` would have produced. Still
+   restacked as before: reused ready peeks' kept registrations, a fill
+   registered on a later tick, a trail's ring.
+   On screen: nothing should differ (the same final order, reached
+   without the restack), except less start-up lag with borders on.
+3. **No ring under a new fill.** `carry_fill` registering new strips
+   (none yet, or the spare fill's colour differs, e.g. a reused ready
+   peek whose edge colour changed) now drops `spare_ring`, so the ring
+   is registered anew over the fill as it is carried. A kept fill keeps
+   the spare, so fix 2's spare survives every fill that registers
+   nothing. On screen: a filled resize of a reused ready peek shows its
+   ring over the fill strips at the trailing edges, not under them.
+   Registrations: +1 (or 8) ring in that case only.
+
+To check on screen:
+
+- Scrolling layout, the owner's style (focused glow 10 px, other no
+  glow), glow back on: scroll and change focus; no ring offset up/left,
+  and no `Ring of <id> resized by its style` debug lines.
+- Ring and glow at rest exactly where they were, focused and not,
+  square and rounded; hover a neighbour near the gap: its edge still
+  resizes and clicks through.
+- Swap and move tiles with the border on, against before: less lag at
+  the start; debug log has no `Stacking <id>'s peek over a tile it may
+  cross` for a plain swap (`perf_bench` `restack` stage near zero).
+- Resize tiles (`fill`) twice within 5 s on a window whose edge colour
+  changes between: ring over the fill strips.
+- Workspace switch with the glow on (slide ring), and the overview's
+  border previews: ring in place.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
