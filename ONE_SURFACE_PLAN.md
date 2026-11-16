@@ -2138,6 +2138,20 @@ default.
 
 Branch `os/12-rounded` (item 2 of "Open" below). Not seen running.
 
+### Chosen: A (2026-11-16)
+
+The owner tested on the laptop and chose A. Branch `os/13-rounded-a`, not
+seen running: `GLAZEWM_ROUNDED_BACKDROP` and `rounded_backdrop.rs` are
+gone, and B with them (`OwnBackdropSource`, `Cut::Own`, `CropSource`).
+A rounded backdrop with `parallax` == 1 is always copyable
+(`is_copyable` now checks parallax only) and cut in rows (`Cut::of`), as
+`a` did; square backdrops are cut whole as before. Stays live: any
+backdrop with `parallax` != 1 (item 3). The live path is untouched. The
+sections below describe the switch and B as they were built; the
+debug logs from the first laptop test stay. Windows functions no longer
+called: none (B's calls are all still made by `BackdropSource`,
+`VignetteSource` and `NativeBackdropOverlay`).
+
 ### The switch
 
 `GLAZEWM_ROUNDED_BACKDROP`, read once per process (`wm-platform`'s
@@ -2400,7 +2414,7 @@ ported first (items below), then this flicker, then the bench.
    description (R6 proposed wording, owner to decide). To check: the
    `catch_up_before_frame` doc in `main.rs` (window events during peek
    moves, "not checked yet" since R4's guard went).
-2. **Rounded backdrops on the surface** (built 2026-11-16, `os/12-rounded`, see "Rounded backdrops: as built"; owner to compare `GLAZEWM_ROUNDED_BACKDROP=a`, `b`, `live` on the laptop and choose, then the switch goes) (owner, 2026-11-15; after the
+2. **Rounded backdrops on the surface**: done (built 2026-11-16, `os/12-rounded`; the owner chose A on the laptop, and the switch and B went in `os/13-rounded-a`, see "Rounded backdrops: as built", "Chosen: A") (owner, 2026-11-15; after the
    removal, before the flicker and the bench). A backdrop with rounded
    corners (the window's corner style) or `parallax` != 1 is not
    copyable (`BackdropOverlayParams::is_copyable`), so the window is live:
