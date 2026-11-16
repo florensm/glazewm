@@ -5040,6 +5040,20 @@ fn carry_ring(
     return true;
   };
 
+  // A ring parked at a frame read off DWM that disagrees with the window's
+  // own rect shows offset from its copy's window: logged to tell it from a
+  // ring resized by a focus fade (below).
+  if let Some(window) = &window {
+    let expected =
+      visible_frame(&bounds, &window.native_properties().shadow_borders);
+    if expected != frame {
+      tracing::debug!(
+        "Ring of {id} parked at frame {frame:?}, off its window's rect \
+         {bounds:?} (frame {expected:?} by its shadow borders)."
+      );
+    }
+  }
+
   // Framed with its stack's tab bar, like the real window.
   let frame = landing_frame(state, id, frame);
   let ring_frame = window.as_ref().map_or_else(
@@ -5061,7 +5075,18 @@ fn carry_ring(
   ) else {
     return false;
   };
+  let outer_before = overlay.outer_rect();
   overlay.apply_blend(blend);
+  // A width or glow change re-places the ring's window and resizes its
+  // visual by separate routes, which may reach DWM in different frames.
+  if overlay.outer_rect() != outer_before {
+    tracing::debug!(
+      "Ring of {id} resized by its style from {outer_before:?} to {:?}, \
+       parked: {}.",
+      overlay.outer_rect(),
+      overlay.is_parked(),
+    );
+  }
 
   let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id)
   else {
