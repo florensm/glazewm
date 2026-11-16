@@ -2307,7 +2307,7 @@ semi-transparent windows; `window_move`/`window_resize`/`window_open` at
 
 Reviewer's note: the owner then checked report 2 with `GLAZEWM_ROUNDED_BACKDROP=live` and it still flickers in scrolling layouts, so it is not (or not only) item 2's: the older backdrop flicker (open item) is the first suspect, in the scroll view's resting or live column peeks across a focus fade.
 
-Branch `os/fix-rounded-1`. The owner's two reports with rounded corners,
+Branch `os/fix-rounded-1`, `os/13-rounded-a`. The owner's two reports with rounded corners,
 a custom border and `GLAZEWM_ROUNDED_BACKDROP=a`. Reading did not settle
 either cause, so no behaviour is changed: two `debug` log lines are added
 to tell the suspects apart. No hand-over step moved, no new Windows API.
@@ -2489,7 +2489,7 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`, `os/r6-docs`, `os/12-rounded`, `os/fix-rounded-1`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`, `os/r6-docs`, `os/12-rounded`, `os/fix-rounded-1`, `os/13-rounded-a`.
 
 Laptop test build: `test/one-surface`, re-cut 2026-11-15 from `0c841473`
 (R0..R3 merged: nothing starts the engine; R4's deletion of the then
