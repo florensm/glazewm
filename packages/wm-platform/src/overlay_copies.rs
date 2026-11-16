@@ -19,7 +19,6 @@ use crate::{
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   lerp_f32,
   native_surrogate::{fill_start, placed_rects},
-  rounded_backdrop::{self, RoundedBackdrop},
   BackdropOverlayParams, Color, Rect, StyleBlend, TabBarPlace,
 };
 
@@ -46,18 +45,13 @@ enum Cut {
 }
 
 impl Cut {
-  /// How a copy of `params`' backdrop is cut, with `rounded` saying how
-  /// rounded corners are drawn, under a ring `ring_width` wide.
-  fn of(
-    params: &BackdropOverlayParams,
-    ring_width: Option<f32>,
-    rounded: RoundedBackdrop,
-  ) -> Self {
-    match rounded {
-      RoundedBackdrop::Bands if params.corner_radius > 0.0 => {
-        Self::Rows(band_count(params.corner_radius, ring_width))
-      }
-      _ => Self::Whole,
+  /// How a copy of `params`' backdrop is cut under a ring `ring_width`
+  /// wide.
+  fn of(params: &BackdropOverlayParams, ring_width: Option<f32>) -> Self {
+    if params.corner_radius > 0.0 {
+      Self::Rows(band_count(params.corner_radius, ring_width))
+    } else {
+      Self::Whole
     }
   }
 
@@ -691,11 +685,10 @@ impl BackdropCopy {
   /// Whether each crop is cut as one carried now for a ring `ring_width`
   /// wide would be.
   fn is_cut_for(&self, ring_width: Option<f32>) -> bool {
-    let rounded = rounded_backdrop::current();
     self
       .crops
       .iter()
-      .all(|crop| crop.cut == Cut::of(&crop.params, ring_width, rounded))
+      .all(|crop| crop.cut == Cut::of(&crop.params, ring_width))
   }
 
   /// Draws nothing, as one just carried: in no style, not shown, at no
@@ -1097,7 +1090,6 @@ impl OverlayCopies {
         )
       });
 
-    let rounded = rounded_backdrop::current();
     let mut crops = Vec::<CropCopy>::new();
     for &params in styles {
       if crops.iter().any(|crop| crop.params == params) {
@@ -1111,7 +1103,7 @@ impl OverlayCopies {
           continue;
         }
       };
-      let cut = Cut::of(&params, ring_width, rounded);
+      let cut = Cut::of(&params, ring_width);
       if let Some(thumbnails) =
         self.register_rows(dest, source.hwnd(), cut)
       {
@@ -1943,8 +1935,7 @@ mod tests {
     bar_rects, copy_rects, crop_fade, crop_weights, fill_strips,
     keeps_backdrop, keeps_fill, keeps_ring, map_rect, ring_part_rects,
     same_set, scale_alpha, shifted, vignette_strength,
-    BackdropOverlayParams, Band, Cut, Rect, RingPart, RoundedBackdrop,
-    RECT,
+    BackdropOverlayParams, Band, Cut, Rect, RingPart, RECT,
   };
   use crate::{corner_bands::band_count, Color};
 
@@ -2138,16 +2129,9 @@ mod tests {
       ..square
     };
 
+    assert_eq!(Cut::of(&square, Some(2.0)), Cut::Whole);
     assert_eq!(
-      Cut::of(&square, Some(2.0), RoundedBackdrop::Bands),
-      Cut::Whole
-    );
-    assert_eq!(
-      Cut::of(&rounded, Some(2.0), RoundedBackdrop::Live),
-      Cut::Whole
-    );
-    assert_eq!(
-      Cut::of(&rounded, Some(2.0), RoundedBackdrop::Bands),
+      Cut::of(&rounded, Some(2.0)),
       Cut::Rows(band_count(8.0, Some(2.0)))
     );
     assert_eq!(Cut::Whole.thumbnails(), 1);

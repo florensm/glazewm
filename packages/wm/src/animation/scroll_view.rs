@@ -20,8 +20,8 @@
 //! As for a workspace switch, a peek spans its monitor and never moves:
 //! only its thumbnail does, along with copies of the window's border ring,
 //! shadow and backdrop, in the same DWM updates. A window whose backdrop
-//! can't be copied (rounded, or drifting with parallax) has its peek move
-//! with it instead (see `WindowPeek`).
+//! can't be copied (drifting with parallax) has its peek move with it
+//! instead (see `WindowPeek`).
 //!
 //! A peek's border, backdrop and tab bar are cut at the monitor edge like
 //! the peek itself, so nothing of a column shows on the monitor beside it.

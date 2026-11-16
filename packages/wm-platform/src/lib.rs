@@ -46,7 +46,6 @@ mod peek_surface;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
-mod rounded_backdrop;
 mod single_instance;
 mod size_to_content;
 mod surface;

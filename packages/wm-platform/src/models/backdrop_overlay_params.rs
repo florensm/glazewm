@@ -1,4 +1,4 @@
-use crate::{rounded_backdrop::RoundedBackdrop, Color};
+use crate::Color;
 
 /// Tint, blur radius, corner radius, opacity, saturation and grading knobs
 /// for a `NativeBackdropOverlay`, bundled so the growing set of overlay
@@ -65,25 +65,17 @@ pub struct BackdropOverlayParams {
 impl BackdropOverlayParams {
   /// Whether a surrogate can draw this backdrop as copies of it (see
   /// `OverlayCopies::carry_backdrop`): pinned to the desktop, as the copy
-  /// is cut from a backdrop of the whole monitor, and square unless
-  /// `GLAZEWM_ROUNDED_BACKDROP` says how to draw rounded corners (see
-  /// `rounded_backdrop`).
+  /// is cut from a backdrop of the whole monitor. Rounded corners are cut
+  /// in rows (see `corner_bands`).
   #[must_use]
   pub fn is_copyable(&self) -> bool {
-    self.is_copyable_with(crate::rounded_backdrop::current())
-  }
-
-  /// [`is_copyable`](Self::is_copyable), drawing rounded corners as
-  /// `rounded` says.
-  fn is_copyable_with(&self, rounded: RoundedBackdrop) -> bool {
-    (self.corner_radius <= 0.0 || rounded.is_copied())
-      && (self.parallax - 1.0).abs() < 1e-3
+    (self.parallax - 1.0).abs() < 1e-3
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::{BackdropOverlayParams, RoundedBackdrop};
+  use super::BackdropOverlayParams;
   use crate::Color;
 
   fn backdrop(corner_radius: f32, parallax: f32) -> BackdropOverlayParams {
@@ -109,19 +101,14 @@ mod tests {
   }
 
   #[test]
-  fn rounded_corners_are_copied_only_when_switched_on() {
-    let rounded = backdrop(8.0, 1.0);
-
-    assert!(!rounded.is_copyable_with(RoundedBackdrop::Live));
-    assert!(rounded.is_copyable_with(RoundedBackdrop::Bands));
-    assert!(backdrop(0.0, 1.0).is_copyable_with(RoundedBackdrop::Live));
+  fn square_and_rounded_corners_are_copied() {
+    assert!(backdrop(0.0, 1.0).is_copyable());
+    assert!(backdrop(8.0, 1.0).is_copyable());
   }
 
   #[test]
   fn parallax_is_never_copied() {
-    for rounded in [RoundedBackdrop::Live, RoundedBackdrop::Bands] {
-      assert!(!backdrop(0.0, 0.5).is_copyable_with(rounded));
-      assert!(!backdrop(8.0, 0.5).is_copyable_with(rounded));
-    }
+    assert!(!backdrop(0.0, 0.5).is_copyable());
+    assert!(!backdrop(8.0, 0.5).is_copyable());
   }
 }
