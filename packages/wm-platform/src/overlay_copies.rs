@@ -1366,6 +1366,9 @@ impl OverlayCopies {
       is_shown,
       opacity,
     });
+    // A spare ring is under the new strips now: it is registered anew
+    // over them as it is carried.
+    self.spare_ring = None;
     self.raise_ring(dest);
     true
   }
