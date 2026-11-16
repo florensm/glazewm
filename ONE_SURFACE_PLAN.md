@@ -2362,6 +2362,155 @@ Not seen running.
    overlay created for <id>.` as it lands); `Backdrop copy carried ...
    replacing one: true.` on focus changes (a rebuild after all).
 
+## Ring on the surface, cheaper: as built
+
+Branch `os/14-ring`, from `99d12fde`. Read off the code, not seen
+running. Owner's report (laptop, `test/one-surface`): with a border on,
+animations "kind of lag".
+
+### Why the ring is cut into cells
+
+`STAND_INS_PLAN.md` 10b-1 / `TODO.md` 66 and "Still open" 5: a column
+resized on its peek had its ring copy stretched with the window, so its
+edges thinned or thickened and its corners (radius, glow) squashed until
+it landed. Cells keep the corners 1:1 and stretch the edges along their
+length only. They also need a source that does not change during the
+resize, so a resizing tile's ring stays parked where it was carried from
+(`carry_ring`'s `corner_reach.is_some()` arm).
+
+None of that applies to a tile drawn at its rest size, and the code
+already knows this: `corner_reach` is
+`entry.stretch.is_some().then(..)` (`peek_view.rs` `carry_ring`), and
+`stretch` is `None` for a same-size motion (`move_tile`:
+`resize.filter(|_| !is_same_size(..))`; columns the same). With no
+`corner_reach`, `RingPart::all` gives one `RingPart::Whole`, drawn by
+`copy_rects` 1:1. A retarget into a resize sets `stretch`, and the
+`Covered | Parked` arm re-cuts it (`cut_ring` -> `register_anew`); a
+ready peek's spare with the other cut is dropped (`keeps_ring`). So the
+"preferred" change of this task is already how it works. The 8 cells
+in the plan's numbers ("7.5 ms in `peek_cover`", `START_LATENCY_PLAN.md`
+"First draw") are from the `resize` bench scenario, where every tile
+resizes. Hidden ring window, DPI, glow and the transparent middle
+don't matter for a 1:1 copy: the ring is parked shown or concealed by
+alpha (which thumbnails leave out), never hidden while carried.
+
+### Per-motion cost with a border, ranked
+
+Per tile: backdrop rows 2k+1 per style (+2k+1 for a vignette; k = 3 for
+r 8 px under a 2 px ring), window 1, fill 2 (fill resizes), ring 1 or 8.
+About 0.16 ms per `DwmRegisterThumbnail` (1.25 ms for 8 cells,
+`START_LATENCY_PLAN.md`).
+
+1. **Restacks at the start, caused by the ring.** `move_tile` registers
+   each tile's backdrop and window in the command. Then the cover pass
+   (`cover_moved_overlays` -> `track_overlays` -> `carry_ring`,
+   `Handover::None` arm) registers every ring copy, over the windows of
+   the tiles ranked above it. `track_overlays` ends with
+   `restack_crossings` (`peek_view.rs:4825`), and `out_of_order` then
+   re-registers whole (`WindowPeek::register_anew`: rows, window, fill,
+   ring) every tile ranked above one whose lane it meets. Step 3 had this
+   as "a swap: one restack of the upper tile". With n tiles that meet
+   (swaps, moves across, opens; resizes whose rings meet in the gap,
+   since lanes take in the ring's outset and glow; any easing that
+   overshoots), that is n-1 whole tiles: with the owner's rounded rows
+   about 9 to 25 registrations each (1.5 to 4 ms), plus as many
+   unregistrations. Without a border there is no late ring, so no
+   restack (a fill resize's late fill still has one). This only happens
+   on surfaces (own peeks were raised as windows), and it grew with A's
+   rows. It fits "lag with the border on". Ranked first.
+2. **Per-frame updates.** `Thumbnail::set` only sends what changed, but
+   a moving tile's rects change every frame: ring 1 (move) or 8
+   (resize) `DwmUpdateThumbnailProperties`, next to the backdrop's 2k+1
+   (+2k+1) rows, window 1, fill 2. Later frames measured 0.36 ms per
+   peek with square backdrops (about 12 updates). The cells are about a
+   third of a resizing rounded tile's calls.
+3. **Ring registrations at the start**: 8 per resizing tile, 1 per
+   moving tile (`peek_cover`). A fill registered later, on a tick
+   (first edge colour), re-registers the ring over it
+   (`OverlayCopies::carry_fill` -> `raise_ring`, `overlay_copies.rs:1332`)
+   and restacks the tiles above it at the end of that tick.
+4. **`readypeeks`**: held thumbnails send nothing per frame. A tile moved
+   again within `READY_LIFETIME` (5 s, `peek_view.rs:1404`, cap
+   `MAX_READY` 16) keeps its ring, unless its cut changed (move after
+   resize: 8 dropped, 1 registered). It saves cost and adds none. A
+   longer lifetime would only help commands more than 5 s apart.
+
+Restacks of rings whose order doesn't change are never done:
+`out_of_order` restacks only a tile that really has a thumbnail under a
+lower one's last (registration orders are exact, `Thumbnail::order`),
+and only where their lanes may meet. Skipping more would leave the
+lower's ring drawn over the upper's window.
+
+### What was built
+
+No change to how the ring is drawn: the 1:1 case already uses one
+thumbnail, and there is no redundant restack to skip. Registrations per
+tile, unchanged: a move 1 ring thumbnail, a resize 8. Built: two
+`debug` lines for the scroll ring offset (below).
+
+What would help, not built (it moves when the ring copy is registered,
+so it is the reviewer's call against rule 5): reserve the ring copy in
+the command, in the tile's place. `move_tile` would register the ring
+overlay's thumbnails held, as a spare (`OverlayCopies::spare_ring`),
+right after the window and backdrop. Then `carry_ring`'s `Handover::None`
+arm takes it as it takes a ready peek's (`keeps_ring`: same overlay
+window, same cut) instead of registering over the other tiles. That
+removes cost 1 for moves and resizes whose ring overlay exists before
+the command (most tiles shown with a border). Where the overlay is made
+or replaced in the cover pass, `keeps_ring` fails and today's path runs.
+The hand-over steps and their order stay as they are. One thing to fix
+with it, also a small bug today: `carry_fill` registering a new fill
+(not the spare's colour) leaves a `spare_ring` under it
+(`overlay_copies.rs:1283`), and `carry_ring` then takes that spare, so
+the ring stacks under the fill. That happens on a reclaimed ready peek
+whose edge colour changed. `carry_fill`'s new-registration path should
+`drop_spares` the ring.
+
+### Ring shown offset upward in scrolling layouts (owner's report)
+
+Read, cause not settled, no behaviour change. Suspects in
+`peek_view.rs` `carry_ring`:
+
+- **(a) A frame read off DWM that disagrees with the window's rect.**
+  `bounds` is `GetWindowRect` (`frame_with_shadows`) and `frame` is
+  `DWMWA_EXTENDED_FRAME_BOUNDS` (`native_window.rs:193`), read in the
+  same call. Right after the WM moves a window, DWM's extended frame can
+  lag. The ring is parked at `frame` while its copy is kept to `bounds`
+  (`copy_rects` maps the ring's rest relative to `window_rest`), so for
+  a frame the copy is offset by the move. A window moved down shows its
+  ring above. Debug line: `Ring of <id> parked at frame ..., off its
+  window's rect ...`.
+- **(b) A ring resized by a focus fade** between styles of different
+  width or glow (the known scroll flicker around focus changes, with or
+  without rounded corners). `NativeBorderOverlay::set_widths`
+  (`native_border_overlay.rs:611`) resizes the `BorderVisual` and
+  re-places the overlay window (`SetWindowPos`) by separate routes, which
+  can reach DWM in different frames. A bigger outset moves the window up
+  and left first, so the old ring shows a few pixels up and left for a
+  frame, on screen and in its copy (a thumbnail of that window). On a
+  peek this runs every frame of the fade (`apply_blend` then `park`).
+  This is "Fixes after the first laptop test" suspect (b). Debug line:
+  `Ring of <id> resized by its style from ... to ..., parked: ...`.
+- (c) Less likely: `landing_frame` parks a deferred fill resize's ring
+  at the target while the window still has its old size
+  (`Revealed` arm), for a frame before it is resized.
+
+### Windows functions called by the new code
+
+None. Logging only.
+
+### To check on screen
+
+- Debug log on, scrolling layout with a border, focused and unfocused
+  styles of different border width: scroll, change focus. If the
+  upward flicker comes with `resized by its style` lines, it's (b);
+  check again with the same width in both styles (it should go). If it
+  comes with `parked at frame ..., off its window's rect`, it's (a).
+- `perf_bench` (desktop): `restack` stage and the `Stacking <id>'s peek
+  over a tile it may cross` debug lines during a swap and a resize, with
+  and without a border, to confirm cost 1's share before building the
+  reservation.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
