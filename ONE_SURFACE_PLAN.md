@@ -2784,6 +2784,10 @@ ported first (items below), then this flicker, then the bench.
 | floating <-> tiling, fullscreen toggle, floating open | yes (6b): on top -> the monitor's band surface; focused -> the tiles' surface | unfocused floating windows not on top; floating closes and minimizes; live |
 | tile crossing monitors | yes (6c), with `morepeeks`: each monitor's surface draws its part | live; stacks; a grab holding a tile on either monitor's surface |
 
+Seen by the owner on the laptop, 2026-11-16 (`test/one-surface` up to `6353eeab`): rounded backdrops
+with A look fine; the border jump with glow is gone (`os/15-ring-fixes`); the scroll focus flicker
+with a semi-transparent focused window is "pretty alright now" (`os/16-scroll-flicker`).
+
 ### Open, in the order to take them
 
 1. **Removal of the old code**: done 2026-11-15 (R0..R6, see "Removal
