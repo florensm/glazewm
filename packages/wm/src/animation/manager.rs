@@ -170,9 +170,8 @@ use wm_platform::{
   lerp_f32,
   perf::{self, Stage},
   sample_edge_color_async, Color, CompanionCover, DxgiVsyncWaiter,
-  EdgeColorCache, FrameClock, NativeBackdropOverlay, NativeBorderOverlay,
-  NativeWindow, Overlay, Rect, StyleBlend, SurrogateBatch,
-  WorkspaceSurrogate, HWND,
+  EdgeColorCache, FrameClock, NativeBorderOverlay, NativeWindow, Overlay,
+  Rect, StyleBlend, SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
 use crate::{
@@ -181,8 +180,7 @@ use crate::{
     advance_focus_fades, apply_focus_effects,
     border_hidden_for_fullscreen, overlay_params_for, overlay_z_anchor,
     platform_sync, resync_settling_overlays, surrogate_effects_for,
-    track_overlays, upsert_live_backdrop_overlay,
-    upsert_pinned_border_overlay, SyncableOverlay,
+    track_overlays, upsert_pinned_border_overlay, SyncableOverlay,
   },
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
@@ -796,10 +794,8 @@ impl AnimationManager {
   }
 
   /// Returns `true` if `window_id` has a workspace-switch surrogate
-  /// actively tracked this tick, or in its `pending_ws_cleanup` grace tail
-  /// -- regardless of whether that surrogate is `Live`-mode and so has a
-  /// backdrop overlay tracking it (`WorkspaceSurrogate::is_live`, checked
-  /// separately by the per-tick driver at its own backdrop tracking step).
+  /// actively tracked this tick, or in its `pending_ws_cleanup` grace
+  /// tail.
   ///
   /// Both the backdrop and border overlay for such a window are owned
   /// entirely by the per-tick driver in `update_internal` for as long as
@@ -1243,13 +1239,12 @@ impl AnimationManager {
     state: &mut WmState,
     times: FrameTimes,
   ) -> (super::peek_view::Landed, SurrogateBatch) {
-    let mut batch = SurrogateBatch::new();
+    let batch = SurrogateBatch::new();
     super::peek_view::note_fill_inputs(state);
-    let mut landed = state.animation_manager.peeks.tick(
-      times.now,
-      times.clock_origin,
-      &mut batch,
-    );
+    let mut landed = state
+      .animation_manager
+      .peeks
+      .tick(times.now, times.clock_origin);
     super::peek_view::finish_leaving(
       state,
       std::mem::take(&mut landed.left),
@@ -1394,7 +1389,7 @@ impl AnimationManager {
       let ws_vsync_now = state.animation_manager.predictive_vsync_now();
 
       // Likewise precomputed before the mutable borrow below -- needed by
-      // the live backdrop-overlay tracker to pick each surrogate's effect
+      // the per-tick overlay tracker to pick each surrogate's effect
       // set.
       let focused_id_for_overlay =
         state.focused_container().map(|c| c.id());
@@ -1459,17 +1454,6 @@ impl AnimationManager {
         // ~1% gap between surrogate and the just-uncloaked real window
         // exposes the desktop for one frame.
         let eased_final = if ws_done { 1.0 } else { eased };
-
-        // Batches every workspace-switch surrogate's `SetWindowPos` (only
-        // issued by `Live`-mode surrogates, which track their own
-        // footprint instead of staying pinned to the viewport so the
-        // backdrop overlay has something to follow)
-        // into one `DeferWindowPos` transaction per tick — mirrors the
-        // `SurrogateBatch` already used for move/resize relayouts.
-        // Surrogates with no live backdrop never push into this
-        // batch, so it stays empty (a no-op commit) for the common
-        // case.
-        let mut ws_batch = SurrogateBatch::new();
 
         // Incoming first, which a cut relies on: a composition landing
         // between the two halves of its one tick then shows the new
@@ -1585,7 +1569,6 @@ impl AnimationManager {
                 let is_vertical =
                   ws.slide_direction == WorkspaceSwitchDirection::Vertical;
                 s.slide_axis(
-                  &mut ws_batch,
                   eased_final,
                   entry.is_incoming,
                   ws.order_direction,
@@ -1605,56 +1588,11 @@ impl AnimationManager {
                 s.update_fade(eased_final, entry.is_incoming);
               }
               WorkspaceSwitchStyle::Zoom => {
-                s.update_zoom(
-                  &mut ws_batch,
-                  eased_final,
-                  entry.is_incoming,
-                );
+                s.update_zoom(eased_final, entry.is_incoming);
               }
             }
 
-            // `Live`-mode surrogates carry no backdrop of their own (see
-            // `WorkspaceSurrogate::new`'s doc comment) -- instead, the
-            // same backdrop overlay used in steady state is
-            // kept alive and repositioned to follow the
-            // surrogate's own live footprint every
-            // tick, computed by the `update_*` call just above. This is
-            // what keeps `blur_amount`/tint/corner_radius
-            // correct and continuous through the whole slide
-            // instead of a fixed-intensity look that
-            // jumps to the tuned value only once the animation ends.
-            if s.is_live() {
-              match s.live_frame() {
-                Some(live) => {
-                  if let Some(blend) = StyleBlend::between(
-                    from_overlays.backdrop,
-                    to_overlays.backdrop,
-                    eased_final,
-                    NativeBackdropOverlay::transparent,
-                  ) {
-                    upsert_live_backdrop_overlay(
-                      &mut state.window_overlays,
-                      window_id,
-                      blend,
-                      live,
-                      s.hwnd(),
-                      &mut ws_batch,
-                    );
-                  }
-                }
-                None => {
-                  if let Some(overlay) = state
-                    .window_overlays
-                    .get_mut(&window_id)
-                    .and_then(|overlays| overlays.backdrop.as_mut())
-                  {
-                    overlay.hide();
-                  }
-                }
-              }
-            }
-
-            // A surrogate that can't carry a copy of the ring (`Live`, see
+            // A surrogate that doesn't carry a copy of the ring (see
             // `WorkspaceSurrogate::carry_ring`) has the overlay pinned to
             // the monitor viewport instead, its ring slid within it by a
             // composition offset. It follows the unclipped window rect,
@@ -1697,7 +1635,6 @@ impl AnimationManager {
             }
           }
         }
-        ws_batch.commit();
 
         if ws_done {
           Some(ws.windows.keys().copied().collect())

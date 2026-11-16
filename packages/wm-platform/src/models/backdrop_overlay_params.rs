@@ -62,17 +62,6 @@ pub struct BackdropOverlayParams {
   pub parallax: f32,
 }
 
-impl BackdropOverlayParams {
-  /// Whether a surrogate can draw this backdrop as copies of it (see
-  /// `OverlayCopies::carry_backdrop`): pinned to the desktop, as the copy
-  /// is cut from a backdrop of the whole monitor. Rounded corners are cut
-  /// in rows (see `corner_bands`).
-  #[must_use]
-  pub fn is_copyable(&self) -> bool {
-    (self.parallax - 1.0).abs() < 1e-3
-  }
-}
-
 /// Where in the backdrop image of `monitor` the backdrop of a window at
 /// `frame` is cut from: the offset of the frame's top-left from the
 /// image's, which is the window's offset within its monitor times
@@ -96,42 +85,8 @@ pub(crate) fn parallax_crop_origin(
 
 #[cfg(test)]
 mod tests {
-  use super::{parallax_crop_origin, BackdropOverlayParams};
-  use crate::{Color, Rect};
-
-  fn backdrop(corner_radius: f32, parallax: f32) -> BackdropOverlayParams {
-    BackdropOverlayParams {
-      tint: Color {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-      },
-      blur_amount: 20.0,
-      corner_radius,
-      opacity: 1.0,
-      saturation: 1.0,
-      exposure: 0.0,
-      contrast: 0.0,
-      highlights: 0.0,
-      shadows: 0.0,
-      vignette: 0.0,
-      grain: 0.0,
-      parallax,
-    }
-  }
-
-  #[test]
-  fn square_and_rounded_corners_are_copied() {
-    assert!(backdrop(0.0, 1.0).is_copyable());
-    assert!(backdrop(8.0, 1.0).is_copyable());
-  }
-
-  #[test]
-  fn parallax_is_never_copied() {
-    assert!(!backdrop(0.0, 0.5).is_copyable());
-    assert!(!backdrop(8.0, 0.5).is_copyable());
-  }
+  use super::parallax_crop_origin;
+  use crate::Rect;
 
   const MONITOR: Rect = Rect {
     left: 1920,

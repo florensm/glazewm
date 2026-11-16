@@ -19,9 +19,7 @@
 //!
 //! As for a workspace switch, a peek spans its monitor and never moves:
 //! only its thumbnail does, along with copies of the window's border ring,
-//! shadow and backdrop, in the same DWM updates. A window whose backdrop
-//! can't be copied (drifting with parallax) has its peek move with it
-//! instead (see `WindowPeek`).
+//! shadow and backdrop, in the same DWM updates.
 //!
 //! A peek's border, backdrop and tab bar are cut at the monitor edge like
 //! the peek itself, so nothing of a column shows on the monitor beside it.
@@ -36,9 +34,9 @@ use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
   peek_view::{
-    has_other_stand_in, hosts_column, is_live, is_peek_resize,
-    is_pure_move, peek_styles, resizes_on_peeks, restack_joining_overlays,
-    restore_cloaked, surface_clips, track_overlays, PeekView, Role,
+    has_other_stand_in, is_peek_resize, is_pure_move, resizes_on_peeks,
+    restack_joining_overlays, restore_cloaked, surface_clips,
+    track_overlays, PeekView, Role,
   },
   transit::Transit,
 };
@@ -199,7 +197,7 @@ pub fn sync_scroll_view(
   let mut needs_flush = false;
   let mut adds_peek = false;
   let mut started_moving = Vec::new();
-  let mut batch = SurrogateBatch::new();
+  let batch = SurrogateBatch::new();
 
   for (workspace, clip) in &workspaces {
     let moves = column_moves(view, workspace, &opening_ids);
@@ -218,12 +216,6 @@ pub fn sync_scroll_view(
               && view.entries.contains_key(&window.id()))
             || opening_ids.contains(&window.id()))
       });
-
-    // A column on a peek of its own is stacked by where that went, which a
-    // surface can't keep its neighbours in step with (see `hosts_column`).
-    let beside_own_peek = moves
-      .iter()
-      .any(|(window, _, _)| is_live(&peek_styles(window, config)));
 
     for (window, from, target) in moves {
       view.last_rects.insert(window.id(), target.clone());
@@ -315,10 +307,6 @@ pub fn sync_scroll_view(
       } else {
         view.end_stand_by(&window.id());
       }
-      let may_host = hosts_column(
-        is_live(&peek_styles(&window, config)),
-        beside_own_peek,
-      );
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -328,12 +316,10 @@ pub fn sync_scroll_view(
         transit.filter(|_| !is_held),
         resizes,
         is_held,
-        may_host,
         &monitor_clips,
         config,
         focused_id == Some(window.id()),
         now,
-        &mut batch,
       );
       if is_moving && is_restored {
         view.raise_moving(&window.id());

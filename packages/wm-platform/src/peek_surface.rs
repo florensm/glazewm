@@ -201,10 +201,6 @@ impl SurfaceWindow {
     HWND(self.hwnd)
   }
 
-  pub(crate) fn clip(&self) -> &Rect {
-    &self.clip
-  }
-
   /// Takes in a tenant drawing `window`, which still shows or not, moving
   /// the surface as [`admission`] says. One whose window is cloaked keeps
   /// the surface from going down from then on (see
