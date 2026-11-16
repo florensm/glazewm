@@ -40,8 +40,9 @@ summary rows are kept next to it, in `<name>-rows.md`. Lower is better in
 every column except `frames`; `interval p50 ms` should match the refresh
 period, and the gap to `interval p90 ms` shows how evenly frames land.
 
-Desktop PC only: it restarts the WM, starts programs and drives bursts of
-window moves over IPC (see CLAUDE.md's build targets).
+Desktop PC only: it restarts the WM, starts programs, drives bursts of
+window moves over IPC and, with `-Screenshots`, captures the screen (see
+CLAUDE.md's build targets).
 
 .PARAMETER Target
 Process name of the tiled window to animate, e.g. `chrome` or `notepad`.
@@ -89,6 +90,24 @@ two is measured.
 Also reports what DWM displayed per burst (`perf_bench --dwm`), through
 the `PresentMon` service, which must be installed.
 
+.PARAMETER Screenshots
+Also takes two PNGs of the target's monitor per build, setting and
+scenario in each of `-ShotRounds` (`perf_bench --shots`): one
+`-ShotDelayMs` after a command starts an animation, one once it settled.
+They come from one extra back-and-forth before the measured bursts, so
+the capture doesn't weigh on the numbers. Saved under
+`~\.glzr\glazewm\compare-shots\<run start>\` as
+`r<round>-cpu<threads>-<setting>-<build>-<mode>-<scenario>-{mid,rest}.png`
+(`this` has no mode).
+
+.PARAMETER ShotDelayMs
+Time from sending the command to the mid-animation shot. If the WM
+answers the command later, the shot is taken on its answer; the output's
+`shots` line says when it was.
+
+.PARAMETER ShotRounds
+Rounds that take screenshots, e.g. `1,3`.
+
 .PARAMETER TileOrder
 Process names, left to right, to put the focused workspace's tiles in after
 every restart, once the layout is restored. A restart can otherwise
@@ -127,6 +146,9 @@ powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\com
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -Scenarios move,resize -Dwm
 
 .EXAMPLE
+powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target chrome -Screenshots -ShotDelayMs 80
+
+.EXAMPLE
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\compare_branches.ps1 -Target notepad -Against "origin/tryout/stand-ins:default,morepeeks+peeksfirst;origin/main" -Launch notepad,explorer,chrome -TileOrder chrome,notepad,explorer
 #>
 param(
@@ -141,6 +163,9 @@ param(
   [string[]] $Backdrops = @('config'),
   [string[]] $Borders = @('config'),
   [switch] $Dwm,
+  [switch] $Screenshots,
+  [int] $ShotDelayMs = 60,
+  [string[]] $ShotRounds = @('1'),
   [string[]] $TileOrder = @(),
   [string[]] $Launch = @('notepad', 'explorer', 'wt', 'chrome'),
   [switch] $KeepLaunched,
@@ -175,6 +200,14 @@ foreach ($setting in @($Backdrops) + @($Borders)) {
     throw "-Backdrops and -Borders take config, on or off, not '$setting'."
   }
 }
+$shotRounds = @(foreach ($value in (Split-List $ShotRounds)) {
+  $shotRound = 0
+  if (-not [int]::TryParse($value, [ref] $shotRound) -or $shotRound -lt 1) {
+    throw "-ShotRounds takes round numbers, not '$value'."
+  }
+  $shotRound
+})
+if ($ShotDelayMs -lt 0) { throw '-ShotDelayMs must not be negative.' }
 if (-not $Scenarios -or -not $cpuLoads -or -not $Backdrops -or -not $Borders) {
   throw '-Scenarios, -CpuLoad, -Backdrops and -Borders each need a value.'
 }
@@ -528,7 +561,7 @@ $bench = Join-Path $targetDir 'release\examples\perf_bench.exe'
 # is `<label>\t<ref>\t<GLAZEWM_ISOLATE value>`.
 $specs = @(Invoke-Checked 'Reading -Against' { & $bench builds @Against })
 $refs = [ordered]@{}
-$builds = @([pscustomobject]@{ Name = 'this'; Ref = $null; Isolate = ''; Exe = $wm })
+$builds = @([pscustomobject]@{ Name = 'this'; ShotName = 'this'; Ref = $null; Isolate = ''; Exe = $wm })
 foreach ($line in $specs) {
   $label, $ref, $isolate = $line -split "`t"
   if (-not $refs.Contains($ref)) {
@@ -547,6 +580,8 @@ foreach ($line in $specs) {
   if ($isolate) { Assert-IsolateWords $ref $refs[$ref].Commit $isolate }
   $builds += [pscustomobject]@{
     Name = $label
+    # File names can't hold `:`; `default` named, as a mode.
+    ShotName = $(if ($isolate) { $label -replace ':', '-' } else { "$label-default" })
     Ref = $ref
     Isolate = [string] $isolate
     Exe = (Join-Path $refs[$ref].Target 'release\glazewm.exe')
@@ -568,6 +603,7 @@ foreach ($scenario in $Scenarios) {
 $dwmArgs = @($(if ($Dwm) { '--dwm' }))
 $dataDir = Join-Path $HOME '.glzr\glazewm'
 $layoutFile = Join-Path $dataDir 'compare-bench-layout.txt'
+$shotsDir = Join-Path $dataDir "compare-shots\$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $rowsFile = Join-Path (Split-Path $ResultsFile) (
   [IO.Path]::GetFileNameWithoutExtension($ResultsFile) + '-rows.md')
 $effectSets = @(foreach ($backdrop in $Backdrops) {
@@ -660,9 +696,15 @@ try {
 
           foreach ($scenario in $Scenarios) {
             Write-Host "  Measuring '$scenario'..."
+            $shotArgs = @()
+            if ($Screenshots -and $round -in $shotRounds) {
+              $shotName = "r$round-cpu$threads-$($set.Tag)-$($build.ShotName)-$scenario"
+              $shotArgs = @('--shots', (Join-Path $shotsDir $shotName),
+                '--shot-delay-ms', $ShotDelayMs)
+            }
             $output = Invoke-Checked "Scenario '$scenario'" {
               & $bench --scenario $scenario --target $Target --bursts $Bursts `
-                --load $Load --label $label @dwmArgs
+                --load $Load --label $label @dwmArgs @shotArgs
             }
             $output | Add-Content -Path $ResultsFile -Encoding UTF8
             $output | Where-Object { $_ -like '| *' } |
@@ -723,4 +765,5 @@ if ($completed) {
   Get-Content -Path $ResultsFile -Encoding UTF8 |
     Select-Object -Skip $before | Write-Host
   Write-Host "Done. Results are in $ResultsFile, rows in $rowsFile"
+  if ($Screenshots) { Write-Host "Screenshots are in $shotsDir" }
 }
