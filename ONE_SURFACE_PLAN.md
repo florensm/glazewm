@@ -2780,6 +2780,54 @@ None new. The fix calls what `apply_focus_effects` already calls
   flicker goes, it is the alpha against the backdrop (3, 4); if it
   stays, it is the backdrop itself (1, 2, 3).
 
+## Step 8 part B: as built
+
+Branch `os/17-step8` (2026-11-16). Bench code only, under
+`packages/wm-cli/examples/perf_bench/`; nothing in `wm` or
+`wm-platform` changed. Not seen running: the container is Linux, so the
+script is unrun and `perf_bench` only type-checks.
+
+- **`compare_branches.ps1`** replaces `isolate_modes.ps1` (its
+  `GLAZEWM_ISOLATE` modes went with R1). It builds this checkout's WM and
+  `perf_bench`, and `-Against`'s WM (default `origin/main`, not fetched)
+  in a `git worktree` at `target\compare\src` with its own
+  `target\compare\target`; the worktree is removed once built (and
+  before, if an interrupted run left one), the target dir is kept for
+  incremental rebuilds. Loops: CPU load (`-CpuLoad 0,8`, busy threads
+  started once per value) > round > backdrops x borders (`-Backdrops`,
+  `-Borders`: `config`, `on`, `off`) > the two builds back to back, which
+  one first alternating per pair. Each build restarts the WM with
+  `GLAZEWM_PERF=1` and `start --config <copy>`, restores the saved
+  layout (and `-TileOrder`), then runs every scenario. Default scenarios
+  `move`, `resize`, `switch`, `minimize`; `minimize` is the open/close
+  measure (same entry and exit animations as `window_open` /
+  `window_close`), so no process is started per burst. `-Launch` opens
+  the same windows once per run, as before. After `switch`, the layout is
+  restored again (it may move tiles to make a workspace to switch to).
+  `-Dwm` passes `--dwm`. Any failing step throws; `finally` stops the CPU
+  load, restarts the WM as it ran, restores the layout, closes the
+  launched windows and deletes the config copies, each step on its own.
+- **`perf_bench`** reads IPC answers as JSON (`ipc.rs`), so this build's
+  bench drives both builds. Helpers: `write-bench-config` (config copy
+  with borders/backdrops forced and `window_minimize` on, every
+  overridden key removed from included files first), `summary-header
+  [--dwm]`, `scenarios`, and `compare <rows> <out> this against`
+  (`compare.rs`): per scenario a headline table, `this / against` per
+  setting (medians over rounds), then every column per setting. A stage
+  no report of a build has prints `—` there; the rows carry `-`, as
+  Windows PowerShell reads `perf_bench`'s output in the console's code
+  page (and `compare` strips the BOM its `-Encoding UTF8` writes). The
+  `session_*` columns are back (part A dropped them): `origin/main`
+  still has `ResizeSession`, whose `session_begin` is its counterpart of
+  `peek_new`.
+- `wm-ipc-client`: `IpcClient::next_text`, the unparsed reply
+  (`next_message` parses it).
+- Results: `~\.glzr\glazewm\compare-bench.md` (runs, `tiles` lines,
+  tables) and `compare-bench-rows.md`.
+
+Windows functions added: none. Removed: none. `dwm.rs` (the `PresentMon`
+loader) is unchanged.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
@@ -2833,24 +2881,11 @@ fill), the scroll focus flicker, step 8 part A (never-called peek and
 surface methods, dead `perf_bench` columns). Owner's laptop checks all
 fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
 
-1. **Step 8 part B, the bench rework** (unfinished, branch
-   `os/17-step8`, pushed, WIP commit `39fa722f` on top of the two part A
-   commits already merged here). Started in `perf_bench`: config and IPC
-   reading for a second build (`bench_config.rs`, new `compare.rs`,
-   `ipc.rs`, `wm-ipc-client`'s `IpcClient::next_text`, `serde` dev-dep).
-   Left: the PowerShell driver (`isolate_modes.ps1` renamed, e.g.
-   `compare_branches.ps1`): build this branch and `-Against <ref>`
-   (default `origin/main`) from a separate `git worktree` with its own
-   `target`, alternate builds per round, restart the WM per build with
-   `GLAZEWM_PERF`, scenarios `move`, `resize`, `switch`, open/close
-   (`-Launch`), load 0 and `-CpuLoad 8`, backdrops and borders on/off,
-   optional `--dwm`; the dwm columns and `print_summary` (side by side,
-   "—" for a stage one side lacks); "To measure (desktop)" rewritten
-   with the exact commands; proposed `CLAUDE.md` wording for the
-   script. Merge only once it compiles and the script is complete.
+1. **Step 8 part B, the bench rework**: built on `os/17-step8`, not
+   seen running (see "Step 8 part B: as built"); to merge after review.
    Desktop only (strip list: the whole `perf_bench/` dir).
-2. **Bench** on the desktop (`tryout/one-surface` against `origin/main`),
-   then read the numbers: `input->first frame`, frame p90, interval
+2. **Bench** on the desktop (`tryout/one-surface` against `origin/main`,
+   the commands in "To measure (desktop)"), then read the numbers: `input->first frame`, frame p90, interval
    p90/p99, `peek_new`, `restack`, dwm gpu busy p90. Owner's feel so
    far: overview much smoother, workspace switching fine, borders
    lagged before `os/15-ring-fixes` (re-check).
@@ -2876,8 +2911,9 @@ fine so far (see above). Laptop build: `test/one-surface` at `6353eeab`.
 5. **Small open items**: `catch_up_before_frame` doc in `main.rs`
    (window events during peek moves "not checked yet" since R4's guard
    went; nothing reported); the solid look of `fill` resizes over no
-   backdrop is by design; `CLAUDE.md`'s `isolate_modes.ps1` description
-   (R6's interim wording, or step 8 part B's, owner to decide); debug
+   backdrop is by design; `CLAUDE.md`'s `isolate_modes.ps1` description,
+   now of `compare_branches.ps1` (step 8 part B's proposed wording, owner
+   to decide); debug
    lines added for laptop checks (`overlay_copies`, `peek_view`
    `carry_ring`, `scroll_view`, `peek_surface`, `overlay_window`,
    `hidden_alpha`, `native_window` z-order retry) can stay or go once
