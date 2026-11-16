@@ -2240,7 +2240,7 @@ impl PeekView {
     // focused or not.
     let (opacity, corner_style, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
-    let styles = peek_styles(window, config);
+    let styles = carried_styles(window, config);
     if !is_moving {
       motion.start_clock(Instant::now());
     }
@@ -2289,7 +2289,9 @@ impl PeekView {
       // Copies of both styles are drawn up front, so a focus change only
       // crossfades them (see `track_overlays`): one registered mid-move
       // left frames without it.
-      entry.peek.carry_styles(&styles);
+      entry
+        .peek
+        .carry_styles(&styles.backdrops, styles.ring_width);
       if covers_shown_window {
         entry.composited = false;
       }
@@ -2521,7 +2523,7 @@ impl PeekView {
     now: Instant,
     batch: &mut SurrogateBatch,
   ) -> bool {
-    let styles = peek_styles(window, config);
+    let styles = carried_styles(window, config);
     let Some(transit) =
       Transit::opening(params).filter(|_| self.can_enter(window))
     else {
@@ -2620,7 +2622,7 @@ impl PeekView {
     batch: &mut SurrogateBatch,
   ) -> bool {
     let id = window.id();
-    let styles = peek_styles(window, config);
+    let styles = carried_styles(window, config);
     let resizes = resize.filter(|_| !is_same_size(from, &target));
     let deferred = !resizes_at_start(from, &target);
     let landing = match self.entries.get(&id) {
@@ -2674,7 +2676,9 @@ impl PeekView {
         &entry.motion.target_rect,
         now,
       );
-      entry.peek.carry_styles(&styles);
+      entry
+        .peek
+        .carry_styles(&styles.backdrops, styles.ring_width);
       if covers_shown_window {
         entry.composited = false;
       }
@@ -3241,7 +3245,7 @@ impl PeekView {
       surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
     });
 
-    let styles = peek_styles(window, config);
+    let styles = carried_styles(window, config);
     let (opacity, corner_style, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
     let made = match ready {
@@ -3525,7 +3529,7 @@ impl PeekView {
       return Leave::Leaving;
     }
 
-    let styles = peek_styles(window, config);
+    let styles = carried_styles(window, config);
     if role.is_some_and(|role| !matches!(role, Role::Moving { .. })) {
       return Leave::Unsupported;
     }
@@ -4574,9 +4578,9 @@ pub fn finish_leaving(state: &mut WmState, left: Vec<Left>) {
 }
 
 /// A hidden peek of `window` for `motion` in `role`, carrying copies of
-/// its backdrop `styles`, and whether it covers a still-shown real window,
-/// so it has to be composited before that window is cloaked. `None` when
-/// the peek can't be created.
+/// its backdrop as `styles` say, and whether it covers a still-shown real
+/// window, so it has to be composited before that window is cloaked.
+/// `None` when the peek can't be created.
 ///
 /// Drawn on `surface` if given, which then takes it (see
 /// [`PeekView::tenancy`]), else on a window of its own.
@@ -4587,7 +4591,7 @@ fn new_entry(
   clip: &Rect,
   opacity: u8,
   corner_style: CornerStyle,
-  styles: &[Option<BackdropOverlayParams>; 2],
+  styles: &PeekStyles,
   role: Role,
   surface: Option<&PeekSurface>,
 ) -> Option<(Entry, bool)> {
@@ -4610,7 +4614,7 @@ fn new_entry(
       &motion.target_rect,
       clip,
       &corner_style,
-      is_live(styles),
+      is_live(&styles.backdrops),
     )
     .inspect_err(|err| {
       tracing::warn!("Failed to create a peek of {window}: {err}");
@@ -4630,25 +4634,30 @@ fn reuse_entry(
   motion: WindowAnimationState,
   clip: &Rect,
   opacity: u8,
-  styles: &[Option<BackdropOverlayParams>; 2],
+  styles: &PeekStyles,
   role: Role,
 ) -> (Entry, bool) {
   let _scope = perf::scope(Stage::PeekNew);
-  peek.reclaim(&window.native(), &motion.target_rect, styles);
+  peek.reclaim(
+    &window.native(),
+    &motion.target_rect,
+    &styles.backdrops,
+    styles.ring_width,
+  );
 
   entry_on(peek, window, motion, clip, opacity, styles, role)
 }
 
 /// The entry of `peek`, just made or reclaimed for `window`, for `motion`
-/// in `role`, carrying copies of its backdrop `styles`, and whether it
-/// covers a still-shown real window (see [`new_entry`]).
+/// in `role`, carrying copies of its backdrop as `styles` say, and
+/// whether it covers a still-shown real window (see [`new_entry`]).
 fn entry_on(
   mut peek: WindowPeek,
   window: &WindowContainer,
   motion: WindowAnimationState,
   clip: &Rect,
   opacity: u8,
-  styles: &[Option<BackdropOverlayParams>; 2],
+  styles: &PeekStyles,
   role: Role,
 ) -> (Entry, bool) {
   let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
@@ -4656,7 +4665,7 @@ fn entry_on(
   // Before the ring, which goes on top. Shown in its style by
   // `track_overlays`, before anything is composited.
   let styles_scope = perf::scope(Stage::PeekStyles);
-  peek.carry_styles(styles);
+  peek.carry_styles(&styles.backdrops, styles.ring_width);
   drop(styles_scope);
 
   // A moving column's or a leaving window's real window may still show
@@ -5471,6 +5480,50 @@ fn leaving_window(
     departing.bounds.clone(),
     departing.frame.clone(),
   ))
+}
+
+/// What a peek of a window carries copies of its backdrop as.
+struct PeekStyles {
+  /// Its backdrops focused and not (see [`peek_styles`]).
+  backdrops: [Option<BackdropOverlayParams>; 2],
+  /// The narrowest ring drawn over the edge of either, which hides the
+  /// steps of rounded corners cut in rows, or `None` if one has no ring.
+  ring_width: Option<f32>,
+}
+
+/// [`PeekStyles`] of `window`.
+fn carried_styles(
+  window: &WindowContainer,
+  config: &UserConfig,
+) -> PeekStyles {
+  // The ring over each backdrop drawn, `None` for one without.
+  let rings = [true, false].into_iter().filter_map(|is_focused| {
+    let params =
+      surrogate_effects_for(window.effect_set(is_focused), config).2;
+    params.backdrop.map(|_| {
+      params
+        .border
+        .filter(|_| !border_hidden_for_fullscreen(window, config))
+        .map(|border| border.width)
+    })
+  });
+
+  PeekStyles {
+    backdrops: peek_styles(window, config),
+    ring_width: narrowest_ring(rings),
+  }
+}
+
+/// The narrowest of `rings`, or `None` if any is (no ring drawn).
+fn narrowest_ring(
+  rings: impl IntoIterator<Item = Option<f32>>,
+) -> Option<f32> {
+  rings
+    .into_iter()
+    .try_fold(None, |narrowest: Option<f32>, width| {
+      width.map(|width| Some(narrowest.map_or(width, |n| n.min(width))))
+    })
+    .flatten()
 }
 
 /// The backdrops of `window` focused and not, which its peek carries
@@ -6737,5 +6790,13 @@ mod tests {
     assert!(!is_resized_already(true, || Some(at_size.clone()), &target));
     assert!(!is_resized_already(false, || Some(other_size), &target));
     assert!(!is_resized_already(false, || None, &target));
+  }
+
+  #[test]
+  fn rounded_rows_are_cut_for_the_narrowest_ring() {
+    assert_eq!(super::narrowest_ring([Some(3.0), Some(2.0)]), Some(2.0));
+    assert_eq!(super::narrowest_ring([Some(3.0), None]), None);
+    assert_eq!(super::narrowest_ring([Some(4.0)]), Some(4.0));
+    assert_eq!(super::narrowest_ring([]), None);
   }
 }

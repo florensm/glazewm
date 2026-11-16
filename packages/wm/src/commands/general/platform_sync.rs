@@ -896,17 +896,19 @@ fn redraw_containers(
             .or(to.backdrop)
             .filter(|_| is_live)
             .map(|p| p.tint.to_abgr());
-          let copied_backdrop = if is_incoming {
-            to.backdrop
-          } else {
-            from.backdrop
-          }
-          .filter(|_| !is_live);
+          let copied = if is_incoming { to } else { from };
+          let copied_backdrop = copied.backdrop.filter(|_| !is_live);
+          // Hides the steps of rounded corners cut in rows (see
+          // `OverlayCopies::carry_backdrop`).
+          let copied_ring_width = copied
+            .border
+            .filter(|_| !border_hidden_for_fullscreen(window, config))
+            .map(|border| border.width);
           // Before anything else is copied into it: the backdrop goes
           // under the window, the rest over it.
           let carry_backdrop = |mut surrogate: WorkspaceSurrogate| {
             if let Some(params) = copied_backdrop {
-              surrogate.carry_backdrop(params);
+              surrogate.carry_backdrop(params, copied_ring_width);
             }
             surrogate
           };
