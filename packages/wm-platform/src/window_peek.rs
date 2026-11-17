@@ -656,6 +656,13 @@ impl WindowPeek {
     self.copies.drop_spares();
   }
 
+  /// Whether it keeps its real window's alpha hidden (see
+  /// [`take_over`](Self::take_over)).
+  #[must_use]
+  pub fn hides_alpha(&self) -> bool {
+    self.hidden_alpha.is_hiding()
+  }
+
   /// Gives the real window back the alpha a handover set aside, unless it
   /// was set again since. No-op otherwise.
   pub fn restore_alpha(&mut self) {

@@ -1938,17 +1938,39 @@ impl PeekView {
             Some(departing) if departing.awaits_cloak => {
               entry.peek.take_over(&departing.native);
               let cloak_scope = perf::scope(Stage::TakeOverCloak);
-              if let Err(err) = departing.native.set_cloaked(true) {
-                tracing::warn!("Failed to cloak leaving {id}: {err}");
+              match departing.native.set_cloaked(true) {
+                Ok(()) => {
+                  tracing::debug!("Cloaked leaving {id} under its peek.");
+                }
+                Err(err) => {
+                  tracing::warn!("Failed to cloak leaving {id}: {err}");
+                }
               }
               drop(cloak_scope);
               departing.awaits_cloak = false;
               // Drawn over its cloaked window from now on, never raised.
               entry.peek.hold_place();
             }
-            _ => {
+            departing => {
               let _scope = perf::scope(Stage::PeekDrawAlpha);
-              entry.peek.restore_alpha();
+              // A closing one's only once it reads cloaked: back while
+              // the cloak hasn't landed, a semi-transparent window would
+              // show at its full size beside its shrinking peek. A
+              // minimizing one isn't cloaked (the OS minimizes it).
+              let is_closing =
+                leaves_as(entry.role, AwayTransition::Close);
+              let is_cloaked = || {
+                departing.is_none_or(|departing| {
+                  departing.native.is_cloaked().unwrap_or(true)
+                })
+              };
+              if !is_closing || !entry.peek.hides_alpha() || is_cloaked() {
+                entry.peek.restore_alpha();
+              } else {
+                tracing::debug!(
+                  "Alpha of leaving {id} kept hidden: not cloaked yet."
+                );
+              }
             }
           }
           for (peek, _) in entry.peeks_mut() {
@@ -4872,6 +4894,11 @@ pub fn finish_leaving(state: &mut WmState, left: Vec<Left>) {
 
     match transition {
       AwayTransition::Close => {
+        tracing::debug!(
+          "Close on its peek complete for {id}; sending WM_CLOSE (cloaked: \
+           {:?}).",
+          window.is_cloaked().ok()
+        );
         if let Err(err) = window.close() {
           tracing::warn!(
             "Failed to send WM_CLOSE for window {id}: {err}."

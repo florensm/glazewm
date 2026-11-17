@@ -27,6 +27,14 @@ pub fn handle_window_shown(
     } else {
       state.pending_sync.queue_container_to_redraw(window);
     }
+  } else if state.closing_windows.is_closing(native_window.hwnd().0) {
+    // Its app may show it again as it tears it down: managed again, it
+    // would be uncloaked for a moment before it goes. A close it refuses
+    // manages it again (see `ClosingWindows::poll`).
+    tracing::debug!(
+      "Closing window {:#x} shown: left cloaked, not managed again.",
+      native_window.hwnd().0
+    );
   } else if !state.ignored_windows.contains(&native_window) {
     show_owner_tab(&native_window, state, config)?;
 
