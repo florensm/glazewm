@@ -151,7 +151,30 @@ const METRICS: &[(&str, &str)] = &[
     "fill_source ms (outside frames)",
   ),
   ("outside:ring_raise:total", "ring_raise ms (outside frames)"),
+  // The hand-over's take-over of each window: its steps under it.
+  ("outside:take_over:total", "take_over ms (outside frames)"),
+  ("outside:to_draw:total", "to_draw ms (outside frames)"),
+  ("outside:to_alpha:total", "to_alpha ms (outside frames)"),
+  ("outside:to_cloak:total", "to_cloak ms (outside frames)"),
   ("outside:peek_cover:total", "peek_cover ms (outside frames)"),
+  // `peek_cover`'s steps, besides `batch_commit`, `restack` and
+  // `native_frame`.
+  ("outside:ring_prep:total", "ring_prep ms (outside frames)"),
+  ("outside:ring_park:total", "ring_park ms (outside frames)"),
+  ("outside:ring_copy:total", "ring_copy ms (outside frames)"),
+  ("outside:bd_copy:total", "bd_copy ms (outside frames)"),
+  (
+    "outside:ovl_restack:total",
+    "ovl_restack ms (outside frames)",
+  ),
+  (
+    "outside:batch_commit:total",
+    "batch_commit ms (outside frames)",
+  ),
+  (
+    "outside:native_frame:total",
+    "native_frame ms (outside frames)",
+  ),
   (
     "outside:peek_handover:total",
     "peek_handover ms (outside frames)",
@@ -160,6 +183,9 @@ const METRICS: &[(&str, &str)] = &[
   // Peek surfaces' windows: made, shown, hidden and raised.
   ("outside:surface:total", "surface ms (outside frames)"),
   ("outside:restack:total", "restack ms (outside frames)"),
+  // Motions on a surface that started on a ready peek, or made one.
+  ("ready:peek_ready_hit", "peek_ready hits"),
+  ("ready:peek_ready_miss", "peek_ready misses"),
   // The workspace switch's pre-pass, under `redraw_prep`.
   (
     "outside:ws_surrogates:total",
@@ -775,6 +801,8 @@ fn parse_reports(text: &str) -> Vec<HashMap<String, f64>> {
         "dist"
       } else if trimmed.contains("motion latency") {
         "latency"
+      } else if trimmed.contains("ready peeks") {
+        "ready"
       } else {
         "other"
       };
@@ -823,6 +851,9 @@ fn parse_reports(text: &str) -> Vec<HashMap<String, f64>> {
       }
       "latency" if values.len() == 3 => {
         report.insert(format!("latency:{name}:p50"), values[1]);
+      }
+      "ready" if values.len() == 1 => {
+        report.insert(format!("ready:{name}"), values[0]);
       }
       _ => {}
     }
@@ -968,6 +999,9 @@ perf [idle]: 30 frames in 500.0ms, 2 slow (>6.9ms)
                            1.80ms     3.10ms     8.50ms     9.00ms
   hitches: 3 frame(s) >2x budget, 1 >4x budget, out of 30
   frame interval           6.94ms     7.40ms    13.80ms    14.10ms  (~144 fps)
+  -- ready peeks (motions on a surface) --
+  peek_ready_hit            2
+  peek_ready_miss           1
 ";
     let reports = parse_reports(text);
     assert_eq!(reports.len(), 1);
@@ -982,5 +1016,7 @@ perf [idle]: 30 frames in 500.0ms, 2 slow (>6.9ms)
     assert_eq!(report.get("interval:p90"), Some(&7.4));
     assert_eq!(report.get("interval:p99"), Some(&13.8));
     assert_eq!(report.get("interval:max"), Some(&14.1));
+    assert_eq!(report.get("ready:peek_ready_hit"), Some(&2.0));
+    assert_eq!(report.get("ready:peek_ready_miss"), Some(&1.0));
   }
 }

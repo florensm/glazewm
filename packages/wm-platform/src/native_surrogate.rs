@@ -544,6 +544,41 @@ impl NativeSurrogate {
     opacity: u8,
     is_shown: bool,
   ) -> Self {
+    let this =
+      Self::registered_on(surface, source_hwnd, thumbnail_rect, opacity);
+    if let Host::Shared(window) = &this.host {
+      window.admit(source_hwnd, is_shown);
+    }
+    this
+  }
+
+  /// Creates a surrogate drawing `source_hwnd` on `surface` as
+  /// [`create_hosted`](Self::create_hosted) does, kept from the start as a
+  /// ready peek of it (see [`retire`](Self::retire)): the surface is not
+  /// moved, and takes it as a tenant only at [`reclaim`](Self::reclaim).
+  #[must_use]
+  pub fn create_ready(
+    surface: &PeekSurface,
+    source_hwnd: HWND,
+    thumbnail_rect: &Rect,
+  ) -> Self {
+    let mut this =
+      Self::registered_on(surface, source_hwnd, thumbnail_rect, u8::MAX);
+    if let Host::Shared(window) = &this.host {
+      window.add_ready();
+    }
+    this.is_ready = true;
+    this
+  }
+
+  /// A hidden surrogate drawing `source_hwnd` on `surface`, its thumbnail
+  /// registered held, neither a tenant nor a ready peek of it yet.
+  fn registered_on(
+    surface: &PeekSurface,
+    source_hwnd: HWND,
+    thumbnail_rect: &Rect,
+    opacity: u8,
+  ) -> Self {
     let window = Rc::clone(surface.window());
 
     // No window to create: `sg_window` has nothing to time here.
@@ -564,8 +599,6 @@ impl NativeSurrogate {
       true,
     );
     drop(thumb_scope);
-
-    window.admit(source_hwnd, is_shown);
 
     Self {
       host: Host::Shared(window),
@@ -594,6 +627,12 @@ impl NativeSurrogate {
 
     window.retire();
     self.is_ready = true;
+  }
+
+  /// Whether it is kept as a ready peek of its surface (see
+  /// [`retire`](Self::retire)).
+  pub(crate) fn is_ready(&self) -> bool {
+    self.is_ready
   }
 
   /// Has a retired surrogate draw `source_hwnd` again as

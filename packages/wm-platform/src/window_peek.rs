@@ -4,6 +4,7 @@ use crate::{
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
+  perf::{self, Stage},
   platform_impl::wallpaper_surface,
   window_edges::compute_border_inset,
   BackdropOverlayParams, Color, CornerStyle, NativeSurrogate,
@@ -151,6 +152,69 @@ impl WindowPeek {
       visible_rect: None,
       stands_by: false,
     }
+  }
+
+  /// A peek of `window`, at `rest`, made ready on `surface` before any
+  /// motion asks for it, as [`set_ready`](Self::set_ready) keeps a landed
+  /// one: its window thumbnail, the backdrop copies in `styles` under a
+  /// ring `ring_width` wide, and with `ring`, the copy of that ring
+  /// overlay cut by its corner reach (see
+  /// [`reserve_ring`](Self::reserve_ring)), all registered held in the
+  /// order a tile stacks them. The surface is not moved.
+  #[must_use]
+  pub fn ready(
+    window: &NativeWindow,
+    rest: &Rect,
+    surface: &PeekSurface,
+    styles: &[Option<BackdropOverlayParams>],
+    ring_width: Option<f32>,
+    ring: Option<(HWND, Option<i32>)>,
+  ) -> Self {
+    let hwnd = window.hwnd();
+    let mut this = Self {
+      copies: OverlayCopies::held(),
+      surrogate: NativeSurrogate::create_ready(surface, hwnd, rest),
+      viewport: surface.clip().clone(),
+      source: hwnd,
+      border_inset: compute_border_inset(hwnd),
+      rest: rest.clone(),
+      drawn: Drawn::Shown,
+      shows_backdrop: false,
+      opacity: u8::MAX,
+      frac: 1.0,
+      hidden_alpha: HiddenAlpha::default(),
+      frame_rect: None,
+      visible_rect: None,
+      stands_by: false,
+    };
+    this.carry_styles(styles, ring_width);
+    if let Some((source, corner_reach)) = ring {
+      this.ready_ring(source, corner_reach);
+    }
+    this
+  }
+
+  /// Has a ready peek keep a copy of the ring overlay `source` cut by
+  /// `corner_reach`, registered held over its other thumbnails, for its
+  /// next motion's [`carry_ring`](Self::carry_ring) to take; one it keeps
+  /// already in that cut stays. Returns whether it keeps one.
+  pub fn ready_ring(
+    &mut self,
+    source: HWND,
+    corner_reach: Option<i32>,
+  ) -> bool {
+    self.surrogate.is_ready() && self.reserve_ring(source, corner_reach)
+  }
+
+  /// Whether a ready peek keeps a copy of the ring overlay `source` cut by
+  /// `corner_reach` (see [`ready_ring`](Self::ready_ring)).
+  #[must_use]
+  pub fn keeps_ready_ring(
+    &self,
+    source: HWND,
+    corner_reach: Option<i32>,
+  ) -> bool {
+    self.copies.keeps_spare_ring(source, corner_reach)
   }
 
   /// Whether it draws on a `PeekSurface` (see [`hosted`](Self::hosted)).
@@ -546,7 +610,10 @@ impl WindowPeek {
   /// (see `HiddenAlpha`). [`restore_alpha`](Self::restore_alpha) gives
   /// `window` its alpha back once the cloak is on screen.
   pub fn take_over(&mut self, window: &NativeWindow) {
+    let draw_scope = perf::scope(Stage::TakeOverDraw);
     self.draw(Drawn::Shown);
+    drop(draw_scope);
+    let _scope = perf::scope(Stage::TakeOverAlpha);
     self.hidden_alpha.hide(&window.inner);
   }
 
