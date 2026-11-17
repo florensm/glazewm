@@ -16,7 +16,8 @@ borders/backdrops setting, runs every build and mode back to back, which
 goes first rotating: each restarts GlazeWM with the frame profiler on
 (`GLAZEWM_PERF=1`), `GLAZEWM_ISOLATE` set to its mode for that start only
 (unset for this checkout and for `default`), and a copy of your config
-that draws borders and backdrops as asked (and animates minimize), puts
+that draws borders and backdrops as asked (and animates minimize, with no
+keybindings: older builds can't parse newer commands), puts
 every window back on its workspace, optionally puts the focused
 workspace's tiles in a fixed order, and runs the same `perf_bench`
 scenarios on it. This build's `perf_bench` drives all of them: it reads
@@ -208,7 +209,9 @@ $shotRounds = @(foreach ($value in (Split-List $ShotRounds)) {
   $shotRound
 })
 if ($ShotDelayMs -lt 0) { throw '-ShotDelayMs must not be negative.' }
-if (-not $Scenarios -or -not $cpuLoads -or -not $Backdrops -or -not $Borders) {
+# Counts: `-not @(0)`, the default CPU load, is true.
+if (@($Scenarios).Count -eq 0 -or $cpuLoads.Count -eq 0 -or
+    @($Backdrops).Count -eq 0 -or @($Borders).Count -eq 0) {
   throw '-Scenarios, -CpuLoad, -Backdrops and -Borders each need a value.'
 }
 
@@ -234,16 +237,32 @@ function Get-WmProcesses {
     })
 }
 
+# Runs the CLI `$Exe` with `$Arguments` and returns its exit code, or
+# `$null` if it is still running after `$TimeoutMs`, when it is killed.
+function Invoke-CliTimed([string] $Exe, [string] $Arguments, [int] $TimeoutMs) {
+  $info = New-Object Diagnostics.ProcessStartInfo $Exe, $Arguments
+  $info.UseShellExecute = $false
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::Start($info)
+  # Drained as it runs, so a full pipe can't stall it.
+  $null = $process.StandardOutput.ReadToEndAsync()
+  $null = $process.StandardError.ReadToEndAsync()
+  if (-not $process.WaitForExit($TimeoutMs)) {
+    $process.Kill()
+    $process.WaitForExit()
+    return $null
+  }
+  $process.ExitCode
+}
+
 # Waits until a WM answers queries.
 function Wait-WmReady([string] $Cli, [string] $Name = 'GlazeWM') {
-  # Windows PowerShell turns a native command's redirected stderr into a
-  # terminating error under 'Stop'.
-  $ErrorActionPreference = 'Continue'
-  for ($i = 0; $i -lt 60; $i++) {
-    # The executable is a GUI app: only with its output piped does
-    # PowerShell wait for it and set `$LASTEXITCODE`, not with `*> $null`.
-    & $Cli query monitors 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { return }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while ($clock.Elapsed.TotalSeconds -lt 30) {
+    # Each try has a timeout of its own: a query sent while the WM starts
+    # can go unanswered for good, leaving the CLI waiting on it.
+    if ((Invoke-CliTimed $Cli 'query monitors' 3000) -eq 0) { return }
     Start-Sleep -Milliseconds 500
   }
   throw ("$Name did not start answering within 30 seconds. If it exited, " +
@@ -251,16 +270,21 @@ function Wait-WmReady([string] $Cli, [string] $Name = 'GlazeWM') {
 }
 
 # Asks every running WM to exit, each through its own executable, and
-# waits for them to end.
+# waits for them to end. One that doesn't, e.g. a build showing a config
+# error dialog, is killed; its watcher shows the windows it hid.
 function Stop-AllWm([string] $FallbackCli) {
   foreach ($process in Get-WmProcesses) {
+    $id = $process.ProcessId
     $cli = $(if ($process.ExecutablePath) { $process.ExecutablePath } else { $FallbackCli })
-    $ErrorActionPreference = 'Continue'
-    & $cli command wm-exit 2>$null | Out-Null
-    $ErrorActionPreference = 'Stop'
-    Wait-Process -Id $process.ProcessId -Timeout 20 -ErrorAction SilentlyContinue
-    if (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue) {
-      throw "GlazeWM ($($process.ProcessId)) did not exit within 20 seconds."
+    $null = Invoke-CliTimed $cli 'command wm-exit' 5000
+    Wait-Process -Id $id -Timeout 20 -ErrorAction SilentlyContinue
+    if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
+      Write-Warning "GlazeWM ($id) did not exit within 20 seconds; killing it."
+      Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+      Wait-Process -Id $id -Timeout 10 -ErrorAction SilentlyContinue
+      if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
+        throw "GlazeWM ($id) could not be stopped."
+      }
     }
   }
 }
