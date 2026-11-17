@@ -3833,6 +3833,9 @@ fn drop_stray_ready(state: &mut WmState) {
 /// nothing animates, the WM not paused (see
 /// [`schedule_prewarm`](PeekView::schedule_prewarm)).
 ///
+/// Scans for companion windows first, unless that was just done (see
+/// `wm_platform::refresh_companions_at_rest`).
+///
 /// A ready peek made for another window handle or clip is replaced. Its
 /// registrations go on top of everything on its surface, which a motion
 /// crossing a tile ranked over it restacks (see
@@ -3853,6 +3856,9 @@ pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
     return;
   }
 
+  // At rest, so a ready peek's motion start finds companions without a
+  // scan (see `NativeSurrogate::reclaim`).
+  wm_platform::refresh_companions_at_rest();
   drop_stray_ready(state);
   let monitor_clips = surface_clips(state);
   let mut wanting = state.windows().into_iter().filter(|window| {

@@ -643,6 +643,9 @@ impl NativeSurrogate {
   /// companion now (see [`keeps_window_thumbnail`]). Returns whether the
   /// thumbnail was registered anew, i.e. stacks above everything on the
   /// surface.
+  ///
+  /// Looks up the companion in the scan kept at rest (see
+  /// `Companion::find_kept`), so a motion start does no `EnumWindows`.
   pub(crate) fn reclaim(
     &mut self,
     source_hwnd: HWND,
@@ -656,7 +659,7 @@ impl NativeSurrogate {
 
     let thumb_scope =
       crate::perf::scope(crate::perf::Stage::SurrogateThumb);
-    let companion = Companion::find(source_hwnd);
+    let companion = Companion::find_kept(source_hwnd);
     let (src, dst) = content_rects(
       thumbnail_rect.width(),
       thumbnail_rect.height(),

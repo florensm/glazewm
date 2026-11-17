@@ -275,6 +275,11 @@ impl WindowListener {
       return;
     }
 
+    // A companion shown makes the kept scan for them stale.
+    if event_type == EVENT_OBJECT_SHOW {
+      crate::companion::note_shown(handle);
+    }
+
     let notification = crate::WindowEventNotification(None);
 
     let event = match event_type {
