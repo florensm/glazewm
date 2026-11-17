@@ -1502,6 +1502,12 @@ fn lanes_meet(
   }
 }
 
+/// Whether a tile ranked `rank` was put on top in a raise pass before the
+/// one now open, `raise_passes` having closed (see [`rank`]).
+fn ranks_before_pass(rank: Rank, raise_passes: u64) -> bool {
+  rank.pass <= raise_passes
+}
+
 /// Of the tiles on one surface in rank order, by the first and last
 /// registration orders of their thumbnails there (see
 /// `WindowPeek::stacking`), those to register anew, in that order, so each
@@ -3366,6 +3372,36 @@ impl PeekView {
     true
   }
 
+  /// Ranks `window_id`'s peek, minimizing on a surface, over the moves of
+  /// the pass now open, if it was put on top in an earlier one: the tiles
+  /// reflowing for it are moved only once the OS reports it minimized,
+  /// often a sync or more after its peek went up (e.g. one for the focus
+  /// the minimize hands on), and would rank over it otherwise (see
+  /// [`Rank`]). It is registered anew, once, if under them.
+  fn keep_minimize_on_top(&mut self, window_id: &Uuid) {
+    let reranks = self.entries.get(window_id).is_some_and(|entry| {
+      leaves_as(entry.role, AwayTransition::Minimize)
+        && entry.tenancy.as_ref().is_some_and(|tenancy| {
+          ranks_before_pass(tenancy.rank, self.raise_passes)
+        })
+    });
+    if !reranks {
+      return;
+    }
+
+    let rank = self.take_rank(Stacking::Transit);
+    if let Some(tenancy) = self
+      .entries
+      .get_mut(window_id)
+      .and_then(|entry| entry.tenancy.as_mut())
+    {
+      tenancy.rank = rank;
+    }
+    tracing::debug!(
+      "Minimize of {window_id} ranked over the moves reflowing for it."
+    );
+  }
+
   /// Puts `window_id`'s moving peek on top, so no window it passes hides
   /// it. A peek goes up just below its real window: a restored one was at
   /// the bottom of the z-order, under the windows it comes back over, and
@@ -3901,6 +3937,26 @@ pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
 
   if more {
     peeks.prewarm_at = Some(Instant::now());
+  }
+}
+
+/// Keeps the peeks of tiles minimizing on a surface, whose minimize this
+/// sync lays out, over the neighbours reflowing for them (see
+/// [`PeekView::keep_minimize_on_top`]). Run before `redraw_containers`.
+pub fn keep_minimizes_on_top(state: &mut WmState) {
+  let peeks = &state.animation_manager.peeks;
+  let minimizing = peeks
+    .entries
+    .iter()
+    .filter(|(id, entry)| {
+      leaves_as(entry.role, AwayTransition::Minimize)
+        && state.pending_sync.is_window_state_change(id)
+    })
+    .map(|(id, _)| *id)
+    .collect::<Vec<_>>();
+
+  for id in minimizing {
+    state.animation_manager.peeks.keep_minimize_on_top(&id);
   }
 }
 
@@ -5604,14 +5660,14 @@ mod tests {
     is_resized_already, is_stale_surface, is_stray, keeps_ready,
     keeps_rest_hosted, keeps_trail_drawing, kept_transit, lands_on_trail,
     lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, lowest,
-    move_clips, out_of_order, peek_resize, rank, ready_miss,
-    resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
-    retimed_transit_ms, returning_transit, sampled_size, settling,
-    state_change_peek_raise, state_change_resize, take_left, takes_ready,
-    toggles_tile_fullscreen, visible_frame, wants_ready, Hold, Host, Lane,
-    Layer, Level, Part, PeekRaise, PeekResize, Rank, ReadyFit, ReadyMiss,
-    Role, Stacking, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
-    STRETCH_SETTLE,
+    move_clips, out_of_order, peek_resize, rank, ranks_before_pass,
+    ready_miss, resizes_at_start, rest_anchor, restretched, rests,
+    retargeted_motion, retimed_transit_ms, returning_transit,
+    sampled_size, settling, state_change_peek_raise, state_change_resize,
+    take_left, takes_ready, toggles_tile_fullscreen, visible_frame,
+    wants_ready, Hold, Host, Lane, Layer, Level, Part, PeekRaise,
+    PeekResize, Rank, ReadyFit, ReadyMiss, Role, Stacking, Stretch,
+    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -5938,6 +5994,19 @@ mod tests {
     assert!(takes_ready(&fit, &fit));
     assert!(!takes_ready(&fit, &other_window));
     assert!(!takes_ready(&fit, &other_clip));
+  }
+
+  /// A minimize ranked in an earlier raise pass is re-ranked for the moves
+  /// of the one now open; one ranked in it is not.
+  #[test]
+  fn a_minimize_ranked_in_an_earlier_pass_is_ranked_again() {
+    let earlier = rank(Stacking::Transit, 3, 0);
+    let current = rank(Stacking::Transit, 4, 1);
+
+    assert!(ranks_before_pass(earlier, 4));
+    assert!(!ranks_before_pass(current, 4));
+    // Ranked again, it goes over the open pass's moves.
+    assert!(rank(Stacking::Raised, 4, 2) < current);
   }
 
   /// A motion that started on a new peek tells why: none kept, one kept
