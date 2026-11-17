@@ -176,6 +176,10 @@ pub fn platform_sync(
     repositioned.into_iter().chain(z_order_touched),
   );
 
+  // Last of what restacks windows in the pass: a close or minimize stays
+  // over the neighbours handed back while it plays (proposal 6).
+  crate::animation::peek_view::keep_leaving_above(state);
+
   let restack = if state.pending_sync.needs_tab_bar_update() {
     crate::tab_bars::Restack::All
   } else {
@@ -2849,6 +2853,9 @@ pub(crate) fn resync_overlays_and_tab_bars(state: &mut WmState) {
   for bar in state.tab_bars.values() {
     bar.keep_behind_anchor();
   }
+
+  // E.g. an app raising a neighbour of a close or minimize still playing.
+  crate::animation::peek_view::keep_leaving_above(state);
 }
 
 /// Puts shown overlays of kind `O` back directly behind their windows.

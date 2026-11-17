@@ -1018,6 +1018,13 @@ impl WindowPeek {
     self.surrogate.lift_surface_above(self.source);
   }
 
+  /// Puts a hosted peek's surface just above `window`, another tile's real
+  /// window, unless it is above it already, so the peek keeps drawing
+  /// over it. None for one of its own.
+  pub fn keep_surface_above(&self, window: HWND) {
+    self.surrogate.lift_surface_above(window);
+  }
+
   /// Puts the peek at the top of the non-topmost windows, over windows
   /// that came above its real window while that was minimized. Its ring
   /// and backdrop copies are drawn in it, so they go with it. A hosted one

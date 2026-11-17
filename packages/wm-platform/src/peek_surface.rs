@@ -269,6 +269,11 @@ impl SurfaceWindow {
     }
 
     let _scope = perf::scope(Stage::Surface);
+    tracing::debug!(
+      "Peek surface {:#x} put above {:#x} to keep drawing over it.",
+      self.hwnd,
+      window.0
+    );
     self.on_top.set(false);
     self.rests_above.set(0);
     if let Err(err) = window_class::place_above(self.hwnd(), window) {

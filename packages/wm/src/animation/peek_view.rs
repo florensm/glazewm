@@ -4013,6 +4013,68 @@ pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
   }
 }
 
+/// Keeps the surface of each tile closing or minimizing on one above the
+/// real windows of the tiles shown on its monitor until its transit ends
+/// (see [`keeps_above_neighbours`]; proposal 6), so its neighbours, landed
+/// and handed back while it plays, don't cover it: the surface goes just
+/// above each of those windows it is below, never down. A neighbour still
+/// drawn by a peek is left to it. Run at the end of every sync and on
+/// every restack another app makes.
+///
+/// Only tiling windows: floating ones above stay above. The neighbours'
+/// rings and backdrops sit behind their windows, so under the surface too.
+pub fn keep_leaving_above(state: &WmState) {
+  let peeks = &state.animation_manager.peeks;
+  let leaving = peeks
+    .entries
+    .values()
+    .filter(|entry| {
+      keeps_above_neighbours(
+        entry.role,
+        entry.tenancy.is_some(),
+        entry
+          .transit
+          .as_ref()
+          .is_some_and(|transit| !transit.is_complete()),
+      )
+    })
+    .collect::<Vec<_>>();
+  if leaving.is_empty() {
+    return;
+  }
+
+  for window in state.windows() {
+    if window.state() != WindowState::Tiling
+      || peeks.draws_window(&window.id())
+      || !window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+    {
+      continue;
+    }
+    let Some(clip) =
+      window.monitor().and_then(|monitor| monitor.to_rect().ok())
+    else {
+      continue;
+    };
+    for entry in leaving.iter().filter(|entry| entry.clip == clip) {
+      entry.peek.keep_surface_above(window.native().hwnd());
+    }
+  }
+}
+
+/// Whether a tile in `role`, on a surface (`is_hosted`) or not, keeps its
+/// surface above its neighbours' real windows (see
+/// [`keep_leaving_above`]): one closing or minimizing there while its
+/// transit runs.
+fn keeps_above_neighbours(
+  role: Role,
+  is_hosted: bool,
+  transit_runs: bool,
+) -> bool {
+  matches!(role, Role::Leaving(_)) && is_hosted && transit_runs
+}
+
 /// Has the peeks standing by for a workspace switch that no switch owes a
 /// hand-over any more (none played, or it ended another way) draw their
 /// windows again, and drops the resting peeks kept for surrogates that
@@ -5741,18 +5803,18 @@ mod tests {
     floating_peek_raise, follow_duration, follows_tile,
     fullscreen_peek_raise, has_landed, has_left, host_for, hosts_hold,
     hosts_on_surface, is_departed, is_peek_resize, is_pure_move,
-    is_resized_already, is_stale_surface, is_stray, keeps_ready,
-    keeps_rest_hosted, keeps_trail_drawing, kept_since_ready,
-    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
-    leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
-    ranks_before_pass, ready_miss, reranks_leaving, resizes_at_start,
-    rest_anchor, restretched, rests, retargeted_motion,
-    retimed_transit_ms, returning_transit, sampled_size, settling,
-    state_change_peek_raise, state_change_resize, take_left, takes_ready,
-    toggles_tile_fullscreen, visible_frame, wants_ready, Hold, Host, Lane,
-    Layer, Level, Part, PeekRaise, PeekResize, Rank, ReadyFit, ReadyMiss,
-    Role, Stacking, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
-    STRETCH_SETTLE,
+    is_resized_already, is_stale_surface, is_stray,
+    keeps_above_neighbours, keeps_ready, keeps_rest_hosted,
+    keeps_trail_drawing, kept_since_ready, kept_transit, lands_on_trail,
+    lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, lowest,
+    move_clips, out_of_order, peek_resize, rank, ranks_before_pass,
+    ready_miss, reranks_leaving, resizes_at_start, rest_anchor,
+    restretched, rests, retargeted_motion, retimed_transit_ms,
+    returning_transit, sampled_size, settling, state_change_peek_raise,
+    state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
+    visible_frame, wants_ready, Hold, Host, Lane, Layer, Level, Part,
+    PeekRaise, PeekResize, Rank, ReadyFit, ReadyMiss, Role, Stacking,
+    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -6079,6 +6141,24 @@ mod tests {
     assert!(takes_ready(&fit, &fit));
     assert!(!takes_ready(&fit, &other_window));
     assert!(!takes_ready(&fit, &other_clip));
+  }
+
+  /// Only a tile leaving on a surface keeps it above its neighbours, and
+  /// only while its transit runs.
+  #[test]
+  fn a_leaving_tile_keeps_its_surface_above_while_it_plays() {
+    let close = Role::Leaving(AwayTransition::Close);
+    let minimize = Role::Leaving(AwayTransition::Minimize);
+
+    assert!(keeps_above_neighbours(close, true, true));
+    assert!(keeps_above_neighbours(minimize, true, true));
+    assert!(!keeps_above_neighbours(close, false, true));
+    assert!(!keeps_above_neighbours(close, true, false));
+    assert!(!keeps_above_neighbours(
+      Role::Moving { ends_shown: true },
+      true,
+      true
+    ));
   }
 
   /// A reclaimed ready peek needs no flush until something is registered
