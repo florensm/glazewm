@@ -1029,6 +1029,18 @@ impl OverlayCopies {
     self.ring.is_some()
   }
 
+  /// Whether the spare ring (see [`reserve_ring`](Self::reserve_ring))
+  /// copies `source` cut by `corner_reach`.
+  pub(crate) fn keeps_spare_ring(
+    &self,
+    source: HWND,
+    corner_reach: Option<i32>,
+  ) -> bool {
+    self.spare_ring.as_ref().is_some_and(|ring| {
+      keeps_ring(ring.source, source.0, &ring.part_kinds(), corner_reach)
+    })
+  }
+
   /// Registers a copy of the ring of `source`, cut by `corner_reach`, on
   /// `dest` now, held and drawing nothing, as the spare
   /// [`carry_ring`](Self::carry_ring) takes: so it stacks right over what

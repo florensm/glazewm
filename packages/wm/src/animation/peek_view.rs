@@ -1362,22 +1362,19 @@ pub enum Leave {
   Unsupported,
 }
 
-/// How long a landed tile's peek is kept ready for its next motion (see
-/// [`Ready`]): long enough for commands in a row. Checked lazily, as no
-/// tick runs while nothing moves.
-const READY_LIFETIME: Duration = Duration::from_secs(5);
+/// How long the WM is left idle, after a sync or a landing, before tiles'
+/// peeks are made ready (see [`prewarm_ready`]): past a burst of
+/// commands, so none waits on the work.
+const PREWARM_DELAY: Duration = Duration::from_millis(150);
 
-/// Most ready peeks kept at once; the oldest goes first.
-const MAX_READY: usize = 16;
-
-/// A landed tile's peek hosted on a `PeekSurface`, kept for the tile's
-/// next motion with every registration it has, held so it draws nothing
-/// (see `WindowPeek::set_ready`). Apart from
-/// `PeekView::entries`, so no query over those sees it.
+/// A tile's peek hosted on a `PeekSurface`, kept for the tile's next
+/// motion with every registration it has, held so it draws nothing (see
+/// `WindowPeek::set_ready`): a landed one, or one made ready while the
+/// tile rests (see [`prewarm_ready`]). Kept while its window is shown.
+/// Apart from `PeekView::entries`, so no query over those sees it.
 struct Ready {
   peek: WindowPeek,
   fit: ReadyFit,
-  kept_at: Instant,
 }
 
 /// What a [`Ready`] peek was made for, which a new motion must ask for.
@@ -1395,33 +1392,25 @@ fn keeps_ready(is_hosted: bool, has_trail: bool) -> bool {
   is_hosted && !has_trail
 }
 
-/// Whether a peek kept ready at `kept_at` has outlived [`READY_LIFETIME`]
-/// at `now`.
-fn is_ready_expired(kept_at: Instant, now: Instant) -> bool {
-  now.saturating_duration_since(kept_at) >= READY_LIFETIME
+/// Whether a ready peek made for `fit` can draw a motion asking for
+/// `wanted`. Its surface must take the motion too (see
+/// [`PeekView::tenancy`]).
+fn takes_ready(fit: &ReadyFit, wanted: &ReadyFit) -> bool {
+  fit == wanted
 }
 
-/// Whether a ready peek made for `fit`, kept at `kept_at`, can draw a
-/// motion asking for `wanted` at `now`. Its surface must take the motion
-/// too (see [`PeekView::tenancy`]).
-fn takes_ready(
-  fit: &ReadyFit,
-  kept_at: Instant,
-  wanted: &ReadyFit,
-  now: Instant,
+/// Whether a tile at rest gets a ready peek made (see [`prewarm_ready`]):
+/// shown, tiled outside a scrolling layout, as its moves are drawn on its
+/// monitor's surface, and drawn by no peek or other stand-in now.
+// Independent conditions, each keeping a tile from a ready peek.
+#[allow(clippy::fn_params_excessive_bools)]
+fn wants_ready(
+  is_shown: bool,
+  is_tile: bool,
+  is_column: bool,
+  is_drawn: bool,
 ) -> bool {
-  fit == wanted && !is_ready_expired(kept_at, now)
-}
-
-/// Of peeks kept at the instants given, those past the first `cap`,
-/// newest first.
-fn evicted<K: Copy>(
-  kept: impl IntoIterator<Item = (K, Instant)>,
-  cap: usize,
-) -> Vec<K> {
-  let mut kept = kept.into_iter().collect::<Vec<_>>();
-  kept.sort_by_key(|(_, kept_at)| std::cmp::Reverse(*kept_at));
-  kept.into_iter().skip(cap).map(|(key, _)| key).collect()
+  is_shown && is_tile && !is_column && !is_drawn
 }
 
 /// Whether a `PeekSurface` that `is_unused` (no tenant, no ready peek) at
@@ -1542,9 +1531,14 @@ pub struct PeekView {
   next_rank: u64,
   /// Raise passes closed so far (see [`Rank::pass`]).
   raise_passes: u64,
-  /// Landed tiles' peeks kept for their next motions, by window (see
+  /// Tiles' peeks kept for their next motions, by window (see
   /// [`Ready`]). Before `surfaces`, which they are on.
   ready: HashMap<Uuid, Ready>,
+  /// When [`prewarm_ready`] is next due, if it is.
+  prewarm_at: Option<Instant>,
+  /// Windows [`prewarm_ready`] could make no ready peek of since it was
+  /// last scheduled.
+  prewarm_refused: HashSet<Uuid>,
   /// One per clip that tiles were drawn on, kept
   /// between motions. Last, so the peeks hosted on them go first.
   surfaces: Vec<PeekSurface>,
@@ -2276,7 +2270,6 @@ impl PeekView {
           source: window.native().hwnd(),
           clip: clip.clone(),
         },
-        now,
       )
     } else {
       self.ready.remove(&id);
@@ -2657,7 +2650,6 @@ impl PeekView {
         source: window.native().hwnd(),
         clip: clip.clone(),
       },
-      now,
     );
     let tenancy = host.and_then(|host| {
       self.tenancy(
@@ -3076,8 +3068,10 @@ impl PeekView {
 
   /// Keeps `entry`'s peek, just released, ready for `id`'s next motion if
   /// it is a tile's on a surface (see [`Ready`]); drops it otherwise.
-  /// Prunes those expired at `now` and the oldest past [`MAX_READY`].
+  /// Tops up the ready peeks once the WM has been idle a while after
+  /// `now` (see [`prewarm_ready`]).
   fn keep_ready(&mut self, id: Uuid, entry: Entry, now: Instant) {
+    self.schedule_prewarm(now);
     if !keeps_ready(entry.peek.is_hosted(), entry.trail.is_some()) {
       return;
     }
@@ -3088,67 +3082,54 @@ impl PeekView {
       clip: entry.clip,
     };
     peek.set_ready();
-
-    self.prune_ready(now);
-    self.ready.insert(
-      id,
-      Ready {
-        peek,
-        fit,
-        kept_at: now,
-      },
-    );
-    for id in evicted(
-      self.ready.iter().map(|(id, ready)| (*id, ready.kept_at)),
-      MAX_READY,
-    ) {
-      self.ready.remove(&id);
-    }
+    self.ready.insert(id, Ready { peek, fit });
   }
 
-  /// Takes `id`'s ready peek if it was made for `wanted` and is not
-  /// expired at `now`. Any other goes.
+  /// Takes `id`'s ready peek if it was made for `wanted`. Any other goes.
   fn take_ready(
     &mut self,
     id: &Uuid,
     wanted: &ReadyFit,
-    now: Instant,
   ) -> Option<WindowPeek> {
-    self.prune_ready(now);
     self
       .ready
       .remove(id)
-      .filter(|ready| takes_ready(&ready.fit, ready.kept_at, wanted, now))
+      .filter(|ready| takes_ready(&ready.fit, wanted))
       .map(|ready| ready.peek)
   }
 
-  /// Takes `window`'s ready peek only if it was made for it cut at `clip`
-  /// and is not expired at `now`, leaving any other kept.
+  /// Takes `window`'s ready peek only if it was made for it cut at `clip`,
+  /// leaving any other kept.
   fn take_ready_at(
     &mut self,
     window: &WindowContainer,
     clip: &Rect,
-    now: Instant,
   ) -> Option<WindowPeek> {
     let id = window.id();
     let wanted = ReadyFit {
       source: window.native().hwnd(),
       clip: clip.clone(),
     };
-    let fits = self.ready.get(&id).is_some_and(|ready| {
-      takes_ready(&ready.fit, ready.kept_at, &wanted, now)
-    });
+    let fits = self
+      .ready
+      .get(&id)
+      .is_some_and(|ready| takes_ready(&ready.fit, &wanted));
     fits
       .then(|| self.ready.remove(&id))
       .flatten()
       .map(|ready| ready.peek)
   }
 
-  /// Drops the ready peeks past [`READY_LIFETIME`] at `now`.
-  fn prune_ready(&mut self, now: Instant) {
-    self
-      .ready
-      .retain(|_, ready| !is_ready_expired(ready.kept_at, now));
+  /// Has [`prewarm_ready`] run once the WM has been idle for
+  /// [`PREWARM_DELAY`] after `now`, unless something draws then.
+  pub fn schedule_prewarm(&mut self, now: Instant) {
+    self.prewarm_at = Some(now + PREWARM_DELAY);
+    self.prewarm_refused.clear();
+  }
+
+  /// When [`prewarm_ready`] is due: `None` while none is scheduled.
+  pub fn prewarm_deadline(&self) -> Option<Instant> {
+    self.prewarm_at
   }
 
   /// Has `window`'s peek, just put up by [`move_tile`](Self::move_tile)
@@ -3460,8 +3441,14 @@ impl PeekView {
     now: Instant,
   ) -> Leave {
     let id = window.id();
-    // Leaving, its window has no next motion to keep a peek for.
-    self.ready.remove(&id);
+    // A new peek is its ready one if that fits; none is kept after.
+    let ready = self.take_ready(
+      &id,
+      &ReadyFit {
+        source: window.native().hwnd(),
+        clip: clip.clone(),
+      },
+    );
     let role = self.entries.get(&id).map(|entry| entry.role);
     if role.is_some_and(|role| matches!(role, Role::Leaving(_))) {
       return Leave::Leaving;
@@ -3498,15 +3485,19 @@ impl PeekView {
         )
       });
       let surface = self.hosting(host, tenancy.as_ref());
-      let Some((mut entry, _)) = new_entry(
-        window,
-        motion,
-        clip,
-        opacity,
-        &styles,
-        Role::Leaving(transition),
-        surface,
-      ) else {
+      let ready = ready.filter(|peek| {
+        surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
+      });
+      let role = Role::Leaving(transition);
+      let made = match ready {
+        Some(peek) => Some(reuse_entry(
+          peek, window, motion, clip, opacity, &styles, role,
+        )),
+        None => {
+          new_entry(window, motion, clip, opacity, &styles, role, surface)
+        }
+      };
+      let Some((mut entry, _)) = made else {
         return Leave::Unsupported;
       };
       entry.tenancy = tenancy.map(|(_, tenancy)| tenancy);
@@ -3659,7 +3650,7 @@ fn is_shown_tile(state: &WmState, id: &Uuid) -> Option<bool> {
 }
 
 /// Drops the ready peeks of windows no longer shown (see
-/// [`is_shown_tile`]), and those expired. Free while none is kept.
+/// [`is_shown_tile`]). Free while none is kept.
 fn drop_stray_ready(state: &mut WmState) {
   if state.animation_manager.peeks.ready.is_empty() {
     return;
@@ -3673,12 +3664,124 @@ fn drop_stray_ready(state: &mut WmState) {
     .filter(|id| is_shown_tile(state, id) != Some(true))
     .copied()
     .collect::<Vec<_>>();
-  let now = state.animation_manager.frame_time();
   let peeks = &mut state.animation_manager.peeks;
   for id in strays {
     peeks.ready.remove(&id);
   }
-  peeks.prune_ready(now);
+}
+
+/// Makes one tile at rest a ready peek, or tops one up with its ring copy
+/// cut for a resize, so its next motion registers nothing (see
+/// [`Ready`]); scheduled again at once while another wants it, so the
+/// event loop, which checks input first, gets in between. Run only while
+/// nothing animates, the WM not paused (see
+/// [`schedule_prewarm`](PeekView::schedule_prewarm)).
+///
+/// A ready peek made for another window handle or clip is replaced. Its
+/// registrations go on top of everything on its surface, which a motion
+/// crossing a tile ranked over it restacks (see
+/// [`PeekView::restack_crossings`]).
+pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
+  state.animation_manager.peeks.prewarm_at = None;
+  if state.is_paused {
+    return;
+  }
+  // Tried again once whatever draws now is done.
+  if state.animation_manager.has_active_animations()
+    || state.overview.is_open()
+  {
+    state
+      .animation_manager
+      .peeks
+      .schedule_prewarm(Instant::now());
+    return;
+  }
+
+  drop_stray_ready(state);
+  let monitor_clips = surface_clips(state);
+  let mut wanting = state.windows().into_iter().filter(|window| {
+    let id = window.id();
+    wants_ready(
+      is_shown_tile(state, &id) == Some(true),
+      window.state() == WindowState::Tiling,
+      crate::layout::scrolling::column_of(&window.as_container())
+        .is_some(),
+      state.animation_manager.peeks.draws_window(&id)
+        || state.animation_manager.has_active_surrogate(&id),
+    ) && !state.animation_manager.peeks.prewarm_refused.contains(&id)
+  });
+
+  let peeks = &state.animation_manager.peeks;
+  let next = wanting.find_map(|window| {
+    let clip = window.monitor()?.to_rect().ok()?;
+    let fit = ReadyFit {
+      source: window.native().hwnd(),
+      clip,
+    };
+    let ring = existing_ring(state, &window)
+      .map(|(source, corner_reach)| (source, Some(corner_reach)));
+    let kept = peeks.ready.get(&window.id());
+    let is_whole = kept.is_some_and(|ready| {
+      takes_ready(&ready.fit, &fit)
+        && ring.is_none_or(|(source, reach)| {
+          ready.peek.keeps_ready_ring(source, reach)
+        })
+    });
+    (!is_whole).then_some((window, fit, ring))
+  });
+  let more = wanting.next().is_some();
+  let Some((window, fit, ring)) = next else {
+    return;
+  };
+
+  let styles = carried_styles(&window, config);
+  let rest = window.to_rect().ok();
+  let peeks = &mut state.animation_manager.peeks;
+  let id = window.id();
+  match peeks.ready.get_mut(&id) {
+    Some(ready) if takes_ready(&ready.fit, &fit) => {
+      let topped = ring.is_none_or(|(source, reach)| {
+        ready.peek.ready_ring(source, reach)
+      });
+      tracing::debug!("Topped up the ready peek of {window}: {topped}.");
+      if !topped {
+        peeks.prewarm_refused.insert(id);
+      }
+    }
+    _ => {
+      peeks.ready.remove(&id);
+      let surface = rest.as_ref().and_then(|rest| {
+        let index =
+          peeks.surface_index(Layer::Tiles, &fit.clip, &monitor_clips)?;
+        Some((rest, peeks.surfaces.get(index)?))
+      });
+      let peek = surface.map(|(rest, surface)| {
+        WindowPeek::ready(
+          &window.native(),
+          rest,
+          surface,
+          &styles.backdrops,
+          styles.ring_width,
+          ring,
+        )
+      });
+      match peek.filter(WindowPeek::has_thumbnail) {
+        Some(peek) => {
+          tracing::debug!("Made a ready peek of {window}.");
+          peeks.ready.insert(id, Ready { peek, fit });
+        }
+        // Not tried again before the next schedule (e.g. an elevated
+        // window, which DWM refuses a thumbnail of).
+        None => {
+          peeks.prewarm_refused.insert(id);
+        }
+      }
+    }
+  }
+
+  if more {
+    peeks.prewarm_at = Some(Instant::now());
+  }
 }
 
 /// Has the peeks standing by for a workspace switch that no switch owes a
@@ -3851,7 +3954,7 @@ pub fn move_on_peek(
   let trail_ready = trail_clip
     .as_ref()
     .filter(|_| host.is_some())
-    .and_then(|trail_clip| peeks.take_ready_at(window, trail_clip, now));
+    .and_then(|trail_clip| peeks.take_ready_at(window, trail_clip));
   let moved = peeks.move_tile(
     window,
     from,
@@ -5351,19 +5454,19 @@ mod tests {
 
   use super::{
     by_surface, conceals_new_ring, crosses_floating, crossing_host,
-    evicted, floating_peek_raise, follow_duration, follows_tile,
+    floating_peek_raise, follow_duration, follows_tile,
     fullscreen_peek_raise, has_landed, has_left, host_for, hosts_hold,
     hosts_on_surface, is_departed, is_peek_resize, is_pure_move,
-    is_ready_expired, is_resized_already, is_stale_surface, is_stray,
-    keeps_ready, keeps_rest_hosted, keeps_trail_drawing, kept_transit,
-    lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
-    leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
-    resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
-    returning_transit, sampled_size, settling, state_change_peek_raise,
-    state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
-    visible_frame, Hold, Host, Lane, Layer, Level, Part, PeekRaise,
+    is_resized_already, is_stale_surface, is_stray, keeps_ready,
+    keeps_rest_hosted, keeps_trail_drawing, kept_transit, lands_on_trail,
+    lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, lowest,
+    move_clips, out_of_order, peek_resize, rank, resizes_at_start,
+    rest_anchor, restretched, rests, retargeted_motion, returning_transit,
+    sampled_size, settling, state_change_peek_raise, state_change_resize,
+    take_left, takes_ready, toggles_tile_fullscreen, visible_frame,
+    wants_ready, Hold, Host, Lane, Layer, Level, Part, PeekRaise,
     PeekResize, Rank, ReadyFit, Role, Stacking, Stretch,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
+    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -5442,15 +5545,14 @@ mod tests {
   /// there fits its trail, not the part on the monitor it moves onto.
   #[test]
   fn a_ready_peek_fits_the_part_on_its_monitor() {
-    let now = Instant::now();
     let left = Rect::from_xy(0, 0, 1920, 1080);
     let right = Rect::from_xy(1920, 0, 1920, 1080);
     let fit = |clip: &Rect| ReadyFit {
       source: HWND(1),
       clip: clip.clone(),
     };
-    assert!(takes_ready(&fit(&right), now, &fit(&right), now));
-    assert!(!takes_ready(&fit(&right), now, &fit(&left), now));
+    assert!(takes_ready(&fit(&right), &fit(&right)));
+    assert!(!takes_ready(&fit(&right), &fit(&left)));
   }
 
   /// As their own peeks play: in the band their pass raises them in, or
@@ -5672,11 +5774,9 @@ mod tests {
     );
   }
 
-  /// A ready peek draws only its own window's motion on the same surface,
-  /// within its lifetime.
+  /// A ready peek draws only its own window's motion on the same surface.
   #[test]
   fn a_ready_peek_is_taken_for_its_window_and_clip_only() {
-    let kept_at = Instant::now();
     let fit = ReadyFit {
       source: HWND(7),
       clip: Rect::from_ltrb(0, 0, 1920, 1040),
@@ -5689,28 +5789,21 @@ mod tests {
       clip: Rect::from_ltrb(1920, 0, 3840, 1040),
       ..fit.clone()
     };
-    let soon = kept_at + Duration::from_secs(1);
 
-    assert!(takes_ready(&fit, kept_at, &fit, soon));
-    assert!(!takes_ready(&fit, kept_at, &other_window, soon));
-    assert!(!takes_ready(&fit, kept_at, &other_clip, soon));
-    assert!(!takes_ready(&fit, kept_at, &fit, kept_at + READY_LIFETIME));
-    assert!(is_ready_expired(kept_at, kept_at + READY_LIFETIME));
-    assert!(!is_ready_expired(kept_at, soon));
+    assert!(takes_ready(&fit, &fit));
+    assert!(!takes_ready(&fit, &other_window));
+    assert!(!takes_ready(&fit, &other_clip));
   }
 
-  /// Past the cap, the oldest go.
+  /// Only a shown tile outside a scrolling layout, drawn by nothing else,
+  /// gets a ready peek made.
   #[test]
-  fn the_oldest_ready_peeks_go_past_the_cap() {
-    let now = Instant::now();
-    let kept = [
-      (1, now),
-      (2, now + Duration::from_millis(20)),
-      (3, now + Duration::from_millis(10)),
-    ];
-
-    assert_eq!(evicted(kept, 2), vec![1]);
-    assert!(evicted(kept, 3).is_empty());
+  fn only_a_resting_shown_tile_is_made_ready() {
+    assert!(wants_ready(true, true, false, false));
+    assert!(!wants_ready(false, true, false, false));
+    assert!(!wants_ready(true, false, false, false));
+    assert!(!wants_ready(true, true, true, false));
+    assert!(!wants_ready(true, true, false, true));
   }
 
   /// Only an unused surface off every kept clip goes.

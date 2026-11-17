@@ -712,6 +712,12 @@ impl WindowManager {
     self.update_animations(config)
   }
 
+  /// Makes ready peeks of tiles at rest while the WM is idle (see
+  /// `peek_view::prewarm_ready`).
+  pub fn prewarm_peeks(&mut self, config: &UserConfig) {
+    crate::animation::peek_view::prewarm_ready(&mut self.state, config);
+  }
+
   /// Updates all active animations and redraws windows that are animating.
   pub fn update_animations(
     &mut self,
