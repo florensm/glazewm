@@ -25,6 +25,7 @@ const HEADLINE: &[&str] = &[
   "peek_new ms (outside frames)",
   "session_begin ms (outside frames)",
   "restack ms (outside frames)",
+  "peek_ready misses",
   "dwm gpu busy p90 ms",
   "dwm missed vblanks/burst",
 ];
