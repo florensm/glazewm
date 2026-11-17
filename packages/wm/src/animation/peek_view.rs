@@ -948,6 +948,22 @@ fn kept_transit(
   transit.filter(|transit| is_moving && !transit.is_complete())
 }
 
+/// How long the transit a tile enters by runs on, `left` of it to go,
+/// once the tile's motion is retargeted to last `motion_ms` from now:
+/// stretched to end with the motion, so the window zooms (or slides) in
+/// once into its new tile rather than reaching its old one first and then
+/// growing into the new one, a second zoom. `None` keeps it as it is: it
+/// ends with the motion or after it, or `is_spring`, which sets its own
+/// duration.
+fn retimed_transit_ms(
+  left: Duration,
+  motion_ms: u32,
+  is_spring: bool,
+) -> Option<u32> {
+  (!is_spring && u128::from(motion_ms) > left.as_millis())
+    .then_some(motion_ms)
+}
+
 /// Whether an entry is a window moving in a tiling layout, entering or
 /// not, which `platform_sync` retargets to its tile: not a column, which
 /// [`PeekView::upsert`] retargets.
@@ -2213,6 +2229,13 @@ impl PeekView {
     let moves_on = self.moves_on_in_place(&id, clip, host);
 
     if let Some(entry) = self.entries.get_mut(&id).filter(|_| moves_on) {
+      if opening.is_some() || entry.transit.is_some() {
+        tracing::debug!(
+          "Column {window} moved on in place to {:?}: its transit carries \
+           on, none started again.",
+          motion.target_rect,
+        );
+      }
       let headed = std::mem::replace(&mut entry.motion, motion);
       entry.clip = clip.clone();
       entry.opacity = opacity;
@@ -2459,11 +2482,20 @@ impl PeekView {
     now: Instant,
   ) -> bool {
     let styles = carried_styles(window, config);
-    let Some(transit) =
-      Transit::opening(params).filter(|_| self.can_enter(window))
-    else {
+    if !self.can_enter(window) {
+      tracing::debug!(
+        "Opening of {window} not started again: its peek draws it."
+      );
+      return false;
+    }
+    let Some(transit) = Transit::opening(params) else {
       return false;
     };
+    tracing::debug!(
+      "Opening of {window} started at {target:?} ({:?}, {} ms).",
+      params.style,
+      params.duration_ms,
+    );
 
     let (opacity, _, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
@@ -2583,7 +2615,14 @@ impl PeekView {
               .is_some_and(|surface| surface.hwnd() == entry.peek.hwnd())
           })
       }
-      Some(_) => return false,
+      Some(entry) => {
+        if entry.transit.is_some() {
+          tracing::debug!(
+            "Move of {window} left to its transit, which carries on."
+          );
+        }
+        return false;
+      }
     };
     let (opacity, _, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
@@ -3361,6 +3400,31 @@ impl PeekView {
 
     let motion =
       retargeted_motion(&entry.motion, target, duration_ms, easing, now);
+    // An entering one zooms or slides on into its new tile, never anew.
+    if let Some(transit) = entry
+      .transit
+      .as_mut()
+      .filter(|transit| transit.direction == Direction::In)
+    {
+      let motion_ms =
+        u32::try_from(motion.duration.as_millis()).unwrap_or(u32::MAX);
+      let retimed = retimed_transit_ms(
+        transit.clock.remaining_at(now),
+        motion_ms,
+        matches!(transit.clock.easing, EasingFunction::Spring(_)),
+      );
+      tracing::debug!(
+        "Opening of {window_id} retargeted to {:?}: transit {}.",
+        motion.target_rect,
+        retimed.map_or_else(
+          || "carries on".to_string(),
+          |ms| format!("stretched to end with it in {ms} ms"),
+        ),
+      );
+      if let Some(ms) = retimed {
+        *transit = transit.retimed(ms, now);
+      }
+    }
     let headed = std::mem::replace(&mut entry.motion, motion);
     // Headed back to the monitor it came from, it lands on its trail's
     // peek, which becomes its own.
@@ -4458,6 +4522,12 @@ pub fn restore_on_peek(
   let enters = Transit::opening(params).is_some()
     && state.animation_manager.peeks.can_enter(window);
   if !enters {
+    if state.animation_manager.peeks.draws_window(&id) {
+      tracing::debug!(
+        "Restore of {window} not started: its peek draws it, which carries \
+         on."
+      );
+    }
     return false;
   }
 
@@ -5461,12 +5531,13 @@ mod tests {
     keeps_rest_hosted, keeps_trail_drawing, kept_transit, lands_on_trail,
     lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, lowest,
     move_clips, out_of_order, peek_resize, rank, resizes_at_start,
-    rest_anchor, restretched, rests, retargeted_motion, returning_transit,
-    sampled_size, settling, state_change_peek_raise, state_change_resize,
-    take_left, takes_ready, toggles_tile_fullscreen, visible_frame,
-    wants_ready, Hold, Host, Lane, Layer, Level, Part, PeekRaise,
-    PeekResize, Rank, ReadyFit, Role, Stacking, Stretch,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    rest_anchor, restretched, rests, retargeted_motion,
+    retimed_transit_ms, returning_transit, sampled_size, settling,
+    state_change_peek_raise, state_change_resize, take_left, takes_ready,
+    toggles_tile_fullscreen, visible_frame, wants_ready, Hold, Host, Lane,
+    Layer, Level, Part, PeekRaise, PeekResize, Rank, ReadyFit, Role,
+    Stacking, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
+    STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -5804,6 +5875,17 @@ mod tests {
     assert!(!wants_ready(true, false, false, false));
     assert!(!wants_ready(true, true, true, false));
     assert!(!wants_ready(true, true, false, true));
+  }
+
+  /// Retargeted for longer than it has left, an opening's transit is
+  /// stretched to end with the motion; never cut short, nor a spring's.
+  #[test]
+  fn an_opening_transit_ends_with_its_retargeted_motion() {
+    let left = Duration::from_millis(80);
+    assert_eq!(retimed_transit_ms(left, 200, false), Some(200));
+    assert_eq!(retimed_transit_ms(left, 80, false), None);
+    assert_eq!(retimed_transit_ms(left, 50, false), None);
+    assert_eq!(retimed_transit_ms(left, 200, true), None);
   }
 
   /// Only an unused surface off every kept clip goes.
