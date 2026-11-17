@@ -185,6 +185,12 @@ pub(super) struct Entry {
   trail: Option<Trail>,
   /// Where its peek draws on its `PeekSurface`, if it is hosted on one.
   tenancy: Option<Tenancy>,
+  /// For a peek reclaimed from a ready one, the registration order its
+  /// thumbnails were all below then (see
+  /// `wm_platform::next_thumbnail_order`): one with none registered since
+  /// has been composited, held, so its cloak needs no flush (see
+  /// [`PeekView::needs_flush`]).
+  ready_mark: Option<u64>,
 }
 
 /// Where a tile's peek draws on the `PeekSurface` it is hosted on: its
@@ -1508,6 +1514,27 @@ fn ranks_before_pass(rank: Rank, raise_passes: u64) -> bool {
   rank.pass <= raise_passes
 }
 
+/// Whether a peek reclaimed from a ready one when the next registration
+/// order was `ready_mark` has registered nothing since: its last
+/// registration, `last`, is below the mark. One not reclaimed, or with no
+/// thumbnail, isn't kept so.
+fn kept_since_ready(ready_mark: Option<u64>, last: Option<u64>) -> bool {
+  ready_mark.zip(last).is_some_and(|(mark, last)| last < mark)
+}
+
+/// Whether a tile in `role`, ranked `rank` if it is on a surface, is put
+/// on top again before a tile is ranked in the raise pass now open,
+/// `raise_passes` having closed: one closing or minimizing, ranked in an
+/// earlier pass, stays over every tile moving while it leaves.
+fn reranks_leaving(
+  role: Role,
+  rank: Option<Rank>,
+  raise_passes: u64,
+) -> bool {
+  matches!(role, Role::Leaving(_))
+    && rank.is_some_and(|rank| ranks_before_pass(rank, raise_passes))
+}
+
 /// Of the tiles on one surface in rank order, by the first and last
 /// registration orders of their thumbnails there (see
 /// `WindowPeek::stacking`), those to register anew, in that order, so each
@@ -1735,6 +1762,25 @@ impl PeekView {
     })
   }
 
+  /// Whether `window_id`'s cloak waits for a `DwmFlush` first, so its
+  /// peek's thumbnails are composited before its window goes: unless it
+  /// is [`is_composited`](Self::is_composited) already, or a ready peek's
+  /// that registered nothing since it was reclaimed (see
+  /// [`kept_since_ready`]), whose thumbnails DWM has held, populated,
+  /// since prewarm or its last landing (proposal 1). A window without
+  /// such a peek always waits.
+  pub fn needs_flush(&self, window_id: &Uuid) -> bool {
+    !self.is_composited(window_id)
+      && !self.entries.get(window_id).is_some_and(|entry| {
+        matches!(entry.role, Role::Moving { .. })
+          && entry.trail.is_none()
+          && kept_since_ready(
+            entry.ready_mark,
+            entry.peek.stacking().map(|(_, last)| last),
+          )
+      })
+  }
+
   /// Holds `id`'s peek where a grab draws it, never landing, or lets go
   /// of it, after which it lands as [`Hold::Released`] says. Letting go of
   /// one not held changes nothing.
@@ -1892,17 +1938,39 @@ impl PeekView {
             Some(departing) if departing.awaits_cloak => {
               entry.peek.take_over(&departing.native);
               let cloak_scope = perf::scope(Stage::TakeOverCloak);
-              if let Err(err) = departing.native.set_cloaked(true) {
-                tracing::warn!("Failed to cloak leaving {id}: {err}");
+              match departing.native.set_cloaked(true) {
+                Ok(()) => {
+                  tracing::debug!("Cloaked leaving {id} under its peek.");
+                }
+                Err(err) => {
+                  tracing::warn!("Failed to cloak leaving {id}: {err}");
+                }
               }
               drop(cloak_scope);
               departing.awaits_cloak = false;
               // Drawn over its cloaked window from now on, never raised.
               entry.peek.hold_place();
             }
-            _ => {
+            departing => {
               let _scope = perf::scope(Stage::PeekDrawAlpha);
-              entry.peek.restore_alpha();
+              // A closing one's only once it reads cloaked: back while
+              // the cloak hasn't landed, a semi-transparent window would
+              // show at its full size beside its shrinking peek. A
+              // minimizing one isn't cloaked (the OS minimizes it).
+              let is_closing =
+                leaves_as(entry.role, AwayTransition::Close);
+              let is_cloaked = || {
+                departing.is_none_or(|departing| {
+                  departing.native.is_cloaked().unwrap_or(true)
+                })
+              };
+              if !is_closing || !entry.peek.hides_alpha() || is_cloaked() {
+                entry.peek.restore_alpha();
+              } else {
+                tracing::debug!(
+                  "Alpha of leaving {id} kept hidden: not cloaked yet."
+                );
+              }
             }
           }
           for (peek, _) in entry.peeks_mut() {
@@ -2723,6 +2791,10 @@ impl PeekView {
       // Raised by this command, it goes on top as its own peek would.
       let stacking = host
         .map_or(Stacking::Raised, |host| host.stacking(Stacking::Raised));
+      self.keep_leaving_on_top();
+      let Some(entry) = self.entries.get_mut(&id) else {
+        return false;
+      };
       let rank = rank(stacking, self.raise_passes, self.next_rank);
       if let Some(tenancy) = &mut entry.tenancy {
         tenancy.lane = tenancy.reach.lane(from, &entry.motion.target_rect);
@@ -2844,6 +2916,7 @@ impl PeekView {
     let lane = reach.lane(&motion.start_rect, &motion.target_rect);
     let index = self.surface_index(host.layer(), clip, monitor_clips)?;
 
+    self.keep_leaving_on_top();
     let rank = self.take_rank(host.stacking(stacking));
     Some((
       index,
@@ -2978,24 +3051,35 @@ impl PeekView {
         .iter()
         .map(|(_, part, entry)| entry.part(*part)?.stacking())
         .collect::<Vec<_>>();
-      let restacked = out_of_order(&spans, |lower, upper| {
-        match (members.get(lower), members.get(upper)) {
-          (Some((_, _, lower)), Some((_, _, upper))) => lower.meets(upper),
-          _ => false,
-        }
-      })
-      .into_iter()
-      .filter_map(|index| {
-        members.get(index).map(|(id, part, _)| (*id, *part))
-      })
-      .collect::<Vec<_>>();
+      let meets = |lower: usize, upper: usize| match (
+        members.get(lower),
+        members.get(upper),
+      ) {
+        (Some((_, _, lower)), Some((_, _, upper))) => lower.meets(upper),
+        _ => false,
+      };
+      let restacked = out_of_order(&spans, meets)
+        .into_iter()
+        .filter_map(|index| {
+          let (id, part, _) = members.get(index)?;
+          // Named in the debug line, to tell which tile it went over.
+          let below = (0..index)
+            .filter(|lower| meets(*lower, index))
+            .filter_map(|lower| members.get(lower).map(|(id, ..)| *id))
+            .collect::<Vec<_>>();
+          Some((*id, *part, below))
+        })
+        .collect::<Vec<_>>();
       if restacked.is_empty() {
         continue;
       }
 
       let _scope = perf::scope(Stage::Restack);
-      for (id, part) in restacked {
-        tracing::debug!("Stacking {id}'s peek over a tile it may cross.");
+      for (id, part, below) in restacked {
+        tracing::debug!(
+          "Stacking {id}'s peek over a tile it may cross, of those ranked \
+           below it: {below:?}."
+        );
         if let Some(peek) = self
           .entries
           .get_mut(&id)
@@ -3372,34 +3456,39 @@ impl PeekView {
     true
   }
 
-  /// Ranks `window_id`'s peek, minimizing on a surface, over the moves of
-  /// the pass now open, if it was put on top in an earlier one: the tiles
-  /// reflowing for it are moved only once the OS reports it minimized,
-  /// often a sync or more after its peek went up (e.g. one for the focus
-  /// the minimize hands on), and would rank over it otherwise (see
-  /// [`Rank`]). It is registered anew, once, if under them.
-  fn keep_minimize_on_top(&mut self, window_id: &Uuid) {
-    let reranks = self.entries.get(window_id).is_some_and(|entry| {
-      leaves_as(entry.role, AwayTransition::Minimize)
-        && entry.tenancy.as_ref().is_some_and(|tenancy| {
-          ranks_before_pass(tenancy.rank, self.raise_passes)
-        })
-    });
-    if !reranks {
-      return;
-    }
-
-    let rank = self.take_rank(Stacking::Transit);
-    if let Some(tenancy) = self
+  /// Ranks the peeks of tiles closing or minimizing on a surface, put on
+  /// top in an earlier raise pass, over the pass now open, before a tile
+  /// is ranked in it (see [`reranks_leaving`]): whichever sync moves the
+  /// tiles reflowing for them, those never rank over them. Each is
+  /// registered anew, once, if under them, by the caller's
+  /// [`restack_crossings`](Self::restack_crossings).
+  fn keep_leaving_on_top(&mut self) {
+    let leaving = self
       .entries
-      .get_mut(window_id)
-      .and_then(|entry| entry.tenancy.as_mut())
-    {
-      tenancy.rank = rank;
+      .iter()
+      .filter(|(_, entry)| {
+        reranks_leaving(
+          entry.role,
+          entry.tenancy.as_ref().map(|tenancy| tenancy.rank),
+          self.raise_passes,
+        )
+      })
+      .map(|(id, _)| *id)
+      .collect::<Vec<_>>();
+
+    for id in leaving {
+      let rank = self.take_rank(Stacking::Transit);
+      if let Some(tenancy) = self
+        .entries
+        .get_mut(&id)
+        .and_then(|entry| entry.tenancy.as_mut())
+      {
+        tenancy.rank = rank;
+      }
+      tracing::debug!(
+        "Leaving {id} ranked over the moves of the pass now open."
+      );
     }
-    tracing::debug!(
-      "Minimize of {window_id} ranked over the moves reflowing for it."
-    );
   }
 
   /// Puts `window_id`'s moving peek on top, so no window it passes hides
@@ -3833,6 +3922,9 @@ fn drop_stray_ready(state: &mut WmState) {
 /// nothing animates, the WM not paused (see
 /// [`schedule_prewarm`](PeekView::schedule_prewarm)).
 ///
+/// Scans for companion windows first, unless that was just done (see
+/// `wm_platform::refresh_companions_at_rest`).
+///
 /// A ready peek made for another window handle or clip is replaced. Its
 /// registrations go on top of everything on its surface, which a motion
 /// crossing a tile ranked over it restacks (see
@@ -3853,6 +3945,9 @@ pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
     return;
   }
 
+  // At rest, so a ready peek's motion start finds companions without a
+  // scan (see `NativeSurrogate::reclaim`).
+  wm_platform::refresh_companions_at_rest();
   drop_stray_ready(state);
   let monitor_clips = surface_clips(state);
   let mut wanting = state.windows().into_iter().filter(|window| {
@@ -3940,24 +4035,66 @@ pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
   }
 }
 
-/// Keeps the peeks of tiles minimizing on a surface, whose minimize this
-/// sync lays out, over the neighbours reflowing for them (see
-/// [`PeekView::keep_minimize_on_top`]). Run before `redraw_containers`.
-pub fn keep_minimizes_on_top(state: &mut WmState) {
+/// Keeps the surface of each tile closing or minimizing on one above the
+/// real windows of the tiles shown on its monitor until its transit ends
+/// (see [`keeps_above_neighbours`]; proposal 6), so its neighbours, landed
+/// and handed back while it plays, don't cover it: the surface goes just
+/// above each of those windows it is below, never down. A neighbour still
+/// drawn by a peek is left to it. Run at the end of every sync and on
+/// every restack another app makes.
+///
+/// Only tiling windows: floating ones above stay above. The neighbours'
+/// rings and backdrops sit behind their windows, so under the surface too.
+pub fn keep_leaving_above(state: &WmState) {
   let peeks = &state.animation_manager.peeks;
-  let minimizing = peeks
+  let leaving = peeks
     .entries
-    .iter()
-    .filter(|(id, entry)| {
-      leaves_as(entry.role, AwayTransition::Minimize)
-        && state.pending_sync.is_window_state_change(id)
+    .values()
+    .filter(|entry| {
+      keeps_above_neighbours(
+        entry.role,
+        entry.tenancy.is_some(),
+        entry
+          .transit
+          .as_ref()
+          .is_some_and(|transit| !transit.is_complete()),
+      )
     })
-    .map(|(id, _)| *id)
     .collect::<Vec<_>>();
-
-  for id in minimizing {
-    state.animation_manager.peeks.keep_minimize_on_top(&id);
+  if leaving.is_empty() {
+    return;
   }
+
+  for window in state.windows() {
+    if window.state() != WindowState::Tiling
+      || peeks.draws_window(&window.id())
+      || !window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+    {
+      continue;
+    }
+    let Some(clip) =
+      window.monitor().and_then(|monitor| monitor.to_rect().ok())
+    else {
+      continue;
+    };
+    for entry in leaving.iter().filter(|entry| entry.clip == clip) {
+      entry.peek.keep_surface_above(window.native().hwnd());
+    }
+  }
+}
+
+/// Whether a tile in `role`, on a surface (`is_hosted`) or not, keeps its
+/// surface above its neighbours' real windows (see
+/// [`keep_leaving_above`]): one closing or minimizing there while its
+/// transit runs.
+fn keeps_above_neighbours(
+  role: Role,
+  is_hosted: bool,
+  transit_runs: bool,
+) -> bool {
+  matches!(role, Role::Leaving(_)) && is_hosted && transit_runs
 }
 
 /// Has the peeks standing by for a workspace switch that no switch owes a
@@ -4757,6 +4894,11 @@ pub fn finish_leaving(state: &mut WmState, left: Vec<Left>) {
 
     match transition {
       AwayTransition::Close => {
+        tracing::debug!(
+          "Close on its peek complete for {id}; sending WM_CLOSE (cloaked: \
+           {:?}).",
+          window.is_cloaked().ok()
+        );
         if let Err(err) = window.close() {
           tracing::warn!(
             "Failed to send WM_CLOSE for window {id}: {err}."
@@ -4824,6 +4966,7 @@ fn reuse_entry(
   role: Role,
 ) -> (Entry, bool) {
   let _scope = perf::scope(Stage::PeekNew);
+  let mark = wm_platform::next_thumbnail_order();
   peek.reclaim(
     &window.native(),
     &motion.target_rect,
@@ -4831,7 +4974,10 @@ fn reuse_entry(
     styles.ring_width,
   );
 
-  entry_on(peek, window, motion, clip, opacity, styles, role)
+  let (mut entry, covers_shown_window) =
+    entry_on(peek, window, motion, clip, opacity, styles, role);
+  entry.ready_mark = Some(mark);
+  (entry, covers_shown_window)
 }
 
 /// The entry of `peek`, just made or reclaimed for `window`, for `motion`
@@ -4883,6 +5029,7 @@ fn entry_on(
     hold: Hold::Free,
     trail: None,
     tenancy: None,
+    ready_mark: None,
   };
 
   (entry, covers_shown_window)
@@ -4932,7 +5079,10 @@ pub fn track_overlays(
       .unwrap_or_else(|| state.effect_set(id, focused_id == Some(id)));
     let (backdrop, border) = tracked_blends(state, id, set, config);
 
-    let carries_backdrop = carry_backdrop(state, id, backdrop);
+    // Read once for both, as each read is a round trip to DWM.
+    let read = read_frame(state, id);
+    let carries_backdrop =
+      carry_backdrop(state, id, backdrop, read.as_ref());
 
     match (backdrop, &frame) {
       _ if carries_backdrop => {}
@@ -4960,7 +5110,7 @@ pub fn track_overlays(
 
     carry_tab_bar(state, id, focused_id == Some(id), config);
 
-    if carry_ring(state, id, border) {
+    if carry_ring(state, id, border, read.as_ref()) {
       continue;
     }
 
@@ -5054,25 +5204,21 @@ fn carry_ring(
   state: &mut WmState,
   id: Uuid,
   blend: Option<StyleBlend<BorderOverlayParams>>,
+  read: Option<&FrameRead>,
 ) -> bool {
   let _scope = perf::scope(Stage::PeekRing);
-  let leaving = leaving_window(state, id);
-  let window = state.window_by_id(id).filter(|_| leaving.is_none());
-  let (native, bounds, frame) = match (leaving, &window) {
-    // A leaving window's ring stays where it was, without a tab bar.
-    (Some(leaving), _) => leaving,
-    (None, Some(window)) => {
-      // Shown where it was, or cloaked where its peek is headed.
-      let native = window.native().clone();
-      let (Ok(bounds), Ok(frame)) =
-        (native.frame_with_shadows(), native.frame())
-      else {
-        return false;
-      };
-      (native, bounds, frame)
-    }
-    (None, None) => return false,
+  let Some(read) = read else {
+    return false;
   };
+  // A leaving window's ring stays where it was, without a tab bar.
+  let window = state.window_by_id(id).filter(|_| !read.is_leaving);
+  // Shown where it was, or cloaked where its peek is headed.
+  let (Some(bounds), Some(frame)) =
+    (read.bounds.clone(), read.frame.clone())
+  else {
+    return false;
+  };
+  let native = read.native.clone();
 
   if let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id) {
     for (peek, _) in entry.peeks_mut() {
@@ -5443,6 +5589,7 @@ fn carry_backdrop(
   state: &mut WmState,
   id: Uuid,
   blend: Option<StyleBlend<BackdropOverlayParams>>,
+  read: Option<&FrameRead>,
 ) -> bool {
   let _scope = perf::scope(Stage::PeekBackdrop);
   let carries = state
@@ -5451,10 +5598,9 @@ fn carry_backdrop(
     .entries
     .get(&id)
     .is_some_and(|entry| entry.peek.carries_backdrop());
-  let leaving = leaving_window(state, id);
-  if !carries || (leaving.is_none() && state.window_by_id(id).is_none()) {
+  let Some(read) = read.filter(|_| carries) else {
     return false;
-  }
+  };
 
   let Some(blend) = blend else {
     if let Some(overlay) = state
@@ -5477,20 +5623,15 @@ fn carry_backdrop(
   // Where steady state puts it (see `sync_overlays`): over the real
   // window's own frame, where it shows before a scroll and waits cloaked
   // during one. A leaving window's stays where it was.
-  let (native, frame) = if let Some((native, _, frame)) = leaving {
-    (native, frame)
-  } else {
-    let Some(native) =
-      state.window_by_id(id).map(|window| window.native().clone())
-    else {
-      return false;
-    };
-    let Ok(frame) = native.frame() else {
-      return false;
-    };
-    (native, landing_frame(state, id, frame))
+  let Some(frame) = read.frame.clone() else {
+    return false;
   };
-  let anchor = native.hwnd();
+  let frame = if read.is_leaving {
+    frame
+  } else {
+    landing_frame(state, id, frame)
+  };
+  let anchor = read.native.hwnd();
 
   let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id)
   else {
@@ -5562,6 +5703,37 @@ fn carry_backdrop(
 
 /// The real window, rect with shadows and frame that `id`'s peek kept as
 /// it started to leave, if it is leaving (see [`Departing`]).
+/// Where `id`'s window is, read once a pass for both [`carry_backdrop`]
+/// and [`carry_ring`]: a leaving window's where it left, another's own
+/// rect and visible frame, each `None` if its read failed.
+struct FrameRead {
+  native: NativeWindow,
+  bounds: Option<Rect>,
+  frame: Option<Rect>,
+  is_leaving: bool,
+}
+
+/// [`FrameRead`] of `id`'s window, `None` for one neither leaving nor
+/// managed.
+fn read_frame(state: &WmState, id: Uuid) -> Option<FrameRead> {
+  if let Some((native, bounds, frame)) = leaving_window(state, id) {
+    return Some(FrameRead {
+      native,
+      bounds: Some(bounds),
+      frame: Some(frame),
+      is_leaving: true,
+    });
+  }
+
+  let native = state.window_by_id(id)?.native().clone();
+  Some(FrameRead {
+    bounds: native.frame_with_shadows().ok(),
+    frame: native.frame().ok(),
+    native,
+    is_leaving: false,
+  })
+}
+
 fn leaving_window(
   state: &WmState,
   id: Uuid,
@@ -5658,17 +5830,18 @@ mod tests {
     floating_peek_raise, follow_duration, follows_tile,
     fullscreen_peek_raise, has_landed, has_left, host_for, hosts_hold,
     hosts_on_surface, is_departed, is_peek_resize, is_pure_move,
-    is_resized_already, is_stale_surface, is_stray, keeps_ready,
-    keeps_rest_hosted, keeps_trail_drawing, kept_transit, lands_on_trail,
+    is_resized_already, is_stale_surface, is_stray,
+    keeps_above_neighbours, keeps_ready, keeps_rest_hosted,
+    keeps_trail_drawing, kept_since_ready, kept_transit, lands_on_trail,
     lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, lowest,
     move_clips, out_of_order, peek_resize, rank, ranks_before_pass,
-    ready_miss, resizes_at_start, rest_anchor, restretched, rests,
-    retargeted_motion, retimed_transit_ms, returning_transit,
-    sampled_size, settling, state_change_peek_raise, state_change_resize,
-    take_left, takes_ready, toggles_tile_fullscreen, visible_frame,
-    wants_ready, Hold, Host, Lane, Layer, Level, Part, PeekRaise,
-    PeekResize, Rank, ReadyFit, ReadyMiss, Role, Stacking, Stretch,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    ready_miss, reranks_leaving, resizes_at_start, rest_anchor,
+    restretched, rests, retargeted_motion, retimed_transit_ms,
+    returning_transit, sampled_size, settling, state_change_peek_raise,
+    state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
+    visible_frame, wants_ready, Hold, Host, Lane, Layer, Level, Part,
+    PeekRaise, PeekResize, Rank, ReadyFit, ReadyMiss, Role, Stacking,
+    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -5995,6 +6168,55 @@ mod tests {
     assert!(takes_ready(&fit, &fit));
     assert!(!takes_ready(&fit, &other_window));
     assert!(!takes_ready(&fit, &other_clip));
+  }
+
+  /// Only a tile leaving on a surface keeps it above its neighbours, and
+  /// only while its transit runs.
+  #[test]
+  fn a_leaving_tile_keeps_its_surface_above_while_it_plays() {
+    let close = Role::Leaving(AwayTransition::Close);
+    let minimize = Role::Leaving(AwayTransition::Minimize);
+
+    assert!(keeps_above_neighbours(close, true, true));
+    assert!(keeps_above_neighbours(minimize, true, true));
+    assert!(!keeps_above_neighbours(close, false, true));
+    assert!(!keeps_above_neighbours(close, true, false));
+    assert!(!keeps_above_neighbours(
+      Role::Moving { ends_shown: true },
+      true,
+      true
+    ));
+  }
+
+  /// A reclaimed ready peek needs no flush until something is registered
+  /// on it; any other peek does.
+  #[test]
+  fn a_ready_peek_with_nothing_registered_since_needs_no_flush() {
+    assert!(kept_since_ready(Some(10), Some(9)));
+    assert!(!kept_since_ready(Some(10), Some(10)));
+    assert!(!kept_since_ready(None, Some(9)));
+    assert!(!kept_since_ready(Some(10), None));
+  }
+
+  /// A close or minimize ranked in an earlier raise pass is ranked again
+  /// before a tile is ranked in the one now open; a moving tile, one
+  /// ranked in it, and one on a peek of its own are not.
+  #[test]
+  fn a_leaving_tile_ranked_in_an_earlier_pass_is_ranked_again() {
+    let earlier = Some(rank(Stacking::Transit, 3, 0));
+    let current = Some(rank(Stacking::Transit, 4, 1));
+    let minimize = Role::Leaving(AwayTransition::Minimize);
+    let close = Role::Leaving(AwayTransition::Close);
+
+    assert!(reranks_leaving(minimize, earlier, 4));
+    assert!(reranks_leaving(close, earlier, 4));
+    assert!(!reranks_leaving(minimize, current, 4));
+    assert!(!reranks_leaving(minimize, None, 4));
+    assert!(!reranks_leaving(
+      Role::Moving { ends_shown: true },
+      earlier,
+      4
+    ));
   }
 
   /// A minimize ranked in an earlier raise pass is re-ranked for the moves

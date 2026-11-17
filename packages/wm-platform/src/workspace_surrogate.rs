@@ -406,11 +406,12 @@ impl WorkspaceSurrogate {
   /// its overlay window, parked at `rest` (see
   /// `NativeBorderOverlay::park`). Called again with the same `source`,
   /// only updates `rest`, e.g. for a width change that resized it.
-  /// Returns whether this one does.
+  /// Drawn at no opacity until [`cover_ring`](Self::cover_ring). Returns
+  /// whether this one does.
   pub fn carry_ring(&mut self, source: HWND, rest: &Rect) -> bool {
     self
       .copies
-      .carry_ring(self.hwnd(), source, rest, &self.rect, None)
+      .carry_ring(self.hwnd(), source, rest, &self.rect, None, 0)
   }
 
   /// Whether the surrogate draws the window's border ring (see

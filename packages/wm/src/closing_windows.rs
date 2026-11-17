@@ -116,6 +116,12 @@ impl ClosingWindows {
     }
   }
 
+  /// Whether the window `handle` is tracked as closing: its close neither
+  /// acted on nor refused yet, so it stays cloaked and unmanaged.
+  pub fn is_closing(&self, handle: isize) -> bool {
+    self.entries.iter().any(|entry| entry.handle == handle)
+  }
+
   /// When [`poll`](Self::poll) is next due, if anything is tracked.
   pub fn next_check(&self) -> Option<Instant> {
     self.next_check
@@ -323,6 +329,21 @@ mod tests {
     let actions = windows.poll(now + Duration::from_secs(6), |_| SHOWN);
 
     assert!(actions.is_empty());
+  }
+
+  #[test]
+  fn a_window_is_closing_until_resolved() {
+    let (mut closing, id) = tracked(Instant::now());
+    let handle = closing.entries[0].handle;
+    assert!(closing.is_closing(handle));
+    assert!(!closing.is_closing(handle + 1));
+
+    closing.mark_close_sent(id, Instant::now());
+    closing.poll(Instant::now(), |_| WindowProbe {
+      is_alive: false,
+      ..SHOWN
+    });
+    assert!(!closing.is_closing(handle));
   }
 
   #[test]

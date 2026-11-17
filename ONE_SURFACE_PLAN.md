@@ -3006,6 +3006,11 @@ minimize, and explains the "blank" close (the neighbours' real windows
 cover it once they land). Next: re-run the bench with `-Dwm`, read
 `peek_ready_miss`, `to_*`, `ring_*`, `ovl_restack` and `native_frame`;
 the owner decides on "Hand-over reorder proposals".
+`os/24-start-cost-3` (not seen running, see "Start cost 3: as built"):
+companion lookups without a scan on a ready hit, ring cells in one update,
+leaving tiles ranked over later moves, proposals 1, 3 and 6, and the close
+flash. Next: bench with `-Dwm` (`peek_new`, `ring_copy`, `dwm_flush`,
+`native_frame`), the screen checks there; proposals 2, 4, 5 still open.
 
 1. **Smoke run of `compare_branches.ps1`** on the desktop (never
    parsed: no PowerShell here), against `tryout/stand-ins` in modes
@@ -3270,13 +3275,125 @@ Windows functions: none added, none removed.
   neighbours while they move, then they cover it as they land (as on
   `main`).
 
-## Hand-over reorder proposals (owner to approve; none done)
+## Start cost 3: as built (`os/24-start-cost-3`, 2026-11-17)
+
+Not seen running. From `results/2026-11-17-start-cost-2` (ready peeks: 100 %
+hits) and the owner's screen check. One commit per item.
+
+1. **Companion lookup without a scan on a ready hit** (`peek_new`).
+   `reclaim` called `Companion::find`, which rescans every top-level window
+   (`EnumWindows`) once its snapshot is 50 ms old, i.e. on nearly every
+   motion start. The scan is now kept until a window carrying
+   `shades.CompanionOf` is shown (the window event hook reads that one
+   property per `EVENT_OBJECT_SHOW`) and refreshed by `prewarm_ready` at
+   rest; `reclaim` reuses it however old (`Companion::find_kept`). Each
+   lookup still checks the companion's property and that it is shown.
+   Other lookups keep the 50 ms TTL. A companion whose property is set
+   only after it shows is missed until the next rest or the peek's own
+   100 ms recheck.
+2. **Ring cells of a ready hit in one update each** (`ring_copy`). Read:
+   on a hit the 8 cells are neither registered nor cut anew (the spare's
+   cut matches, nothing drops it), but each was placed at opacity 0 and
+   then `cover_ring` set it to full: 16 `DwmUpdateThumbnailProperties`
+   per resizing tile, about the cost of registering them. A copy taken up
+   or registered by `carry_ring` is now drawn at its cover opacity from
+   the start: 8 per tile (a miss saves 8 too). Switch surrogates still
+   carry at 0 until their own `cover_ring`.
+3. **Minimize on top: why it never ran, fixed.** `keep_minimizes_on_top`
+   re-ranked only in the sync that marked the window a state change, and
+   only if a raise pass had closed since its peek went up. The neighbours
+   can be ranked in another sync (the minimize event and the focus it
+   hands on come in either order; a later pass's move ranks over any
+   earlier transit), so it never applied. Replaced by
+   `keep_leaving_on_top`: right before any tile is ranked
+   (`tenancy`, a landing move's re-rank), every tile closing or
+   minimizing on a surface, ranked in an earlier pass, is ranked again
+   over the open pass (`reranks_leaving`, tested). The `platform_sync`
+   hook is gone. `Stacking …` debug lines now name the lower-ranked tiles
+   met, to tell neighbour-over-neighbour (the general rule, kept) from a
+   neighbour over the leaving tile (should not happen any more).
+4. **Proposal 3 done**: `track_overlays` reads each tile's frame once
+   (`read_frame`) for `carry_backdrop` and `carry_ring`: two reads per
+   tile per pass instead of three.
+5. **Proposal 1 done**: `commit_pending_cloaks` skips its flush when every
+   window's peek was reclaimed ready with nothing registered on it since
+   (`needs_flush`, `kept_since_ready`, tested: every thumbnail's order is
+   below the registration order noted at `reclaim`,
+   `wm_platform::next_thumbnail_order`). Guard against a frame without the
+   window: any registration since (companion thumbnail, backdrop or ring
+   copy cut anew, tab bar, restack) or any other window in the pass keeps
+   the flush; the thumbnails' showing and the cloak still go to DWM in the
+   same order as after a flush. A move still flushes (its whole-ring copy
+   is registered at the start; the ready cut is cells); minimize keeps the
+   flush in `leave_on_peek` (whole ring) and skips the neighbours'.
+6. **Proposal 6 done**: while a tile's close or minimize transit runs on a
+   surface, `keep_leaving_above` (end of every sync and every restack
+   event) puts that surface just above each shown tiling window of its
+   monitor not drawn by a peek, if below it (`SurfaceWindow::keep_above`).
+   Z-order change, exactly: only that monitor's tiles' surface moves, only
+   up, only above tiling windows (floating ones above stay above, and so
+   does a neighbour's companion window, e.g. shades', which sits above its
+   window); the neighbours' own z-order and the hand-back's "keeps its
+   place" step are unchanged; nothing changes once the transit ends (the
+   surface, released when empty, is hidden and back to the usual rules).
+   The surface is click-through and no-activate.
+7. **Close flash (owner, desktop)**, found by reading: (a) a Shown event
+   for a closing window (its app showing it again as it tears down) went
+   to `manage_window`, as the window is detached: managed again,
+   `platform_sync` uncloaked it until it went. Now ignored while
+   `ClosingWindows` tracks it (`is_closing`, tested); a refused close still
+   manages it again. (b) A semi-transparent closing window got its alpha
+   back a tick after its cloak was sent, however late the shell's cloak
+   landed: now only once it reads cloaked. Left as is: a close the app
+   takes over 2 s to act on is taken as refused and the window comes back
+   (`CLOSE_CONFIRM_TIMEOUT`), and a window the app hides is uncloaked
+   (hidden, so unseen).
+
+**Stale ring lines (CPU 8, resize, 66 ms), read only.** Likely the real
+rings of the two neighbours, not their copies: a ring shown at the start
+is covered by its copy (`Handover::Covering`) and concealed by its alpha
+only in `hand_over_moved_overlays`, after the cloak. Under load that
+conceal (and the park's async move of the ring window, `set_bounds`) can
+land a composition after the first tick moved the copies, so the real ring
+shows where the window was: its two vertical edges, the thin lines at the
+old x. Not changed (tuned hand-over step).
+
+Expected on the bench (not measured): `peek_new` on move, resize and
+minimize down by the `EnumWindows` scan (likely most of resize's 3.4–4.0
+and part of minimize's 7.4–8.7); `ring_copy` on resize and minimize about
+halved (6.7–7.9 → ~3.5–4); `native_frame` down a third; `dwm_flush` on
+resize from 8.8–10.3 to about what is left of the cell restacks (0 if no
+`Stacking` line), on minimize one flush less (~5); move unchanged
+(`dwm_flush` stays). `prewarm` pays one `EnumWindows` per sync at rest.
+
+Windows functions: none added, none removed (`GetPropW` now also runs in
+the window event hook, on each show event).
+
+### To check on screen
+
+- Resize after 1 s idle: no blank, ring-less or backdrop-less first frame;
+  debug `Cloaking … without a flush: every peek kept ready.`
+- Minimize and close a tile beside two others (`window_minimize` /
+  `window_close` at 1500 ms): it shrinks over its neighbours for the whole
+  transit, also once they land; debug `Peek surface … put above … to keep
+  drawing over it`; no `Stacking …` line naming the leaving tile among
+  those below a neighbour. Click a neighbour meanwhile: it takes the
+  click.
+- Close Windows Terminal and Chrome a few times: no flash of the old
+  window; debug `Cloaked leaving …`, `Close on its peek complete …;
+  sending WM_CLOSE (cloaked: Some(true))`, any `Closing window … shown:
+  left cloaked`, and no `Uncloaking closing window` unless the app
+  refused (a save prompt).
+- With shades running: a moved tile shows its companion's colors from its
+  first frame, also right after shades started.
+
+## Hand-over reorder proposals (owner to approve; 1, 3 and 6 done)
 
 Each moves a tuned step (`STAND_INS_PLAN.md` rule 5), so none is built.
 Savings are estimates from the 2026-11-17 bench (174 Hz, 5.75 ms
 refresh); the new stages will size them.
 
-1. **No `DwmFlush` for a pass of ready peeks only.** A ready peek's
+1. **Done** (`os/24-start-cost-3`). **No `DwmFlush` for a pass of ready peeks only.** A ready peek's
    thumbnails have been registered (held) since prewarm or its last
    landing, so the flush that lets DWM populate a new thumbnail before
    the cloak may be unneeded when every peek of the pass was reclaimed.
@@ -3290,7 +3407,7 @@ refresh); the new stages will size them.
    resize). Risk: overlays of higher windows over the copies for a frame
    after the cloak (why `restack_joining_overlays` runs first), and the
    ring shown real and copied while they differ (a focus fade).
-3. **One frame read per tile per pass.** `carry_ring` and `carry_backdrop`
+3. **Done** (`os/24-start-cost-3`). **One frame read per tile per pass.** `carry_ring` and `carry_backdrop`
    each read the window's frame; read once in `track_overlays` and pass
    it to both. Saves one or two DWM round trips per tile per frame and in
    `peek_cover`/`peek_handover`. Risk: low; it changes what the
@@ -3306,7 +3423,7 @@ refresh); the new stages will size them.
    work; the first composited frame shows the window from the peek a step
    earlier. Risk: a frame of the real ring over the copied window, before
    its copies show.
-6. **A close or minimize over landed neighbours** (c above). Keep a
+6. **Done** (`os/24-start-cost-3`). **A close or minimize over landed neighbours** (c above). Keep a
    leaving tile's surface above its neighbours' real windows until it
    ends (raised after their hand-back), or hold their hand-back until it
    ends. Gain: the close plays in full. Risk: the surface over real

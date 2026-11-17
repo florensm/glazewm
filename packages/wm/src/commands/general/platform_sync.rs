@@ -100,8 +100,6 @@ pub fn platform_sync(
   } = if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
-    // Before the neighbours reflowing for it are ranked.
-    crate::animation::peek_view::keep_minimizes_on_top(state);
     redraw_containers(&focused_container, state, config)?
   } else {
     Redraw::default()
@@ -177,6 +175,10 @@ pub fn platform_sync(
   state.animation_manager.settle_overlay_z_order(
     repositioned.into_iter().chain(z_order_touched),
   );
+
+  // Last of what restacks windows in the pass: a close or minimize stays
+  // over the neighbours handed back while it plays (proposal 6).
+  crate::animation::peek_view::keep_leaving_above(state);
 
   let restack = if state.pending_sync.needs_tab_bar_update() {
     crate::tab_bars::Restack::All
@@ -582,12 +584,23 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
   // flushes after putting up their peeks, earlier in the same pass, so a
   // pass cloaking only those skips a second wait of up to a frame before
   // the scroll's first.
+  //
+  // Nor one whose peeks were all reclaimed ready, with nothing registered
+  // on them since (proposal 1): their thumbnails were composited, held,
+  // long before. The thumbnails' showing and the cloak still go to DWM in
+  // that order, a call apart, as after a flush.
   let flushes = pending.iter().any(|cloak| {
-    !state
+    state
       .animation_manager
       .peeks
-      .is_composited(&cloak.window.id())
+      .needs_flush(&cloak.window.id())
   });
+  if !flushes {
+    tracing::debug!(
+      "Cloaking {} window(s) without a flush: every peek kept ready.",
+      pending.len()
+    );
+  }
 
   // Flush before cloaking so DWM renders one frame with every queued
   // surrogate (and its now-correctly-anchored overlays) visible and its
@@ -2840,6 +2853,9 @@ pub(crate) fn resync_overlays_and_tab_bars(state: &mut WmState) {
   for bar in state.tab_bars.values() {
     bar.keep_behind_anchor();
   }
+
+  // E.g. an app raising a neighbour of a close or minimize still playing.
+  crate::animation::peek_view::keep_leaving_above(state);
 }
 
 /// Puts shown overlays of kind `O` back directly behind their windows.

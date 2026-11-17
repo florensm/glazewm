@@ -468,22 +468,23 @@ impl WindowPeek {
     corner_reach: Option<i32>,
   ) -> bool {
     let dest = self.surrogate.hwnd();
+    // Drawn twice in one place, a ring looks like one. Faded with its
+    // window, as last placed (see `place_scaled`). A copy taken up or
+    // registered here is drawn so at once, one kept is set to it.
+    let opacity = if self.frac < 1.0 {
+      scale_alpha(u8::MAX, self.frac)
+    } else {
+      u8::MAX
+    };
     let carries = self.copies.carry_ring(
       dest,
       source,
       ring_rect,
       window_rect,
       corner_reach,
+      opacity,
     );
-    // Drawn twice in one place, a ring looks like one. Faded with its
-    // window, as last placed (see `place_scaled`).
-    if self.frac < 1.0 {
-      self
-        .copies
-        .set_ring_opacity(scale_alpha(u8::MAX, self.frac));
-    } else {
-      self.copies.cover_ring();
-    }
+    self.copies.set_ring_opacity(opacity);
     carries
   }
 
@@ -653,6 +654,13 @@ impl WindowPeek {
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.raise_ring(self.surrogate.hwnd());
     self.copies.drop_spares();
+  }
+
+  /// Whether it keeps its real window's alpha hidden (see
+  /// [`take_over`](Self::take_over)).
+  #[must_use]
+  pub fn hides_alpha(&self) -> bool {
+    self.hidden_alpha.is_hiding()
   }
 
   /// Gives the real window back the alpha a handover set aside, unless it
@@ -1015,6 +1023,13 @@ impl WindowPeek {
   /// scrolling layout's). None for one of its own.
   pub fn stay_over_window(&self) {
     self.surrogate.lift_surface_above(self.source);
+  }
+
+  /// Puts a hosted peek's surface just above `window`, another tile's real
+  /// window, unless it is above it already, so the peek keeps drawing
+  /// over it. None for one of its own.
+  pub fn keep_surface_above(&self, window: HWND) {
+    self.surrogate.lift_surface_above(window);
   }
 
   /// Puts the peek at the top of the non-topmost windows, over windows

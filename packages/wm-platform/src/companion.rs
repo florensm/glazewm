@@ -1,5 +1,8 @@
 use std::{
-  sync::{Mutex, PoisonError},
+  sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex, PoisonError,
+  },
   time::{Duration, Instant},
 };
 
@@ -34,10 +37,52 @@ const COMPANION_PROPERTY: PCWSTR = w!("shades.CompanionOf");
 /// `NativeSurrogate::rechecks_companion`).
 const SNAPSHOT_TTL: Duration = Duration::from_millis(50);
 
-/// Every `(window, companion)` pair from a scan, and when it ran.
-type Snapshot = (Instant, Vec<(isize, isize)>);
+/// Every `(window, companion)` pair from a scan, when it ran, and the
+/// [`SHOWN_GENERATION`] it saw.
+struct Snapshot {
+  taken: Instant,
+  generation: u64,
+  pairs: Vec<(isize, isize)>,
+}
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
+
+/// Bumped each time a window carrying [`COMPANION_PROPERTY`] is shown (see
+/// [`note_shown`]): a snapshot taken before then may miss a companion.
+/// One hidden or destroyed since is caught by each lookup's own check.
+static SHOWN_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// How a lookup may reuse the last scan for companions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reuse {
+  /// Only within [`SNAPSHOT_TTL`], e.g. a stand-in's periodic recheck,
+  /// which also catches a companion whose property was set after it was
+  /// shown.
+  Fresh,
+  /// For as long as no companion was shown since, e.g. a ready peek's
+  /// motion start, the scan kept by [`Companion::refresh_at_rest`].
+  Kept,
+}
+
+/// Whether a scan taken `age` ago, seeing `generation`, is reused by a
+/// lookup allowing `reuse`, `current` being [`SHOWN_GENERATION`] now.
+fn reuses_snapshot(
+  reuse: Reuse,
+  age: Duration,
+  generation: u64,
+  current: u64,
+) -> bool {
+  generation == current && (reuse == Reuse::Kept || age < SNAPSHOT_TTL)
+}
+
+/// Notes that `hwnd`, another app's window, was just shown: a companion
+/// among them makes the next lookup scan again. Called from the window
+/// event hook, so it reads one property and nothing else.
+pub(crate) fn note_shown(hwnd: HWND) {
+  if companion_of(hwnd).is_some() {
+    SHOWN_GENERATION.fetch_add(1, Ordering::AcqRel);
+  }
+}
 
 /// Most windows [`Companion::covers_window`] walks down past, bounding a
 /// walk of a z-order that changes under it.
@@ -183,25 +228,45 @@ pub(crate) struct Companion {
 impl Companion {
   /// The companion of `window`, if one is shown (possibly cloaked).
   pub(crate) fn find(window: HWND) -> Option<Self> {
-    let now = Instant::now();
+    Self::lookup(window, Reuse::Fresh)
+  }
+
+  /// [`find`](Self::find), reusing the last scan for as long as no
+  /// companion was shown since, however old: for a ready peek's motion
+  /// start, which then does no `EnumWindows`. The scan is kept current
+  /// by [`refresh_at_rest`](Self::refresh_at_rest).
+  ///
+  /// A companion whose property is set only after it was shown is missed
+  /// until the next rest or a stand-in's own recheck (see
+  /// `NativeSurrogate::rechecks_companion`).
+  pub(crate) fn find_kept(window: HWND) -> Option<Self> {
+    Self::lookup(window, Reuse::Kept)
+  }
+
+  /// Scans for companions anew, unless the last scan is younger than
+  /// [`SNAPSHOT_TTL`] and none was shown since, for the lookups of motions
+  /// to come (see [`find_kept`](Self::find_kept)). Run at rest.
+  pub(crate) fn refresh_at_rest() {
+    let mut snapshot =
+      SNAPSHOT.lock().unwrap_or_else(PoisonError::into_inner);
+    current_snapshot(&mut snapshot, Reuse::Fresh);
+  }
+
+  fn lookup(window: HWND, reuse: Reuse) -> Option<Self> {
     let mut snapshot =
       SNAPSHOT.lock().unwrap_or_else(PoisonError::into_inner);
 
-    let is_fresh = snapshot
-      .as_ref()
-      .is_some_and(|(taken, _)| now.duration_since(*taken) < SNAPSHOT_TTL);
-
-    if !is_fresh {
-      *snapshot = Some((now, scan()));
-    }
-
-    let hwnd = snapshot
-      .as_ref()?
-      .1
+    let hwnd = current_snapshot(&mut snapshot, reuse)
+      .pairs
       .iter()
       .find(|(source, _)| *source == window.0)
       .map(|(_, companion)| HWND(*companion))
-      .filter(|companion| companion_of(*companion) == Some(window))?;
+      .filter(|companion| companion_of(*companion) == Some(window))
+      .filter(|companion| {
+        // SAFETY: A stale handle just returns false.
+        unsafe { IsWindowVisible(*companion) }.as_bool()
+      })?;
+    drop(snapshot);
 
     Some(Self {
       hwnd: hwnd.0,
@@ -336,6 +401,40 @@ fn map_rects(
   (src, dst)
 }
 
+/// The snapshot in `slot`, scanned anew first unless `reuse` allows the
+/// one there (see [`reuses_snapshot`]).
+fn current_snapshot(
+  slot: &mut Option<Snapshot>,
+  reuse: Reuse,
+) -> &Snapshot {
+  let now = Instant::now();
+  let current = SHOWN_GENERATION.load(Ordering::Acquire);
+  let reuses = slot.as_ref().is_some_and(|snapshot| {
+    reuses_snapshot(
+      reuse,
+      now.duration_since(snapshot.taken),
+      snapshot.generation,
+      current,
+    )
+  });
+
+  if !reuses {
+    // Read before the scan, so a companion shown during it makes the next
+    // lookup scan again.
+    *slot = Some(Snapshot {
+      taken: now,
+      generation: current,
+      pairs: scan(),
+    });
+  }
+
+  slot.get_or_insert_with(|| Snapshot {
+    taken: now,
+    generation: current,
+    pairs: Vec::new(),
+  })
+}
+
 /// Whether `upper` is anywhere above `lower` in the z-order.
 pub(crate) fn is_above(upper: HWND, lower: HWND) -> bool {
   let mut below = upper;
@@ -406,7 +505,25 @@ mod tests {
 
   use windows::Win32::Foundation::RECT;
 
-  use super::{map_rects, CompanionState, HandoffWait, HANDOFF_MAX_WAIT};
+  use super::{
+    map_rects, reuses_snapshot, CompanionState, HandoffWait, Reuse,
+    HANDOFF_MAX_WAIT, SNAPSHOT_TTL,
+  };
+
+  #[test]
+  fn a_kept_scan_is_reused_however_old_until_a_companion_shows() {
+    let old = SNAPSHOT_TTL * 100;
+    assert!(reuses_snapshot(Reuse::Kept, old, 3, 3));
+    assert!(!reuses_snapshot(Reuse::Kept, old, 3, 4));
+    assert!(!reuses_snapshot(Reuse::Kept, Duration::ZERO, 3, 4));
+  }
+
+  #[test]
+  fn a_fresh_lookup_scans_again_past_its_ttl() {
+    assert!(reuses_snapshot(Reuse::Fresh, Duration::ZERO, 3, 3));
+    assert!(!reuses_snapshot(Reuse::Fresh, SNAPSHOT_TTL, 3, 3));
+    assert!(!reuses_snapshot(Reuse::Fresh, Duration::ZERO, 2, 3));
+  }
 
   const COVERING: CompanionState =
     CompanionState::WindowShown { covers: true };
