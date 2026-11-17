@@ -1906,6 +1906,8 @@ pub struct WindowTransitionParams {
   /// Opacity at the away end of the transition -- the value a window
   /// enters from and exits to.
   pub away_opacity: f32,
+  /// For `zoom`: scale at the away end, 0.0 (from nothing) to 1.0.
+  pub away_scale: f32,
 }
 
 impl WindowTransitionParams {
@@ -1916,6 +1918,7 @@ impl WindowTransitionParams {
       easing: config.easing.clone(),
       style: config.style.clone(),
       away_opacity: config.opacity_from,
+      away_scale: config.zoom_from.clamp(0.0, 1.0),
     }
   }
 
@@ -1926,6 +1929,7 @@ impl WindowTransitionParams {
       easing: config.easing.clone(),
       style: config.style.clone(),
       away_opacity: config.opacity_to,
+      away_scale: config.zoom_to.clamp(0.0, 1.0),
     }
   }
 
@@ -1936,6 +1940,7 @@ impl WindowTransitionParams {
       easing: config.easing.clone(),
       style: config.style.clone(),
       away_opacity: config.opacity_to,
+      away_scale: config.zoom_to.clamp(0.0, 1.0),
     }
   }
 
@@ -1972,6 +1977,9 @@ pub struct WindowOpenConfig {
   /// the window fades in from fully transparent. Can be combined with
   /// any style.
   pub opacity_from: f32,
+  /// For `zoom`: scale the window grows from (0.0-1.0). At `0.8` with
+  /// `opacity_from: 0.0` it pops in from 80% while fading in.
+  pub zoom_from: f32,
 }
 
 impl Default for WindowOpenConfig {
@@ -1982,6 +1990,7 @@ impl Default for WindowOpenConfig {
       easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
       style: WindowTransitionStyle::SlideRight,
       opacity_from: 1.0,
+      zoom_from: 0.0,
     }
   }
 }
@@ -2004,6 +2013,8 @@ pub struct WindowCloseConfig {
   /// Final opacity (0.0–1.0). At `0.0` the window fades to fully
   /// transparent; at `1.0` no fade is applied.
   pub opacity_to: f32,
+  /// For `zoom`: scale the window shrinks to (0.0-1.0).
+  pub zoom_to: f32,
 }
 
 impl Default for WindowCloseConfig {
@@ -2014,6 +2025,7 @@ impl Default for WindowCloseConfig {
       easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
       style: WindowTransitionStyle::None,
       opacity_to: 0.0,
+      zoom_to: 0.0,
     }
   }
 }
@@ -2046,6 +2058,9 @@ pub struct WindowMinimizeConfig {
   /// start of the restore animation. At `0.0` the window fades fully
   /// out; at `1.0` no fade is applied.
   pub opacity_to: f32,
+  /// For `zoom`: scale at the end of the minimize, and at the start of
+  /// the restore (0.0-1.0).
+  pub zoom_to: f32,
 }
 
 impl Default for WindowMinimizeConfig {
@@ -2056,6 +2071,7 @@ impl Default for WindowMinimizeConfig {
       easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
       style: WindowTransitionStyle::Zoom,
       opacity_to: 0.0,
+      zoom_to: 0.0,
     }
   }
 }
