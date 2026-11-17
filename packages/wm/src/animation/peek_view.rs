@@ -4952,7 +4952,10 @@ pub fn track_overlays(
       .unwrap_or_else(|| state.effect_set(id, focused_id == Some(id)));
     let (backdrop, border) = tracked_blends(state, id, set, config);
 
-    let carries_backdrop = carry_backdrop(state, id, backdrop);
+    // Read once for both, as each read is a round trip to DWM.
+    let read = read_frame(state, id);
+    let carries_backdrop =
+      carry_backdrop(state, id, backdrop, read.as_ref());
 
     match (backdrop, &frame) {
       _ if carries_backdrop => {}
@@ -4980,7 +4983,7 @@ pub fn track_overlays(
 
     carry_tab_bar(state, id, focused_id == Some(id), config);
 
-    if carry_ring(state, id, border) {
+    if carry_ring(state, id, border, read.as_ref()) {
       continue;
     }
 
@@ -5074,25 +5077,21 @@ fn carry_ring(
   state: &mut WmState,
   id: Uuid,
   blend: Option<StyleBlend<BorderOverlayParams>>,
+  read: Option<&FrameRead>,
 ) -> bool {
   let _scope = perf::scope(Stage::PeekRing);
-  let leaving = leaving_window(state, id);
-  let window = state.window_by_id(id).filter(|_| leaving.is_none());
-  let (native, bounds, frame) = match (leaving, &window) {
-    // A leaving window's ring stays where it was, without a tab bar.
-    (Some(leaving), _) => leaving,
-    (None, Some(window)) => {
-      // Shown where it was, or cloaked where its peek is headed.
-      let native = window.native().clone();
-      let (Ok(bounds), Ok(frame)) =
-        (native.frame_with_shadows(), native.frame())
-      else {
-        return false;
-      };
-      (native, bounds, frame)
-    }
-    (None, None) => return false,
+  let Some(read) = read else {
+    return false;
   };
+  // A leaving window's ring stays where it was, without a tab bar.
+  let window = state.window_by_id(id).filter(|_| !read.is_leaving);
+  // Shown where it was, or cloaked where its peek is headed.
+  let (Some(bounds), Some(frame)) =
+    (read.bounds.clone(), read.frame.clone())
+  else {
+    return false;
+  };
+  let native = read.native.clone();
 
   if let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id) {
     for (peek, _) in entry.peeks_mut() {
@@ -5463,6 +5462,7 @@ fn carry_backdrop(
   state: &mut WmState,
   id: Uuid,
   blend: Option<StyleBlend<BackdropOverlayParams>>,
+  read: Option<&FrameRead>,
 ) -> bool {
   let _scope = perf::scope(Stage::PeekBackdrop);
   let carries = state
@@ -5471,10 +5471,9 @@ fn carry_backdrop(
     .entries
     .get(&id)
     .is_some_and(|entry| entry.peek.carries_backdrop());
-  let leaving = leaving_window(state, id);
-  if !carries || (leaving.is_none() && state.window_by_id(id).is_none()) {
+  let Some(read) = read.filter(|_| carries) else {
     return false;
-  }
+  };
 
   let Some(blend) = blend else {
     if let Some(overlay) = state
@@ -5497,20 +5496,15 @@ fn carry_backdrop(
   // Where steady state puts it (see `sync_overlays`): over the real
   // window's own frame, where it shows before a scroll and waits cloaked
   // during one. A leaving window's stays where it was.
-  let (native, frame) = if let Some((native, _, frame)) = leaving {
-    (native, frame)
-  } else {
-    let Some(native) =
-      state.window_by_id(id).map(|window| window.native().clone())
-    else {
-      return false;
-    };
-    let Ok(frame) = native.frame() else {
-      return false;
-    };
-    (native, landing_frame(state, id, frame))
+  let Some(frame) = read.frame.clone() else {
+    return false;
   };
-  let anchor = native.hwnd();
+  let frame = if read.is_leaving {
+    frame
+  } else {
+    landing_frame(state, id, frame)
+  };
+  let anchor = read.native.hwnd();
 
   let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id)
   else {
@@ -5582,6 +5576,37 @@ fn carry_backdrop(
 
 /// The real window, rect with shadows and frame that `id`'s peek kept as
 /// it started to leave, if it is leaving (see [`Departing`]).
+/// Where `id`'s window is, read once a pass for both [`carry_backdrop`]
+/// and [`carry_ring`]: a leaving window's where it left, another's own
+/// rect and visible frame, each `None` if its read failed.
+struct FrameRead {
+  native: NativeWindow,
+  bounds: Option<Rect>,
+  frame: Option<Rect>,
+  is_leaving: bool,
+}
+
+/// [`FrameRead`] of `id`'s window, `None` for one neither leaving nor
+/// managed.
+fn read_frame(state: &WmState, id: Uuid) -> Option<FrameRead> {
+  if let Some((native, bounds, frame)) = leaving_window(state, id) {
+    return Some(FrameRead {
+      native,
+      bounds: Some(bounds),
+      frame: Some(frame),
+      is_leaving: true,
+    });
+  }
+
+  let native = state.window_by_id(id)?.native().clone();
+  Some(FrameRead {
+    bounds: native.frame_with_shadows().ok(),
+    frame: native.frame().ok(),
+    native,
+    is_leaving: false,
+  })
+}
+
 fn leaving_window(
   state: &WmState,
   id: Uuid,
