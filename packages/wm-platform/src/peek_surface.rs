@@ -292,6 +292,12 @@ impl SurfaceWindow {
   /// ready peek, which never keeps the surface from taking new tenants.
   pub(crate) fn retire(&self) {
     self.release();
+    self.add_ready();
+  }
+
+  /// Takes in a ready peek that was never a tenant (see
+  /// `NativeSurrogate::create_ready`).
+  pub(crate) fn add_ready(&self) {
     self.ready.set(self.ready.get() + 1);
   }
 

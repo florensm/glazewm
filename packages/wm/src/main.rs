@@ -223,6 +223,7 @@ async fn start_wm(
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
     let hot_corner = wm.state.overview.hot_corner_deadline();
+    let prewarm = wm.state.animation_manager.peeks.prewarm_deadline();
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -294,6 +295,11 @@ async fn start_wm(
         wm.process_closing_windows(&mut config)
       },
       () = sleep_until(hot_corner) => wm.process_hot_corner(&config),
+      // Below every input and event, so a command never waits on it.
+      () = sleep_until(prewarm) => {
+        wm.prewarm_peeks(&config);
+        Ok(())
+      },
       _ = sent_message_interval.tick() => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)

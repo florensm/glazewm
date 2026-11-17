@@ -129,6 +129,32 @@ impl Transit {
     self.clock.is_complete()
   }
 
+  /// This transit carried on from where it is at `now` to its end over
+  /// `duration_ms`, at the speed it has there, keeping what is left of its
+  /// start delay: so it ends with a motion retargeted to last as long,
+  /// rather than before it. Its clock runs from `now` if this one's did.
+  #[must_use]
+  pub fn retimed(&self, duration_ms: u32, now: Instant) -> Self {
+    let total = self.clock.start_delay + self.clock.duration;
+    let elapsed = total.saturating_sub(self.clock.remaining_at(now));
+    let mut clock = self.clock.retargeted(
+      self.clock.target_rect.clone(),
+      duration_ms,
+      self.clock.easing.clone(),
+      now,
+    );
+    clock.start_delay = self.clock.start_delay.saturating_sub(elapsed);
+    if self.clock.is_running() {
+      clock.start_clock(now);
+    }
+
+    Self {
+      from: self.amount_at(now),
+      clock,
+      ..self.clone()
+    }
+  }
+
   /// The transit the other way, from where this one is at `now`, over
   /// `params`' duration scaled by how far it has left to go (at least
   /// one frame). Its clock is unstarted: the caller starts it at `now`.
@@ -489,5 +515,22 @@ mod tests {
     closing.clock.start_clock(now);
     assert_near(closing.amount_at(now), amount);
     assert!(closing.amount_at(now + Duration::from_millis(5)) > amount);
+  }
+
+  /// Retimed mid-way, an opening carries on from where it is, never
+  /// back from the start, and ends when the new duration says.
+  #[test]
+  fn a_retimed_opening_carries_on_to_its_new_end() {
+    let start = Instant::now();
+    let opening = Transit::new(Direction::In, &params(linear()), 0.0);
+    opening.clock.start_clock(start);
+    let now = start + Duration::from_millis(100);
+    let amount = opening.amount_at(now);
+
+    let retimed = opening.retimed(400, now);
+    assert_near(retimed.amount_at(now), amount);
+    assert!(retimed.amount_at(now + Duration::from_millis(200)) > amount);
+    assert!(retimed.amount_at(now + Duration::from_millis(200)) < 1.0);
+    assert_near(retimed.amount_at(now + Duration::from_millis(400)), 1.0);
   }
 }

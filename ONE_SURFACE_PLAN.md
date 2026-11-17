@@ -355,7 +355,9 @@ Branch `os/2-ready`. Not seen running.
   (`SurfaceWindow::retire`). The surface hides, and takes new tenants
   again (`raised` reset), exactly as if the peek had gone.
 - Kept only for a tile's peek with no trail (`keeps_ready`). Lifetime
-  `READY_LIFETIME` (5 s), cap `MAX_READY` (16, oldest out).
+  `READY_LIFETIME` (5 s), cap `MAX_READY` (16, oldest out). Superseded
+  2026-11-17: kept while shown, and made for resting tiles too ("Start
+  cost: as built").
 - `move_tile` takes the window's ready peek (always out of the store)
   and uses it only if the window handle and clip are the same, it is not
   expired (`takes_ready`), the motion `host`s and `tenancy` admits it,
@@ -781,10 +783,10 @@ step 1's table.
   entering or leaving tile is drawn over windows that were above its own
   peek (a floating window over a closing tile), and its ring copy over
   windows between before its take-over.
-- Opens cost a restack of the neighbours moved before them in the pass
-  that meet them, twice when their ring copies register after the
-  open's (`restack` stage). An open ranked on top instead would cost
-  none but draw over its neighbours where today they cover it.
+- Superseded 2026-11-17 ("Start cost: as built"): opens, closes,
+  minimizes and restores now rank over their moving neighbours, so
+  those are not restacked; the transit tile itself is registered anew
+  once if its registrations were under theirs.
 
 ### Windows functions called by the new code
 
@@ -2993,6 +2995,13 @@ fine so far (see above). Laptop build: `test/one-surface` at `d5b8d3f` (re-cut 2
 `4a9d55b`: border inside, switch inset fix, item 3; same Windows
 imports and `Cargo.lock` as `6353eeab`).
 
+2026-11-17: the start-latency bench ran (`results/2026-11-17-start-latency`).
+`os/22-start-cost` (not seen running, see "Start cost: as built") acts on
+it: transits on top, ready peeks for every resting tile, the double zoom
+on open. Next: re-run the same bench command against `origin/main` and
+read `peek_new`, `peek_cover`, `restack`, `surface`, `input->first frame`
+for resize and minimize; check the list in that section on screen.
+
 1. **Smoke run of `compare_branches.ps1`** on the desktop (never
    parsed: no PowerShell here), against `tryout/stand-ins` in modes
    `nopeeks`, `default`, `morepeeks` and `origin/main` (the default
@@ -3042,9 +3051,9 @@ imports and `Cargo.lock` as `6353eeab`).
   every other switch (a kept outgoing peek holds the surface's one place
   at rest). Hosting both would let the incoming one move the surface
   under the kept one for a sync. Kept as built unless the owner objects.
-- An opening tile is drawn under its moving neighbours, as today, at
-  the cost of restacking them on every open (step 4). The other way
-  (opening tile on top) costs nothing and looks different.
+- Decided (owner, 2026-11-17): a tile opening, closing, minimizing or
+  restoring is drawn on top of its moving neighbours (`Level::Transit`),
+  so they are not restacked at its start. See "Start cost: as built".
 - Whether to bench now (tile moves and resizes: `default` against
   `onesurface` and `onesurface+readypeeks`, see "To measure") before
   building steps 6 and on.
@@ -3062,6 +3071,96 @@ Laptop test build: `test/one-surface`, re-cut 2026-11-15 from `0c841473`
 (R0..R3 merged: nothing starts the engine; R4's deletion of the then
 unreachable engine not in it). No `GLAZEWM_ISOLATE` any more: the
 surfaces are always on. Same Windows functions as the build before it.
+
+## Start cost: as built (`os/22-start-cost`, 2026-11-17)
+
+Not seen running. From the start-latency bench: one surface starts a
+resize with `take_over` 9–11 + `peek_cover` 10–12 ms, a minimize with
+`peek_new` 8.5 + `restack` 8.6 + `peek_cover` 18–23 ms, where `main` pays
+only `session_begin`. Three owner's decisions, one commit each.
+
+1. **Transits on top** (`Level::Transit` in `Rank`). A tile opening,
+   closing, minimizing or restoring on a surface ranks over every tile
+   its pass and earlier ones moved (still under a later pass's moves and
+   band raises). Its moving neighbours are never registered anew for it;
+   it is, once, if its own registrations were under theirs (a close or
+   minimize's peek goes up in the command, before the neighbours' moves
+   in the sync). A moving tile that starts to leave is re-ranked so. No
+   hand-over step moved. Own-window peeks keep their z-order rules.
+2. **Ready peeks for every resting tile** (`prewarm_ready`). Each shown
+   tile outside a scrolling layout, drawn by nothing, gets a ready peek on
+   its monitor's surface: `WindowPeek::ready` registers held, in a tile's
+   order, its window thumbnail, backdrop copies (as configured, focused
+   and not), and its ring copy cut in cells (a resize's cut), without
+   moving the surface (`NativeSurrogate::create_ready`, counted as ready,
+   never as a tenant). A landed peek whose ring was kept whole is topped
+   up to cells. Run 150 ms after every sync or landing, only while
+   nothing animates, the overview is closed and the WM isn't paused; one
+   tile per wake, rescheduled at once, as the lowest branch of the event
+   loop, so input always goes first. Ready peeks are kept while their
+   window is shown (no lifetime, no cap) and go at the purge points of
+   step 2 (unmanage, not shown at a sync, display change, reload, pause,
+   exit) or when the window handle or clip no longer fits (replaced on
+   the next prewarm). A close or minimize now takes its tile's ready peek
+   (`leave` → `reuse_entry`). Not pre-warmed: fills (their color is
+   sampled from the window as it resizes), opens and restores (no window
+   to show before).
+3. **Double zoom on open**. A tile retargeted while it opened (a
+   neighbour reflowing, a second open, a floating open turned tiling)
+   glided to its new tile on the new motion's clock while its zoom ran on
+   its own, shorter one: it zoomed into the first tile, then grew into
+   the new one. `retarget_tile` now stretches an entering transit to end
+   with the retargeted motion, from where it is at its speed
+   (`Transit::retimed`, `retimed_transit_ms`, tested); never restarted,
+   never cut short, a spring's left as is. An open still can't restart:
+   `enter` refuses a window its peek draws. Debug lines, to tell the
+   trigger on screen: `Opening of … started at …`, `Opening of … not
+   started again`, `Opening of … retargeted to …: transit stretched …` /
+   `carries on`, `Move of … left to its transit`, `Restore of … not
+   started`, `Column … moved on in place`. Two `started` lines for one
+   app are two windows (or the window unmanaged and managed again).
+
+Expected on the bench (not measured): `restack` ~0 on minimize and close
+(only the leaving tile, once, when its ready peek is under its
+neighbours'); `peek_new` down to a `reclaim` (Companion lookup, a
+property update per kept part) for resize and minimize; `peek_cover`
+without the 8-cell ring registration on resize (what is left: parking
+and covering the real ring and backdrop, `restack_joining_overlays`'
+`SetWindowPos`); a move still registers its whole-ring copy (one
+thumbnail) since the ready cut is cells; `surface` lower once the
+surface exists before the first motion. `take_over` is the hand-over and
+the cloak, not registration: unchanged.
+
+GPU and DWM cost: per resting tile, held (hidden) thumbnails on a
+hidden surface: 1 window + backdrop rows (2k+1 per distinct style, plus
+the vignette's; e.g. 7–21) + 8 ring cells, so about 16–30 per tile, 100–
+180 for six tiles, always. Held thumbnails draw nothing, but DWM keeps
+each registration and its source window's surface referenced; watch
+`dwm gpu busy` at rest and in motion (`--dwm`) against the last bench.
+
+Windows functions: none added, none removed. Prewarm calls only what
+peeks already call (`DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail`, `EnumWindows`
+via `Companion::find`, `GetWindowRect`/`DwmGetWindowAttribute` via
+`compute_border_inset`, `MonitorFromPoint`/`GetMonitorInfoW`).
+
+### To check on screen
+
+- Open a window beside two tiles (zoom): it zooms over its neighbours as
+  they make room, never under them; one zoom, no second growth.
+- Open two windows quickly, or one whose app resizes itself as it shows:
+  one zoom each; the debug lines say which trigger retargeted it.
+- Close and minimize a tile: it shrinks over its neighbours; no frame
+  without it at the start; no `Stacking … over a tile it may cross`
+  line for a neighbour.
+- Idle 1 s after a layout change, then resize: no blank, backdrop-only
+  or ring-less first frame; debug `Made a ready peek of …` once per tile
+  after a change, not repeated while idle.
+- Switch workspace and back, reload the config (ring width, backdrop),
+  pause and unpause, unplug a monitor: the next motion shows the current
+  style, nothing of the old; no surrogate-class window left drawing.
+- An elevated window as a tile: no busy loop (one `Made`/refused attempt
+  per sync, CPU idle).
 
 ## Item 3: as built (`os/18-parallax`, 2026-11-16)
 
