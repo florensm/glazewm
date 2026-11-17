@@ -975,6 +975,9 @@ impl OverlayCopies {
   /// same `source`, only updates where the two are, e.g. for a width
   /// change that resized the ring, and how it is cut. Returns whether it
   /// does.
+  ///
+  /// A copy taken up or registered here is drawn at `opacity` from the
+  /// start, so it needs no second update per part to get there.
   pub(crate) fn carry_ring(
     &mut self,
     dest: HWND,
@@ -982,6 +985,7 @@ impl OverlayCopies {
     rest: &Rect,
     window_rest: &Rect,
     corner_reach: Option<i32>,
+    opacity: u8,
   ) -> bool {
     if let Some(ring) =
       self.ring.as_mut().filter(|ring| ring.source == source.0)
@@ -1007,7 +1011,8 @@ impl OverlayCopies {
       ring.rest = rest.clone();
       ring.window_rest = window_rest.clone();
       ring.corner_reach = corner_reach;
-      let looks = ring.looks(corner_reach, self.placement.as_ref(), 0);
+      let looks =
+        ring.looks(corner_reach, self.placement.as_ref(), opacity);
       for ((_, thumbnail), (_, look)) in ring.parts.iter_mut().zip(looks) {
         let _ = thumbnail.set(look);
       }
@@ -1023,7 +1028,7 @@ impl OverlayCopies {
       window_rest: window_rest.clone(),
       corner_reach,
     };
-    let looks = ring.looks(corner_reach, self.placement.as_ref(), 0);
+    let looks = ring.looks(corner_reach, self.placement.as_ref(), opacity);
     self.ring = register_all(dest, source, looks, self.held)
       .map(|parts| RingCopy { parts, ..ring });
     self.ring.is_some()

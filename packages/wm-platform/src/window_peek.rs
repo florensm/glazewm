@@ -468,22 +468,23 @@ impl WindowPeek {
     corner_reach: Option<i32>,
   ) -> bool {
     let dest = self.surrogate.hwnd();
+    // Drawn twice in one place, a ring looks like one. Faded with its
+    // window, as last placed (see `place_scaled`). A copy taken up or
+    // registered here is drawn so at once, one kept is set to it.
+    let opacity = if self.frac < 1.0 {
+      scale_alpha(u8::MAX, self.frac)
+    } else {
+      u8::MAX
+    };
     let carries = self.copies.carry_ring(
       dest,
       source,
       ring_rect,
       window_rect,
       corner_reach,
+      opacity,
     );
-    // Drawn twice in one place, a ring looks like one. Faded with its
-    // window, as last placed (see `place_scaled`).
-    if self.frac < 1.0 {
-      self
-        .copies
-        .set_ring_opacity(scale_alpha(u8::MAX, self.frac));
-    } else {
-      self.copies.cover_ring();
-    }
+    self.copies.set_ring_opacity(opacity);
     carries
   }
 
