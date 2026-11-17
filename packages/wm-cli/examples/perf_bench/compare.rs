@@ -23,6 +23,8 @@ const HEADLINE: &[&str] = &[
   "interval p90 ms",
   "interval p99 ms",
   "peek_new ms (outside frames)",
+  "take_over ms (outside frames)",
+  "peek_cover ms (outside frames)",
   "session_begin ms (outside frames)",
   "restack ms (outside frames)",
   "peek_ready misses",

@@ -608,7 +608,9 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
       .animation_manager
       .peeks
       .take_over(&window.id(), &window.native());
+    let cloak_scope = perf::scope(Stage::TakeOverCloak);
     let _ = window.native().set_cloaked(true);
+    drop(cloak_scope);
     drop(take_over_scope);
 
     let preposition_scope = perf::scope(Stage::Preposition);

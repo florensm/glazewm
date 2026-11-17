@@ -320,11 +320,31 @@ pub enum Stage {
   /// `PeekView::restack_crossings`: tiles on a `PeekSurface` registered
   /// anew over ones they may cross (`WindowPeek::register_anew`).
   Restack,
+  /// `WindowPeek::take_over`'s thumbnail and backdrop copy shown at the
+  /// window's opacity (`DwmUpdateThumbnailProperties`).
+  TakeOverDraw,
+  /// `WindowPeek::take_over`'s alpha taken off a semi-transparent window.
+  TakeOverAlpha,
+  /// The real window's cloak as its peek takes over.
+  TakeOverCloak,
+  /// `carry_ring`'s ring overlay made or styled before it is handed over.
+  RingPrep,
+  /// `carry_ring`'s park, conceal or reveal of the real ring.
+  RingPark,
+  /// `carry_ring`'s ring copy registered, cut or moved on the peek.
+  RingCopy,
+  /// `carry_backdrop`'s backdrop copies shown in their blend.
+  BackdropCopy,
+  /// `carry_backdrop`'s hide or reveal of the real backdrop.
+  BackdropPark,
+  /// `restack_joining_overlays`: overlays of tiles joining a surface put
+  /// behind it.
+  OverlayRestack,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 56] = [
+  const ALL: [Stage; 65] = [
     Stage::Command,
     Stage::PeekFrame,
     Stage::PeekDraw,
@@ -381,6 +401,15 @@ impl Stage {
     Stage::PeekPlace,
     Stage::Surface,
     Stage::Restack,
+    Stage::TakeOverDraw,
+    Stage::TakeOverAlpha,
+    Stage::TakeOverCloak,
+    Stage::RingPrep,
+    Stage::RingPark,
+    Stage::RingCopy,
+    Stage::BackdropCopy,
+    Stage::BackdropPark,
+    Stage::OverlayRestack,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -450,6 +479,15 @@ impl Stage {
       Stage::PeekPlace => "peek_place",
       Stage::Surface => "surface",
       Stage::Restack => "restack",
+      Stage::TakeOverDraw => "to_draw",
+      Stage::TakeOverAlpha => "to_alpha",
+      Stage::TakeOverCloak => "to_cloak",
+      Stage::RingPrep => "ring_prep",
+      Stage::RingPark => "ring_park",
+      Stage::RingCopy => "ring_copy",
+      Stage::BackdropCopy => "bd_copy",
+      Stage::BackdropPark => "bd_park",
+      Stage::OverlayRestack => "ovl_restack",
     }
   }
 
@@ -528,6 +566,15 @@ impl Stage {
         | Stage::PeekPlace
         | Stage::Surface
         | Stage::Restack
+        | Stage::TakeOverDraw
+        | Stage::TakeOverAlpha
+        | Stage::TakeOverCloak
+        | Stage::RingPrep
+        | Stage::RingPark
+        | Stage::RingCopy
+        | Stage::BackdropCopy
+        | Stage::BackdropPark
+        | Stage::OverlayRestack
     )
   }
 }

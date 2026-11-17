@@ -4,6 +4,7 @@ use crate::{
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
+  perf::{self, Stage},
   platform_impl::wallpaper_surface,
   window_edges::compute_border_inset,
   BackdropOverlayParams, Color, CornerStyle, NativeSurrogate,
@@ -609,7 +610,10 @@ impl WindowPeek {
   /// (see `HiddenAlpha`). [`restore_alpha`](Self::restore_alpha) gives
   /// `window` its alpha back once the cloak is on screen.
   pub fn take_over(&mut self, window: &NativeWindow) {
+    let draw_scope = perf::scope(Stage::TakeOverDraw);
     self.draw(Drawn::Shown);
+    drop(draw_scope);
+    let _scope = perf::scope(Stage::TakeOverAlpha);
     self.hidden_alpha.hide(&window.inner);
   }
 

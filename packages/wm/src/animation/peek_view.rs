@@ -1885,9 +1885,11 @@ impl PeekView {
           match entry.departing.as_mut() {
             Some(departing) if departing.awaits_cloak => {
               entry.peek.take_over(&departing.native);
+              let cloak_scope = perf::scope(Stage::TakeOverCloak);
               if let Err(err) = departing.native.set_cloaked(true) {
                 tracing::warn!("Failed to cloak leaving {id}: {err}");
               }
+              drop(cloak_scope);
               departing.awaits_cloak = false;
               // Drawn over its cloaked window from now on, never raised.
               entry.peek.hold_place();
@@ -4500,6 +4502,7 @@ pub fn cover_moved_overlays(state: &mut WmState, config: &UserConfig) {
 /// which would cover their copies there once their windows are cloaked,
 /// until it is raised.
 pub(super) fn restack_joining_overlays(state: &mut WmState) {
+  let _scope = perf::scope(Stage::OverlayRestack);
   for (window_id, anchor) in
     state.animation_manager.peeks.joining_tenants()
   {
@@ -5058,6 +5061,7 @@ fn carry_ring(
   );
   let anchor = native.hwnd();
 
+  let prep_scope = perf::scope(Stage::RingPrep);
   if !create_concealed_ring(state, id, &ring_frame, blend.from, anchor) {
     return false;
   }
@@ -5073,6 +5077,7 @@ fn carry_ring(
   };
   let outer_before = overlay.outer_rect();
   overlay.apply_blend(blend);
+  drop(prep_scope);
   // The ring's window is sized for all of its window's styles, so only a
   // new reserve (a reload) re-places it and resizes its visual, by
   // separate routes, which may reach DWM in different frames.
@@ -5102,6 +5107,7 @@ fn carry_ring(
     Handover::Covering | Handover::Covered | Handover::Parked
       if is_landing =>
     {
+      let _scope = perf::scope(Stage::RingPark);
       overlay.set_rect(&ring_frame, anchor);
       Handover::Revealed
     }
@@ -5110,9 +5116,12 @@ fn carry_ring(
     // concealed at once.
     Handover::None | Handover::Revealed => {
       let is_shown = overlay.is_visible();
+      let park_scope = perf::scope(Stage::RingPark);
       overlay.park(&ring_frame, anchor, !is_shown);
+      drop(park_scope);
 
       let ring_rect = overlay.outer_rect();
+      let copy_scope = perf::scope(Stage::RingCopy);
       if !entry.carry_ring(
         overlay.hwnd(),
         &ring_rect,
@@ -5121,6 +5130,7 @@ fn carry_ring(
       ) {
         return false;
       }
+      drop(copy_scope);
 
       if is_shown {
         Handover::Covering
@@ -5138,15 +5148,21 @@ fn carry_ring(
         && entry.peek.carried_ring_rect()
           == Some(&overlay.outer_rect()) =>
     {
+      let park_scope = perf::scope(Stage::RingPark);
       overlay.conceal();
+      drop(park_scope);
+      let _scope = perf::scope(Stage::RingCopy);
       for (peek, _) in entry.peeks_mut() {
         peek.cut_ring(corner_reach);
       }
       Handover::Parked
     }
     Handover::Covered | Handover::Parked => {
+      let park_scope = perf::scope(Stage::RingPark);
       overlay.park(&ring_frame, anchor, true);
+      drop(park_scope);
       let ring_rect = overlay.outer_rect();
+      let _scope = perf::scope(Stage::RingCopy);
       entry.carry_ring(overlay.hwnd(), &ring_rect, &bounds, corner_reach);
       Handover::Parked
     }
@@ -5425,10 +5441,12 @@ fn carry_backdrop(
   };
   let is_landing =
     matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
+  let copy_scope = perf::scope(Stage::BackdropCopy);
   for (peek, _) in entry.peeks_mut() {
     peek.show_backdrop();
     peek.show_style_blend(&blend);
   }
+  drop(copy_scope);
 
   let handover = entry.backdrop;
   entry.backdrop = if is_landing
@@ -5446,6 +5464,7 @@ fn carry_backdrop(
       return false;
     };
     overlay.apply_blend(blend);
+    let _scope = perf::scope(Stage::BackdropPark);
     overlay.set_rect(&frame, anchor);
     Handover::Revealed
   } else {
@@ -5473,6 +5492,7 @@ fn carry_backdrop(
       Handover::Covering => Handover::Covering,
       Handover::Covered | Handover::Parked => {
         if let Some(overlay) = overlay.filter(|_| is_shown) {
+          let _scope = perf::scope(Stage::BackdropPark);
           overlay.hide();
         }
         Handover::Parked

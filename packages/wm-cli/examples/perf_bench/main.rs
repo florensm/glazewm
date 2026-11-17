@@ -151,7 +151,30 @@ const METRICS: &[(&str, &str)] = &[
     "fill_source ms (outside frames)",
   ),
   ("outside:ring_raise:total", "ring_raise ms (outside frames)"),
+  // The hand-over's take-over of each window: its steps under it.
+  ("outside:take_over:total", "take_over ms (outside frames)"),
+  ("outside:to_draw:total", "to_draw ms (outside frames)"),
+  ("outside:to_alpha:total", "to_alpha ms (outside frames)"),
+  ("outside:to_cloak:total", "to_cloak ms (outside frames)"),
   ("outside:peek_cover:total", "peek_cover ms (outside frames)"),
+  // `peek_cover`'s steps, besides `batch_commit`, `restack` and
+  // `native_frame`.
+  ("outside:ring_prep:total", "ring_prep ms (outside frames)"),
+  ("outside:ring_park:total", "ring_park ms (outside frames)"),
+  ("outside:ring_copy:total", "ring_copy ms (outside frames)"),
+  ("outside:bd_copy:total", "bd_copy ms (outside frames)"),
+  (
+    "outside:ovl_restack:total",
+    "ovl_restack ms (outside frames)",
+  ),
+  (
+    "outside:batch_commit:total",
+    "batch_commit ms (outside frames)",
+  ),
+  (
+    "outside:native_frame:total",
+    "native_frame ms (outside frames)",
+  ),
   (
     "outside:peek_handover:total",
     "peek_handover ms (outside frames)",
