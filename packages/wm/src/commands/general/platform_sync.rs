@@ -100,6 +100,8 @@ pub fn platform_sync(
   } = if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
+    // Before the neighbours reflowing for it are ranked.
+    crate::animation::peek_view::keep_minimizes_on_top(state);
     redraw_containers(&focused_container, state, config)?
   } else {
     Redraw::default()
@@ -608,7 +610,9 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
       .animation_manager
       .peeks
       .take_over(&window.id(), &window.native());
+    let cloak_scope = perf::scope(Stage::TakeOverCloak);
     let _ = window.native().set_cloaked(true);
+    drop(cloak_scope);
     drop(take_over_scope);
 
     let preposition_scope = perf::scope(Stage::Preposition);

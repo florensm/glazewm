@@ -320,11 +320,31 @@ pub enum Stage {
   /// `PeekView::restack_crossings`: tiles on a `PeekSurface` registered
   /// anew over ones they may cross (`WindowPeek::register_anew`).
   Restack,
+  /// `WindowPeek::take_over`'s thumbnail and backdrop copy shown at the
+  /// window's opacity (`DwmUpdateThumbnailProperties`).
+  TakeOverDraw,
+  /// `WindowPeek::take_over`'s alpha taken off a semi-transparent window.
+  TakeOverAlpha,
+  /// The real window's cloak as its peek takes over.
+  TakeOverCloak,
+  /// `carry_ring`'s ring overlay made or styled before it is handed over.
+  RingPrep,
+  /// `carry_ring`'s park, conceal or reveal of the real ring.
+  RingPark,
+  /// `carry_ring`'s ring copy registered, cut or moved on the peek.
+  RingCopy,
+  /// `carry_backdrop`'s backdrop copies shown in their blend.
+  BackdropCopy,
+  /// `carry_backdrop`'s hide or reveal of the real backdrop.
+  BackdropPark,
+  /// `restack_joining_overlays`: overlays of tiles joining a surface put
+  /// behind it.
+  OverlayRestack,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 56] = [
+  const ALL: [Stage; 65] = [
     Stage::Command,
     Stage::PeekFrame,
     Stage::PeekDraw,
@@ -381,6 +401,15 @@ impl Stage {
     Stage::PeekPlace,
     Stage::Surface,
     Stage::Restack,
+    Stage::TakeOverDraw,
+    Stage::TakeOverAlpha,
+    Stage::TakeOverCloak,
+    Stage::RingPrep,
+    Stage::RingPark,
+    Stage::RingCopy,
+    Stage::BackdropCopy,
+    Stage::BackdropPark,
+    Stage::OverlayRestack,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -450,6 +479,15 @@ impl Stage {
       Stage::PeekPlace => "peek_place",
       Stage::Surface => "surface",
       Stage::Restack => "restack",
+      Stage::TakeOverDraw => "to_draw",
+      Stage::TakeOverAlpha => "to_alpha",
+      Stage::TakeOverCloak => "to_cloak",
+      Stage::RingPrep => "ring_prep",
+      Stage::RingPark => "ring_park",
+      Stage::RingCopy => "ring_copy",
+      Stage::BackdropCopy => "bd_copy",
+      Stage::BackdropPark => "bd_park",
+      Stage::OverlayRestack => "ovl_restack",
     }
   }
 
@@ -528,6 +566,15 @@ impl Stage {
         | Stage::PeekPlace
         | Stage::Surface
         | Stage::Restack
+        | Stage::TakeOverDraw
+        | Stage::TakeOverAlpha
+        | Stage::TakeOverCloak
+        | Stage::RingPrep
+        | Stage::RingPark
+        | Stage::RingCopy
+        | Stage::BackdropCopy
+        | Stage::BackdropPark
+        | Stage::OverlayRestack
     )
   }
 }
@@ -592,6 +639,10 @@ struct Profiler {
   gesture_moves: u32,
   /// Animations started this session that also changed the window's size.
   gesture_resizes: u32,
+  /// Motions on a surface that started on their tile's ready peek.
+  ready_hits: u32,
+  /// Motions on a surface that had to make a new peek instead.
+  ready_misses: u32,
   /// When the previous frame began, for [`Profiler::interval_samples`].
   last_frame_start: Option<Instant>,
   /// Time between consecutive frame starts, i.e. the animation's real
@@ -633,6 +684,8 @@ impl Default for Profiler {
       event_wait: [EventWait::default(); EventKind::COUNT],
       gesture_moves: 0,
       gesture_resizes: 0,
+      ready_hits: 0,
+      ready_misses: 0,
       last_frame_start: None,
       interval_samples: Vec::new(),
       outside_total: [Duration::ZERO; Stage::COUNT],
@@ -1027,6 +1080,27 @@ fn record_animation_start(is_resize: bool) {
   });
 }
 
+/// Records whether a motion of a tile on a surface started on its ready
+/// peek (`hit`) or made a new one.
+pub fn note_ready_peek(hit: bool) {
+  if is_enabled() {
+    record_ready_peek(hit);
+  }
+}
+
+/// [`note_ready_peek`] without the `GLAZEWM_PERF` gate, for tests.
+fn record_ready_peek(hit: bool) {
+  PROFILER.with(|profiler| {
+    if let Ok(mut profiler) = profiler.try_borrow_mut() {
+      if hit {
+        profiler.ready_hits += 1;
+      } else {
+        profiler.ready_misses += 1;
+      }
+    }
+  });
+}
+
 /// Marks the start of a frame, clearing the previous frame's per-stage
 /// accumulators.
 pub fn begin_frame() {
@@ -1237,6 +1311,7 @@ fn take_report(reason: &str) -> Option<String> {
   write_apply_breakdown(&mut lines, &summary);
   write_event_waits(&mut lines, &summary);
   write_gesture_split(&mut lines, &summary);
+  write_ready_peeks(&mut lines, &summary);
 
   Some(lines.trim_end().to_string())
 }
@@ -1502,6 +1577,24 @@ fn write_gesture_split(lines: &mut String, summary: &Profiler) {
       count,
       f64::from(count) * 100.0 / f64::from(total),
     );
+  }
+}
+
+/// Appends how many motions on a surface started on a ready peek.
+///
+/// A no-op when none started on a surface during the session.
+fn write_ready_peeks(lines: &mut String, summary: &Profiler) {
+  if summary.ready_hits + summary.ready_misses == 0 {
+    return;
+  }
+
+  // Writing into a `String` is infallible, so the results are discarded.
+  let _ = writeln!(lines, "  -- ready peeks (motions on a surface) --");
+  for (label, count) in [
+    ("peek_ready_hit", summary.ready_hits),
+    ("peek_ready_miss", summary.ready_misses),
+  ] {
+    let _ = writeln!(lines, "  {label:<20}{count:>7}");
   }
 }
 
@@ -1865,6 +1958,24 @@ mod tests {
       assert!(first_row.contains("explorer.exe [sync]"), "{first_row}");
       assert!(report.contains("explorer.exe [async]"));
       assert!(report.contains("outlook.exe [sync]"));
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn counts_ready_peek_hits_and_misses() {
+    std::thread::spawn(|| {
+      start_frame();
+      record_ready_peek(true);
+      record_ready_peek(false);
+      record_ready_peek(false);
+      assert!(!roll_up_frame());
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.contains("ready peeks (motions on a surface)"));
+      assert!(report.contains("peek_ready_hit            1"));
+      assert!(report.contains("peek_ready_miss           2"));
     })
     .join()
     .expect("profiler test thread panicked");

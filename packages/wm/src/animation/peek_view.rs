@@ -1415,6 +1415,51 @@ fn takes_ready(fit: &ReadyFit, wanted: &ReadyFit) -> bool {
   fit == wanted
 }
 
+/// Why a tile's motion on a surface started on a new peek, not its ready
+/// one (see [`ready_miss`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReadyMiss {
+  /// None was kept for the window.
+  NoneKept,
+  /// One was kept for another handle of it or another clip.
+  OtherFit,
+  /// One fit, but the motion is drawn on another surface, or on none.
+  OtherSurface,
+}
+
+/// Why a motion asking for `wanted` did not start on the ready peek kept
+/// for `kept`, if any; `None` if it did (`taken`).
+fn ready_miss(
+  kept: Option<&ReadyFit>,
+  wanted: &ReadyFit,
+  taken: bool,
+) -> Option<ReadyMiss> {
+  if taken {
+    return None;
+  }
+
+  Some(match kept {
+    None => ReadyMiss::NoneKept,
+    Some(kept) if !takes_ready(kept, wanted) => ReadyMiss::OtherFit,
+    Some(_) => ReadyMiss::OtherSurface,
+  })
+}
+
+/// Counts whether `window`'s motion on a surface started on its ready peek
+/// (see `perf::note_ready_peek`), and logs why not if it didn't.
+fn note_ready_take(
+  window: &WindowContainer,
+  kept: Option<&ReadyFit>,
+  wanted: &ReadyFit,
+  taken: bool,
+) {
+  let miss = ready_miss(kept, wanted, taken);
+  perf::note_ready_peek(miss.is_none());
+  if let Some(miss) = miss {
+    tracing::debug!("No ready peek for the motion of {window}: {miss:?}.");
+  }
+}
+
 /// Whether a tile at rest gets a ready peek made (see [`prewarm_ready`]):
 /// shown, tiled outside a scrolling layout, as its moves are drawn on its
 /// monitor's surface, and drawn by no peek or other stand-in now.
@@ -1455,6 +1500,12 @@ fn lanes_meet(
   } else {
     overshoots || a.hull().intersection(&b.hull()).is_some()
   }
+}
+
+/// Whether a tile ranked `rank` was put on top in a raise pass before the
+/// one now open, `raise_passes` having closed (see [`rank`]).
+fn ranks_before_pass(rank: Rank, raise_passes: u64) -> bool {
+  rank.pass <= raise_passes
 }
 
 /// Of the tiles on one surface in rank order, by the first and last
@@ -1840,9 +1891,11 @@ impl PeekView {
           match entry.departing.as_mut() {
             Some(departing) if departing.awaits_cloak => {
               entry.peek.take_over(&departing.native);
+              let cloak_scope = perf::scope(Stage::TakeOverCloak);
               if let Err(err) = departing.native.set_cloaked(true) {
                 tracing::warn!("Failed to cloak leaving {id}: {err}");
               }
+              drop(cloak_scope);
               departing.awaits_cloak = false;
               // Drawn over its cloaked window from now on, never raised.
               entry.peek.hold_place();
@@ -1890,6 +1943,10 @@ impl PeekView {
       })
     })
     .collect();
+    // Their neighbours may rest on peeks that went ready before.
+    if !landed.left.is_empty() {
+      self.schedule_prewarm(now);
+    }
 
     // Columns that moved out of view have nothing left to show.
     self.entries.retain(|_, entry| {
@@ -2683,13 +2740,12 @@ impl PeekView {
     }
 
     // Any ready peek goes unless this motion takes it.
-    let ready = self.take_ready(
-      &id,
-      &ReadyFit {
-        source: window.native().hwnd(),
-        clip: clip.clone(),
-      },
-    );
+    let wanted = ReadyFit {
+      source: window.native().hwnd(),
+      clip: clip.clone(),
+    };
+    let kept = self.ready.get(&id).map(|ready| ready.fit.clone());
+    let ready = self.take_ready(&id, &wanted);
     let tenancy = host.and_then(|host| {
       self.tenancy(
         window,
@@ -2705,6 +2761,9 @@ impl PeekView {
     let ready = ready.filter(|peek| {
       surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
     });
+    if host.is_some() {
+      note_ready_take(window, kept.as_ref(), &wanted, ready.is_some());
+    }
     let made = match ready {
       Some(peek) => Some(reuse_entry(
         peek, window, motion, clip, opacity, &styles, role,
@@ -3121,6 +3180,7 @@ impl PeekView {
       clip: entry.clip,
     };
     peek.set_ready();
+    tracing::debug!("Kept the landed peek of {id} ready.");
     self.ready.insert(id, Ready { peek, fit });
   }
 
@@ -3312,6 +3372,36 @@ impl PeekView {
     true
   }
 
+  /// Ranks `window_id`'s peek, minimizing on a surface, over the moves of
+  /// the pass now open, if it was put on top in an earlier one: the tiles
+  /// reflowing for it are moved only once the OS reports it minimized,
+  /// often a sync or more after its peek went up (e.g. one for the focus
+  /// the minimize hands on), and would rank over it otherwise (see
+  /// [`Rank`]). It is registered anew, once, if under them.
+  fn keep_minimize_on_top(&mut self, window_id: &Uuid) {
+    let reranks = self.entries.get(window_id).is_some_and(|entry| {
+      leaves_as(entry.role, AwayTransition::Minimize)
+        && entry.tenancy.as_ref().is_some_and(|tenancy| {
+          ranks_before_pass(tenancy.rank, self.raise_passes)
+        })
+    });
+    if !reranks {
+      return;
+    }
+
+    let rank = self.take_rank(Stacking::Transit);
+    if let Some(tenancy) = self
+      .entries
+      .get_mut(window_id)
+      .and_then(|entry| entry.tenancy.as_mut())
+    {
+      tenancy.rank = rank;
+    }
+    tracing::debug!(
+      "Minimize of {window_id} ranked over the moves reflowing for it."
+    );
+  }
+
   /// Puts `window_id`'s moving peek on top, so no window it passes hides
   /// it. A peek goes up just below its real window: a restored one was at
   /// the bottom of the z-order, under the windows it comes back over, and
@@ -3490,7 +3580,7 @@ impl PeekView {
   /// ranked over every tile there that moves (see [`Rank`]), which a
   /// surface made for it drops those left unused off `monitor_clips` for.
   /// One already drawn stays where it is, re-ranked so unless it entered.
-  #[allow(clippy::too_many_arguments)]
+  #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
   pub(super) fn leave(
     &mut self,
     window: &WindowContainer,
@@ -3506,13 +3596,12 @@ impl PeekView {
   ) -> Leave {
     let id = window.id();
     // A new peek is its ready one if that fits; none is kept after.
-    let ready = self.take_ready(
-      &id,
-      &ReadyFit {
-        source: window.native().hwnd(),
-        clip: clip.clone(),
-      },
-    );
+    let wanted = ReadyFit {
+      source: window.native().hwnd(),
+      clip: clip.clone(),
+    };
+    let kept = self.ready.get(&id).map(|ready| ready.fit.clone());
+    let ready = self.take_ready(&id, &wanted);
     let role = self.entries.get(&id).map(|entry| entry.role);
     if role.is_some_and(|role| matches!(role, Role::Leaving(_))) {
       return Leave::Leaving;
@@ -3552,6 +3641,9 @@ impl PeekView {
       let ready = ready.filter(|peek| {
         surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
       });
+      if host.is_some() {
+        note_ready_take(window, kept.as_ref(), &wanted, ready.is_some());
+      }
       let role = Role::Leaving(transition);
       let made = match ready {
         Some(peek) => Some(reuse_entry(
@@ -3845,6 +3937,26 @@ pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
 
   if more {
     peeks.prewarm_at = Some(Instant::now());
+  }
+}
+
+/// Keeps the peeks of tiles minimizing on a surface, whose minimize this
+/// sync lays out, over the neighbours reflowing for them (see
+/// [`PeekView::keep_minimize_on_top`]). Run before `redraw_containers`.
+pub fn keep_minimizes_on_top(state: &mut WmState) {
+  let peeks = &state.animation_manager.peeks;
+  let minimizing = peeks
+    .entries
+    .iter()
+    .filter(|(id, entry)| {
+      leaves_as(entry.role, AwayTransition::Minimize)
+        && state.pending_sync.is_window_state_change(id)
+    })
+    .map(|(id, _)| *id)
+    .collect::<Vec<_>>();
+
+  for id in minimizing {
+    state.animation_manager.peeks.keep_minimize_on_top(&id);
   }
 }
 
@@ -4446,6 +4558,7 @@ pub fn cover_moved_overlays(state: &mut WmState, config: &UserConfig) {
 /// which would cover their copies there once their windows are cloaked,
 /// until it is raised.
 pub(super) fn restack_joining_overlays(state: &mut WmState) {
+  let _scope = perf::scope(Stage::OverlayRestack);
   for (window_id, anchor) in
     state.animation_manager.peeks.joining_tenants()
   {
@@ -5004,6 +5117,7 @@ fn carry_ring(
   );
   let anchor = native.hwnd();
 
+  let prep_scope = perf::scope(Stage::RingPrep);
   if !create_concealed_ring(state, id, &ring_frame, blend.from, anchor) {
     return false;
   }
@@ -5019,6 +5133,7 @@ fn carry_ring(
   };
   let outer_before = overlay.outer_rect();
   overlay.apply_blend(blend);
+  drop(prep_scope);
   // The ring's window is sized for all of its window's styles, so only a
   // new reserve (a reload) re-places it and resizes its visual, by
   // separate routes, which may reach DWM in different frames.
@@ -5048,6 +5163,7 @@ fn carry_ring(
     Handover::Covering | Handover::Covered | Handover::Parked
       if is_landing =>
     {
+      let _scope = perf::scope(Stage::RingPark);
       overlay.set_rect(&ring_frame, anchor);
       Handover::Revealed
     }
@@ -5056,9 +5172,12 @@ fn carry_ring(
     // concealed at once.
     Handover::None | Handover::Revealed => {
       let is_shown = overlay.is_visible();
+      let park_scope = perf::scope(Stage::RingPark);
       overlay.park(&ring_frame, anchor, !is_shown);
+      drop(park_scope);
 
       let ring_rect = overlay.outer_rect();
+      let copy_scope = perf::scope(Stage::RingCopy);
       if !entry.carry_ring(
         overlay.hwnd(),
         &ring_rect,
@@ -5067,6 +5186,7 @@ fn carry_ring(
       ) {
         return false;
       }
+      drop(copy_scope);
 
       if is_shown {
         Handover::Covering
@@ -5084,15 +5204,21 @@ fn carry_ring(
         && entry.peek.carried_ring_rect()
           == Some(&overlay.outer_rect()) =>
     {
+      let park_scope = perf::scope(Stage::RingPark);
       overlay.conceal();
+      drop(park_scope);
+      let _scope = perf::scope(Stage::RingCopy);
       for (peek, _) in entry.peeks_mut() {
         peek.cut_ring(corner_reach);
       }
       Handover::Parked
     }
     Handover::Covered | Handover::Parked => {
+      let park_scope = perf::scope(Stage::RingPark);
       overlay.park(&ring_frame, anchor, true);
+      drop(park_scope);
       let ring_rect = overlay.outer_rect();
+      let _scope = perf::scope(Stage::RingCopy);
       entry.carry_ring(overlay.hwnd(), &ring_rect, &bounds, corner_reach);
       Handover::Parked
     }
@@ -5312,6 +5438,7 @@ fn create_concealed_ring(
 /// copy is shown under the overlay, which goes a composited frame later,
 /// and the overlay comes back where the window lands, under the copy.
 /// Returns whether it did: not for a peek carrying no backdrop.
+#[allow(clippy::too_many_lines)]
 fn carry_backdrop(
   state: &mut WmState,
   id: Uuid,
@@ -5371,10 +5498,12 @@ fn carry_backdrop(
   };
   let is_landing =
     matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
+  let copy_scope = perf::scope(Stage::BackdropCopy);
   for (peek, _) in entry.peeks_mut() {
     peek.show_backdrop();
     peek.show_style_blend(&blend);
   }
+  drop(copy_scope);
 
   let handover = entry.backdrop;
   entry.backdrop = if is_landing
@@ -5392,6 +5521,7 @@ fn carry_backdrop(
       return false;
     };
     overlay.apply_blend(blend);
+    let _scope = perf::scope(Stage::BackdropPark);
     overlay.set_rect(&frame, anchor);
     Handover::Revealed
   } else {
@@ -5419,6 +5549,7 @@ fn carry_backdrop(
       Handover::Covering => Handover::Covering,
       Handover::Covered | Handover::Parked => {
         if let Some(overlay) = overlay.filter(|_| is_shown) {
+          let _scope = perf::scope(Stage::BackdropPark);
           overlay.hide();
         }
         Handover::Parked
@@ -5530,14 +5661,14 @@ mod tests {
     is_resized_already, is_stale_surface, is_stray, keeps_ready,
     keeps_rest_hosted, keeps_trail_drawing, kept_transit, lands_on_trail,
     lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, lowest,
-    move_clips, out_of_order, peek_resize, rank, resizes_at_start,
-    rest_anchor, restretched, rests, retargeted_motion,
-    retimed_transit_ms, returning_transit, sampled_size, settling,
-    state_change_peek_raise, state_change_resize, take_left, takes_ready,
-    toggles_tile_fullscreen, visible_frame, wants_ready, Hold, Host, Lane,
-    Layer, Level, Part, PeekRaise, PeekResize, Rank, ReadyFit, Role,
-    Stacking, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
-    STRETCH_SETTLE,
+    move_clips, out_of_order, peek_resize, rank, ranks_before_pass,
+    ready_miss, resizes_at_start, rest_anchor, restretched, rests,
+    retargeted_motion, retimed_transit_ms, returning_transit,
+    sampled_size, settling, state_change_peek_raise, state_change_resize,
+    take_left, takes_ready, toggles_tile_fullscreen, visible_frame,
+    wants_ready, Hold, Host, Lane, Layer, Level, Part, PeekRaise,
+    PeekResize, Rank, ReadyFit, ReadyMiss, Role, Stacking, Stretch,
+    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -5864,6 +5995,44 @@ mod tests {
     assert!(takes_ready(&fit, &fit));
     assert!(!takes_ready(&fit, &other_window));
     assert!(!takes_ready(&fit, &other_clip));
+  }
+
+  /// A minimize ranked in an earlier raise pass is re-ranked for the moves
+  /// of the one now open; one ranked in it is not.
+  #[test]
+  fn a_minimize_ranked_in_an_earlier_pass_is_ranked_again() {
+    let earlier = rank(Stacking::Transit, 3, 0);
+    let current = rank(Stacking::Transit, 4, 1);
+
+    assert!(ranks_before_pass(earlier, 4));
+    assert!(!ranks_before_pass(current, 4));
+    // Ranked again, it goes over the open pass's moves.
+    assert!(rank(Stacking::Raised, 4, 2) < current);
+  }
+
+  /// A motion that started on a new peek tells why: none kept, one kept
+  /// for another handle or clip, or one its surface didn't take.
+  #[test]
+  fn a_ready_miss_tells_why() {
+    let fit = ReadyFit {
+      source: HWND(7),
+      clip: Rect::from_ltrb(0, 0, 1920, 1040),
+    };
+    let other_clip = ReadyFit {
+      clip: Rect::from_ltrb(1920, 0, 3840, 1040),
+      ..fit.clone()
+    };
+
+    assert_eq!(ready_miss(Some(&fit), &fit, true), None);
+    assert_eq!(ready_miss(None, &fit, false), Some(ReadyMiss::NoneKept));
+    assert_eq!(
+      ready_miss(Some(&other_clip), &fit, false),
+      Some(ReadyMiss::OtherFit)
+    );
+    assert_eq!(
+      ready_miss(Some(&fit), &fit, false),
+      Some(ReadyMiss::OtherSurface)
+    );
   }
 
   /// Only a shown tile outside a scrolling layout, drawn by nothing else,
