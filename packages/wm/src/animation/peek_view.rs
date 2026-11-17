@@ -3580,7 +3580,7 @@ impl PeekView {
   /// ranked over every tile there that moves (see [`Rank`]), which a
   /// surface made for it drops those left unused off `monitor_clips` for.
   /// One already drawn stays where it is, re-ranked so unless it entered.
-  #[allow(clippy::too_many_arguments)]
+  #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
   pub(super) fn leave(
     &mut self,
     window: &WindowContainer,
@@ -5438,6 +5438,7 @@ fn create_concealed_ring(
 /// copy is shown under the overlay, which goes a composited frame later,
 /// and the overlay comes back where the window lands, under the copy.
 /// Returns whether it did: not for a peek carrying no backdrop.
+#[allow(clippy::too_many_lines)]
 fn carry_backdrop(
   state: &mut WmState,
   id: Uuid,
