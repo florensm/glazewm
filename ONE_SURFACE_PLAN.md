@@ -781,10 +781,10 @@ step 1's table.
   entering or leaving tile is drawn over windows that were above its own
   peek (a floating window over a closing tile), and its ring copy over
   windows between before its take-over.
-- Opens cost a restack of the neighbours moved before them in the pass
-  that meet them, twice when their ring copies register after the
-  open's (`restack` stage). An open ranked on top instead would cost
-  none but draw over its neighbours where today they cover it.
+- Superseded 2026-11-17 ("Start cost: as built"): opens, closes,
+  minimizes and restores now rank over their moving neighbours, so
+  those are not restacked; the transit tile itself is registered anew
+  once if its registrations were under theirs.
 
 ### Windows functions called by the new code
 
@@ -3042,9 +3042,9 @@ imports and `Cargo.lock` as `6353eeab`).
   every other switch (a kept outgoing peek holds the surface's one place
   at rest). Hosting both would let the incoming one move the surface
   under the kept one for a sync. Kept as built unless the owner objects.
-- An opening tile is drawn under its moving neighbours, as today, at
-  the cost of restacking them on every open (step 4). The other way
-  (opening tile on top) costs nothing and looks different.
+- Decided (owner, 2026-11-17): a tile opening, closing, minimizing or
+  restoring is drawn on top of its moving neighbours (`Level::Transit`),
+  so they are not restacked at its start. See "Start cost: as built".
 - Whether to bench now (tile moves and resizes: `default` against
   `onesurface` and `onesurface+readypeeks`, see "To measure") before
   building steps 6 and on.

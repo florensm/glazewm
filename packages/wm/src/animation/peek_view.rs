@@ -262,24 +262,36 @@ impl Host {
   }
 }
 
-/// Where a tile stacks among the tenants of its surface: as its peek of
-/// its own would among theirs, by when each was last put on top.
+/// Where a tile stacks among the tenants of its surface, by when each was
+/// last put on top.
 ///
 /// A moving tile's peek is raised once its pass's windows are cloaked
 /// (`raise_moving` in `platform_sync`'s raise loop), above any put on top
-/// in that pass before: an entering one, which goes up just below its new
-/// window, and a restored one, raised as it is drawn. A leaving one goes
-/// up just below its real window, under every tile that moved before, and
-/// is never raised: a closing window stays below its neighbours (owner's
-/// decision, `STAND_INS_PLAN.md` task 4).
+/// in that pass before. A tile opening, closing, minimizing or restoring
+/// goes over every tile its pass and earlier ones moved, so neighbours
+/// reflowing around it need no restack (owner's decision, 2026-11-17;
+/// peeks of their own put it under them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Rank {
-  /// The raise pass it was put on top in, from 1; 0 for a leaving one.
+  /// The raise pass it was put on top in, from 1.
   pass: u64,
-  /// Whether it was put on top by its pass's raises.
-  raised: bool,
+  /// How it was put on top in its pass.
+  level: Level,
   /// The order ranks were given in.
   order: u64,
+}
+
+/// How a tile was put on top within its raise pass, lowest first (see
+/// [`Rank`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+  /// Before its pass's raises.
+  InPass,
+  /// By its pass's raises.
+  Raised,
+  /// Over its pass's raises, as a tile opening, closing, minimizing or
+  /// restoring.
+  Transit,
 }
 
 /// How a tile is put on top of its surface's tenants (see [`Rank`]).
@@ -287,10 +299,11 @@ struct Rank {
 enum Stacking {
   /// By its pass's raises, as a moving tile is.
   Raised,
-  /// In its pass, before its raises, as an entering or restored one is.
+  /// In its pass, before its raises, as an unfocused column is.
   InPass,
-  /// Not at all: below every other, as one starting to leave is.
-  Below,
+  /// Over its pass's raises, as a tile opening, closing, minimizing or
+  /// restoring is.
+  Transit,
   /// After its pass's raises, as one raised in its band then is (see
   /// [`Host::InBand`]): as if put on top first in the next pass.
   OverPass,
@@ -299,15 +312,13 @@ enum Stacking {
 /// The rank of a tile put on top by `stacking` in raise pass `pass`
 /// (counted from 0), given `order`-th.
 fn rank(stacking: Stacking, pass: u64, order: u64) -> Rank {
-  Rank {
-    pass: match stacking {
-      Stacking::Below => 0,
-      Stacking::Raised | Stacking::InPass => pass + 1,
-      Stacking::OverPass => pass + 2,
-    },
-    raised: stacking == Stacking::Raised,
-    order,
-  }
+  let (pass, level) = match stacking {
+    Stacking::InPass => (pass + 1, Level::InPass),
+    Stacking::Raised => (pass + 1, Level::Raised),
+    Stacking::Transit => (pass + 1, Level::Transit),
+    Stacking::OverPass => (pass + 2, Level::InPass),
+  };
+  Rank { pass, level, order }
 }
 
 /// What a tile's peek draws around its rect: its visible frame, inside the
@@ -2435,10 +2446,9 @@ impl PeekView {
   /// handed back.
   ///
   /// With `host`, it is drawn on that `PeekSurface` of `clip`, ranked over
-  /// every tile put on top before its pass and under those its pass
-  /// raises, as its peek of its own would be (see [`Rank`]), or over them
-  /// for one raised in its band; a surface made for it drops those left
-  /// unused off `monitor_clips`.
+  /// every tile its pass and earlier ones moved (see [`Rank`]), or over
+  /// them for one raised in its band; a surface made for it drops those
+  /// left unused off `monitor_clips`.
   ///
   /// Returns `false`, creating nothing, for a window already drawn, or a
   /// transition with nothing to show (see [`Transit::opening`]).
@@ -2479,7 +2489,7 @@ impl PeekView {
         &motion,
         clip,
         host,
-        Stacking::InPass,
+        Stacking::Transit,
         config,
         monitor_clips,
       )
@@ -2503,8 +2513,8 @@ impl PeekView {
     let is_hosted = entry.tenancy.is_some();
     entry.draw(target, now);
     self.entries.insert(window.id(), entry);
-    // Registered over the tiles its pass moved before it, which rank above
-    // it.
+    // Registered last, it is over every tile it ranks above; a kept
+    // registration of a tile ranked over it may not be.
     if is_hosted {
       self.restack_crossings();
     }
@@ -3250,7 +3260,7 @@ impl PeekView {
       }
       _ => return false,
     };
-    let rank = is_hosted.then(|| self.take_rank(Stacking::InPass));
+    let rank = is_hosted.then(|| self.take_rank(Stacking::Transit));
     let Some(entry) = self.entries.get_mut(window_id) else {
       return false;
     };
@@ -3431,10 +3441,10 @@ impl PeekView {
   /// shown, it is warmed up until the window is cloaked by the first
   /// tick, as it takes over.
   ///
-  /// With `host`, a new peek is drawn on the `PeekSurface` of `clip`
-  /// instead, ranked below every tile there (see [`Rank`]), which a
+  /// With `host`, it is drawn on the `PeekSurface` of `clip` instead,
+  /// ranked over every tile there that moves (see [`Rank`]), which a
   /// surface made for it drops those left unused off `monitor_clips` for.
-  /// One already drawn stays where it is, its rank kept.
+  /// One already drawn stays where it is, re-ranked so unless it entered.
   #[allow(clippy::too_many_arguments)]
   pub(super) fn leave(
     &mut self,
@@ -3482,7 +3492,7 @@ impl PeekView {
           &motion,
           clip,
           host,
-          Stacking::Below,
+          Stacking::Transit,
           config,
           monitor_clips,
         )
@@ -3532,6 +3542,21 @@ impl PeekView {
       frame,
     });
     entry.draw(&current, now);
+    // A tile that was moving goes over its neighbours as it starts to
+    // leave, as a new leaving one does.
+    let reranks = entry
+      .tenancy
+      .as_ref()
+      .is_some_and(|tenancy| tenancy.rank.level != Level::Transit);
+    if reranks {
+      let rank = self.take_rank(Stacking::Transit);
+      if let Some(tenancy) =
+        self.entries.get_mut(&id).and_then(|e| e.tenancy.as_mut())
+      {
+        tenancy.rank = rank;
+      }
+      self.restack_crossings();
+    }
 
     Leave::Leaving
   }
@@ -5336,9 +5361,9 @@ mod tests {
     resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
     returning_transit, sampled_size, settling, state_change_peek_raise,
     state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
-    visible_frame, Hold, Host, Lane, Layer, Part, PeekRaise, PeekResize,
-    Rank, ReadyFit, Role, Stacking, Stretch, FILL_LANDING_WAIT,
-    HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
+    visible_frame, Hold, Host, Lane, Layer, Level, Part, PeekRaise,
+    PeekResize, Rank, ReadyFit, Role, Stacking, Stretch,
+    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -5384,7 +5409,7 @@ mod tests {
   fn tenants_are_grouped_per_surface_in_rank_order() {
     let rank = |pass, order| Rank {
       pass,
-      raised: true,
+      level: Level::Raised,
       order,
     };
     let groups = by_surface(vec![
@@ -5454,7 +5479,7 @@ mod tests {
     for under in [
       rank(Stacking::Raised, 3, 11),
       rank(Stacking::InPass, 3, 12),
-      rank(Stacking::Below, 3, 13),
+      rank(Stacking::Transit, 3, 13),
     ] {
       assert!(under < over);
     }
@@ -5465,25 +5490,28 @@ mod tests {
       Host::InBand(Layer::TopBand).stacking(Stacking::Raised),
       Stacking::OverPass
     );
-    assert_eq!(Host::Tiles.stacking(Stacking::Below), Stacking::Below);
+    assert_eq!(Host::Tiles.stacking(Stacking::Transit), Stacking::Transit);
   }
 
-  /// As their own peeks: a move raised after the pass's entering ones, a
-  /// later pass over an earlier one, a leaving one below them all.
+  /// A move raised after its pass's columns, a later pass over an earlier
+  /// one; an opening or leaving tile over every move of its pass and
+  /// before, several in the order they started.
   #[test]
   fn tiles_rank_by_when_their_peeks_go_on_top() {
     let raised = rank(Stacking::Raised, 3, 10);
-    let entering = rank(Stacking::InPass, 3, 11);
-    assert!(entering < raised);
-    assert!(rank(Stacking::Raised, 2, 12) < entering);
+    let column = rank(Stacking::InPass, 3, 11);
+    assert!(column < raised);
+    assert!(rank(Stacking::Raised, 2, 12) < column);
     assert!(raised < rank(Stacking::InPass, 4, 9));
     assert!(raised < rank(Stacking::Raised, 3, 12));
 
-    let leaving = rank(Stacking::Below, 7, 20);
-    for other in [raised, entering, rank(Stacking::InPass, 0, 0)] {
-      assert!(leaving < other);
+    let transit = rank(Stacking::Transit, 3, 8);
+    for under in [raised, column, rank(Stacking::Raised, 3, 30)] {
+      assert!(under < transit);
     }
-    assert!(leaving < rank(Stacking::Below, 7, 21));
+    assert!(transit < rank(Stacking::Transit, 3, 9));
+    assert!(transit < rank(Stacking::Raised, 4, 0));
+    assert!(transit < rank(Stacking::OverPass, 3, 0));
   }
 
   fn lane(from: (i32, i32, i32, i32), to: (i32, i32, i32, i32)) -> Lane {
