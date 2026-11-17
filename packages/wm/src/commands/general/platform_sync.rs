@@ -100,8 +100,6 @@ pub fn platform_sync(
   } = if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
-    // Before the neighbours reflowing for it are ranked.
-    crate::animation::peek_view::keep_minimizes_on_top(state);
     redraw_containers(&focused_container, state, config)?
   } else {
     Redraw::default()
