@@ -185,6 +185,12 @@ pub(super) struct Entry {
   trail: Option<Trail>,
   /// Where its peek draws on its `PeekSurface`, if it is hosted on one.
   tenancy: Option<Tenancy>,
+  /// For a peek reclaimed from a ready one, the registration order its
+  /// thumbnails were all below then (see
+  /// `wm_platform::next_thumbnail_order`): one with none registered since
+  /// has been composited, held, so its cloak needs no flush (see
+  /// [`PeekView::needs_flush`]).
+  ready_mark: Option<u64>,
 }
 
 /// Where a tile's peek draws on the `PeekSurface` it is hosted on: its
@@ -1508,6 +1514,14 @@ fn ranks_before_pass(rank: Rank, raise_passes: u64) -> bool {
   rank.pass <= raise_passes
 }
 
+/// Whether a peek reclaimed from a ready one when the next registration
+/// order was `ready_mark` has registered nothing since: its last
+/// registration, `last`, is below the mark. One not reclaimed, or with no
+/// thumbnail, isn't kept so.
+fn kept_since_ready(ready_mark: Option<u64>, last: Option<u64>) -> bool {
+  ready_mark.zip(last).is_some_and(|(mark, last)| last < mark)
+}
+
 /// Whether a tile in `role`, ranked `rank` if it is on a surface, is put
 /// on top again before a tile is ranked in the raise pass now open,
 /// `raise_passes` having closed: one closing or minimizing, ranked in an
@@ -1746,6 +1760,25 @@ impl PeekView {
     self.entries.get(window_id).is_some_and(|entry| {
       matches!(entry.role, Role::Moving { .. }) && entry.composited
     })
+  }
+
+  /// Whether `window_id`'s cloak waits for a `DwmFlush` first, so its
+  /// peek's thumbnails are composited before its window goes: unless it
+  /// is [`is_composited`](Self::is_composited) already, or a ready peek's
+  /// that registered nothing since it was reclaimed (see
+  /// [`kept_since_ready`]), whose thumbnails DWM has held, populated,
+  /// since prewarm or its last landing (proposal 1). A window without
+  /// such a peek always waits.
+  pub fn needs_flush(&self, window_id: &Uuid) -> bool {
+    !self.is_composited(window_id)
+      && !self.entries.get(window_id).is_some_and(|entry| {
+        matches!(entry.role, Role::Moving { .. })
+          && entry.trail.is_none()
+          && kept_since_ready(
+            entry.ready_mark,
+            entry.peek.stacking().map(|(_, last)| last),
+          )
+      })
   }
 
   /// Holds `id`'s peek where a grab draws it, never landing, or lets go
@@ -4844,6 +4877,7 @@ fn reuse_entry(
   role: Role,
 ) -> (Entry, bool) {
   let _scope = perf::scope(Stage::PeekNew);
+  let mark = wm_platform::next_thumbnail_order();
   peek.reclaim(
     &window.native(),
     &motion.target_rect,
@@ -4851,7 +4885,10 @@ fn reuse_entry(
     styles.ring_width,
   );
 
-  entry_on(peek, window, motion, clip, opacity, styles, role)
+  let (mut entry, covers_shown_window) =
+    entry_on(peek, window, motion, clip, opacity, styles, role);
+  entry.ready_mark = Some(mark);
+  (entry, covers_shown_window)
 }
 
 /// The entry of `peek`, just made or reclaimed for `window`, for `motion`
@@ -4903,6 +4940,7 @@ fn entry_on(
     hold: Hold::Free,
     trail: None,
     tenancy: None,
+    ready_mark: None,
   };
 
   (entry, covers_shown_window)
@@ -5704,16 +5742,17 @@ mod tests {
     fullscreen_peek_raise, has_landed, has_left, host_for, hosts_hold,
     hosts_on_surface, is_departed, is_peek_resize, is_pure_move,
     is_resized_already, is_stale_surface, is_stray, keeps_ready,
-    keeps_rest_hosted, keeps_trail_drawing, kept_transit, lands_on_trail,
-    lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, lowest,
-    move_clips, out_of_order, peek_resize, rank, ranks_before_pass,
-    ready_miss, reranks_leaving, resizes_at_start, rest_anchor,
-    restretched, rests, retargeted_motion, retimed_transit_ms,
-    returning_transit, sampled_size, settling, state_change_peek_raise,
-    state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
-    visible_frame, wants_ready, Hold, Host, Lane, Layer, Level, Part,
-    PeekRaise, PeekResize, Rank, ReadyFit, ReadyMiss, Role, Stacking,
-    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    keeps_rest_hosted, keeps_trail_drawing, kept_since_ready,
+    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
+    ranks_before_pass, ready_miss, reranks_leaving, resizes_at_start,
+    rest_anchor, restretched, rests, retargeted_motion,
+    retimed_transit_ms, returning_transit, sampled_size, settling,
+    state_change_peek_raise, state_change_resize, take_left, takes_ready,
+    toggles_tile_fullscreen, visible_frame, wants_ready, Hold, Host, Lane,
+    Layer, Level, Part, PeekRaise, PeekResize, Rank, ReadyFit, ReadyMiss,
+    Role, Stacking, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
+    STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -6040,6 +6079,16 @@ mod tests {
     assert!(takes_ready(&fit, &fit));
     assert!(!takes_ready(&fit, &other_window));
     assert!(!takes_ready(&fit, &other_clip));
+  }
+
+  /// A reclaimed ready peek needs no flush until something is registered
+  /// on it; any other peek does.
+  #[test]
+  fn a_ready_peek_with_nothing_registered_since_needs_no_flush() {
+    assert!(kept_since_ready(Some(10), Some(9)));
+    assert!(!kept_since_ready(Some(10), Some(10)));
+    assert!(!kept_since_ready(None, Some(9)));
+    assert!(!kept_since_ready(Some(10), None));
   }
 
   /// A close or minimize ranked in an earlier raise pass is ranked again

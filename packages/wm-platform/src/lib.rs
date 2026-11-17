@@ -171,6 +171,13 @@ pub fn process_sent_messages() {
   };
 }
 
+/// The registration order the next DWM thumbnail gets: a peek whose
+/// thumbnails are all below it has registered nothing since.
+#[must_use]
+pub fn next_thumbnail_order() -> u64 {
+  dwm_thumbnail::next_order()
+}
+
 /// Scans for companion windows at rest, so a ready peek's next motion
 /// finds its window's companion without a scan of its own.
 pub fn refresh_companions_at_rest() {

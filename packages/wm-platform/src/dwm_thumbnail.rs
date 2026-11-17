@@ -29,6 +29,12 @@ pub(crate) struct Look {
 /// The [`Thumbnail::order`] of the next registration.
 static NEXT_ORDER: AtomicU64 = AtomicU64::new(0);
 
+/// The order the next thumbnail registered gets (see `Thumbnail::order`):
+/// every one registered so far is below it.
+pub(crate) fn next_order() -> u64 {
+  NEXT_ORDER.load(Ordering::Relaxed)
+}
+
 /// A DWM thumbnail, unregistered on drop, which must come before its
 /// destination window is destroyed.
 ///

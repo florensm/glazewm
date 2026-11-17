@@ -580,12 +580,23 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
   // flushes after putting up their peeks, earlier in the same pass, so a
   // pass cloaking only those skips a second wait of up to a frame before
   // the scroll's first.
+  //
+  // Nor one whose peeks were all reclaimed ready, with nothing registered
+  // on them since (proposal 1): their thumbnails were composited, held,
+  // long before. The thumbnails' showing and the cloak still go to DWM in
+  // that order, a call apart, as after a flush.
   let flushes = pending.iter().any(|cloak| {
-    !state
+    state
       .animation_manager
       .peeks
-      .is_composited(&cloak.window.id())
+      .needs_flush(&cloak.window.id())
   });
+  if !flushes {
+    tracing::debug!(
+      "Cloaking {} window(s) without a flush: every peek kept ready.",
+      pending.len()
+    );
+  }
 
   // Flush before cloaking so DWM renders one frame with every queued
   // surrogate (and its now-correctly-anchored overlays) visible and its
