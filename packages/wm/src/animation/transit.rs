@@ -20,6 +20,11 @@ const AMOUNT_SCALE: f32 = 10_000.0;
 /// at 60 Hz.
 const MIN_DURATION_MS: u32 = 17;
 
+/// Largest scale a zoom is drawn at while an overshooting easing carries
+/// it past its rest: enough for a visible bounce, small enough that it
+/// only grazes its neighbours' gaps.
+const MAX_ZOOM_SCALE: f32 = 1.05;
+
 /// Which way a window's entry track runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -52,6 +57,8 @@ pub struct Transit {
   pub style: WindowTransitionStyle,
   /// Opacity at the away end, as a fraction of the window's own.
   pub away_opacity: f32,
+  /// For a zoom, its scale at the away end.
+  pub away_scale: f32,
   /// How far in the window was when this transit began: 0 for an open,
   /// 1 for a close, anything between for one turned round mid-way.
   pub from: f32,
@@ -80,6 +87,7 @@ impl Transit {
       direction,
       style: params.style.clone(),
       away_opacity: params.away_opacity,
+      away_scale: params.away_scale,
       from,
       clock,
     }
@@ -115,7 +123,8 @@ impl Transit {
       .then(|| Self::new(Direction::Out, params, 1.0))
   }
 
-  /// How far in the window is at `now`: 0 away, 1 at rest.
+  /// How far in the window is at `now`: 0 away, 1 at rest, past either
+  /// while an overshooting easing carries it beyond.
   pub fn amount_at(&self, now: Instant) -> f32 {
     let progress = self.clock.eased_progress_at(now);
 
@@ -127,6 +136,28 @@ impl Transit {
 
   pub fn is_complete(&self) -> bool {
     self.clock.is_complete()
+  }
+
+  /// Where a window resting at `rest` is drawn at `now`, and at what
+  /// fraction of its opacity (see [`transit_frame`]).
+  pub fn frame_at(
+    &self,
+    rest: &Rect,
+    now: Instant,
+  ) -> Option<(Rect, f32)> {
+    transit_frame(
+      rest,
+      &self.style,
+      self.away_opacity,
+      self.away_scale,
+      self.amount_at(now),
+    )
+  }
+
+  /// All a window resting at `rest` may be drawn over by this transit (see
+  /// [`transit_reach`]).
+  pub fn reach(&self, rest: &Rect) -> Rect {
+    transit_reach(rest, &self.style, self.clock.easing.can_overshoot())
   }
 
   /// This transit carried on from where it is at `now` to its end over
@@ -185,21 +216,27 @@ impl Transit {
   }
 }
 
-/// Whether `params` change nothing on screen: a stationary style other
-/// than a zoom, at full opacity throughout.
+/// Whether `params` change nothing on screen: no slide, no zoom (a zoom
+/// from full size is none) and full opacity throughout.
 fn shows_nothing(params: &WindowTransitionParams) -> bool {
-  params.style.is_stationary()
-    && params.style != WindowTransitionStyle::Zoom
-    && params.away_opacity >= 1.0
+  let zooms =
+    params.style == WindowTransitionStyle::Zoom && params.away_scale < 1.0;
+
+  params.style.is_stationary() && !zooms && params.away_opacity >= 1.0
 }
 
 /// Where a window resting at `rest` is drawn when `amount` in, and at
 /// what fraction of its opacity. `None` while it has no size.
+///
+/// A zoom scales from `away_scale` at 0 to full size at 1, and past it
+/// (up to [`MAX_ZOOM_SCALE`]) for an amount past 1. Every other style
+/// stops at its rest.
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub fn transit_frame(
   rest: &Rect,
   style: &WindowTransitionStyle,
   away_opacity: f32,
+  away_scale: f32,
   amount: f32,
 ) -> Option<(Rect, f32)> {
   let (width, height) = (rest.width(), rest.height());
@@ -207,6 +244,7 @@ pub fn transit_frame(
     return None;
   }
 
+  let overshot = amount.max(0.0);
   let amount = amount.clamp(0.0, 1.0);
   let away = |extent: i32| (extent as f32 * (1.0 - amount)).round() as i32;
   let moved = |dx: i32, dy: i32| {
@@ -216,9 +254,9 @@ pub fn transit_frame(
   let frame = match style {
     WindowTransitionStyle::None => rest.clone(),
     WindowTransitionStyle::Zoom => {
-      let inset = |extent: i32| {
-        (extent as f32 * (1.0 - amount) / 2.0).round() as i32
-      };
+      let scale = zoom_scale(away_scale, overshot);
+      let inset =
+        |extent: i32| (extent as f32 * (1.0 - scale) / 2.0).round() as i32;
       let (dx, dy) = (inset(width), inset(height));
       let (left, top) = (rest.left + dx, rest.top + dy);
       let (right, bottom) = (rest.right - dx, rest.bottom - dy);
@@ -240,12 +278,31 @@ pub fn transit_frame(
   Some((frame, opacity))
 }
 
+/// A zoom's scale `amount` in from `away_scale`, at most
+/// [`MAX_ZOOM_SCALE`].
+fn zoom_scale(away_scale: f32, amount: f32) -> f32 {
+  let away_scale = away_scale.clamp(0.0, 1.0);
+  (away_scale + (1.0 - away_scale) * amount).clamp(0.0, MAX_ZOOM_SCALE)
+}
+
 /// All a window resting at `rest` may be drawn over as it enters or leaves
-/// by `style` (see [`transit_frame`]): its rect, and the rect a slide
-/// comes from. Every amount in between draws within the two.
-pub fn transit_reach(rest: &Rect, style: &WindowTransitionStyle) -> Rect {
-  transit_frame(rest, style, 1.0, 0.0)
-    .map_or_else(|| rest.clone(), |(away, _)| rest.union(&away))
+/// by `style` (see [`transit_frame`]): its rect, the rect a slide comes
+/// from and, for a zoom that `overshoots`, its largest frame. Every amount
+/// in between draws within them.
+pub fn transit_reach(
+  rest: &Rect,
+  style: &WindowTransitionStyle,
+  overshoots: bool,
+) -> Rect {
+  let reach = transit_frame(rest, style, 1.0, 0.0, 0.0)
+    .map_or_else(|| rest.clone(), |(away, _)| rest.union(&away));
+
+  if overshoots && *style == WindowTransitionStyle::Zoom {
+    let widest = transit_frame(rest, style, 1.0, 0.0, f32::MAX);
+    widest.map_or(reach.clone(), |(widest, _)| reach.union(&widest))
+  } else {
+    reach
+  }
 }
 
 /// A clock rect standing for `amount` in (see [`AMOUNT_SCALE`]).
@@ -283,7 +340,7 @@ mod tests {
   }
 
   fn frame_at(style: &WindowTransitionStyle, amount: f32) -> Option<Rect> {
-    transit_frame(&rest(), style, 1.0, amount).map(|(frame, _)| frame)
+    transit_frame(&rest(), style, 1.0, 0.0, amount).map(|(frame, _)| frame)
   }
 
   fn opacity_at(away_opacity: f32, amount: f32) -> Option<f32> {
@@ -291,6 +348,7 @@ mod tests {
       &rest(),
       &WindowTransitionStyle::None,
       away_opacity,
+      0.0,
       amount,
     )
     .map(|(_, opacity)| opacity)
@@ -302,6 +360,7 @@ mod tests {
       easing,
       style: WindowTransitionStyle::Zoom,
       away_opacity: 0.0,
+      away_scale: 0.0,
     }
   }
 
@@ -332,9 +391,58 @@ mod tests {
 
     let odd = Rect::from_xy(100, 50, 801, 601);
     assert_eq!(
-      transit_frame(&odd, &zoom, 1.0, 1.0).map(|(frame, _)| frame),
+      transit_frame(&odd, &zoom, 1.0, 0.0, 1.0).map(|(frame, _)| frame),
       Some(odd)
     );
+  }
+
+  #[test]
+  fn zoom_starts_from_its_away_scale() {
+    let zoom = WindowTransitionStyle::Zoom;
+    let at = |amount| {
+      transit_frame(&rest(), &zoom, 0.0, 0.8, amount)
+        .map(|(frame, _)| frame)
+    };
+
+    assert_eq!(at(0.0), Some(Rect::from_ltrb(180, 110, 820, 590)));
+    assert_eq!(at(0.5), Some(Rect::from_ltrb(140, 80, 860, 620)));
+    assert_eq!(at(1.0), Some(rest()));
+  }
+
+  #[test]
+  fn only_a_zoom_overshoots_and_no_further_than_its_cap() {
+    let zoom = WindowTransitionStyle::Zoom;
+    let over = |style, amount| {
+      transit_frame(&rest(), style, 1.0, 0.8, amount)
+        .map(|(frame, _)| frame)
+    };
+
+    // 0.8 + 0.2 * 1.2 = 1.04: 16 px wider and 12 px taller per side.
+    assert_eq!(over(&zoom, 1.2), Some(Rect::from_ltrb(84, 38, 916, 662)));
+    assert_eq!(
+      over(&zoom, 100.0),
+      Some(Rect::from_ltrb(80, 35, 920, 665))
+    );
+    for slide in &SLIDES {
+      assert_eq!(over(slide, 1.2), Some(rest()), "{slide:?}");
+    }
+
+    let reach = transit_reach(&rest(), &zoom, true);
+    assert_eq!(reach, Rect::from_ltrb(80, 35, 920, 665));
+    assert_eq!(transit_reach(&rest(), &zoom, false), rest());
+  }
+
+  #[test]
+  fn a_zoom_from_full_size_at_full_opacity_shows_nothing() {
+    let with = |away_scale| WindowTransitionParams {
+      away_scale,
+      away_opacity: 1.0,
+      ..params(linear())
+    };
+
+    assert!(Transit::opening(&with(1.0)).is_none());
+    assert!(Transit::leaving(&with(1.0)).is_none());
+    assert!(Transit::opening(&with(0.8)).is_some());
   }
 
   #[test]
@@ -355,20 +463,24 @@ mod tests {
   #[test]
   fn a_transit_reaches_where_a_slide_comes_from() {
     assert_eq!(
-      transit_reach(&rest(), &WindowTransitionStyle::SlideRight),
+      transit_reach(&rest(), &WindowTransitionStyle::SlideRight, false),
       Rect::from_ltrb(100, 50, 1700, 650)
     );
     assert_eq!(
-      transit_reach(&rest(), &WindowTransitionStyle::SlideTop),
+      transit_reach(&rest(), &WindowTransitionStyle::SlideTop, false),
       Rect::from_ltrb(100, -550, 900, 650)
     );
     for style in [WindowTransitionStyle::Zoom, WindowTransitionStyle::None]
     {
-      assert_eq!(transit_reach(&rest(), &style), rest(), "{style:?}");
+      assert_eq!(
+        transit_reach(&rest(), &style, false),
+        rest(),
+        "{style:?}"
+      );
     }
     for amount in [0.0, 0.3, 0.7, 1.0] {
       for slide in &SLIDES {
-        let reach = transit_reach(&rest(), slide);
+        let reach = transit_reach(&rest(), slide, false);
         assert!(
           frame_at(slide, amount).is_some_and(|frame| reach
             .intersection(&frame)

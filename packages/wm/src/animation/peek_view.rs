@@ -21,11 +21,11 @@ use wm_platform::{
 use super::{
   stand_in::{moved_along, StandIn},
   state::WindowAnimationState,
-  transit::{transit_frame, transit_reach, Direction, Transit},
+  transit::{Direction, Transit},
 };
 use crate::{
   animation::{
-    manager::{movement_timing, Motion},
+    manager::{movement_timing, relayout_timing, MakingWay, Motion},
     AnimationManager, AwayTransition,
   },
   commands::general::{
@@ -626,14 +626,14 @@ impl Entry {
 
   /// The lane its tile draws along from now on, on a surface: its
   /// tenancy's while it moves, with what its transit reaches while it
-  /// enters or leaves (see [`transit_reach`]), and where it landed once it
-  /// has.
+  /// enters or leaves (see [`Transit::reach`]), and where it landed once
+  /// it has.
   fn lane(&self) -> Option<Lane> {
     let tenancy = self.tenancy.as_ref()?;
 
     Some(match (self.role, &self.transit) {
       (Role::Moving { .. } | Role::Leaving(_), Some(transit)) => {
-        let reach = |rect: &Rect| transit_reach(rect, &transit.style);
+        let reach = |rect: &Rect| transit.reach(rect);
         tenancy.reach.lane(
           &reach(&self.motion.start_rect),
           &reach(&self.motion.target_rect),
@@ -674,14 +674,10 @@ impl Entry {
       return;
     }
 
-    let frame = self.transit.as_ref().map(|transit| {
-      transit_frame(
-        rect,
-        &transit.style,
-        transit.away_opacity,
-        transit.amount_at(now),
-      )
-    });
+    let frame = self
+      .transit
+      .as_ref()
+      .map(|transit| transit.frame_at(rect, now));
     let opacity = self.opacity;
 
     for (peek, clip) in self.peeks_mut() {
@@ -4207,6 +4203,7 @@ pub fn move_on_peek(
   from: &Rect,
   target: &Rect,
   cycle_has_resize: bool,
+  making_way: Option<&MakingWay>,
   resizes: Option<PeekResize>,
   config: &UserConfig,
   is_focused: bool,
@@ -4251,7 +4248,7 @@ pub fn move_on_peek(
     Motion::Move
   };
   let (duration_ms, easing) =
-    movement_timing(motion, cycle_has_resize, config);
+    relayout_timing(motion, cycle_has_resize, making_way, config);
   let host = move_host(state, window, &clip, trail_clip.as_ref(), raise);
   let mut monitor_clips = surface_monitor_clips(state, host, &clip);
   if let Some(trail_clip) =
@@ -6529,6 +6526,7 @@ mod tests {
       easing: linear(),
       style: WindowTransitionStyle::Zoom,
       away_opacity: 0.0,
+      away_scale: 0.0,
     }
   }
 

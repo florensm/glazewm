@@ -10,6 +10,6 @@ pub mod transit;
 
 pub(crate) use manager::{
   restack_switch_tenants, switch_crossing, AwayTransition, HandBack,
-  WorkspaceSwitchEntry,
+  MakingWay, WorkspaceSwitchEntry,
 };
 pub use manager::{AnimationManager, AnimationPositionResult};

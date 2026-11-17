@@ -1149,6 +1149,20 @@ to see it; check each once more at 150 ms.
     - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
       gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
       compare one no longer apply.
+74. **Pop-in zoom, overshoot, and tiles in step with opens and closes**.
+    A split layout, one window. `window_open: { style: "zoom", zoom_from:
+    0.8, opacity_from: 0.0, duration_ms: 1000, easing:
+    "cubic_bezier(0.05, 0.9, 0.1, 1.05)" }`, `window_close: { style:
+    "zoom", zoom_to: 0.8, duration_ms: 1000 }`,
+    `window_resize.style: "stretch"`.
+    - Open a second window: it grows from 80% while fading in, a few
+      pixels past full size, and settles; the first tile shrinks on the
+      same curve and duration, their shared edge never opening a gap.
+    - Close it: it shrinks to 80% and fades over 1 s while the remaining
+      tile grows over it, on its own easing, done as the close ends.
+    - Two tiles open in a row a few hundred ms apart: no restart of the
+      first's zoom. `zoom_from: 0.0` (the default): as before.
+    - Windows API: none new.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live` (historical: those

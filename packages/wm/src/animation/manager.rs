@@ -163,8 +163,8 @@ fn keep_first_error(
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, EffectSet, ResizeStyle, WorkspaceSwitchDirection,
-  WorkspaceSwitchStyle,
+  EasingFunction, EffectSet, ResizeStyle, WindowTransitionParams,
+  WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
 use wm_platform::{
   lerp_f32,
@@ -175,7 +175,10 @@ use wm_platform::{
 };
 
 use crate::{
-  animation::focus_fade::{FocusFades, FocusMix},
+  animation::{
+    focus_fade::{FocusFades, FocusMix},
+    transit::Direction,
+  },
   commands::general::{
     advance_focus_fades, apply_focus_effects,
     border_hidden_for_fullscreen, overlay_params_for, overlay_z_anchor,
@@ -2700,6 +2703,61 @@ pub enum Motion {
   Fullscreen,
 }
 
+/// A window entering or leaving that a relayout's tiles make way for,
+/// whose timing they move on (see [`relayout_timing`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MakingWay {
+  direction: Direction,
+  duration_ms: u32,
+  easing: EasingFunction,
+}
+
+impl MakingWay {
+  /// For a window opening or restoring by `params`.
+  pub fn entering(params: &WindowTransitionParams) -> Self {
+    Self::new(Direction::In, params)
+  }
+
+  /// For a window closing or minimizing by `params`.
+  pub fn leaving(params: &WindowTransitionParams) -> Self {
+    Self::new(Direction::Out, params)
+  }
+
+  fn new(direction: Direction, params: &WindowTransitionParams) -> Self {
+    Self {
+      direction,
+      duration_ms: params.duration_ms,
+      easing: params.easing.clone(),
+    }
+  }
+}
+
+/// The duration and easing a tile's `motion` runs on in a relayout that
+/// makes way for a window entering or leaving, if any: the same as that
+/// window's, so the edges they share meet throughout rather than drifting
+/// apart and closing up again at the end.
+///
+/// For a leaving window, only its duration: its easing is usually an
+/// ease-in, which would bring the tiles growing over it to a dead stop.
+/// Columns and fullscreen toggles keep their own (see
+/// [`movement_timing`]).
+pub(crate) fn relayout_timing(
+  motion: Motion,
+  cycle_has_resize: bool,
+  making_way: Option<&MakingWay>,
+  config: &UserConfig,
+) -> (u32, EasingFunction) {
+  let own = movement_timing(motion, cycle_has_resize, config);
+
+  match (motion, making_way) {
+    (Motion::Move | Motion::Resize, Some(way)) => match way.direction {
+      Direction::In => (way.duration_ms, way.easing.clone()),
+      Direction::Out => (way.duration_ms, own.1),
+    },
+    _ => own,
+  }
+}
+
 /// The duration and easing a window's `motion` runs on.
 ///
 /// When any window in the cycle resizes, pure translations share the
@@ -2872,6 +2930,48 @@ mod tests {
         ResizeStyle::Stretch,
       false
     ));
+  }
+
+  /// Tiles making way for an entering window take its timing, for a
+  /// leaving one its duration only; columns and fullscreen toggles keep
+  /// their own.
+  #[test]
+  fn tiles_making_way_move_in_step() {
+    let mut parsed = ParsedConfig::default();
+    parsed.animations.window_open.duration_ms = 400;
+    parsed.animations.window_open.easing =
+      EasingFunction::CubicBezier(0.05, 0.9, 0.1, 1.05);
+    parsed.animations.window_close.duration_ms = 300;
+    let config = UserConfig::from_parsed(parsed);
+    let animations = &config.value.animations;
+    let open = MakingWay::entering(&WindowTransitionParams::from_open(
+      &animations.window_open,
+    ));
+    let close = MakingWay::leaving(&WindowTransitionParams::from_close(
+      &animations.window_close,
+    ));
+    let resize = (
+      animations.window_resize.duration_ms,
+      animations.window_resize.easing.clone(),
+    );
+
+    for motion in [Motion::Move, Motion::Resize] {
+      assert_eq!(
+        relayout_timing(motion, true, Some(&open), &config),
+        (400, animations.window_open.easing.clone())
+      );
+      assert_eq!(
+        relayout_timing(motion, true, Some(&close), &config),
+        (300, resize.1.clone())
+      );
+      assert_eq!(relayout_timing(motion, true, None, &config), resize);
+    }
+    for motion in [Motion::Column, Motion::Fullscreen] {
+      assert_eq!(
+        relayout_timing(motion, true, Some(&open), &config),
+        movement_timing(motion, true, &config)
+      );
+    }
   }
 
   /// The profiler times a peek frame from the wake its tick came from,

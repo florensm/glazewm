@@ -47,6 +47,11 @@ animations:
     style: "slide_right"
     # 0.0 to 1.0. Below 1.0 fades in.
     opacity_from: 1.0
+    # For 'zoom': scale it grows from, 0.0 to 1.0. 0.8 with
+    # 'opacity_from: 0.0' pops in. An easing that overshoots (e.g.
+    # 'cubic_bezier(0.05, 0.9, 0.1, 1.05)') grows a little past full size.
+    # Tiles making room move on this duration and easing too.
+    zoom_from: 0.0
 
   workspace_switch:
     enabled: true
@@ -74,6 +79,9 @@ animations:
     style: "none"
     # 0.0 to 1.0. Below 1.0 fades out.
     opacity_to: 0.0
+    # For 'zoom': scale it shrinks to, 0.0 to 1.0. Tiles filling the gap
+    # take this duration, with 'window_resize''s easing.
+    zoom_to: 0.0
 
   # Plays in reverse on restore, easing included: an ease-in minimize
   # eases out as it comes back. Only for minimizes the WM does itself
@@ -85,6 +93,7 @@ animations:
     # 'zoom', 'none', 'slide_bottom', 'slide_top', 'slide_left', 'slide_right'.
     style: "zoom"
     opacity_to: 0.0
+    zoom_to: 0.0
 
   # Borders and backdrops blending between their focused and unfocused
   # styles as focus moves. Transparency still switches at once.

@@ -17,7 +17,7 @@ use wm_platform::{
 use crate::{
   animation::{
     manager::Motion, peek_view::PeekRaise, AnimationPositionResult,
-    AwayTransition, HandBack, WorkspaceSwitchEntry,
+    AwayTransition, HandBack, MakingWay, WorkspaceSwitchEntry,
   },
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
@@ -636,6 +636,53 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
 
 /// Whether `window`, new and floating, opens on a pinned peek: not
 /// natively maximized, which `reposition_window` restores first.
+/// A tiling window opening or restoring in this pass that its neighbours
+/// make way for in step with (see `relayout_timing`), if any. The same
+/// tests `redraw_containers` picks an entry animation by, short of those
+/// for windows it doesn't relay out beside (columns, a switch's).
+fn entering_way(
+  state: &WmState,
+  windows: &[&WindowContainer],
+  config: &UserConfig,
+) -> Option<MakingWay> {
+  let animations = &config.value.animations;
+
+  windows.iter().find_map(|window| {
+    let is_tile = window.state() == WindowState::Tiling
+      && crate::layout::scrolling::column_of(&window.as_container())
+        .is_none()
+      && window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+      && !is_hidden_in_layout(*window)
+      && !state
+        .pending_sync
+        .is_workspace_switch_outgoing(&window.id())
+      && !state
+        .pending_sync
+        .is_workspace_switch_incoming(&window.id());
+    if !is_tile {
+      return None;
+    }
+
+    if state.pending_sync.is_window_restore(&window.id()) {
+      animations.window_minimize.enabled.then(|| {
+        MakingWay::entering(&WindowTransitionParams::from_restore(
+          &animations.window_minimize,
+        ))
+      })
+    } else if !state.window_target_positions.contains_key(&window.id()) {
+      animations.window_open.enabled.then(|| {
+        MakingWay::entering(&WindowTransitionParams::from_open(
+          &animations.window_open,
+        ))
+      })
+    } else {
+      None
+    }
+  })
+}
+
 fn opens_floating_on_peek(window: &WindowContainer) -> bool {
   !window.native().is_maximized()
 }
@@ -1232,6 +1279,14 @@ fn redraw_containers(
     }
   });
 
+  // Tiles making way for a window entering or leaving move in step with
+  // it.
+  let making_way = state
+    .pending_sync
+    .making_way()
+    .cloned()
+    .or_else(|| entering_way(state, &windows_to_update, config));
+
   // With `window_resize` enabled, in either style, the relayout's resizes
   // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e), each tile's as
   // `move_on_peek` takes it.
@@ -1686,6 +1741,7 @@ fn redraw_containers(
             from,
             &target_rect,
             cycle_has_resize,
+            making_way.as_ref(),
             if is_state_change {
               crate::animation::peek_view::state_change_resize(
                 &config.value.animations.window_resize,
@@ -1765,9 +1821,10 @@ fn redraw_containers(
         // floating one jumps there (see `follow_duration`).
         if state.animation_manager.peeks.follows_tile(&window.id()) {
           let (duration_ms, easing) =
-            crate::animation::manager::movement_timing(
+            crate::animation::manager::relayout_timing(
               motion,
               cycle_has_resize,
+              making_way.as_ref(),
               config,
             );
           // One a grab holds jumps, as its steps put it.
