@@ -121,6 +121,10 @@ pub fn switch_overrides(style: &str) -> anyhow::Result<Vec<Override>> {
 /// The overrides that draw `borders` and `backdrops` as asked, for the
 /// config at `main`, with minimize animated so `perf_bench`'s `minimize`
 /// scenario has frames to measure.
+///
+/// Keybindings are dropped: the bench drives the WM over IPC only, and a
+/// command added since (e.g. `focus --special-workspace`) stops an older
+/// build from starting.
 pub fn effect_overrides(
   main: &Path,
   borders: Effect,
@@ -134,10 +138,14 @@ pub fn effect_overrides(
     .copied()
     .chain(has_urgent.then_some(URGENT_SET));
 
-  let mut overrides = vec![Override::new(
-    &["animations", "window_minimize", "enabled"],
-    Value::Bool(true),
-  )];
+  let mut overrides = vec![
+    Override::new(
+      &["animations", "window_minimize", "enabled"],
+      Value::Bool(true),
+    ),
+    Override::new(&["keybindings"], Value::Sequence(Vec::new())),
+    Override::new(&["binding_modes"], Value::Sequence(Vec::new())),
+  ];
   for set in sets {
     for (effect, setting) in [("border", borders), ("backdrop", backdrops)]
     {
@@ -418,6 +426,10 @@ mod tests {
     let minimize =
       lookup(&bench, &["animations", "window_minimize", "enabled"]);
     assert_eq!(minimize.and_then(Value::as_bool), Some(true));
+    for key in ["keybindings", "binding_modes"] {
+      let bindings = lookup(&bench, &[key]).and_then(Value::as_sequence);
+      assert!(bindings.is_some_and(Vec::is_empty));
+    }
 
     std::fs::remove_dir_all(&dir).unwrap();
   }
