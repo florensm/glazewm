@@ -2981,6 +2981,41 @@ Seen by the owner on the laptop, 2026-11-16 (`test/one-surface` up to `6353eeab`
 with A look fine; the border jump with glow is gone (`os/15-ring-fixes`); the scroll focus flicker
 with a semi-transparent focused window is "pretty alright now" (`os/16-scroll-flicker`).
 
+### Open, in the order to take them (updated 2026-11-18)
+
+Supersedes the 2026-11-16 list below, kept as history. Done since: the
+bench rework (stand-ins modes and `main`, `-Dwm`, `-Screenshots`) and
+four desktop runs (`results/2026-11-17*`), item 3, borders inside the
+tile with the switch inset fix, start cost rounds 1-3 (`os/22`..`os/24`,
+see their "as built"), the close flash, pop-in zoom options (`cd1a647b`)
+and a sample config that pops windows in and out (`c9896fe`).
+Laptop build: `test/one-surface` at `d248dca` (cut from `c9896fe`; same
+Windows imports and `Cargo.lock` as `6353eeab`). Round 3 not benched.
+
+1. **Owner's laptop check of `d248dca`** (resize start and first frame,
+   one zoom on open, close/minimize visible to the end, no close flash,
+   border inside on switches).
+2. **Bench round 3 on the desktop** (`-Dwm`, against
+   `origin/tryout/stand-ins:nopeeks;origin/main`): `dwm_flush`,
+   `to_cloak`, `ring_copy`, `peek_new`, `bd_park`; does one surface now
+   start as fast as `main` (resize ~36 ms, minimize ~44 ms)?
+3. **Neighbours of an opening window overshoot** with an overshooting
+   `window_open.easing` (they take the open's easing since `cd1a647b`).
+   Owner to decide: keep, or give neighbours the open's duration with a
+   non-overshooting easing.
+4. **Hand-over reorder proposals 2, 4, 5** (owner's call, with round 3's
+   numbers); cloak-skipping declined (windows stay cloaked). Stale real
+   ring lines at the start of a resize under CPU load: a tuned step,
+   propose only if the owner sees it.
+5. **Cleanup pass** once the design has settled: debug lines from the
+   laptop checks, `main.rs`'s `catch_up_before_frame` doc (still names
+   `ResizeSession`), leftovers in `peek_view.rs`, trimming bench result
+   files to their READMEs and old as-built sections. Animation code is
+   ~23.3k lines (`start-latency` ~22.1k, `main` ~8.2k).
+6. **Owner:** `CLAUDE.md`'s `isolate_modes.ps1` wording (replace with
+   `compare_branches.ps1`, proposed in chat); delete the merged
+   `claude/sharp-davinci-n25tw0` branch on GitHub.
+
 ### Open, in the order to take them (updated 2026-11-16)
 
 Done: the removal (R0..R6), rounded backdrops (A, always on), the ring
