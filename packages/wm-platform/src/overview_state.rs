@@ -240,7 +240,7 @@ pub(crate) struct Hit {
   pub point: Option<(i32, i32)>,
 }
 
-/// A control along the bottom of a screen.
+/// A control of the search line or the search box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Control {
   /// The search field, which typing goes to wherever the cursor is.
@@ -248,6 +248,9 @@ pub(crate) enum Control {
 
   /// The chip beside it, which shows the keyboard shortcuts.
   Shortcuts,
+
+  /// A row of the search box's list: the match of this window.
+  Result(isize),
 }
 
 /// Keyboard shortcuts of one step, as the shortcut sheet lists them.
@@ -273,15 +276,34 @@ impl Shortcut {
   }
 }
 
-/// The search field, as every screen shows it.
+/// Most matches the search box lists at once; it scrolls to keep the
+/// one it is on in view.
+pub(crate) const MAX_RESULTS: usize = 6;
+
+/// The search, as every screen shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SearchField {
   pub query: String,
 
   pub hits: usize,
 
-  /// Which of its matches is picked, from 0, if one is.
+  /// Which of its matches the list is on, from 0, if any.
   pub current: Option<usize>,
+
+  /// The matches the list shows, from match `first` on.
+  pub results: Vec<SearchResult>,
+  pub first: usize,
+}
+
+/// A match as the search box lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SearchResult {
+  pub hwnd: isize,
+  pub title: String,
+  pub process_name: String,
+
+  /// Name its workspace's card shows.
+  pub workspace: String,
 }
 
 /// A window being dragged with the mouse.
@@ -369,8 +391,9 @@ pub(crate) struct Interaction {
   /// workspaces change, rather than for each key and screen that asks.
   matches: Vec<Match>,
 
-  /// Match a search last went to while carrying, which picks no window
-  /// to tell by.
+  /// Match the search's list is on: the first as the query changes, then
+  /// whichever was stepped to. Typing never moves the view; stepping
+  /// does.
   match_index: Option<usize>,
 
   /// Whether the sheet of keyboard shortcuts is open.
@@ -510,7 +533,11 @@ impl Interaction {
     self.screens = cursors;
     self.hover = hover;
 
+    let current = self.current_match();
     self.matches = find_matches(&self.query, &new);
+    self.match_index = current
+      .and_then(|hwnd| self.matches.iter().position(|m| m.hwnd == hwnd))
+      .or_else(|| (!self.matches.is_empty()).then_some(0));
 
     let exists = |hwnd: isize| find(&new, hwnd).is_some();
 
@@ -729,6 +756,17 @@ impl Interaction {
       }
       // Never the workspace the cursor happens to be on.
       Command::Enter if self.matches.is_empty() => {}
+      // On the match the list is on, wherever the view is: go there
+      // first, then carry on as ever.
+      Command::Enter
+      | Command::CloseWindow
+      | Command::SendToWorkspace(_)
+      | Command::SendToSpecial => {
+        if let Some(index) = self.match_position() {
+          self.goto_nth_match(index);
+        }
+        return false;
+      }
       _ => return false,
     }
 
@@ -815,12 +853,11 @@ impl Interaction {
     self.follow_search(workspaces);
   }
 
-  /// Finds the matches of the query as it is now and goes to the best,
-  /// staying put without one.
+  /// Finds the matches of the query as it is now and puts the list on the
+  /// best, leaving the view where it is.
   fn follow_search(&mut self, workspaces: &[OverviewWorkspace]) {
     self.matches = find_matches(&self.query, workspaces);
-    self.match_index = None;
-    self.goto_nth_match(0);
+    self.match_index = (!self.matches.is_empty()).then_some(0);
   }
 
   /// Ends the search, leaving the cursor where it is.
@@ -1201,21 +1238,21 @@ impl Interaction {
     }
   }
 
-  /// Which match the cursor is on: the picked window, or while carrying,
-  /// which picks none, the match last gone to.
+  /// Which match the search's list is on.
   fn match_position(&self) -> Option<usize> {
-    if self.mode == Mode::Carrying {
-      return self.match_index.filter(|index| *index < self.matches.len());
-    }
-
-    let hwnd = self
-      .selected_window
-      .filter(|_| self.mode == Mode::Windows)?;
-    self.matches.iter().position(|found| found.hwnd == hwnd)
+    self.match_index.filter(|index| *index < self.matches.len())
   }
 
-  /// Selects the match `delta` on from the one the cursor is on, around
-  /// the ends, or the first (or last) when it is on none. Returns whether
+  /// Window the search's list is on.
+  pub fn current_match(&self) -> Option<isize> {
+    self
+      .match_position()
+      .and_then(|index| self.matches.get(index))
+      .map(|found| found.hwnd)
+  }
+
+  /// Selects the match `delta` on from the one the list is on, around the
+  /// ends, or the first (or last) when it is on none. Returns whether
   /// there was a match.
   fn goto_match(&mut self, delta: isize) -> bool {
     let Ok(len) = isize::try_from(self.matches.len()) else {
@@ -1281,6 +1318,16 @@ impl Interaction {
     self.hover = hit.workspace;
     self.hover_control = hit.control;
 
+    // Pointing at a row of the search box puts the list on it.
+    if let Some(Control::Result(hwnd)) = hit.control {
+      if let Some(index) =
+        self.matches.iter().position(|found| found.hwnd == hwnd)
+      {
+        changed |= self.match_index != Some(index);
+        self.match_index = Some(index);
+      }
+    }
+
     // Pointing at a window of the shown workspace picks it, as the arrows
     // would.
     let pointed = hit.window.filter(|_| {
@@ -1294,6 +1341,14 @@ impl Interaction {
         self.selected_window = Some(hwnd);
         self.picked_by = PickedBy::Mouse;
         changed = true;
+      }
+
+      // Pointing at a match puts the list on it too.
+      if let Some(index) =
+        self.matches.iter().position(|found| found.hwnd == hwnd)
+      {
+        changed |= self.match_index != Some(index);
+        self.match_index = Some(index);
       }
     }
 
@@ -1358,6 +1413,18 @@ impl Interaction {
       }
       // Typing goes to the field as it is.
       Some(Control::Search) => return None,
+      Some(Control::Result(hwnd)) => {
+        let workspace = self
+          .matches
+          .iter()
+          .find(|found| found.hwnd == hwnd)
+          .map(|found| found.workspace)
+          .or_else(|| find(workspaces, hwnd).map(|(index, _)| index));
+        return Some(OverviewAction::FocusWindow {
+          hwnd,
+          monitor: self.monitor_of(workspace),
+        });
+      }
       _ if showed_shortcuts => return None,
       None => {}
     }
@@ -1499,18 +1566,53 @@ impl Interaction {
       keeps_window_in_view: self.picked_by != PickedBy::Mouse,
       marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
-      search: self.search_field(),
+      search: self.search_field(workspaces),
+      search_current: self.current_match().and_then(|hwnd| {
+        let index =
+          self.matches.iter().find(|m| m.hwnd == hwnd)?.workspace;
+        Some((local(index)?, hwnd))
+      }),
       shortcuts: (is_active && self.shows_shortcuts)
         .then(|| self.shortcuts()),
     }
   }
 
-  /// The search field every screen shows.
-  pub fn search_field(&self) -> SearchField {
+  /// The search every screen shows: the query, and a page of the
+  /// matches holding the one the list is on.
+  pub fn search_field(
+    &self,
+    workspaces: &[OverviewWorkspace],
+  ) -> SearchField {
+    let current = self.match_position();
+    let first =
+      current.map_or(0, |index| (index + 1).saturating_sub(MAX_RESULTS));
+    let results = self
+      .matches
+      .iter()
+      .skip(first)
+      .take(MAX_RESULTS)
+      .filter_map(|found| {
+        let workspace = workspaces.get(found.workspace)?;
+        let window = workspace.window(found.hwnd)?;
+        Some(SearchResult {
+          hwnd: found.hwnd,
+          title: window.title.clone(),
+          process_name: window.process_name.clone(),
+          workspace: if workspace.label.is_empty() {
+            workspace.name.clone()
+          } else {
+            workspace.label.clone()
+          },
+        })
+      })
+      .collect();
+
     SearchField {
       query: self.query.clone(),
       hits: self.matches.len(),
-      current: self.match_position(),
+      current,
+      results,
+      first,
     }
   }
 
@@ -1577,7 +1679,7 @@ impl Interaction {
         title: "Search",
         shortcuts: vec![
           Shortcut::new("A\u{2013}Z", "type to search"),
-          Shortcut::new(&matches, "next / previous"),
+          Shortcut::new(&matches, "step and show"),
           Shortcut::new(&Command::Enter.label(), "go to the match"),
           Shortcut::new(&Command::Back.label(), "erase"),
           Shortcut::new(&Command::Cancel.label(), "clear"),
@@ -1639,6 +1741,10 @@ pub(crate) struct ScreenFocus {
 
   /// The search field.
   pub search: SearchField,
+
+  /// The match the search's list is on, if on this screen: its card and
+  /// window.
+  pub search_current: Option<(usize, isize)>,
 
   /// The keyboard shortcuts, while their sheet is open on this screen.
   pub shortcuts: Option<Vec<ShortcutGroup>>,
@@ -1960,7 +2066,7 @@ fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
 mod tests {
   use super::{
     all_workspaces, Control, Hit, Interaction, Key, Mode, SearchField,
-    Toward, BINDINGS,
+    Toward, BINDINGS, MAX_RESULTS,
   };
   use crate::{
     overview_layout::RectF, Direction, OverviewAction, OverviewInput,
@@ -2786,26 +2892,32 @@ mod tests {
   }
 
   #[test]
-  fn typing_starts_a_search_that_follows_its_best_match() {
+  fn typing_puts_the_list_on_the_best_match_and_leaves_the_view() {
     let mut state = interaction();
+    let view = |state: &Interaction| {
+      (state.selected(), state.mode, state.selected_window)
+    };
+    let before = view(&state);
     assert!(!state.is_searching());
 
-    // The first character already searches, and picks.
+    // The first character already searches.
     press(&mut state, &[Key::Text('t')]);
     assert!(state.is_searching());
     assert_eq!(state.query, "t");
-    assert_eq!(state.selected_window, Some(11), "Terminal, at its start");
+    assert_eq!(state.current_match(), Some(11), "Terminal, at its start");
+    assert_eq!(view(&state), before, "the view stays put");
 
     // "Editor" has it later than "Terminal", which a longer query drops.
     press(&mut state, &typed("o"));
     assert_eq!(state.query, "to");
-    assert_eq!((state.selected(), state.mode), (0, Mode::Windows));
-    assert_eq!(state.selected_window, Some(12));
+    assert_eq!(state.current_match(), Some(12));
+    assert_eq!(view(&state), before);
 
-    // Taking a character back follows the best match again.
+    // Taking a character back puts the list on the best match again.
     press(&mut state, &[Key::Backspace]);
     assert_eq!(state.query, "t");
-    assert_eq!(state.selected_window, Some(11));
+    assert_eq!(state.current_match(), Some(11));
+    assert_eq!(view(&state), before);
   }
 
   #[test]
@@ -2863,15 +2975,20 @@ mod tests {
 
   #[test]
   fn matches_are_stepped_through_while_typing_goes_on() {
+    let workspaces = workspaces();
     let mut state = interaction();
     let at = |state: &Interaction| {
-      (state.selected_window, state.search_field().current)
+      (
+        state.selected_window,
+        state.search_field(&workspaces).current,
+      )
     };
 
-    // All three match ".exe" alike, so in order: 11, 12, 21.
+    // Editor has it at its start, then Terminal, then Browser. Typing
+    // picks no window; stepping does.
     press(&mut state, &typed("e"));
-    assert_eq!(state.search_field().hits, 3);
-    assert_eq!(at(&state), (Some(12), Some(0)), "Editor, at its start");
+    assert_eq!(state.search_field(&workspaces).hits, 3);
+    assert_eq!(at(&state), (None, Some(0)), "the list on Editor");
 
     for (keys, expected) in [
       ([Key::Tab], (Some(11), Some(1))),
@@ -2889,10 +3006,11 @@ mod tests {
       assert_eq!(state.query, "e", "the search stays on");
     }
 
-    // Typing on narrows it down from wherever the cursor was.
+    // Typing on narrows it down, the list back on the best, leaving the
+    // pick where it was.
     press(&mut state, &typed("d"));
     assert_eq!(state.query, "ed");
-    assert_eq!(at(&state), (Some(12), Some(0)));
+    assert_eq!(at(&state), (Some(21), Some(0)));
   }
 
   #[test]
@@ -2900,9 +3018,9 @@ mod tests {
     let mut state = interaction();
 
     assert_eq!(press(&mut state, &typed("term")), None);
-    assert_eq!(press(&mut state, &[Key::Escape]), None);
+    assert_eq!(press(&mut state, &[Key::Tab, Key::Escape]), None);
     assert_eq!(state.query, "");
-    assert_eq!(state.selected_window, Some(11), "the pick stays");
+    assert_eq!(state.selected_window, Some(11), "the match stepped to");
 
     assert_eq!(
       press(&mut state, &[Key::Escape]),
@@ -2915,9 +3033,9 @@ mod tests {
     let mut state = interaction();
 
     press(&mut state, &typed("te"));
-    press(&mut state, &[Key::Backspace, Key::Backspace]);
+    press(&mut state, &[Key::Down, Key::Backspace, Key::Backspace]);
     assert_eq!(state.query, "");
-    assert_eq!(state.mode, Mode::Windows, "the pick stays");
+    assert_eq!(state.mode, Mode::Windows, "the match stepped to stays");
 
     // With none left, it steps back as ever, and the arrows move again.
     press(&mut state, &[Key::Backspace]);
@@ -2932,7 +3050,7 @@ mod tests {
 
     press(&mut state, &[Key::Space, Key::Space]);
     press(&mut state, &typed("e"));
-    assert_eq!((state.selected(), state.mode), (0, Mode::Carrying));
+    assert_eq!((state.selected(), state.mode), (1, Mode::Carrying));
     press(&mut state, &[Key::End]);
     assert_eq!(state.selected(), 1, "its last match");
     assert_eq!(state.carried, Some(21));
@@ -3175,11 +3293,17 @@ mod tests {
     let old = workspaces();
     let mut state = interaction();
     press(&mut state, &typed("e"));
-    assert_eq!(state.search_field().hits, 3);
+    assert_eq!(state.search_field(&old).hits, 3);
 
     // Workspace 1 goes away, along with two of them.
-    state.sync(&old, &[screen(MONITOR, old[1..].to_vec())]);
-    assert_eq!(state.search_field().hits, 1);
+    let new = old[1..].to_vec();
+    state.sync(&old, &[screen(MONITOR, new.clone())]);
+    assert_eq!(state.search_field(&new).hits, 1);
+    assert_eq!(
+      state.current_match(),
+      Some(21),
+      "the list on what is left"
+    );
     assert_eq!(press(&mut state, &[Key::Tab]), None);
     assert_eq!((state.selected(), state.selected_window), (0, Some(21)));
   }
@@ -3598,8 +3722,9 @@ mod tests {
     let mut state =
       Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
     press_on(&mut state, &workspaces, &typed("notes"));
+    assert_eq!(state.search_field(&workspaces).hits, 1);
 
-    assert_eq!(state.search_field().hits, 1);
+    press_on(&mut state, &workspaces, &[Key::Tab]);
     assert_eq!(
       (state.active, state.selected(), state.selected_window),
       (1, 5, Some(51)),
@@ -3608,49 +3733,83 @@ mod tests {
   }
 
   #[test]
-  fn the_search_field_shows_what_is_typed() {
+  fn the_search_field_lists_the_matches() {
+    let workspaces = workspaces();
     let mut state = interaction();
-    let typing_e = SearchField {
-      query: "e".to_string(),
-      hits: 3,
-      current: Some(0),
+    let field = |state: &Interaction| state.search_field(&workspaces);
+    let listed = |state: &Interaction| {
+      field(state)
+        .results
+        .iter()
+        .map(|result| (result.hwnd, result.workspace.clone()))
+        .collect::<Vec<_>>()
     };
-    assert_eq!(state.search_field(), SearchField::default());
+    assert_eq!(field(&state), SearchField::default());
 
     press(&mut state, &[Key::Text('e')]);
-    assert_eq!(state.search_field(), typing_e);
-
-    // Which match is picked shows as they are stepped through.
-    press(&mut state, &[Key::Down]);
+    let typing_e = field(&state);
     assert_eq!(
-      state.search_field(),
-      SearchField {
-        current: Some(1),
-        ..typing_e.clone()
-      }
+      (typing_e.query.as_str(), typing_e.hits, typing_e.current),
+      ("e", 3, Some(0))
     );
+    assert_eq!(
+      listed(&state),
+      [
+        (12, "1".to_string()),
+        (11, "1".to_string()),
+        (21, "2".to_string())
+      ]
+    );
+    assert_eq!(typing_e.results[0].title, "Editor");
+    assert_eq!(typing_e.results[0].process_name, "Editor.exe");
 
-    // With the cursor on a window that is no match, e.g. one pointed
-    // at, none of them is picked.
-    press(&mut state, &typed("d"));
-    assert_eq!(state.selected_window, Some(12), "Editor alone");
-    let terminal = Hit {
+    // Which match the list is on shows as they are stepped through.
+    press(&mut state, &[Key::Down]);
+    assert_eq!(field(&state).current, Some(1));
+
+    // Pointing at a match, or at its row, puts the list on it.
+    let editor = Hit {
       workspace: Some(0),
-      window: Some(11),
+      window: Some(12),
       ..Hit::default()
     };
-    state.mouse_move((10.0, 10.0), terminal, false);
-    assert_eq!(
-      state.search_field(),
-      SearchField {
-        query: "ed".to_string(),
-        hits: 1,
-        current: None,
-      }
-    );
+    state.mouse_move((10.0, 10.0), editor, false);
+    assert_eq!(field(&state).current, Some(0));
+    let browser_row = Hit {
+      control: Some(Control::Result(21)),
+      ..Hit::default()
+    };
+    state.mouse_move((10.0, 10.0), browser_row, false);
+    assert_eq!(field(&state).current, Some(2));
 
     press(&mut state, &[Key::Escape]);
-    assert_eq!(state.search_field(), SearchField::default());
+    assert_eq!(field(&state), SearchField::default());
+  }
+
+  #[test]
+  fn the_list_scrolls_to_keep_its_match_in_view() {
+    let titles = (0..10)
+      .map(|index| {
+        window(100 + index, "Doc", Rect::from_xy(0, 0, 1920, 1000))
+      })
+      .collect::<Vec<_>>();
+    let workspaces = vec![OverviewWorkspace {
+      is_displayed: true,
+      windows: titles,
+      ..card("1")
+    }];
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
+    press_on(&mut state, &workspaces, &typed("doc"));
+
+    let field = state.search_field(&workspaces);
+    assert_eq!((field.hits, field.first), (10, 0));
+    assert_eq!(field.results.len(), MAX_RESULTS);
+
+    press_on(&mut state, &workspaces, &[Key::End]);
+    let field = state.search_field(&workspaces);
+    assert_eq!(field.current, Some(9));
+    assert_eq!(field.first, 10 - MAX_RESULTS);
+    assert_eq!(field.results.len(), MAX_RESULTS);
   }
 
   #[test]
@@ -3694,9 +3853,15 @@ mod tests {
 
     // A click on the field changes nothing: typing goes to it anyway.
     press(&mut state, &[Key::Text('e')]);
-    let before = state.search_field();
+    let before = state.search_field(&workspaces);
     assert_eq!(click(&mut state, control(Control::Search)), None);
-    assert_eq!(state.search_field(), before);
+    assert_eq!(state.search_field(&workspaces), before);
+
+    // A click on a row goes to its match.
+    assert_eq!(
+      click(&mut state, control(Control::Result(21))),
+      Some(focus_window(21))
+    );
 
     // While the sheet is open, a click anywhere only closes it.
     press(&mut state, &[Key::Escape, Key::F1]);

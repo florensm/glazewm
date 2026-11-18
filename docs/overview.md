@@ -204,29 +204,41 @@ around its edges shows which.
 
 ### Search
 
-A search field sits at the bottom of every monitor, and typing goes to
-it from anywhere: there is no key to start a search. It matches window
-titles and process names, on every monitor; matches are outlined in
-`search_color` and the rest fade.
+Typing goes to the search from anywhere: there is no key to start one.
+It matches window titles and process names, on every monitor. While
+idle, a "Type to search" field sits at the bottom of every monitor; once
+something is typed, a search box takes its place near the top: the
+query, which match it is on (e.g. "2 of 5"), and a list of the matches,
+best first, each with its app's icon, its title and process with what
+matched lit in `search_color`, and its workspace. The list shows six at
+a time and scrolls to keep its match in view. Windows that don't match
+fade to a quarter, workspaces with none dim as a whole, and in the
+activities' large view the matches grow a little.
 
-- The selection follows the best match as the query changes, moving
-  there the way the arrows would, to another workspace or monitor too.
-  The field shows the query and which match is picked, e.g. "2 of 5".
+- Typing never moves the view: the list goes to the best match, and the
+  ring and title tag mark it wherever it shows, but the selected
+  workspace, window and monitor stay where they are.
 - `Tab` / `Shift`+`Tab`, the arrows (`↓` `→` next, `↑` `←` previous) and
   `Alt`+`H` `J` `K` `L` step through the matches, around the ends, and
-  `Home` / `End` go to the first and last. The search stays on: keep
-  typing to narrow it down.
-- `Enter` goes to the picked match. Without a match it does nothing.
+  `Home` / `End` go to the first and last. Each step shows the match,
+  moving there the way the arrows would, to another workspace or monitor
+  too. The search stays on: keep typing to narrow it down.
+- Pointing at a match, or at its row in the list, puts the list on it;
+  clicking a row goes to that match.
+- `Enter` goes to the match the list is on. Without a match it does
+  nothing.
 - `Backspace` takes back a character, and `Escape` clears the query,
-  leaving the selection on the match. With no query left they do what
-  they always do: `Backspace` steps back, `Escape` closes.
+  leaving the selection where the last step put it. With no query left
+  they do what they always do: `Backspace` steps back, `Escape` closes.
 - `Space` types a space once there is a query, for titles of several
-  words. To pick up a match with `Space`, clear the query first.
-- The `Alt` chords and `Delete` act on the picked match as on any
-  window: `Alt`+`Shift`+`3` sends it to workspace 3.
+  words. To pick up a match with `Space`, step to it and clear the query
+  first.
+- The `Alt` chords and `Delete` act on the match the list is on as on
+  any window: `Alt`+`Shift`+`3` sends it to workspace 3.
 
-While carrying a window, a search picks the workspace to drop it on, and
-`Enter` drops it there.
+While carrying a window, stepping through a search's matches aims the
+drop at their workspaces, and `Enter` drops it on the workspace of the
+match the list is on.
 
 ### Special workspace
 
@@ -280,8 +292,8 @@ room left above and below. Columns scrolled out of view can be picked,
 dragged and searched like any other window; picking one focuses it, which
 scrolls it into view.
 
-In the stack, a window picked on a strip with the keyboard or a search
-goes to the middle of the screen, the strip panning under it; one pointed
+In the stack, a window picked on a strip with the keyboard or a step
+through a search goes to the middle of the screen, the strip panning under it; one pointed
 at stays where it is, under the cursor. Selecting another workspace lets
 the strip slide back to what its monitor shows. The pan is the
 overview's alone: the workspace itself only scrolls once a window is
@@ -345,7 +357,7 @@ overview:
   # Secondary text, e.g. the search's hit count.
   subtext_color: "#cdc3ceff"
 
-  # Outline of windows matching a search.
+  # What matched, in the search box's list.
   search_color: "#89b4faff"
 
   # Font of the overview's text, drawn with DirectWrite. Segoe UI when the
@@ -397,6 +409,16 @@ overview:
   # back, from 0 (not at all) to 0.8 (wobbly). The zooms go by
   # `zoom_easing` instead.
   bounce: 0.25
+
+  # How the selected or hovered window is marked: "ring" (in the accent
+  # color), "glow" (a soft accent glow fading out from its edge) or
+  # "none" (only the title tag under it shows which it is). `width` is the
+  # ring's thickness or how far the glow reaches, and `gap` the space
+  # between the window and either, in logical pixels.
+  window_highlight:
+    style: "ring"
+    width: 2
+    gap: 0
 
   effects:
     # Soft glow of the accent color around the selected workspace.
