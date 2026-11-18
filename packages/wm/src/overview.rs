@@ -14,24 +14,24 @@ use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, EffectSet, HotCorner, InvokeCommand, InvokeFocusCommand,
+  EasingFunction, HotCorner, InvokeCommand, InvokeFocusCommand,
   InvokeMoveCommand, Layout, OverviewLayout, WindowState, WorkspaceConfig,
 };
 use wm_platform::{
   Color, MouseButton, MouseEvent, NativeBackdropOverlay,
-  NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
-  OverviewCurve, OverviewFrame, OverviewInput, OverviewLayoutMode,
-  OverviewOverlay, OverviewOverlayKind, OverviewScreen, OverviewStyle,
-  OverviewWindow, OverviewWorkspace, Point, Rect, TabFrame,
+  NativeBorderOverlay, NativeOverview, OverviewAction, OverviewCurve,
+  OverviewFrame, OverviewInput, OverviewLayoutMode, OverviewOverlay,
+  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
+  OverviewWorkspace, Point, Rect, TabFrame,
 };
 
 use crate::{
   animation::engine::apply_easing,
   commands::{
-    general::{surrogate_effects_for, SyncableOverlay},
+    general::SyncableOverlay,
     workspace::{activate_workspace, summon_special_workspace},
   },
-  layout::{is_hidden_in_layout, scrolling},
+  layout::scrolling,
   models::{
     is_inactive_stack_child, Container, Monitor, WindowContainer,
     Workspace, WorkspaceTarget,
@@ -40,6 +40,7 @@ use crate::{
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   window_overlays::WindowOverlays,
+  window_styles::{overlay_bounds, shows_overlays, WindowLooks},
   wm_state::WmState,
 };
 
@@ -744,45 +745,6 @@ pub fn prepare_target(
   )
 }
 
-/// How the WM draws windows, resolved once per frame: its effects on the
-/// focused window, on urgent ones and on the others.
-struct WindowLooks {
-  focused_id: Option<Uuid>,
-  focused: WindowLook,
-  urgent: WindowLook,
-  other: WindowLook,
-}
-
-/// The effects the WM gives a window.
-struct WindowLook {
-  opacity: u8,
-  overlays: OverlayParams,
-}
-
-impl WindowLooks {
-  fn new(state: &WmState, config: &UserConfig) -> Self {
-    let look = |set| {
-      let (opacity, _, overlays) = surrogate_effects_for(set, config);
-      WindowLook { opacity, overlays }
-    };
-
-    Self {
-      focused_id: state.focused_container().map(|focused| focused.id()),
-      focused: look(EffectSet::Focused),
-      urgent: look(EffectSet::Urgent),
-      other: look(EffectSet::Other),
-    }
-  }
-
-  fn of(&self, window: &WindowContainer) -> &WindowLook {
-    match window.effect_set(self.focused_id == Some(window.id())) {
-      EffectSet::Focused => &self.focused,
-      EffectSet::Urgent => &self.urgent,
-      EffectSet::Other => &self.other,
-    }
-  }
-}
-
 fn overview_window(
   state: &WmState,
   window: &WindowContainer,
@@ -837,19 +799,6 @@ fn overview_window(
   }
 }
 
-/// Whether `window`'s overlays are on screen, for its preview to show
-/// them: it is in view on a shown workspace.
-///
-/// The WM hides the others, which DWM composes for no thumbnail; cloaked
-/// instead, they showed in previews as small, stale boxes.
-fn shows_overlays(window: &WindowContainer) -> bool {
-  window.state() != WindowState::Minimized
-    && !is_hidden_in_layout(window)
-    && window
-      .workspace()
-      .is_some_and(|workspace| workspace.is_displayed())
-}
-
 /// `window`'s overlay among `overlays`, while the WM draws one with
 /// `params` for it, and how far it reaches past the window.
 fn window_overlay<O: SyncableOverlay>(
@@ -859,16 +808,14 @@ fn window_overlay<O: SyncableOverlay>(
   kind: OverviewOverlayKind,
   config: &UserConfig,
 ) -> Option<OverviewOverlay> {
-  let params = params.filter(|_| !O::suppressed_for(window, config))?;
-  let overlay = overlays.get(&window.id()).and_then(O::get)?;
-
   // Any rect does: an overlay reaches past its window by the same amount
   // wherever the window is.
   let frame = window.to_rect().ok()?;
-  let bounds = O::bounds(&O::overlay_rect(window, &frame), &params);
+  let (hwnd, bounds) =
+    overlay_bounds::<O>(overlays, window, params, &frame, config)?;
 
   Some(OverviewOverlay {
-    hwnd: overlay.hwnd().0,
+    hwnd,
     kind,
     outset: outset(&frame, &bounds),
   })
@@ -1474,10 +1421,9 @@ mod tests {
 
   #[test]
   fn only_windows_on_screen_show_their_overlays() {
-    use super::shows_overlays;
     use crate::{
       commands::container::set_focused_descendant, models::Monitor,
-      wm_state::WmState,
+      window_styles::shows_overlays, wm_state::WmState,
     };
 
     let (shown, hidden) = (tiling("shown"), tiling("hidden"));

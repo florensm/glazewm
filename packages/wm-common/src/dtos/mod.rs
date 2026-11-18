@@ -4,6 +4,7 @@ mod root_container_dto;
 mod split_container_dto;
 mod stack_container_dto;
 mod window_dto;
+mod window_style_dto;
 mod workspace_dto;
 
 pub use container_dto::*;
@@ -12,4 +13,5 @@ pub use root_container_dto::*;
 pub use split_container_dto::*;
 pub use stack_container_dto::*;
 pub use window_dto::*;
+pub use window_style_dto::*;
 pub use workspace_dto::*;

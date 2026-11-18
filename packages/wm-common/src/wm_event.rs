@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-  dtos::ContainerDto,
+  dtos::{ContainerDto, WindowDto},
   parsed_config::{BindingModeConfig, ParsedConfig},
   Layout, TilingDirection,
 };
@@ -79,4 +79,37 @@ pub enum WmEvent {
   PauseChanged {
     is_paused: bool,
   },
+}
+
+impl WmEvent {
+  /// Runs `f` on every window this event holds.
+  pub fn for_each_window_mut(
+    &mut self,
+    f: &mut impl FnMut(&mut WindowDto),
+  ) {
+    let container = match self {
+      WmEvent::FocusChanged { focused_container }
+      | WmEvent::FocusedContainerMoved { focused_container } => {
+        focused_container
+      }
+      WmEvent::MonitorAdded { added_monitor } => added_monitor,
+      WmEvent::MonitorUpdated { updated_monitor } => updated_monitor,
+      WmEvent::TilingDirectionChanged {
+        direction_container,
+        ..
+      } => direction_container,
+      WmEvent::LayoutChanged { workspace, .. } => workspace,
+      WmEvent::WindowManaged { managed_window } => managed_window,
+      WmEvent::WindowUrgencyChanged { updated_window, .. } => {
+        updated_window
+      }
+      WmEvent::WorkspaceActivated {
+        activated_workspace,
+      } => activated_workspace,
+      WmEvent::WorkspaceUpdated { updated_workspace } => updated_workspace,
+      _ => return,
+    };
+
+    container.for_each_window_mut(f);
+  }
 }

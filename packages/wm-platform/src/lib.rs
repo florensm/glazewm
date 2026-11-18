@@ -184,6 +184,13 @@ pub fn refresh_companions_at_rest() {
   companion::Companion::refresh_at_rest();
 }
 
+/// Handle of the window another program draws over `window` in its place
+/// (see `companion`), if one is shown.
+#[must_use]
+pub fn companion_of(window: &NativeWindow) -> Option<isize> {
+  companion::Companion::find(window.hwnd()).map(|found| found.hwnd().0)
+}
+
 /// Waits for the next DWM composition frame to complete.
 ///
 /// Used to synchronize animation ticks to vsync so surrogate updates reach

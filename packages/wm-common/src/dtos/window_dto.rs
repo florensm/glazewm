@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wm_platform::{Rect, RectDelta};
 
-use crate::{ActiveDrag, DisplayState, WindowState};
+use crate::{ActiveDrag, DisplayState, WindowState, WindowStyleDto};
 
 /// User-friendly representation of a tiling or non-tiling window.
 ///
@@ -22,6 +22,10 @@ pub struct WindowDto {
   pub prev_state: Option<WindowState>,
   pub display_state: DisplayState,
   pub border_delta: RectDelta,
+  /// How the WM shows it, filled in as it is sent over IPC; `None` for a
+  /// minimized window or a stack's hidden tab.
+  #[serde(default)]
+  pub style: Option<WindowStyleDto>,
   pub floating_placement: Rect,
   pub handle: isize,
   /// Kept out of `Debug`, and so out of logs: it can hold private text.

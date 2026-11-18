@@ -60,6 +60,7 @@ mod tab_bars;
 mod traits;
 mod user_config;
 mod window_overlays;
+mod window_styles;
 mod wm;
 mod wm_state;
 
@@ -431,6 +432,13 @@ fn handle_wm_event(
     listeners
       .mouse
       .set_enabled_events(mouse_event_kinds(config))?;
+  }
+
+  let mut wm_event = wm_event;
+  if ipc_server.has_subscribers() {
+    wm_event.for_each_window_mut(&mut window_styles::style_filler(
+      &wm.state, config,
+    ));
   }
 
   if let Err(err) = ipc_server.process_event(wm_event) {

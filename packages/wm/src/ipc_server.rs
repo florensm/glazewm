@@ -160,18 +160,24 @@ impl IpcServer {
       iter::once("").chain(message.split_whitespace()),
     );
 
-    let response_data =
-      app_command
-        .map_err(anyhow::Error::msg)
-        .and_then(|app_command| {
-          self.handle_app_command(
-            app_command,
-            response_tx,
-            disconnection_tx,
-            wm,
-            config,
-          )
-        });
+    let response_data = app_command
+      .map_err(anyhow::Error::msg)
+      .and_then(|app_command| {
+        self.handle_app_command(
+          app_command,
+          response_tx,
+          disconnection_tx,
+          wm,
+          config,
+        )
+      })
+      .map(|mut data| {
+        // How the WM shows each window, which its DTO can't tell.
+        data.for_each_window_mut(&mut crate::window_styles::style_filler(
+          &wm.state, config,
+        ));
+        data
+      });
 
     // Respond to the client with the result of the command.
     response_tx
@@ -388,6 +394,12 @@ impl IpcServer {
     });
 
     wm.hold_overlay(id, config)
+  }
+
+  /// Whether any connection is subscribed to events.
+  pub fn has_subscribers(&self) -> bool {
+    // Less the receiver the server keeps.
+    self.event_tx.receiver_count() > 1
   }
 
   /// Forgets overlay hold `id`, whose connection went.

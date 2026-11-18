@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{BindingModeConfig, ContainerDto, TilingDirection, WmEvent};
+use crate::{
+  BindingModeConfig, ContainerDto, TilingDirection, WindowDto, WmEvent,
+};
 
 pub const DEFAULT_IPC_PORT: u32 = 6123;
 
@@ -39,6 +41,35 @@ pub enum ClientResponseData {
   Windows(WindowsData),
   Workspaces(WorkspacesData),
   Paused(bool),
+}
+
+impl ClientResponseData {
+  /// Runs `f` on every window this response holds.
+  pub fn for_each_window_mut(
+    &mut self,
+    f: &mut impl FnMut(&mut WindowDto),
+  ) {
+    let containers = match self {
+      ClientResponseData::Focused(data) => vec![&mut data.focused],
+      ClientResponseData::Monitors(data) => {
+        data.monitors.iter_mut().collect()
+      }
+      ClientResponseData::TilingDirection(data) => {
+        vec![&mut data.direction_container]
+      }
+      ClientResponseData::Windows(data) => {
+        data.windows.iter_mut().collect()
+      }
+      ClientResponseData::Workspaces(data) => {
+        data.workspaces.iter_mut().collect()
+      }
+      _ => Vec::new(),
+    };
+
+    for container in containers {
+      container.for_each_window_mut(f);
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
