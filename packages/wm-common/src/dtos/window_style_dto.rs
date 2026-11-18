@@ -26,6 +26,24 @@ pub struct WindowStyleDto {
   /// What the WM draws around and behind it, bottom to top, while the
   /// window shows on screen (the WM hides them otherwise).
   pub overlays: Vec<WindowOverlayDto>,
+
+  /// The border ring the WM gives it, also while its overlay is hidden
+  /// (e.g. on a workspace not displayed), for a preview to draw itself.
+  pub border: Option<WindowBorderDto>,
+}
+
+/// A border ring around a window's visible frame, sizes in physical
+/// pixels.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowBorderDto {
+  /// As `#rrggbbaa`.
+  pub color: String,
+  pub width: f32,
+  /// Of the ring's outer edge.
+  pub corner_radius: f32,
+  /// From 0 to 1.
+  pub opacity: f32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

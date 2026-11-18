@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 use wm_common::{
-  EffectSet, WindowDto, WindowOverlayDto, WindowOverlayKind, WindowState,
-  WindowStyleDto,
+  EffectSet, WindowBorderDto, WindowDto, WindowOverlayDto,
+  WindowOverlayKind, WindowState, WindowStyleDto,
 };
 use wm_platform::{
   NativeBackdropOverlay, NativeBorderOverlay, OverlayParams, Rect,
@@ -159,11 +159,29 @@ fn window_style(
     Vec::new()
   };
 
+  let border = look
+    .overlays
+    .border
+    .filter(|params| {
+      params.opacity > 0.0
+        && !NativeBorderOverlay::suppressed_for(window, config)
+    })
+    .map(|params| WindowBorderDto {
+      color: format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        params.color.r, params.color.g, params.color.b, params.color.a
+      ),
+      width: params.width,
+      corner_radius: params.corner_radius,
+      opacity: params.opacity,
+    });
+
   Some(WindowStyleDto {
     frame,
     bounds,
     opacity: look.opacity,
     companion_handle: wm_platform::companion_of(&window.native()),
     overlays,
+    border,
   })
 }
