@@ -9,7 +9,8 @@ use wm_common::{
   WindowOverlayKind, WindowState, WindowStyleDto,
 };
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, OverlayParams, Rect,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, OverlayParams,
+  Rect,
 };
 
 use crate::{
@@ -152,7 +153,11 @@ fn window_style(
     ]
     .into_iter()
     .filter_map(|(kind, found)| {
-      found.map(|(handle, rect)| WindowOverlayDto { handle, kind, rect })
+      found.map(|(handle, rect)| WindowOverlayDto {
+        handle,
+        kind,
+        rect: overlay_on_frame(handle, window, &frame).unwrap_or(rect),
+      })
     })
     .collect()
   } else {
@@ -184,4 +189,26 @@ fn window_style(
     overlays,
     border,
   })
+}
+
+/// Where the overlay window `handle` sits around `frame`: as far past the
+/// window's visible frame as it really is. Its window can reach further
+/// than its style does (a border's `reserve`, see
+/// `BorderOverlayParams::extent`), and a thumbnail of it shows all of it.
+fn overlay_on_frame(
+  handle: isize,
+  window: &WindowContainer,
+  frame: &Rect,
+) -> Option<Rect> {
+  let overlay = NativeWindow::from_handle(handle)
+    .frame_with_shadows()
+    .ok()?;
+  let shown = window.native().frame().ok()?;
+
+  Some(Rect::from_ltrb(
+    frame.left - (shown.left - overlay.left),
+    frame.top - (shown.top - overlay.top),
+    frame.right + (overlay.right - shown.right),
+    frame.bottom + (overlay.bottom - shown.bottom),
+  ))
 }
