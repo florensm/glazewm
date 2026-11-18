@@ -518,6 +518,7 @@ fn overview_frame(
       highlight_duration_ms: overview.highlight_duration_ms,
       bounce: overview.bounce,
       effects: overview.effects,
+      window_highlight: overview.window_highlight,
       particles: config.value.animations.particles.look(),
     },
   }

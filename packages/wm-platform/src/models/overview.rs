@@ -196,6 +196,9 @@ pub struct OverviewStyle {
 
   pub effects: OverviewEffects,
 
+  /// How the selected or hovered window is marked.
+  pub window_highlight: OverviewWindowHighlight,
+
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
 }
@@ -280,6 +283,47 @@ impl Default for OverviewCurve {
         .collect(),
     )
   }
+}
+
+/// How the overview marks the selected or hovered window.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewWindowHighlight {
+  pub style: OverviewWindowHighlightStyle,
+
+  /// The ring's thickness, or how far the glow reaches, in logical
+  /// pixels.
+  pub width: f32,
+
+  /// Space between the window and its ring or glow, in logical pixels.
+  pub gap: f32,
+}
+
+impl Default for OverviewWindowHighlight {
+  fn default() -> Self {
+    Self {
+      style: OverviewWindowHighlightStyle::default(),
+      width: 2.0,
+      gap: 0.0,
+    }
+  }
+}
+
+/// What marks the selected or hovered window in the overview.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewWindowHighlightStyle {
+  /// A ring in the accent color.
+  #[default]
+  Ring,
+
+  /// A soft glow in the accent color, fading out from the window's edge.
+  Glow,
+
+  /// Nothing; the title tag under it still shows which it is.
+  None,
 }
 
 /// Extra flourishes of the overview, each of which can be turned off.

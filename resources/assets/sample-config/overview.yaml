@@ -49,6 +49,14 @@ overview:
   # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
   bounce: 0.25
 
+  # Marks the selected or hovered window: 'ring', 'glow' or 'none'. Width
+  # is the ring's thickness or the glow's reach; gap is the space to the
+  # window, both in pixels.
+  window_highlight:
+    style: "ring"
+    width: 2
+    gap: 0
+
   effects:
     # Soft accent glow around the selected workspace.
     glow: true

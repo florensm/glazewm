@@ -4,8 +4,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
-  OpacityValue, OverviewEffects, OverviewSwitchStyle, OverviewZoomStyle,
-  ParticleEffects, ParticleLook, RectDelta,
+  OpacityValue, OverviewEffects, OverviewSwitchStyle,
+  OverviewWindowHighlight, OverviewZoomStyle, ParticleEffects,
+  ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -746,6 +747,9 @@ pub struct OverviewConfig {
 
   /// Glow, ripples and particles, each of which can be turned off.
   pub effects: OverviewEffects,
+
+  /// How the selected or hovered window is marked.
+  pub window_highlight: OverviewWindowHighlight,
 }
 
 /// How the overview lays out the workspaces.
@@ -817,6 +821,7 @@ impl Default for OverviewConfig {
       highlight_duration_ms: 170,
       bounce: 0.25,
       effects: OverviewEffects::default(),
+      window_highlight: OverviewWindowHighlight::default(),
     }
   }
 }
@@ -2736,7 +2741,7 @@ where
 mod tests {
   use std::str::FromStr;
 
-  use wm_platform::ParticleStyle;
+  use wm_platform::{OverviewWindowHighlightStyle, ParticleStyle};
 
   use super::{
     BackdropEffectConfig, BorderEffectConfig, BorderGlow,
@@ -3005,6 +3010,32 @@ mod tests {
     let defaults = OverviewConfig::default();
     assert_eq!(defaults.zoom_style, OverviewZoomStyle::Zoom);
     assert_eq!(defaults.switch_style, OverviewSwitchStyle::Slide);
+  }
+
+  #[test]
+  fn overview_window_highlight_reads_partial_settings() {
+    let config =
+      serde_json::from_value::<OverviewConfig>(serde_json::json!({
+        "window_highlight": { "style": "glow", "width": 6 },
+      }))
+      .expect("parses");
+
+    assert_eq!(
+      config.window_highlight.style,
+      OverviewWindowHighlightStyle::Glow
+    );
+    assert!((config.window_highlight.width - 6.0).abs() < f32::EPSILON);
+    assert!(config.window_highlight.gap.abs() < f32::EPSILON);
+
+    let none =
+      serde_json::from_value::<OverviewConfig>(serde_json::json!({
+        "window_highlight": { "style": "none" },
+      }))
+      .expect("parses");
+    assert_eq!(
+      none.window_highlight.style,
+      OverviewWindowHighlightStyle::None
+    );
   }
 
   #[test]

@@ -1459,6 +1459,7 @@ mod tests {
       highlight_duration_ms: 170,
       bounce: 0.25,
       effects: crate::OverviewEffects::default(),
+      window_highlight: crate::OverviewWindowHighlight::default(),
       particles: crate::ParticleLook::default(),
     };
     let searching = SearchField {

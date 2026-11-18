@@ -398,6 +398,16 @@ overview:
   # `zoom_easing` instead.
   bounce: 0.25
 
+  # How the selected or hovered window is marked: "ring" (in the accent
+  # color), "glow" (a soft accent glow fading out from its edge) or
+  # "none" (only the title tag under it shows which it is). `width` is the
+  # ring's thickness or how far the glow reaches, and `gap` the space
+  # between the window and either, in logical pixels.
+  window_highlight:
+    style: "ring"
+    width: 2
+    gap: 0
+
   effects:
     # Soft glow of the accent color around the selected workspace.
     glow: true

@@ -20,7 +20,7 @@ use crate::{
   overview_overlays::{Highlight, Tag},
   overview_state::{Mode, Toward},
   overview_thumbnails::Picture,
-  OverviewLayoutMode, OverviewStyle,
+  OverviewLayoutMode, OverviewStyle, OverviewWindowHighlightStyle,
 };
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
@@ -30,6 +30,10 @@ const RING_GAP: f32 = 5.0;
 
 /// Corner radius a window's highlight is drawn with, in logical pixels.
 const WINDOW_RING_RADIUS: f32 = 10.0;
+
+/// Corner radius of a window shown in the overview, which the selected
+/// window's ring or glow stays concentric with, in logical pixels.
+const WINDOW_CORNER_RADIUS: f32 = 5.0;
 
 /// Corner radius of the ring around the screen with the keyboard, and its
 /// gap to the screen's edges, in logical pixels.
@@ -172,11 +176,25 @@ impl Overlays {
       px(2.0).max(1),
       with_alpha(accent, 0.45),
     ));
-    self.window_ring.slices.draw(SliceLook::ring(
-      px(WINDOW_RING_RADIUS),
-      px(3.0).max(1),
-      accent,
-    ));
+    let highlight = style.window_highlight;
+    let radius = px(WINDOW_CORNER_RADIUS + highlight.gap.max(0.0));
+    let width = px(highlight.width).max(1);
+    match highlight.style {
+      OverviewWindowHighlightStyle::Ring => {
+        self
+          .window_ring
+          .slices
+          .draw(SliceLook::ring(radius, width, accent));
+      }
+      OverviewWindowHighlightStyle::Glow => {
+        self.window_ring.slices.draw(SliceLook::glow(
+          radius,
+          width,
+          with_alpha(accent, 0.55),
+        ));
+      }
+      OverviewWindowHighlightStyle::None => {}
+    }
     self.drop_ring.slices.draw(SliceLook::ring(
       px(WINDOW_RING_RADIUS),
       px(3.0).max(1),
@@ -475,8 +493,22 @@ impl Screen {
     let picked_rect = picked.and_then(|hwnd| {
       self.window_rect(hwnd, context).map(|rect| (hwnd, rect))
     });
-    let window_target = picked_rect
-      .map(|(hwnd, rect)| (hwnd, rect.inset(-px(RING_GAP)), 1.0));
+    let highlight = self.style().map(|style| style.window_highlight);
+    let window_target =
+      picked_rect
+        .zip(highlight)
+        .and_then(|((hwnd, rect), highlight)| {
+          let outset = match highlight.style {
+            OverviewWindowHighlightStyle::Ring => highlight.gap,
+            // The glow's picture starts its fade `width` out from the
+            // rect.
+            OverviewWindowHighlightStyle::Glow => {
+              highlight.gap + highlight.width
+            }
+            OverviewWindowHighlightStyle::None => return None,
+          };
+          Some((hwnd, rect.inset(-px(outset.max(0.0))), 1.0))
+        });
 
     // The half of the window a dragged window would land beside.
     let drop_target = focus.drop.zip(focus.drop_beside).and_then(
