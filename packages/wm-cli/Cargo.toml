@@ -20,25 +20,5 @@ tokio = { workspace = true }
 wm-common = { path = "../wm-common" }
 wm-ipc-client = { path = "../wm-ipc-client" }
 
-[dev-dependencies]
-uuid = { workspace = true }
-# `perf_bench`'s IPC answers, read without `wm-common`'s types.
-serde = { workspace = true }
-# `perf_bench`'s config copies for `switch_modes.ps1`.
-serde_yaml = "0.9"
-
-# `perf_bench --dwm`: PresentMon service API and `dwm.exe` lookup.
-# `perf_bench --shots`: GDI screen capture, saved as PNG.
-[target.'cfg(windows)'.dev-dependencies]
-png = "0.17"
-windows = { version = "0.52", features = [
-  "Win32_Foundation",
-  "Win32_Graphics_Gdi",
-  "Win32_System_Diagnostics_ToolHelp",
-  "Win32_System_LibraryLoader",
-  "Win32_System_Performance",
-  "Win32_UI_HiDpi",
-] }
-
 [lints]
 workspace = true
