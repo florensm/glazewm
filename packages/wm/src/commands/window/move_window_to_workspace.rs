@@ -1,13 +1,15 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::WindowState;
+use wm_common::{WindowState, WmEvent};
 
 use crate::{
   commands::{
     container::{move_container_within_tree, set_focused_descendant},
     workspace::activate_workspace,
   },
-  models::{other_stack_tabs, WindowContainer, WorkspaceTarget},
+  models::{
+    other_stack_tabs, WindowContainer, Workspace, WorkspaceTarget,
+  },
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -145,7 +147,25 @@ pub fn move_window_to_workspace(
     state
       .pending_sync
       .queue_containers_to_redraw(old_tabs)
-      .queue_workspace_to_reorder(target_workspace);
+      .queue_workspace_to_reorder(target_workspace.clone());
+
+    emit_moved(&current_workspace, &target_workspace, state)?;
+  }
+
+  Ok(())
+}
+
+/// Tells IPC clients what the move changed: moving a window that isn't
+/// focused emits nothing else.
+fn emit_moved(
+  from: &Workspace,
+  to: &Workspace,
+  state: &WmState,
+) -> anyhow::Result<()> {
+  for workspace in [from, to] {
+    state.emit_event(WmEvent::WorkspaceUpdated {
+      updated_workspace: workspace.to_dto()?,
+    });
   }
 
   Ok(())

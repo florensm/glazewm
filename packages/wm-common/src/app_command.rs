@@ -174,6 +174,7 @@ pub enum SubscribableEvent {
   WorkspaceDeactivated,
   WorkspaceUpdated,
   PauseChanged,
+  OverlayInput,
 }
 
 #[derive(Clone, Debug, Parser, PartialEq, Serialize)]

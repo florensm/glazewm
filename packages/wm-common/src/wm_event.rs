@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use wm_platform::Direction;
 
 use crate::{
   dtos::{ContainerDto, WindowDto},
@@ -79,6 +80,35 @@ pub enum WmEvent {
   PauseChanged {
     is_paused: bool,
   },
+  /// A keybinding pressed while a program holds the overlay (see
+  /// `overlay begin`), for that program to act on instead of the WM.
+  OverlayInput {
+    input: OverlayInput,
+  },
+}
+
+/// What a keybinding means to a program holding the overlay, e.g. an
+/// overview: the WM doesn't run it on the desktop behind.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OverlayInput {
+  /// A `focus --direction` or `move --direction`: move the selection.
+  Move {
+    direction: Direction,
+  },
+  /// Go to the named workspace.
+  FocusWorkspace {
+    name: String,
+  },
+  /// Send the selected window to the named workspace.
+  MoveToWorkspace {
+    name: String,
+  },
+  /// Show the next or previous workspace.
+  NextWorkspace,
+  PreviousWorkspace,
+  /// Close the selected window.
+  CloseWindow,
 }
 
 impl WmEvent {

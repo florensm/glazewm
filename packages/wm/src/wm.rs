@@ -9,13 +9,13 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{
   FloatingStateConfig, FullscreenStateConfig, InvokeCommand,
-  InvokeFocusCommand, InvokeMoveCommand, TitleBarVisibility, WindowState,
-  WmEvent,
+  InvokeFocusCommand, InvokeMoveCommand, OverlayInput, TitleBarVisibility,
+  WindowState, WmEvent,
 };
 use wm_platform::{
   Dispatcher, GrabEvent, GrabListener, GuardedClick, Keybinding,
-  KeybindingEvent, LengthValue, OverviewAction, PlatformEvent, RectDelta,
-  WindowEvent,
+  KeybindingEvent, LengthValue, OverviewAction, OverviewInput,
+  PlatformEvent, RectDelta, WindowEvent,
 };
 
 use crate::{
@@ -643,6 +643,21 @@ impl WindowManager {
     let Some(commands) = commands else {
       return Ok(());
     };
+
+    // A program holding the overlay has the keyboard too; it gets the
+    // keybinding's meaning to act on.
+    if self.state.overlay_holds.is_held() {
+      match crate::overview::route_keybinding(&commands) {
+        KeyRoute::Wm => {}
+        KeyRoute::Dropped => return Ok(()),
+        KeyRoute::Overview(input) => {
+          if let Some(input) = overlay_input(input) {
+            self.state.emit_event(WmEvent::OverlayInput { input });
+          }
+          return Ok(());
+        }
+      }
+    }
 
     if self.state.overview.is_open() {
       match crate::overview::route_keybinding(&commands) {
@@ -1660,6 +1675,25 @@ fn send_due_keys(state: &mut WmState) {
       }
     }
   }
+}
+
+/// What an overview input means to a program holding the overlay. The
+/// special workspace has no meaning there.
+fn overlay_input(input: OverviewInput) -> Option<OverlayInput> {
+  Some(match input {
+    OverviewInput::Move(direction) => OverlayInput::Move { direction },
+    OverviewInput::FocusWorkspace(name) => {
+      OverlayInput::FocusWorkspace { name }
+    }
+    OverviewInput::MoveToWorkspace(name) => {
+      OverlayInput::MoveToWorkspace { name }
+    }
+    OverviewInput::NextWorkspace => OverlayInput::NextWorkspace,
+    OverviewInput::PreviousWorkspace => OverlayInput::PreviousWorkspace,
+    OverviewInput::CloseWindow => OverlayInput::CloseWindow,
+    OverviewInput::FocusSpecialWorkspace
+    | OverviewInput::MoveToSpecialWorkspace => return None,
+  })
 }
 
 #[cfg(test)]
