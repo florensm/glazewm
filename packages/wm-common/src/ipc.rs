@@ -17,22 +17,9 @@ pub enum ServerMessage {
   EventSubscription(EventSubscriptionMessage),
 }
 
-/// A message to the IPC server as JSON rather than plain text: its reply
-/// carries `id`, so a client can tell replies to the same command apart.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientRequest {
-  pub id: String,
-  /// The message as plain text, e.g. `query monitors`.
-  pub command: String,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientResponseMessage {
-  /// The `id` of the request answered, when it was sent as JSON.
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub request_id: Option<String>,
   pub client_message: String,
   pub data: Option<ClientResponseData>,
   pub error: Option<String>,

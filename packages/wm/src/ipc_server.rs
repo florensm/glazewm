@@ -5,10 +5,7 @@ use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
   net::{TcpListener, TcpStream},
-  sync::{
-    broadcast::{self, error::RecvError},
-    mpsc,
-  },
+  sync::{broadcast, mpsc},
   task,
 };
 use tokio_tungstenite::{
@@ -22,12 +19,12 @@ use tokio_tungstenite::{
 use tracing::{info, warn};
 use uuid::Uuid;
 use wm_common::{
-  AppCommand, AppMetadataData, BindingModesData, ClientRequest,
-  ClientResponseData, ClientResponseMessage, CommandData,
-  EventSubscribeData, EventSubscriptionMessage, FocusedData,
-  InvokeCommand, MonitorsData, OverlayCommand, OverlayData, QueryCommand,
-  ServerMessage, SubscribableEvent, TilingDirectionData, WindowsData,
-  WmEvent, WorkspacesData, DEFAULT_IPC_PORT,
+  AppCommand, AppMetadataData, BindingModesData, ClientResponseData,
+  ClientResponseMessage, CommandData, EventSubscribeData,
+  EventSubscriptionMessage, FocusedData, MonitorsData, OverlayCommand,
+  OverlayData, QueryCommand, ServerMessage, SubscribableEvent,
+  TilingDirectionData, WindowsData, WmEvent, WorkspacesData,
+  DEFAULT_IPC_PORT,
 };
 
 use crate::{
@@ -60,9 +57,7 @@ pub struct IpcServer {
 impl IpcServer {
   pub async fn start() -> anyhow::Result<Self> {
     let (message_tx, message_rx) = mpsc::unbounded_channel();
-    // Room for a burst, e.g. a workspace switch's events; a subscriber
-    // further behind is told it missed some.
-    let (event_tx, _event_rx) = broadcast::channel(256);
+    let (event_tx, _event_rx) = broadcast::channel(16);
     let (unsubscribe_tx, _unsubscribe_rx) = broadcast::channel(16);
     let (overlay_release_tx, overlay_release_rx) =
       mpsc::unbounded_channel();
@@ -161,39 +156,32 @@ impl IpcServer {
     wm: &mut WindowManager,
     config: &mut UserConfig,
   ) -> anyhow::Result<()> {
-    let (request_id, command, invalid) = parse_request(message);
+    let app_command = AppCommand::try_parse_from(
+      iter::once("").chain(message.split_whitespace()),
+    );
 
-    let response_data = match invalid {
-      Some(err) => Err(err),
-      None => AppCommand::try_parse_from(
-        iter::once("").chain(command.split_whitespace()),
-      )
-      .map_err(anyhow::Error::msg),
-    }
-    .and_then(|app_command| {
-      self.handle_app_command(
-        app_command,
-        response_tx,
-        disconnection_tx,
-        wm,
-        config,
-      )
-    })
-    .map(|mut data| {
-      // How the WM shows each window, which its DTO can't tell.
-      data.for_each_window_mut(&mut crate::window_styles::style_filler(
-        &wm.state, config,
-      ));
-      data
-    });
+    let response_data = app_command
+      .map_err(anyhow::Error::msg)
+      .and_then(|app_command| {
+        self.handle_app_command(
+          app_command,
+          response_tx,
+          disconnection_tx,
+          wm,
+          config,
+        )
+      })
+      .map(|mut data| {
+        // How the WM shows each window, which its DTO can't tell.
+        data.for_each_window_mut(&mut crate::window_styles::style_filler(
+          &wm.state, config,
+        ));
+        data
+      });
 
     // Respond to the client with the result of the command.
     response_tx
-      .send(Self::to_client_response_msg(
-        request_id,
-        command,
-        response_data,
-      )?)
+      .send(Self::to_client_response_msg(message, response_data)?)
       .map_err(|err| {
         anyhow::anyhow!("Failed to send response: {}", err)
       })?;
@@ -282,15 +270,6 @@ impl IpcServer {
         subject_container_id,
         command,
       } => {
-        // A program that can reach the IPC can start programs itself; over
-        // IPC this only lets whatever else reaches the socket run them.
-        if matches!(command, InvokeCommand::ShellExec { .. }) {
-          bail!(
-            "`shell-exec` isn't accepted over IPC. Use it in a keybinding \
-             or `startup_commands`."
-          );
-        }
-
         let subject_container_id = wm.process_commands(
           &vec![command],
           subject_container_id,
@@ -321,26 +300,10 @@ impl IpcServer {
                   break;
                 }
               }
-              received = event_rx.recv() => {
-                let event = match received {
-                  // Check whether the event is one of the subscribed events.
-                  Ok((event_type, event)) => {
-                    if !events.contains(&event_type)
-                      && !events.contains(&SubscribableEvent::All)
-                    {
-                      continue;
-                    }
-                    event
-                  }
-                  Err(RecvError::Lagged(count)) => {
-                    warn!(
-                      "Subscription {subscription_id} missed {count} events."
-                    );
-                    WmEvent::EventsMissed { count }
-                  }
-                  Err(RecvError::Closed) => break,
-                };
-
+              Ok((event_type, event)) = event_rx.recv() => {
+                // Check whether the event is one of the subscribed events.
+                if events.contains(&event_type)
+                  || events.contains(&SubscribableEvent::All)
                 {
                   let send_result = Self::to_event_subscription_msg(
                     subscription_id,
@@ -445,7 +408,6 @@ impl IpcServer {
   }
 
   fn to_client_response_msg(
-    request_id: Option<String>,
     client_message: String,
     response_data: anyhow::Result<ClientResponseData>,
   ) -> anyhow::Result<Message> {
@@ -453,7 +415,6 @@ impl IpcServer {
     let success = response_data.as_ref().is_ok();
 
     let message = ServerMessage::ClientResponse(ClientResponseMessage {
-      request_id,
       client_message,
       data: response_data.ok(),
       error,
@@ -518,8 +479,6 @@ impl IpcServer {
       }
       WmEvent::PauseChanged { .. } => SubscribableEvent::PauseChanged,
       WmEvent::OverlayInput { .. } => SubscribableEvent::OverlayInput,
-      // Only ever sent to one subscription by its own task.
-      WmEvent::EventsMissed { .. } => SubscribableEvent::All,
     };
 
     self
@@ -539,27 +498,6 @@ impl IpcServer {
 impl Drop for IpcServer {
   fn drop(&mut self) {
     self.stop();
-  }
-}
-
-/// Splits an IPC message into its request id and command. A JSON request
-/// (`ClientRequest`) carries an id for its reply; plain text is the
-/// command itself. A malformed JSON request comes back whole, with its
-/// error.
-fn parse_request(
-  message: String,
-) -> (Option<String>, String, Option<anyhow::Error>) {
-  if !message.trim_start().starts_with('{') {
-    return (None, message, None);
-  }
-
-  match serde_json::from_str::<ClientRequest>(&message) {
-    Ok(request) => (Some(request.id), request.command, None),
-    Err(err) => (
-      None,
-      message,
-      Some(anyhow::anyhow!("Invalid JSON request: {err}")),
-    ),
   }
 }
 
@@ -613,30 +551,5 @@ mod tests {
   #[test]
   fn accepts_native_clients() {
     assert!(!is_from_browser(&request(None)));
-  }
-
-  #[test]
-  fn plain_text_is_the_command() {
-    let (id, command, invalid) = parse_request("query monitors".into());
-    assert_eq!((id, command.as_str()), (None, "query monitors"));
-    assert!(invalid.is_none());
-  }
-
-  #[test]
-  fn json_carries_an_id() {
-    let (id, command, invalid) =
-      parse_request(r#"{"id": "7", "command": "query monitors"}"#.into());
-    assert_eq!(
-      (id.as_deref(), command.as_str()),
-      (Some("7"), "query monitors")
-    );
-    assert!(invalid.is_none());
-  }
-
-  #[test]
-  fn malformed_json_is_an_error() {
-    let (id, command, invalid) = parse_request(r#"{"command": 1}"#.into());
-    assert_eq!((id, command.as_str()), (None, r#"{"command": 1}"#));
-    assert!(invalid.is_some());
   }
 }
