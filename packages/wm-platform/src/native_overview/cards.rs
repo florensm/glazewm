@@ -17,6 +17,9 @@ use crate::{
 /// where at scale it would be too thin to see.
 const CARD_BORDER_WIDTH: f32 = 1.5;
 
+/// How strongly a window shows during a search it doesn't match.
+const SEARCH_MISS_OPACITY: f32 = 0.25;
+
 /// Where window `hwnd` of `workspace` is on screen: measured for the
 /// displayed workspace's windows in view, so a zoom starts and ends
 /// exactly on them.
@@ -247,23 +250,35 @@ impl Screen {
   /// lifted, so it visibly left without vanishing, and while a search
   /// passes it by.
   pub(super) fn window_opacity(&self, index: usize, hwnd: isize) -> f32 {
-    let focus = &self.focus;
-    if focus.floating == Some(hwnd) {
-      return 0.35;
-    }
-
-    let is_miss = !focus.query.is_empty()
-      && !self
-        .workspaces()
-        .get(index)
-        .and_then(|workspace| workspace.window(hwnd))
-        .is_some_and(|window| focus.is_match(window));
-
-    if is_miss {
-      0.3
+    if self.focus.floating == Some(hwnd) {
+      0.35
+    } else if !self.focus.query.is_empty()
+      && !self.matches_search(index, hwnd)
+    {
+      SEARCH_MISS_OPACITY
     } else {
       1.0
     }
+  }
+
+  /// Whether window `hwnd` of workspace `index` matches the search.
+  pub(super) fn matches_search(&self, index: usize, hwnd: isize) -> bool {
+    self
+      .workspaces()
+      .get(index)
+      .and_then(|workspace| workspace.window(hwnd))
+      .is_some_and(|window| self.focus.is_match(window))
+  }
+
+  /// Whether a search is on that no window of workspace `index` matches.
+  pub(super) fn misses_search(&self, index: usize) -> bool {
+    !self.focus.query.is_empty()
+      && self.workspaces().get(index).is_some_and(|workspace| {
+        !workspace
+          .windows
+          .iter()
+          .any(|window| self.focus.is_match(window))
+      })
   }
 
   /// Everything card `index` shows, but for its selection and hover,
@@ -278,8 +293,7 @@ impl Screen {
     let focus = &self.focus;
     let look = self.metrics.look;
 
-    let (accent, search, caption) =
-      (style.accent, style.search, style.caption);
+    let (accent, caption) = (style.accent, style.caption);
     let focused_window =
       self.frame.as_ref().and_then(|frame| frame.focused_window);
 
@@ -290,7 +304,6 @@ impl Screen {
         .map(|preview| {
           let window =
             workspace.and_then(|workspace| workspace.window(preview.hwnd));
-          let is_match = window.is_some_and(|w| focus.is_match(w));
           let is_picked = focus.floating == Some(preview.hwnd);
           let is_focused = focused_window == Some(preview.hwnd);
 
@@ -300,9 +313,7 @@ impl Screen {
           let drawn_border = window
             .and_then(|window| window.border)
             .filter(|_| !preview.has_border());
-          let (border_width, border) = if is_match {
-            (3.0, search)
-          } else if is_picked {
+          let (border_width, border) = if is_picked {
             (2.0, accent)
           } else if preview.has_border() {
             (0.0, caption)

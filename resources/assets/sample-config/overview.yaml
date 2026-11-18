@@ -14,7 +14,7 @@ overview:
 
   text_color: "#e8e0e8ff"
   subtext_color: "#cdc3ceff"
-  # Outline of windows matching a search.
+  # What matched, in the search box's list.
   search_color: "#89b4faff"
   # Falls back to Segoe UI on Windows 10.
   font_family: "Segoe UI Variable Text"

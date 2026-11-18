@@ -27,16 +27,28 @@ pub(super) fn scene_window_shown(
 ) -> (RectF, f32) {
   let (rect, alpha) = (window.rect(), window.alpha.value);
 
-  match landing {
+  // Landing, it settles where it heads, at its own size.
+  let (rect, alpha, lift) = match landing {
     Some(openness) => {
       let closed = 1.0 - openness.clamp(0.0, 1.0);
       (
         rect.lerp(&window.target(), closed),
         alpha + (window.alpha.target - alpha) * closed,
+        window.lift.value * (1.0 - closed),
       )
     }
-    None => (rect, alpha),
-  }
+    None => (rect, alpha, window.lift.value),
+  };
+  let (grow_w, grow_h) = (rect.w * lift, rect.h * lift);
+  (
+    RectF::new(
+      rect.x - grow_w / 2.0,
+      rect.y - grow_h / 2.0,
+      rect.w + grow_w,
+      rect.h + grow_h,
+    ),
+    alpha,
+  )
 }
 
 impl Screen {

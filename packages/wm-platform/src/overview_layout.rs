@@ -323,6 +323,10 @@ impl CardMetrics {
 /// Height of the search field line, in logical pixels.
 pub(crate) const SEARCH_HEIGHT: f32 = 36.0;
 
+/// How far into the activities' scene, and down from the top of the
+/// stack, the search box sits while searching, in logical pixels.
+const SPOTLIGHT_INSET: f32 = 28.0;
+
 /// Where a card sits: its center, scale and opacity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Placement {
@@ -383,11 +387,13 @@ impl Placement {
   }
 }
 
-/// Where every card goes, and the search field's line under them.
+/// Where every card goes, the search field's line under them, and the
+/// top of the search box shown while searching.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Targets {
   pub cards: Vec<Placement>,
   pub search_y: f32,
+  pub spotlight_y: f32,
 }
 
 /// What the layouts need of a card.
@@ -470,7 +476,15 @@ pub(crate) fn activities(
     (search_y - metrics.px(16.0) - scene_top).max(0.0),
   );
 
-  (Targets { cards, search_y }, scene)
+  let spotlight_y = scene_top + metrics.px(SPOTLIGHT_INSET);
+  (
+    Targets {
+      cards,
+      search_y,
+      spotlight_y,
+    },
+    scene,
+  )
 }
 
 /// Space kept free beside a panned strip's picked window, and between the
@@ -540,7 +554,15 @@ pub(crate) fn stack(
     })
     .collect();
 
-  (Targets { cards, search_y }, panned)
+  let spotlight_y = metrics.px(SPOTLIGHT_INSET);
+  (
+    Targets {
+      cards,
+      search_y,
+      spotlight_y,
+    },
+    panned,
+  )
 }
 
 /// How a workspace's screen space maps onto its card at scale 1.

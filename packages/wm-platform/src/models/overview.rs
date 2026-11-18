@@ -162,7 +162,7 @@ pub struct OverviewStyle {
   pub text: Color,
   pub subtext: Color,
 
-  /// Border of windows matching a search.
+  /// What matched, in the search box's list.
   pub search: Color,
 
   pub font_family: String,

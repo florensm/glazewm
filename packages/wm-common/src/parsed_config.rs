@@ -697,7 +697,7 @@ pub struct OverviewConfig {
   /// Secondary text, e.g. the search's hit count.
   pub subtext_color: Color,
 
-  /// Border of windows matching a search.
+  /// What matched, in the search box's list.
   pub search_color: Color,
 
   /// Font of the overview's text; Segoe UI when it isn't installed.
