@@ -8,15 +8,23 @@ use tokio::{
   sync::{broadcast, mpsc},
   task,
 };
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+  accept_hdr_async,
+  tungstenite::{
+    handshake::server::{ErrorResponse, Request, Response},
+    http::{header::ORIGIN, StatusCode},
+    Message,
+  },
+};
 use tracing::{info, warn};
 use uuid::Uuid;
 use wm_common::{
   AppCommand, AppMetadataData, BindingModesData, ClientResponseData,
   ClientResponseMessage, CommandData, EventSubscribeData,
-  EventSubscriptionMessage, FocusedData, MonitorsData, QueryCommand,
-  ServerMessage, SubscribableEvent, TilingDirectionData, WindowsData,
-  WmEvent, WorkspacesData, DEFAULT_IPC_PORT,
+  EventSubscriptionMessage, FocusedData, MonitorsData, OverlayCommand,
+  OverlayData, QueryCommand, ServerMessage, SubscribableEvent,
+  TilingDirectionData, WindowsData, WmEvent, WorkspacesData,
+  DEFAULT_IPC_PORT,
 };
 
 use crate::{
@@ -39,6 +47,11 @@ pub struct IpcServer {
   event_tx: broadcast::Sender<(SubscribableEvent, WmEvent)>,
   _unsubscribe_rx: broadcast::Receiver<Uuid>,
   unsubscribe_tx: broadcast::Sender<Uuid>,
+  /// Overlay holds by connection, keyed by its response channel.
+  overlay_holds: Vec<(mpsc::UnboundedSender<Message>, Uuid)>,
+  overlay_release_tx: mpsc::UnboundedSender<Uuid>,
+  /// Holds whose connection went without ending them.
+  pub overlay_release_rx: mpsc::UnboundedReceiver<Uuid>,
 }
 
 impl IpcServer {
@@ -46,6 +59,8 @@ impl IpcServer {
     let (message_tx, message_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = broadcast::channel(16);
     let (unsubscribe_tx, _unsubscribe_rx) = broadcast::channel(16);
+    let (overlay_release_tx, overlay_release_rx) =
+      mpsc::unbounded_channel();
 
     let server_addr = format!("127.0.0.1:{DEFAULT_IPC_PORT}");
     let server = TcpListener::bind(server_addr.clone()).await?;
@@ -74,6 +89,9 @@ impl IpcServer {
       unsubscribe_tx,
       #[allow(clippy::used_underscore_binding)]
       _unsubscribe_rx,
+      overlay_holds: Vec::new(),
+      overlay_release_tx,
+      overlay_release_rx,
     })
   }
 
@@ -84,7 +102,7 @@ impl IpcServer {
   ) -> anyhow::Result<()> {
     info!("Incoming IPC connection from: {}.", addr);
 
-    let ws_stream = accept_async(stream)
+    let ws_stream = accept_hdr_async(stream, reject_browsers)
       .await
       .context("Error during websocket handshake.")?;
 
@@ -131,7 +149,7 @@ impl IpcServer {
   }
 
   pub fn process_message(
-    &self,
+    &mut self,
     message: String,
     response_tx: &mpsc::UnboundedSender<Message>,
     disconnection_tx: &broadcast::Sender<()>,
@@ -167,7 +185,7 @@ impl IpcServer {
 
   #[allow(clippy::too_many_lines)]
   fn handle_app_command(
-    &self,
+    &mut self,
     app_command: AppCommand,
     response_tx: &mpsc::UnboundedSender<Message>,
     disconnection_tx: &broadcast::Sender<()>,
@@ -313,10 +331,68 @@ impl IpcServer {
 
         ClientResponseData::EventUnsubscribe
       }
+      AppCommand::Overlay { command } => {
+        match command {
+          OverlayCommand::Begin => {
+            self.begin_overlay(response_tx, wm, config)?;
+          }
+          OverlayCommand::End => {
+            let held = self
+              .overlay_holds
+              .iter()
+              .position(|(tx, _)| tx.same_channel(response_tx));
+
+            if let Some(index) = held {
+              let (_, id) = self.overlay_holds.remove(index);
+              wm.release_overlay(id, config)?;
+            }
+          }
+        }
+
+        ClientResponseData::Overlay(OverlayData {
+          is_held: wm.state.overlay_holds.is_held(),
+        })
+      }
       AppCommand::Start { .. } => bail!("Unsupported IPC command."),
     };
 
     Ok(response_data)
+  }
+
+  /// Starts an overlay hold for the connection of `response_tx`, unless
+  /// it holds one already. The hold ends with the connection.
+  fn begin_overlay(
+    &mut self,
+    response_tx: &mpsc::UnboundedSender<Message>,
+    wm: &mut WindowManager,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    if self
+      .overlay_holds
+      .iter()
+      .any(|(tx, _)| tx.same_channel(response_tx))
+    {
+      return Ok(());
+    }
+
+    let id = Uuid::new_v4();
+    self.overlay_holds.push((response_tx.clone(), id));
+
+    // The connection's task owns the receiving end, so this resolves once
+    // it is gone, even if it went before this message was processed.
+    let response_tx = response_tx.clone();
+    let release_tx = self.overlay_release_tx.clone();
+    task::spawn(async move {
+      response_tx.closed().await;
+      let _ = release_tx.send(id);
+    });
+
+    wm.hold_overlay(id, config)
+  }
+
+  /// Forgets overlay hold `id`, whose connection went.
+  pub fn forget_overlay_hold(&mut self, id: Uuid) {
+    self.overlay_holds.retain(|(_, held)| *held != id);
   }
 
   fn to_client_response_msg(
@@ -409,5 +485,58 @@ impl IpcServer {
 impl Drop for IpcServer {
   fn drop(&mut self) {
     self.stop();
+  }
+}
+
+/// Refuses WebSocket handshakes from web pages.
+///
+/// Any page a browser opens may connect to a localhost socket, and the IPC
+/// runs commands such as `shell-exec`. Browsers always send `Origin` on a
+/// WebSocket handshake and pages can't remove it, while native clients
+/// (the CLI, `wm-ipc-client`, Qt's `QWebSocket` with no origin set) send
+/// none.
+#[allow(clippy::result_large_err)]
+fn reject_browsers(
+  request: &Request,
+  response: Response,
+) -> Result<Response, ErrorResponse> {
+  if is_from_browser(request) {
+    warn!("Refused IPC connection from a web page.");
+    let mut refusal = ErrorResponse::new(Some(
+      "Connections from web pages are refused.".into(),
+    ));
+    *refusal.status_mut() = StatusCode::FORBIDDEN;
+    return Err(refusal);
+  }
+
+  Ok(response)
+}
+
+fn is_from_browser(request: &Request) -> bool {
+  request.headers().contains_key(ORIGIN)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn request(origin: Option<&str>) -> Request {
+    let mut builder = Request::builder().uri("ws://127.0.0.1:6123");
+    if let Some(origin) = origin {
+      builder = builder.header(ORIGIN, origin);
+    }
+    builder.body(()).expect("Valid request.")
+  }
+
+  #[test]
+  fn refuses_any_origin() {
+    assert!(is_from_browser(&request(Some("https://example.com"))));
+    assert!(is_from_browser(&request(Some("null"))));
+    assert!(is_from_browser(&request(Some("http://127.0.0.1:6123"))));
+  }
+
+  #[test]
+  fn accepts_native_clients() {
+    assert!(!is_from_browser(&request(None)));
   }
 }

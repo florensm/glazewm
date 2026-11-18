@@ -64,6 +64,16 @@ pub enum AppCommand {
     #[clap(long = "id")]
     subscription_id: Uuid,
   },
+
+  /// Tells the window manager that another program draws over the desktop
+  /// and takes its input, e.g. a bar's own overview.
+  ///
+  /// Requires an already running instance of the window manager, and
+  /// lasts only as long as the IPC connection that sent it.
+  Overlay {
+    #[clap(subcommand)]
+    command: OverlayCommand,
+  },
 }
 
 impl AppCommand {
@@ -130,6 +140,17 @@ pub enum QueryCommand {
   Workspaces,
   /// Outputs whether the window manager is paused.
   Paused,
+}
+
+#[derive(Clone, Debug, Parser)]
+pub enum OverlayCommand {
+  /// Starts holding the overlay for this connection. While any connection
+  /// holds it, layout changes land without animations and the WM leaves
+  /// the foreground window alone, as for its own overview.
+  Begin,
+  /// Stops holding the overlay for this connection. Once none holds it,
+  /// the WM gives the foreground back to its focused window.
+  End,
 }
 
 #[derive(Clone, Debug, PartialEq, ValueEnum)]

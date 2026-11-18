@@ -34,7 +34,7 @@ use crate::{
 /// the windows to where they land, and an animation stands surrogates in
 /// for them, hiding their borders and backdrops meanwhile.
 fn animations_suppressed(state: &WmState) -> bool {
-  state.pending_sync.animations_suppressed() || state.overview.is_shown()
+  state.pending_sync.animations_suppressed() || state.is_overlaid()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -408,7 +408,7 @@ fn sync_focus(
 ) -> anyhow::Result<Option<uuid::Uuid>> {
   // The overview holds the foreground while open, and gives it back when
   // it closes.
-  if state.overview.is_open() {
+  if state.is_foreground_held() {
     return Ok(None);
   }
 

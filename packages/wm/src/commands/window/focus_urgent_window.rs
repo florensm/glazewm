@@ -1,10 +1,7 @@
 use tracing::info;
 
 use crate::{
-  commands::{
-    container::focus_container_by_id, workspace::focus_workspace,
-  },
-  models::WorkspaceTarget,
+  commands::container::focus_container_by_id,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -35,15 +32,5 @@ pub fn focus_urgent_window(
 
   // Focusing the window emits a focus event, which is what ultimately
   // clears its urgency.
-  if let Some(workspace) = window.workspace() {
-    if !workspace.is_displayed() {
-      focus_workspace(
-        WorkspaceTarget::Name(workspace.config().name),
-        state,
-        config,
-      )?;
-    }
-  }
-
-  focus_container_by_id(&window.id(), state)
+  focus_container_by_id(&window.id(), state, config)
 }

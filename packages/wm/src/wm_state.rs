@@ -24,6 +24,7 @@ use crate::{
     Container, Monitor, NativeMonitorProperties, RootContainer,
     WindowContainer, Workspace, WorkspaceTarget,
   },
+  overlay_holds::OverlayHolds,
   overview::Overview,
   pending_sync::PendingSync,
   switch_log::SwitchLog,
@@ -114,6 +115,9 @@ pub struct WmState {
   /// Overview of every monitor's workspaces and their windows.
   pub overview: Overview,
 
+  /// Overlays other programs hold over the desktop through IPC.
+  pub overlay_holds: OverlayHolds,
+
   /// Times each workspace switch for `switch.log`.
   pub switch_log: SwitchLog,
 
@@ -174,6 +178,7 @@ impl WmState {
       window_overlays: HashMap::new(),
       drop_indicator: None,
       overview: Overview::new(overview_action_tx),
+      overlay_holds: OverlayHolds::default(),
       switch_log: SwitchLog::default(),
       grab: crate::grab::GrabState::default(),
       prev_effects_window: None,
@@ -264,6 +269,19 @@ impl WmState {
     self.has_initialized = true;
 
     Ok(())
+  }
+
+  /// Whether something is drawn over the desktop and takes its clicks:
+  /// the overview, zooming into its pick included, or an overlay held
+  /// over IPC.
+  pub fn is_overlaid(&self) -> bool {
+    self.overview.is_shown() || self.overlay_holds.is_held()
+  }
+
+  /// Whether the foreground window is left to the overview or an overlay
+  /// held over IPC, rather than synced to the focused window.
+  pub fn is_foreground_held(&self) -> bool {
+    self.overview.is_open() || self.overlay_holds.is_held()
   }
 
   pub fn monitors(&self) -> Vec<Monitor> {

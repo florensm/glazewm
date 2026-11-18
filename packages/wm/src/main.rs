@@ -49,6 +49,7 @@ mod grab;
 mod ipc_server;
 mod layout;
 mod models;
+mod overlay_holds;
 mod overview;
 mod particles;
 mod pending_sync;
@@ -287,6 +288,10 @@ async fn start_wm(
       Some(message) = ipc_server.message_rx.recv() => {
         handle_ipc_message(message, &mut ipc_server, &mut wm, &mut config);
         Ok(())
+      },
+      Some(id) = ipc_server.overlay_release_rx.recv() => {
+        ipc_server.forget_overlay_hold(id);
+        wm.release_overlay(id, &config)
       },
       () = sleep_until(auto_stack_deadline) => {
         wm.process_auto_stack_timeouts(&mut config)

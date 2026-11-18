@@ -134,7 +134,7 @@ impl WindowManager {
   ) -> anyhow::Result<()> {
     let state = &mut self.state;
 
-    if state.is_paused || state.overview.is_shown() {
+    if state.is_paused || state.is_overlaid() {
       return Ok(());
     }
 
@@ -345,6 +345,52 @@ impl WindowManager {
       ),
       None => Ok(()),
     }
+  }
+
+  /// Starts overlay hold `id`, held by an IPC connection.
+  pub fn hold_overlay(
+    &mut self,
+    id: Uuid,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    if !self.state.overlay_holds.hold(id) {
+      return Ok(());
+    }
+
+    tracing::info!("Overlay held over IPC ({id}).");
+
+    // Drops the click guards and covered tiles' stand-ins, which would
+    // take clicks meant for the overlay or draw over it.
+    self.sync_all(config)
+  }
+
+  /// Ends overlay hold `id`. Once none is left, the foreground goes back
+  /// to the focused window.
+  pub fn release_overlay(
+    &mut self,
+    id: Uuid,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    let state = &mut self.state;
+
+    if !state.overlay_holds.release(id) || state.overlay_holds.is_held() {
+      return Ok(());
+    }
+
+    tracing::info!("Overlay released over IPC ({id}).");
+    state.pending_sync.queue_focus_change();
+    self.sync_all(config)
+  }
+
+  /// Runs a platform sync whether or not anything is pending, unless the
+  /// WM is paused.
+  fn sync_all(&mut self, config: &UserConfig) -> anyhow::Result<()> {
+    if !self.state.is_paused {
+      platform_sync(&mut self.state, config)?;
+    }
+
+    self.state.animation_manager.ensure_timer_running();
+    Ok(())
   }
 
   /// Opens the overview once the cursor has rested in the hot corner.
@@ -857,7 +903,7 @@ impl WindowManager {
         }
 
         if let Some(container_id) = &args.container_id {
-          focus_container_by_id(container_id, state)?;
+          focus_container_by_id(container_id, state, config)?;
         }
 
         if let Some(monitor_index) = &args.monitor {

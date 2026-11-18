@@ -206,7 +206,7 @@ pub fn show_particles(state: &mut WmState, config: &UserConfig) {
   let last = state.particles.seen.replace(seen.clone());
 
   // The overview throws off its own, over itself.
-  if state.overview.is_shown() {
+  if state.is_overlaid() {
     return;
   }
 

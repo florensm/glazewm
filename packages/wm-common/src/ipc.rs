@@ -33,11 +33,19 @@ pub enum ClientResponseData {
   EventSubscribe(EventSubscribeData),
   EventUnsubscribe,
   Focused(FocusedData),
+  Overlay(OverlayData),
   Monitors(MonitorsData),
   TilingDirection(TilingDirectionData),
   Windows(WindowsData),
   Workspaces(WorkspacesData),
   Paused(bool),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayData {
+  /// Whether any connection still holds the overlay.
+  pub is_held: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

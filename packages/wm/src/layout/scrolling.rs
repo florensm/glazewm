@@ -1047,7 +1047,7 @@ fn overflows_onto_other_monitor(rect: &Rect, monitor: &Monitor) -> bool {
 /// handled as focusing them. None do while the WM is paused or the
 /// overview, which takes its own clicks, is shown.
 pub fn sync_click_guard(state: &mut WmState) -> anyhow::Result<()> {
-  let windows = if state.is_paused || state.overview.is_shown() {
+  let windows = if state.is_paused || state.is_overlaid() {
     Vec::new()
   } else {
     click_to_scroll_windows(state)?

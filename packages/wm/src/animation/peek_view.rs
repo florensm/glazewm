@@ -3932,7 +3932,7 @@ pub fn prewarm_ready(state: &mut WmState, config: &UserConfig) {
   }
   // Tried again once whatever draws now is done.
   if state.animation_manager.has_active_animations()
-    || state.overview.is_open()
+    || state.is_foreground_held()
   {
     state
       .animation_manager

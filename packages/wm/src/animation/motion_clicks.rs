@@ -23,7 +23,7 @@ use crate::{
 /// or none once nothing moves. Called every animation frame, since the
 /// guard lapses unless renewed.
 pub fn sync_motion_guard(state: &mut WmState) {
-  let areas = if state.is_paused || state.overview.is_shown() {
+  let areas = if state.is_paused || state.is_overlaid() {
     Vec::new()
   } else {
     moving_areas(state)

@@ -29,7 +29,7 @@ pub fn handle_mouse_move(
   {
     // A click on the overview is its own: a peek behind it focused here
     // would fight its pick, e.g. scrolling or switching back mid-zoom.
-    if !state.overview.is_shown() {
+    if !state.is_overlaid() {
       focus_clicked_peek(position, state);
     }
     return Ok(());
@@ -56,7 +56,7 @@ pub fn handle_mouse_move(
 
     // The cursor is over the overview while it is on screen, zooming
     // into its pick included.
-    if state.overview.is_shown() {
+    if state.is_overlaid() {
       return Ok(());
     }
 

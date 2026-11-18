@@ -317,7 +317,7 @@ pub fn sync_listener(
     return Ok(());
   }
 
-  let windows = if state.is_paused || state.overview.is_shown() {
+  let windows = if state.is_paused || state.is_overlaid() {
     Vec::new()
   } else {
     state.windows()

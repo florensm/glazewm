@@ -81,7 +81,7 @@ pub fn sync_covered_tiles(state: &mut WmState) {
 fn is_covered(state: &WmState, window: &WindowContainer) -> bool {
   if window.state() != WindowState::Tiling
     || window.display_state() != DisplayState::Shown
-    || state.overview.is_shown()
+    || state.is_overlaid()
     || !state.window_target_positions.contains_key(&window.id())
     || state.animation_manager.stands_in_for(&window.id())
     || scrolling::column_of(&window.as_container()).is_some()
