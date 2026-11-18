@@ -85,6 +85,12 @@ pub enum WmEvent {
   OverlayInput {
     input: OverlayInput,
   },
+  /// Sent to one subscription alone, which fell behind and missed
+  /// `count` events: what it knows may be stale, so it should query
+  /// again. Never broadcast.
+  EventsMissed {
+    count: u64,
+  },
 }
 
 /// What a keybinding means to a program holding the overlay, e.g. an
