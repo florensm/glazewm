@@ -795,9 +795,9 @@ pub struct OverviewBackdropFrameConfig {
 impl Default for OverviewBackdropFrameConfig {
   fn default() -> Self {
     Self {
-      color: BorderColorSource::Value("#161418ff".to_string()),
-      corner_radius: 16.0,
-      padding: 32.0,
+      color: BorderColorSource::Value("#141416ff".to_string()),
+      corner_radius: 14.0,
+      padding: 24.0,
       shadow: true,
     }
   }
@@ -819,13 +819,13 @@ impl Default for OverviewBackdropFrameConfig {
 pub enum OverviewLayout {
   /// The shown workspace large and as laid out, under a row of every
   /// workspace in miniature.
-  #[default]
   Activities,
   /// Every workspace at the same zoom, stacked top to bottom, each
   /// strip at its full length.
   Stack,
   /// As the activities, but the shown workspace's windows, each tab of
   /// its stacks included, spread out side by side.
+  #[default]
   Expose,
 }
 
@@ -858,30 +858,30 @@ impl Default for OverviewConfig {
       backdrop_style: OverviewBackdropStyle::default(),
       backdrop_frame: OverviewBackdropFrameConfig::default(),
       accent_color: None,
-      card_color: color(0x221e_24e6),
-      surface_color: color(0x2d29_2eff),
-      caption_color: color(0x1612_17c7),
-      text_color: color(0xe8e0_e8ff),
-      subtext_color: color(0xcdc3_ceff),
+      card_color: color(0x1c1c_20e6),
+      surface_color: color(0x2a2a_30ff),
+      caption_color: color(0x1414_18c7),
+      text_color: color(0xf2f2_f5ff),
+      subtext_color: color(0xb4b4_bcff),
       search_color: color(0x89b4_faff),
       font_family: "Segoe UI Variable Text".to_string(),
       layout: OverviewLayout::default(),
       hot_corner: HotCorner::default(),
       hot_corner_delay_ms: 300,
       zoom_style: OverviewZoomStyle::default(),
-      zoom_easing: EasingFunction::CubicBezier(0.25, 1.0, 0.5, 1.0),
-      open_duration_ms: 200,
-      close_duration_ms: 150,
+      zoom_easing: EasingFunction::CubicBezier(0.22, 1.0, 0.36, 1.0),
+      open_duration_ms: 280,
+      close_duration_ms: 220,
       switch_style: OverviewSwitchStyle::default(),
-      switch_duration_ms: 300,
-      highlight_duration_ms: 170,
-      bounce: 0.25,
+      switch_duration_ms: 260,
+      highlight_duration_ms: 140,
+      bounce: 0.0,
       effects: OverviewEffects::default(),
       window_highlight: OverviewWindowHighlight::default(),
       strip_view: OverviewStripView::default(),
       expose: OverviewExpose::default(),
       workspace_row: OverviewWorkspaceRow::default(),
-      search_hint: true,
+      search_hint: false,
     }
   }
 }
@@ -3039,12 +3039,10 @@ mod tests {
 
     assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
     assert_eq!(layout("stack"), Some(OverviewLayout::Stack));
+    assert_eq!(layout("expose"), Some(OverviewLayout::Expose));
     assert_eq!(layout("grid"), None);
     assert_eq!(layout("nope"), None);
-    assert_eq!(
-      OverviewConfig::default().layout,
-      OverviewLayout::Activities
-    );
+    assert_eq!(OverviewConfig::default().layout, OverviewLayout::Expose);
   }
 
   #[test]
@@ -3063,7 +3061,7 @@ mod tests {
 
     // As the sample config and the docs write the default.
     assert_eq!(
-      easing("cubic_bezier(0.25, 1, 0.5, 1)").ok(),
+      easing("cubic_bezier(0.22, 1, 0.36, 1)").ok(),
       Some(OverviewConfig::default().zoom_easing)
     );
 

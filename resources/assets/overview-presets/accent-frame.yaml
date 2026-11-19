@@ -2,6 +2,7 @@
 # color, so it follows your theme.
 overview:
   layout: "activities"
+  workspace_row: "shown"
   backdrop_style: "framed"
   backdrop_frame:
     color: "accent"

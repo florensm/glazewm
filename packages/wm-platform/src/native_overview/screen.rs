@@ -38,8 +38,7 @@ use crate::{
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
   BorderOverlayParams, OverviewBackdropStyle, OverviewEffects,
-  OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
-  OverviewWorkspaceRow, OverviewZoomStyle,
+  OverviewLayoutMode, OverviewStyle, OverviewWorkspace, OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -99,6 +98,7 @@ impl Screen {
       metrics: CardMetrics::new(1.0, 1.0, 1.0, layout),
       drawn_for: layout,
       registered_for: None,
+      raised: None,
       registration: 0,
       area: RectF::default(),
       work: RectF::default(),
@@ -350,6 +350,7 @@ impl Screen {
     self.pointer = None;
     self.entrance = None;
     self.registered_for = None;
+    self.raised = None;
     self.nav.clear();
     self.pan = None;
     self.zoom = None;
@@ -469,9 +470,13 @@ impl Screen {
     let retired = self.retire_thumbnails();
     self.retired.extend(retired);
 
+    let raised = self.raised;
     if layout.has_scene() {
-      for window in
-        self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
+      for window in self
+        .scenes
+        .iter_mut()
+        .flat_map(|scene| &mut scene.windows)
+        .filter(|window| Some(window.preview.hwnd) != raised)
       {
         window.preview.register(host);
       }
@@ -516,6 +521,11 @@ impl Screen {
       if let Some(picture) = picture {
         picture.register(host);
       }
+    }
+
+    // The window zoomed into on close, over everything else.
+    if let Some(window) = self.raised_window() {
+      window.preview.register(host);
     }
 
     self.registered_for = Some(layout);
@@ -702,7 +712,7 @@ impl Screen {
   /// style has it.
   pub(super) fn scene_chrome(&self) -> SceneChrome {
     self.style().map_or(SceneChrome::FULL, |style| SceneChrome {
-      has_row: style.workspace_row == OverviewWorkspaceRow::Shown,
+      row: style.workspace_row,
       has_search_line: style.search_hint,
     })
   }
@@ -1075,6 +1085,7 @@ impl Screen {
     if self.focus.layout.spreads_windows() {
       self.retarget_scenes(false);
     }
+    self.raise_picked(index);
     self.celebrate_exit(index, zoom.duration());
 
     let shown_windows = self.scenes.get(index).map(|scene| {
@@ -1096,6 +1107,36 @@ impl Screen {
         .map(|card| card.placement().rect(&card.metrics)),
     );
     self.is_dirty = true;
+  }
+
+  /// Registers the window picked on scene `index` anew, above everything
+  /// else, so it flies home over the windows around it as the one coming
+  /// to the front. Its old thumbnails stay up until the new ones are
+  /// placed, so it doesn't blink.
+  fn raise_picked(&mut self, index: usize) {
+    let picked = self
+      .picked_window()
+      .filter(|(card, _)| *card == index && self.focus.layout.has_scene());
+    self.raised = picked.map(|(_, hwnd)| hwnd);
+
+    let host = self.hwnd;
+    let mut retired = Vec::new();
+    if let Some(window) = self.raised_window() {
+      window.preview.retire(&mut retired);
+      window.preview.register(host);
+    }
+    self.retired.extend(retired);
+    self.is_dirty = true;
+  }
+
+  /// The scene window raised over everything else, if any.
+  fn raised_window(&mut self) -> Option<&mut SceneWindow> {
+    let hwnd = self.raised?;
+    self
+      .scenes
+      .iter_mut()
+      .flat_map(|scene| &mut scene.windows)
+      .find(|window| window.preview.hwnd == hwnd)
   }
 
   /// Card it zooms into to close on, which holds still meanwhile.

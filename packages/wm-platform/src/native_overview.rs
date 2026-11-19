@@ -639,6 +639,10 @@ struct Screen {
   /// Layout whose thumbnails are registered, if any are.
   registered_for: Option<OverviewLayoutMode>,
 
+  /// The scene window picked to close on, registered above everything
+  /// else so it flies home over the windows around it.
+  raised: Option<isize>,
+
   /// ID of the last registration of its thumbnails, unique across
   /// screens. Each registration leaves them above anything registered on
   /// it before.

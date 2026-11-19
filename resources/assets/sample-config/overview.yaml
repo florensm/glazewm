@@ -1,119 +1,127 @@
-# Opened by `toggle-overview`.
+# Opened by `toggle-overview`. As set here, it is a calm, OS-like exposé:
+# the desktop zooms out onto a rounded slab of wallpaper, the windows spread
+# out over it, and a slim strip of the other workspaces sits along the top.
+# Ready-made looks: resources/assets/overview-presets in the repository.
 overview:
-  backdrop_blur: 40
-  # Its alpha sets how dark the backdrop gets.
-  backdrop_tint: "#00000066"
-  # "blur", or "framed": the desktop shrinks onto a rounded panel of
-  # sharp wallpaper, over `backdrop_frame.color` ("accent" works too).
-  backdrop_style: "blur"
-  backdrop_frame:
-    color: "#161418ff"
-    corner_radius: 16
-    # Wallpaper around the windows on the panel.
-    padding: 32
-    shadow: true
+  # -- Layout --------------------------------------------------------------
 
-  # Defaults to the focused window's border color.
-  # accent_color: "accent"
+  # 'expose' (the shown workspace's windows spread out side by side, every
+  # stack tab included), 'activities' (them as laid out) or 'stack' (every
+  # workspace stacked top to bottom). Tab switches while open.
+  layout: "expose"
 
-  # Workspace cards, hovered cards and window title strips.
-  card_color: "#221e24e6"
-  surface_color: "#2d292eff"
-  caption_color: "#161217c7"
+  # The other workspaces over the large view: 'compact' (a slim strip, as
+  # macOS and Windows show their desktops), 'shown' (larger) or 'hidden'
+  # (arrows, the wheel and alt+digits still go through them).
+  workspace_row: "compact"
 
-  text_color: "#e8e0e8ff"
-  subtext_color: "#cdc3ceff"
-  # What matched, in the search box's list.
-  search_color: "#89b4faff"
-  # Falls back to Segoe UI on Windows 10.
-  font_family: "Segoe UI Variable Text"
+  # The "Type to search" field along the bottom. Typing searches anyway,
+  # and F1 shows the shortcuts.
+  search_hint: false
 
-  # 'activities' (a row of miniatures over the shown workspace), 'stack'
-  # (every workspace stacked top to bottom, each strip at full length; the
-  # wheel turned sideways, or with shift, pans it) or 'expose' (as the
-  # activities, but the shown workspace's windows, every stack tab
-  # included, spread out side by side). Tab switches while open.
-  layout: "activities"
-
-  # Corner that opens the overview as the cursor rests in it: 'none',
-  # 'top_left', 'top_right', 'bottom_left' or 'bottom_right'.
-  hot_corner: "none"
-  # How long the cursor rests in the corner first, in ms; 0 is at once.
-  hot_corner_delay_ms: 300
-
-  # How it opens and closes: 'zoom' (everything zooms out of the workspace
-  # on screen and back into the one picked), 'fade' or 'none'.
-  zoom_style: "zoom"
-  # Pace of the open and close: any animation easing, e.g. "ease_out" or
-  # "spring(1.0, 800, 0.0001)" (which ignores the durations).
-  zoom_easing: "cubic_bezier(0.25, 1, 0.5, 1)"
-  # 0 makes them instant.
-  open_duration_ms: 200
-  close_duration_ms: 150
-  # How the activities change the workspace they show large: 'slide',
-  # 'fade' or 'miniature' (its windows fly out of its miniature).
-  switch_style: "slide"
-  # Moving to another workspace or layout while open.
-  switch_duration_ms: 300
-  # Selection and hover highlights settling and fading.
-  highlight_duration_ms: 170
-  # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
-  bounce: 0.25
-
-  # Marks the selected or hovered window: 'ring', 'glow' or 'none'. Width
-  # is the ring's thickness or the glow's reach; gap is the space to the
-  # window, both in pixels.
-  window_highlight:
-    style: "ring"
-    width: 2
-    gap: 0
+  # How the exposé spreads the windows: at most `max_per_row` to a row (0
+  # for as many as shows them largest), `gap` pixels apart. `arrangement`:
+  # 'natural' (windows keep their sizes against each other) or 'grid' (all
+  # of a row as tall).
+  expose:
+    max_per_row: 0
+    gap: 28
+    arrangement: "natural"
 
   # A scrolling workspace large in the activities: 'visible' (the columns
   # on screen) or 'whole' (the whole strip, scaled to fit).
   strip_view: "visible"
 
-  # 'shown' or 'hidden': the row of workspaces over the large view.
-  workspace_row: "shown"
+  # Corner that opens the overview as the cursor rests in it: 'none',
+  # 'top_left', 'top_right', 'bottom_left' or 'bottom_right'.
+  hot_corner: "none"
+  hot_corner_delay_ms: 300
 
-  # The "Type to search" field along the bottom; typing searches anyway.
-  search_hint: true
+  # -- Backdrop ------------------------------------------------------------
 
-  # Exposé: windows per row before wrapping (0 for as many as shows them
-  # largest), and the gap between them.
-  # `arrangement`: 'natural' (windows keep their sizes against each other)
-  # or 'grid' (all of a row as tall).
-  expose:
-    max_per_row: 0
-    gap: 32
-    arrangement: "natural"
+  # 'framed' (the desktop shrinks onto a rounded slab of sharp wallpaper)
+  # or 'blur' (the wallpaper blurred and tinted over the whole screen).
+  backdrop_style: "framed"
+  backdrop_frame:
+    # Around the slab; "accent" for your Windows accent color.
+    color: "#141416ff"
+    corner_radius: 14
+    # Wallpaper showing around the windows on the slab.
+    padding: 24
+    shadow: true
+  # For 'blur': its radius, and a tint whose alpha sets how dark it gets.
+  backdrop_blur: 40
+  backdrop_tint: "#00000066"
 
+  # -- Colors and text -----------------------------------------------------
+
+  # Rings and highlights. Defaults to the focused window's border color;
+  # "accent" is your Windows accent color.
+  # accent_color: "accent"
+
+  # Workspace cards, hovered cards and window title strips.
+  card_color: "#1c1c20e6"
+  surface_color: "#2a2a30ff"
+  caption_color: "#141418c7"
+  text_color: "#f2f2f5ff"
+  subtext_color: "#b4b4bcff"
+  # What matched, in the search box's list.
+  search_color: "#89b4faff"
+  # Falls back to Segoe UI on Windows 10.
+  font_family: "Segoe UI Variable Text"
+
+  # Marks the picked window: 'ring', 'glow' or 'none'. Width is the ring's
+  # thickness or the glow's reach; gap is the space to the window.
+  window_highlight:
+    style: "ring"
+    width: 2
+    gap: 0
+
+  # -- Motion --------------------------------------------------------------
+
+  # How it opens and closes: 'zoom' (everything zooms out of the workspace
+  # on screen, and back into the one picked), 'fade' or 'none'.
+  zoom_style: "zoom"
+  # A quick start and a long, soft landing. Any animation easing works,
+  # e.g. "ease_out" or "spring(1.0, 400, 0.0001)" (which ignores the
+  # durations below).
+  zoom_easing: "cubic_bezier(0.22, 1, 0.36, 1)"
+  open_duration_ms: 280
+  close_duration_ms: 220
+  # How the large view changes workspace: 'slide', 'fade' or 'miniature'.
+  switch_style: "slide"
+  switch_duration_ms: 260
+  # Highlights settling on what they mark next.
+  highlight_duration_ms: 140
+  # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
+  bounce: 0
+
+  # Flourishes, all off but the picked window growing a little. See the
+  # 'playful' preset for them turned on.
   effects:
-    # Soft accent glow around the selected workspace.
-    glow: true
-    # Slowly breathing glow. Keeps the overview animating every frame.
+    # Accent glow around the selected workspace, optionally breathing.
+    glow: false
     pulse: false
-    # Ring spreading out of a card as it is clicked or a window lands, and
-    # drawing in on a window closed from the overview.
+    # Rings out of a clicked card, and into a closed window's spot.
     ripples: false
-    # Particles over the overview: where a dropped window lands, off the
-    # edges of a window closed from it, off the shown workspace as it opens,
-    # and off the windows of the workspace it zooms into as it closes.
-    # Styles as for `animations.particles`, which sets how they look.
-    drop_particles: "sparks"
-    close_particles: "dust"
+    # Particles where a dropped window lands, off a closed window, as it
+    # opens and as it closes: 'none', or styles as for
+    # `animations.particles`.
+    drop_particles: "none"
+    close_particles: "none"
     open_particles: "none"
     exit_particles: "none"
-    # Whether a card wobbles as a window lands on it.
-    jelly: true
-    # Delay between cards popping in on open, in ms: 0 brings them in together.
-    stagger_ms: 24
-    # How far a hovered card leans toward the cursor, in pixels.
-    lean: 8
-    # How much the other cards dim while one is hovered: 0 to 1.
+    # A card wobbling as a window lands on it.
+    jelly: false
+    # Delay between cards appearing on open, in ms.
+    stagger_ms: 0
+    # A hovered card leaning toward the cursor, in pixels.
+    lean: 0
+    # Other cards dimming while one is hovered: 0 to 1.
     dim: 0
-    # How much a dragged window stretches with its speed: 0 to 1.
-    squash: 0.5
-    # Fading outlines trailing a dragged window: 0 (none) to 8.
+    # A dragged window stretching with its speed: 0 to 1.
+    squash: 0
+    # Fading outlines trailing a dragged window: 0 to 8.
     trail: 0
-    # How much the picked window grows in the large view: 0 to 0.15.
-    window_lift: 0.03
+    # How much the picked window grows: 0 to 0.15.
+    window_lift: 0.025

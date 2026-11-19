@@ -2,6 +2,7 @@
 # blur, fading in and out instead of zooming, without any bounce.
 overview:
   layout: "stack"
+  search_hint: true
   backdrop_style: "blur"
   backdrop_blur: 60
   backdrop_tint: "#00000099"

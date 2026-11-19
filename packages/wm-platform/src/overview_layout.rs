@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use crate::{OverviewCurve, OverviewLayoutMode};
+use crate::{OverviewCurve, OverviewLayoutMode, OverviewWorkspaceRow};
 
 /// A rectangle with fractional coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -434,8 +434,8 @@ const MINIATURE_WIDTHS: f32 = 2.0;
 /// What the activities and the exposé show around their scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SceneChrome {
-  /// The row of miniatures over it.
-  pub has_row: bool,
+  /// The row of miniatures over it, and how large.
+  pub row: OverviewWorkspaceRow,
 
   /// The search field under it, while no search is on.
   pub has_search_line: bool,
@@ -443,10 +443,20 @@ pub(crate) struct SceneChrome {
 
 impl SceneChrome {
   pub const FULL: Self = Self {
-    has_row: true,
+    row: OverviewWorkspaceRow::Shown,
     has_search_line: true,
   };
+
+  /// Whether it shows the row of miniatures at all.
+  pub fn has_row(self) -> bool {
+    self.row != OverviewWorkspaceRow::Hidden
+  }
 }
+
+/// Part of the overview's height a row of miniatures takes, and how tall
+/// its miniatures are at least and at most, in logical pixels.
+const ROW_HEIGHT: (f32, f32, f32) = (0.12, 64.0, 170.0);
+const COMPACT_ROW_HEIGHT: (f32, f32, f32) = (0.07, 44.0, 96.0);
 
 /// Every card in miniature in a row along the top, their names under
 /// them, and below them the scene: where the selected workspace shows
@@ -464,8 +474,14 @@ pub(crate) fn activities(
   let label = metrics.px(LABEL_GAP + LABEL_HEIGHT);
 
   // As tall as a part of the overview, shrunk for a long row to fit.
-  let height = (view_height * 0.12)
-    .clamp(metrics.px(64.0), metrics.px(170.0))
+  let (part, least, most) = match chrome.row {
+    OverviewWorkspaceRow::Compact => COMPACT_ROW_HEIGHT,
+    OverviewWorkspaceRow::Shown | OverviewWorkspaceRow::Hidden => {
+      ROW_HEIGHT
+    }
+  };
+  let height = (view_height * part)
+    .clamp(metrics.px(least), metrics.px(most))
     .min(metrics.height);
   let widths = slots.iter().map(|slot| slot.width).sum::<f32>();
   #[allow(clippy::cast_precision_loss)]
@@ -476,7 +492,7 @@ pub(crate) fn activities(
 
   let row_width = widths * scale + gaps;
   let card_height = metrics.height * scale;
-  let (cy, opacity) = if chrome.has_row {
+  let (cy, opacity) = if chrome.has_row() {
     (top + card_height / 2.0, 1.0)
   } else {
     (-card_height, 0.0)
@@ -496,7 +512,7 @@ pub(crate) fn activities(
     .collect();
 
   let search_y = metrics.bottom_search_y();
-  let scene_top = if chrome.has_row {
+  let scene_top = if chrome.has_row() {
     top + card_height + label + metrics.px(22.0)
   } else {
     margin
@@ -1280,10 +1296,10 @@ mod tests {
   use super::{
     activities, chrome_opacity, cover_crop, ease_out_back, ease_out_cubic,
     stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
-    Placement, RectF, SceneChrome, Spring, SpringRect, Tile, Zoom,
-    STACK_MAX_WIDTHS,
+    Placement, RectF, SceneChrome, Spring, SpringRect, Targets, Tile,
+    Zoom, STACK_MAX_WIDTHS,
   };
-  use crate::{OverviewCurve, OverviewLayoutMode};
+  use crate::{OverviewCurve, OverviewLayoutMode, OverviewWorkspaceRow};
 
   /// Cards drawn for the stack.
   fn metrics() -> CardMetrics {
@@ -1836,7 +1852,7 @@ mod tests {
     let metrics = metrics_for(OverviewLayoutMode::Activities);
     let slots = slots(&metrics, 4);
     let bare = SceneChrome {
-      has_row: false,
+      row: OverviewWorkspaceRow::Hidden,
       has_search_line: false,
     };
 
@@ -1876,6 +1892,29 @@ mod tests {
     // Once open, it is the scene as laid out.
     let open = Camera::zoom(&zoom_rect, &work_in_view, 1.0);
     assert_rect_close(&open.apply(&zoom_rect), &zoom_rect);
+  }
+
+  /// A compact row's miniatures are smaller, leaving the scene more room
+  /// than a full row does.
+  #[test]
+  fn a_compact_row_leaves_the_scene_more_room() {
+    let metrics = metrics_for(OverviewLayoutMode::Activities);
+    let slots = slots(&metrics, 4);
+    let chrome = |row| SceneChrome {
+      row,
+      has_search_line: true,
+    };
+
+    let (full, full_scene) =
+      activities(&metrics, &slots, chrome(OverviewWorkspaceRow::Shown));
+    let (compact, compact_scene) =
+      activities(&metrics, &slots, chrome(OverviewWorkspaceRow::Compact));
+
+    let height = |targets: &Targets| targets.cards[0].rect(&metrics).h;
+    assert!(height(&compact) < height(&full));
+    assert!(compact_scene.y < full_scene.y);
+    assert!(compact_scene.h > full_scene.h);
+    assert_close(compact.cards[0].opacity, 1.0);
   }
 
   #[test]

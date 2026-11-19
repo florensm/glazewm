@@ -21,6 +21,7 @@ overview:
     pulse: true
     ripples: true
     jelly: true
+    stagger_ms: 30
     lean: 12
     squash: 0.8
     trail: 4

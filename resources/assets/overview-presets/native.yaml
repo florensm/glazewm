@@ -1,0 +1,32 @@
+# Native: a calm exposé, as an OS's own overview is. The desktop zooms out
+# onto a rounded slab of its wallpaper, the windows spread out over it at
+# their own sizes, and a slim strip of the other workspaces sits on top.
+# The same as the overview's defaults, written out to start from.
+overview:
+  layout: "expose"
+  workspace_row: "compact"
+  search_hint: false
+  expose:
+    max_per_row: 0
+    gap: 28
+    arrangement: "natural"
+  backdrop_style: "framed"
+  backdrop_frame:
+    color: "#141416ff"
+    corner_radius: 14
+    padding: 24
+    shadow: true
+  accent_color: "accent"
+  window_highlight:
+    style: "ring"
+    width: 2
+    gap: 3
+  zoom_style: "zoom"
+  zoom_easing: "cubic_bezier(0.22, 1, 0.36, 1)"
+  open_duration_ms: 280
+  close_duration_ms: 220
+  switch_duration_ms: 260
+  highlight_duration_ms: 140
+  bounce: 0
+  effects:
+    window_lift: 0.025

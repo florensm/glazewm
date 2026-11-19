@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
   BorderOverlayParams, Color, Direction, ParticleEffects, ParticleLook,
-  ParticleStyle, Point, Rect, TabFrame,
+  Point, Rect, TabFrame,
 };
 
 /// What the window overview shows, sent by the WM as a whole.
@@ -248,8 +248,13 @@ pub enum OverviewStripView {
 #[serde(rename_all = "snake_case")]
 pub enum OverviewWorkspaceRow {
   /// Over the scene, which starts below it.
-  #[default]
   Shown,
+
+  /// A slim strip of small miniatures over the scene, as macOS's Spaces
+  /// bar and Windows' Task View show their desktops, leaving the scene
+  /// most of the room.
+  #[default]
+  Compact,
 
   /// Left out, the scene taking its room. Workspaces are still gone
   /// through with the keyboard and the wheel.
@@ -275,7 +280,7 @@ impl Default for OverviewExpose {
   fn default() -> Self {
     Self {
       max_per_row: 0,
-      gap: 32.0,
+      gap: 28.0,
       arrangement: OverviewExposeArrangement::default(),
     }
   }
@@ -304,11 +309,11 @@ pub enum OverviewExposeArrangement {
 #[serde(rename_all = "snake_case")]
 pub enum OverviewBackdropStyle {
   /// The wallpaper over the whole screen, blurred and tinted.
-  #[default]
   Blur,
 
   /// The wallpaper kept sharp on a rounded panel where the shown
   /// workspace sits, over a plain color: the desktop shrunk as a whole.
+  #[default]
   Framed,
 }
 
@@ -537,21 +542,11 @@ impl OverviewEffects {
 
 impl Default for OverviewEffects {
   fn default() -> Self {
+    // Calm, as an OS's own overview: nothing but the picked window
+    // growing a little. The rest is there to turn on.
     Self {
-      glow: true,
-      pulse: false,
-      ripples: false,
-      drop_particles: ParticleStyle::Sparks.into(),
-      close_particles: ParticleStyle::Dust.into(),
-      open_particles: ParticleEffects::NONE,
-      exit_particles: ParticleEffects::NONE,
-      jelly: true,
-      stagger_ms: 24,
-      lean: 8.0,
-      dim: 0.0,
-      squash: 0.5,
-      trail: 0,
-      window_lift: 0.03,
+      window_lift: 0.025,
+      ..Self::NONE
     }
   }
 }

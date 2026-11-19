@@ -673,7 +673,7 @@ impl Screen {
       .enumerate()
       .map(|(index, (card, label))| {
         // No names without their row.
-        if !layout.has_scene() || !self.scene_chrome().has_row {
+        if !layout.has_scene() || !self.scene_chrome().has_row() {
           return None;
         }
         let rect =

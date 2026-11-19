@@ -641,57 +641,57 @@ mod tests {
       .value
   }
 
+  /// An overview preset, by file name, and its contents.
+  macro_rules! preset {
+    ($name:literal) => {
+      (
+        $name,
+        include_str!(concat!(
+          "../../../resources/assets/overview-presets/",
+          $name
+        )),
+      )
+    };
+  }
+
   /// The overview presets, by file name.
-  const OVERVIEW_PRESETS: [(&str, &str); 8] = [
-    (
-      "accent-frame.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/accent-frame.yaml"
-      ),
-    ),
-    (
-      "edge-to-edge.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/edge-to-edge.yaml"
-      ),
-    ),
-    (
-      "flat-and-fast.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/flat-and-fast.yaml"
-      ),
-    ),
-    (
-      "frosted.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/frosted.yaml"
-      ),
-    ),
-    (
-      "mission-control.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/mission-control.yaml"
-      ),
-    ),
-    (
-      "niri-column.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/niri-column.yaml"
-      ),
-    ),
-    (
-      "paper.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/paper.yaml"
-      ),
-    ),
-    (
-      "playful.yaml",
-      include_str!(
-        "../../../resources/assets/overview-presets/playful.yaml"
-      ),
-    ),
+  const OVERVIEW_PRESETS: [(&str, &str); 11] = [
+    preset!("accent-frame.yaml"),
+    preset!("edge-to-edge.yaml"),
+    preset!("flat-and-fast.yaml"),
+    preset!("frosted.yaml"),
+    preset!("macos.yaml"),
+    preset!("mission-control.yaml"),
+    preset!("native.yaml"),
+    preset!("niri-column.yaml"),
+    preset!("paper.yaml"),
+    preset!("playful.yaml"),
+    preset!("windows.yaml"),
   ];
+
+  /// Every preset in the folder is listed above, so each is tested.
+  #[test]
+  fn overview_presets_are_all_listed() {
+    let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .join("../../resources/assets/overview-presets");
+    let mut found = std::fs::read_dir(folder)
+      .expect("presets folder should be readable")
+      .filter_map(|entry| {
+        let name = entry.ok()?.file_name().into_string().ok()?;
+        std::path::Path::new(&name)
+          .extension()
+          .is_some_and(|extension| extension.eq_ignore_ascii_case("yaml"))
+          .then_some(name)
+      })
+      .collect::<Vec<_>>();
+    found.sort();
+
+    let listed = OVERVIEW_PRESETS
+      .iter()
+      .map(|(name, _)| (*name).to_string())
+      .collect::<Vec<_>>();
+    assert_eq!(found, listed);
+  }
 
   /// Each overview preset parses in place of the sample's `overview.yaml`,
   /// with no key the config doesn't know.

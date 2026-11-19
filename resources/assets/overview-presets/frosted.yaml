@@ -2,6 +2,8 @@
 # still come through, with a soft glow around the picked window.
 overview:
   layout: "activities"
+  workspace_row: "shown"
+  search_hint: true
   backdrop_style: "blur"
   backdrop_blur: 24
   backdrop_tint: "#140a1e48"
