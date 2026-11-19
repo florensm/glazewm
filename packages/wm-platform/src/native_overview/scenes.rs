@@ -10,7 +10,7 @@ use super::{cards::screen_rect, to_ms, Screen, ScreenFrame};
 const SLIDE_GAP: f32 = 48.0;
 
 use crate::{
-  overview_expose::{pile_rects, pile_size, spread},
+  overview_expose::spread,
   overview_layout::{CardView, RectF, Tile},
   overview_scene::{Scene, SceneWindow},
   overview_state::ScreenFocus,
@@ -73,9 +73,6 @@ struct Spread {
   gap: f32,
   max_scale: f32,
   max_per_row: usize,
-
-  /// Window picked on the scene, which rises out of its pile.
-  picked: Option<isize>,
 }
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
@@ -92,7 +89,7 @@ fn scene_rects(
     for window in &mut scene.windows {
       window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
     }
-    return spread_piles(scene, how, only);
+    return spread_windows(scene, how, only);
   }
 
   scene
@@ -109,54 +106,35 @@ fn scene_rects(
 }
 
 /// Where the exposé shows each window of `scene`, of those in `only` if
-/// given: each stack's tabs as one pile in a slot of its own, and every
-/// other window alone in one, its picked tab risen out of the pile.
-/// `None` for a window left out.
-fn spread_piles(
+/// given, every tab of a stack a window of its own. `None` for a window
+/// left out.
+fn spread_windows(
   scene: &Scene,
   how: &Spread,
   only: Option<&[isize]>,
 ) -> Vec<Option<RectF>> {
-  // Indices of each pile's windows, front tab first.
-  let mut piles: Vec<(isize, Vec<usize>)> = Vec::new();
-  for (index, window) in scene.windows.iter().enumerate() {
-    if only.is_some_and(|only| !only.contains(&window.preview.hwnd)) {
-      continue;
-    }
-    let key = window
-      .tab_depth
-      .map_or(window.preview.hwnd, |(anchor, _)| anchor);
-    match piles.iter_mut().find(|(other, _)| *other == key) {
-      Some((_, members)) => members.push(index),
-      None => piles.push((key, vec![index])),
-    }
-  }
-  for (_, members) in &mut piles {
-    members.sort_by_key(|&index| {
-      scene.windows[index].tab_depth.map_or(0, |(_, depth)| depth)
-    });
-  }
-
-  let rooms = piles
+  let shown = scene
+    .windows
     .iter()
-    .map(|(_, members)| {
-      let front = &scene.windows[members[0]].preview.screen_rect;
-      pile_size(front, members.len())
+    .enumerate()
+    .filter(|(_, window)| {
+      only.is_none_or(|only| only.contains(&window.preview.hwnd))
     })
+    .map(|(index, window)| (index, window.preview.screen_rect))
     .collect::<Vec<_>>();
-  let slots =
-    spread(&rooms, &how.area, how.gap, how.max_scale, how.max_per_row);
+  let screen_rects =
+    shown.iter().map(|(_, rect)| *rect).collect::<Vec<_>>();
+  let slots = spread(
+    &screen_rects,
+    &how.area,
+    how.gap,
+    how.max_scale,
+    how.max_per_row,
+  );
 
   let mut rects = vec![None; scene.windows.len()];
-  for ((_, members), slot) in piles.iter().zip(slots) {
-    let pulled = members.iter().position(|&index| {
-      Some(scene.windows[index].preview.hwnd) == how.picked
-    });
-    for (&index, rect) in
-      members.iter().zip(pile_rects(&slot, members.len(), pulled))
-    {
-      rects[index] = Some(rect);
-    }
+  for ((index, _), slot) in shown.iter().zip(slots) {
+    rects[*index] = Some(slot);
   }
   rects
 }
@@ -350,7 +328,6 @@ impl Screen {
     };
     let scene_area = self.scene_area;
     let spread_as = self.spread_as(frame);
-    let picked = self.focus.selected_window;
 
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
@@ -373,15 +350,11 @@ impl Screen {
       // A scene being zoomed into lands as laid out, where the real
       // windows are.
       let spreading = spreads && closing != Some(index);
-      let spread_here = Spread {
-        picked: picked.filter(|_| index == selected),
-        ..spread_as
-      };
       let matches = search_matches(workspace, &self.focus);
       let rects = scene_rects(
         scene,
         &tiles,
-        spreading.then_some(&spread_here),
+        spreading.then_some(&spread_as),
         matches.as_deref(),
       );
 
@@ -438,7 +411,6 @@ impl Screen {
       max_scale: (area.w / monitor.w).min(area.h / monitor.h).max(0.0),
       max_per_row: usize::try_from(expose.max_per_row)
         .unwrap_or(usize::MAX),
-      picked: None,
     }
   }
 

@@ -42,10 +42,8 @@ overview's own outline instead.
   Control does, in justified rows like a photo grid's: every window of a
   row as tall as the others, keeping its shape, and the row as wide as
   the room, so they show as large as they can (but never larger than in
-  the activities). A stack's tabs share one spot as a pile, its
-  shown tab in front and each further one a step up and right behind it;
-  the tab under the cursor, or picked with the keyboard, rises out of the
-  pile. Rows follow where the windows sit on screen, top to bottom and
+  the activities). Every tab of its stacks shows too, each a window of
+  its own. Rows follow where the windows sit on screen, top to bottom and
   left to right, as many as cover the most room; `expose.max_per_row`
   caps how many go in a row, e.g. to wrap a scrolling workspace's
   columns onto rows, the left ones on top. Opening, they fly out of where they are; closing, they
