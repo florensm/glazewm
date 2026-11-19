@@ -13,6 +13,7 @@ use crate::{
   overview_expose::{pile_rects, pile_size, spread},
   overview_layout::{CardView, RectF, Tile},
   overview_scene::{Scene, SceneWindow},
+  overview_state::ScreenFocus,
   OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
 };
 
@@ -85,12 +86,13 @@ fn scene_rects(
   scene: &mut Scene,
   tiles: &[Option<Tile>],
   spread_as: Option<&Spread>,
+  only: Option<&[isize]>,
 ) -> Vec<Option<RectF>> {
   if let Some(how) = spread_as {
     for window in &mut scene.windows {
       window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
     }
-    return spread_piles(scene, how).into_iter().map(Some).collect();
+    return spread_piles(scene, how, only);
   }
 
   scene
@@ -106,13 +108,21 @@ fn scene_rects(
     .collect()
 }
 
-/// Where the exposé shows each window of `scene`: each stack's tabs as
-/// one pile in a slot of its own, and every other window alone in one,
-/// its picked tab risen out of the pile.
-fn spread_piles(scene: &Scene, how: &Spread) -> Vec<RectF> {
+/// Where the exposé shows each window of `scene`, of those in `only` if
+/// given: each stack's tabs as one pile in a slot of its own, and every
+/// other window alone in one, its picked tab risen out of the pile.
+/// `None` for a window left out.
+fn spread_piles(
+  scene: &Scene,
+  how: &Spread,
+  only: Option<&[isize]>,
+) -> Vec<Option<RectF>> {
   // Indices of each pile's windows, front tab first.
   let mut piles: Vec<(isize, Vec<usize>)> = Vec::new();
   for (index, window) in scene.windows.iter().enumerate() {
+    if only.is_some_and(|only| !only.contains(&window.preview.hwnd)) {
+      continue;
+    }
     let key = window
       .tab_depth
       .map_or(window.preview.hwnd, |(anchor, _)| anchor);
@@ -137,7 +147,7 @@ fn spread_piles(scene: &Scene, how: &Spread) -> Vec<RectF> {
   let slots =
     spread(&rooms, &how.area, how.gap, how.max_scale, how.max_per_row);
 
-  let mut rects = vec![RectF::default(); scene.windows.len()];
+  let mut rects = vec![None; scene.windows.len()];
   for ((_, members), slot) in piles.iter().zip(slots) {
     let pulled = members.iter().position(|&index| {
       Some(scene.windows[index].preview.hwnd) == how.picked
@@ -145,10 +155,29 @@ fn spread_piles(scene: &Scene, how: &Spread) -> Vec<RectF> {
     for (&index, rect) in
       members.iter().zip(pile_rects(&slot, members.len(), pulled))
     {
-      rects[index] = rect;
+      rects[index] = Some(rect);
     }
   }
   rects
+}
+
+/// The windows of `workspace` a search matches, which the exposé
+/// spreads alone: `None` without a query, or with no match, which leaves
+/// every window spread.
+fn search_matches(
+  workspace: &OverviewWorkspace,
+  focus: &ScreenFocus,
+) -> Option<Vec<isize>> {
+  if focus.query.is_empty() {
+    return None;
+  }
+  let matches = workspace
+    .windows
+    .iter()
+    .filter(|window| focus.is_match(window))
+    .map(|window| window.hwnd)
+    .collect::<Vec<_>>();
+  (!matches.is_empty()).then_some(matches)
 }
 
 impl Screen {
@@ -320,19 +349,7 @@ impl Screen {
       return;
     };
     let scene_area = self.scene_area;
-    let monitor = RectF::from_rect(&frame.rect);
-    let expose = frame.style.expose;
-    let spread_as = Spread {
-      area: scene_area,
-      gap: self.metrics.px(expose.gap.max(0.0)),
-      // Never larger than the activities show them.
-      max_scale: (scene_area.w / monitor.w)
-        .min(scene_area.h / monitor.h)
-        .max(0.0),
-      max_per_row: usize::try_from(expose.max_per_row)
-        .unwrap_or(usize::MAX),
-      picked: None,
-    };
+    let spread_as = self.spread_as(frame);
     let picked = self.focus.selected_window;
 
     for (index, (scene, workspace)) in
@@ -360,8 +377,13 @@ impl Screen {
         picked: picked.filter(|_| index == selected),
         ..spread_as
       };
-      let rects =
-        scene_rects(scene, &tiles, spreading.then_some(&spread_here));
+      let matches = search_matches(workspace, &self.focus);
+      let rects = scene_rects(
+        scene,
+        &tiles,
+        spreading.then_some(&spread_here),
+        matches.as_deref(),
+      );
 
       for ((window, rect), tile) in
         scene.windows.iter_mut().zip(rects).zip(&tiles)
@@ -402,6 +424,22 @@ impl Screen {
     }
 
     self.retarget_workspace_rect(snap);
+  }
+
+  /// How the exposé spreads a scene of `frame` over the scene area.
+  fn spread_as(&self, frame: &ScreenFrame) -> Spread {
+    let area = self.scene_area;
+    let monitor = RectF::from_rect(&frame.rect);
+    let expose = frame.style.expose;
+    Spread {
+      area,
+      gap: self.metrics.px(expose.gap.max(0.0)),
+      // Never larger than the activities show them.
+      max_scale: (area.w / monitor.w).min(area.h / monitor.h).max(0.0),
+      max_per_row: usize::try_from(expose.max_per_row)
+        .unwrap_or(usize::MAX),
+      picked: None,
+    }
   }
 
   /// Points the shown workspace's working area where the scene lays it

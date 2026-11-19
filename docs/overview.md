@@ -246,7 +246,9 @@ best first, each with its app's icon, its title and process with what
 matched lit in `search_color`, and its workspace. The list shows six at
 a time and scrolls to keep its match in view. Windows that don't match
 fade to a quarter, workspaces with none dim as a whole, and in the
-activities' large view the matches grow a little.
+activities' large view the matches grow a little. In the exposé, the
+matches spread out over the room alone, growing as the query narrows,
+and the rest fade out; with no match left, every window stays.
 
 - Typing never moves the view: the list goes to the best match, and the
   ring and title tag mark it wherever it shows, but the selected
