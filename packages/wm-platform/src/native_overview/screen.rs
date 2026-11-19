@@ -1535,8 +1535,10 @@ impl Screen {
       return Hit::default();
     }
 
-    if let Some(control) =
-      self.hit_spotlight(x, y).or_else(|| self.hit_control(x, y))
+    if let Some(control) = self
+      .hit_spotlight(x, y)
+      .or_else(|| self.hit_control(x, y))
+      .or_else(|| self.hit_close(x, y).map(Control::Close))
     {
       return Hit {
         control: Some(control),

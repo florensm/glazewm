@@ -39,8 +39,10 @@ overview's own outline instead.
   [Scrolling workspaces](#scrolling-workspaces)).
 - **Exposé**: the activities' row of miniatures, and below it the shown
   workspace's windows spread out side by side at one scale, as macOS's
-  Mission Control does: every tab of its stacks too, each a window of
-  its own. Rows follow where the windows sit on screen, top to bottom and
+  Mission Control does. A stack's tabs share one spot as a pile, its
+  shown tab in front and each further one a step up and right behind it;
+  the tab under the cursor, or picked with the keyboard, rises out of the
+  pile. Rows follow where the windows sit on screen, top to bottom and
   left to right, at most `expose.max_per_row` to a row: a scrolling
   workspace's columns, which fit one long row best, wrap onto more rows
   instead, the left ones on top. Opening, they fly out of where they are; closing, they
@@ -120,6 +122,7 @@ is nowhere to go.
 | Click the background | Close without changing anything. |
 | Drag a window onto a workspace | Move it there, laid out where dropping it there on screen would put it: beside the window under the cursor, on the side nearest the cursor, which a highlight shows; or into the column there in a scrolling layout. Works within a workspace too, to rearrange it. A window that isn't tiling, or dropped on the special workspace or on a miniature in the activities, only moves. The overview stays open. |
 | Middle-click a window | Close the window. |
+| Click the **×** on the picked window | Close the window. It shows on the top-right corner of the window under the cursor, or picked with the keyboard, in the activities' and the exposé's large view. |
 | Click **F1 Shortcuts** | Show or hide the keyboard shortcuts. |
 | Wheel | Show or select the next or previous workspace. |
 | Wheel sideways, or `Shift` + wheel | Pan the stack's selected strip, half a monitor per notch, as far as keeps the middle of the screen on it. |

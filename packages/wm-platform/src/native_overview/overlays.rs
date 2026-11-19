@@ -11,8 +11,9 @@ use super::{
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{
-    card_radius, draw_label, draw_note, draw_tag, label_size, note_size,
-    tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
+    card_radius, close_size, draw_close, draw_label, draw_note, draw_tag,
+    label_size, note_size, tag_size, with_alpha, ClosePicture,
+    LabelPicture, SliceLook, TagPicture, CLOSE_BUTTON,
   },
   overview_layout::{
     chrome_opacity, CardMetrics, RectF, RowPlacement, SpringRect,
@@ -67,6 +68,9 @@ pub(super) struct Overlays {
   /// The picked window's title, under it.
   pub(super) tag: Tag<TagPicture>,
 
+  /// A button closing the picked window, on its top-right corner.
+  pub(super) close: Tag<ClosePicture>,
+
   /// Where the shown workspace has no windows.
   pub(super) note: Tag<String>,
 
@@ -89,6 +93,7 @@ impl Overlays {
       window_ring: Highlight::new(highlight_ms)?,
       drop_ring: Highlight::new(highlight_ms)?,
       tag: Tag::new(highlight_ms)?,
+      close: Tag::new(highlight_ms)?,
       note: Tag::new(highlight_ms)?,
       workspace_rect: SpringRect::new(RectF::default(), switch_ms),
       labels: Vec::new(),
@@ -110,6 +115,7 @@ impl Overlays {
     self.window_ring.mark.retune(highlight_ms);
     self.drop_ring.mark.retune(highlight_ms);
     self.tag.mark.retune(highlight_ms);
+    self.close.mark.retune(highlight_ms);
     self.note.mark.retune(highlight_ms);
     self.workspace_rect.retune(switch_ms, bounce);
   }
@@ -132,6 +138,7 @@ impl Overlays {
     self.window_ring.slices.register(host);
     self.drop_ring.slices.register(host);
     self.tag.picture.register(host);
+    self.close.picture.register(host);
 
     if layout.has_scene() {
       self.note.picture.register(host);
@@ -153,6 +160,7 @@ impl Overlays {
       slices.retire(retired);
     }
     self.tag.picture.retire(retired);
+    self.close.picture.retire(retired);
     self.note.picture.retire(retired);
   }
 
@@ -211,12 +219,14 @@ impl Overlays {
     self.window_ring.mark.reset();
     self.drop_ring.mark.reset();
     self.tag.mark.reset();
+    self.close.mark.reset();
     self.note.mark.reset();
   }
 
   /// Forgets what the pictures show, so they are all drawn anew.
   pub(super) fn forget_drawn(&mut self) {
     self.tag.drawn = None;
+    self.close.drawn = None;
     self.note.drawn = None;
     for label in &mut self.labels {
       label.drawn = None;
@@ -233,6 +243,7 @@ impl Overlays {
       self.window_ring.mark.step(dt),
       self.drop_ring.mark.step(dt),
       self.tag.mark.step(dt),
+      self.close.mark.step(dt),
       self.note.mark.step(dt),
       self.workspace_rect.step(dt),
     ]
@@ -310,6 +321,17 @@ impl Screen {
       }
     }
 
+    let close = ClosePicture::new(style);
+    if overlays.close.drawn != Some(close) {
+      overlays
+        .close
+        .picture
+        .draw(close_size(scale_factor), |surface| {
+          draw_close(surface, close, scale_factor);
+        });
+      overlays.close.drawn = Some(close);
+    }
+
     if let Some(note) = note {
       if overlays.note.drawn.as_ref() != Some(&note) {
         let size = note_size(&note, style, scale_factor);
@@ -319,6 +341,35 @@ impl Screen {
         overlays.note.drawn = Some(note);
       }
     }
+  }
+
+  /// Where the close button shows for `picked`, the picked window and
+  /// where it shows: over its top-right corner, in the large view only,
+  /// and not while a window is dragged.
+  fn close_rect(
+    &self,
+    picked: Option<(isize, RectF)>,
+    view: &RectF,
+  ) -> Option<(isize, RectF, f32)> {
+    if !self.focus.layout.has_scene() || self.focus.is_dragging {
+      return None;
+    }
+    let (hwnd, rect) = picked?;
+    let size = self.metrics.px(CLOSE_BUTTON);
+    let x = (rect.right() - size * 0.7).min(view.right() - size);
+    let y = (rect.y - size * 0.3).max(view.y);
+    Some((hwnd, RectF::new(x, y, size, size), 1.0))
+  }
+
+  /// The window whose close button is under (`x`, `y`), once it shows
+  /// clearly.
+  pub(super) fn hit_close(&self, x: f32, y: f32) -> Option<isize> {
+    if self.zoom.is_some() {
+      return None;
+    }
+    let (_, hwnd) = self.picked_window()?;
+    let (rect, _, alpha) = self.overlays.as_ref()?.close.mark.shown()?;
+    (alpha > 0.5 && rect.contains(x, y)).then_some(hwnd)
   }
 
   /// Each workspace's name beside its card.
@@ -544,6 +595,8 @@ impl Screen {
         (hwnd, RectF::new(x, y, width, height), 1.0)
       });
 
+    let close_target = self.close_rect(picked_rect, &view);
+
     let note_target =
       self
         .note_text()
@@ -594,6 +647,8 @@ impl Screen {
 
     is_gliding |= overlays.tag.mark.follow(tag_target, now);
     overlays.tag.place(&view, chrome);
+    is_gliding |= overlays.close.mark.follow(close_target, now);
+    overlays.close.place(&view, chrome);
     is_gliding |= overlays.note.mark.follow(note_target, now);
     overlays.note.place(&view, chrome);
 
