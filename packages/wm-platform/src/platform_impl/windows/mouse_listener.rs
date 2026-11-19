@@ -6,7 +6,7 @@ use std::{
 use tokio::sync::mpsc;
 use windows::Win32::{
   Devices::HumanInterfaceDevice::{
-    HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC,
+    HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC, MOUSE_MOVE_ABSOLUTE,
   },
   Foundation::{HWND, POINT},
   UI::{
@@ -190,6 +190,20 @@ impl MouseListener {
         == FOREGROUND_INPUT_IDENTIFIER
     {
       return Ok(());
+    }
+
+    // Relative movement only: an absolute device (e.g. a pen, or a remote
+    // session) can't push past the desktop's edge.
+    // SAFETY: `dwType` is `RIM_TYPEMOUSE`, checked above, so `mouse` is
+    // the union's field in use.
+    let mouse = unsafe { raw_input.data.mouse };
+    if u32::from(mouse.usFlags) & MOUSE_MOVE_ABSOLUTE == 0
+      && (mouse.lLastX, mouse.lLastY) != (0, 0)
+    {
+      crate::grab_listener::note_raw_motion(
+        (mouse.lLastX, mouse.lLastY),
+        super::pinned_axes,
+      );
     }
 
     // Map button flags to a `MouseEventKind`.

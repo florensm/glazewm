@@ -366,6 +366,10 @@ pub(crate) enum HandBack {
   AwaitingCompanion,
   /// Shown again in its place.
   Done,
+  /// Drawn by its resting peek again, its real window left cloaked as
+  /// the layout hides it (`slidepeeks`, see
+  /// `AnimationManager::hand_back_to_peek`).
+  ToPeek,
 }
 
 /// A step of tearing down a finished workspace switch's surrogates.
@@ -1435,7 +1439,9 @@ impl AnimationManager {
 
     let times = state.animation_manager.begin_frame_times();
     let (landed, batch) = Self::tick_peeks(state, times);
+    let track_scope = perf::scope(Stage::PeekTrack);
     super::peek_view::track_overlays(state, config, batch);
+    drop(track_scope);
 
     Some(PeeksDrawn { times, landed })
   }
@@ -1451,6 +1457,7 @@ impl AnimationManager {
     times: FrameTimes,
   ) -> (super::peek_view::Landed, SurrogateBatch) {
     let mut batch = SurrogateBatch::new();
+    super::peek_view::note_fill_inputs(state);
     let mut landed = state.animation_manager.peeks.tick(
       times.now,
       times.clock_origin,
@@ -1472,6 +1479,15 @@ impl AnimationManager {
   fn queue_landed(state: &mut WmState, landed: super::peek_view::Landed) {
     if !landed.shown.is_empty() {
       state.pending_sync.queue_focus_change();
+    }
+    // Sampled at the next idle point, once handed back.
+    for window_id in &landed.filled {
+      if let Some(window) = state.window_by_id(*window_id) {
+        state
+          .animation_manager
+          .pending_edge_samples
+          .insert(window.native().hwnd().0);
+      }
     }
     for window_id in landed
       .shown
@@ -1556,7 +1572,11 @@ impl AnimationManager {
         .map(|at| perf::scope_since(Stage::PeekFrame, Some(at)));
       let (landed, batch) = Self::tick_peeks(state, times);
       Self::queue_landed(state, landed);
+      // Under `peek_frame` only, which a frame with no peek moving lacks.
+      let track_scope =
+        peek_scope.as_ref().map(|_| perf::scope(Stage::PeekTrack));
       super::peek_view::track_overlays(state, config, batch);
+      drop(track_scope);
       drop(peek_scope);
     }
 
@@ -2968,7 +2988,8 @@ impl AnimationManager {
   }
 
   /// Queues a first edge-color sample for a window just shown that has
-  /// none, so its first `fill` resize has a fill.
+  /// none, so its first `fill` resize, or grab resize on peeks, has a
+  /// fill.
   ///
   /// Taken at the next idle point like a resize's, by then after any open
   /// animation has landed; never at a resize's start (see
@@ -2979,10 +3000,13 @@ impl AnimationManager {
     config: &UserConfig,
   ) {
     let resize = &config.value.animations.window_resize;
-    if resize.enabled
-      && resize.style != ResizeStyle::Stretch
-      && self.cached_edge_color(hwnd.0).is_none()
-    {
+    let grab = &config.value.general.grab_and_move;
+    let grab_fills = grab.enabled
+      && grab.resize
+      && grab.draw == wm_common::GrabDraw::Peeks;
+    let fills = (resize.enabled && resize.style != ResizeStyle::Stretch)
+      || grab_fills;
+    if fills && self.cached_edge_color(hwnd.0).is_none() {
       self.pending_edge_samples.insert(hwnd.0);
     }
   }
@@ -3018,7 +3042,7 @@ impl AnimationManager {
   /// `sample_edge_color_async`'s background thread populates this same map
   /// directly (see `edge_color_cache`'s doc comment), so a lock failure
   /// here is treated the same as a miss rather than propagated.
-  fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
+  pub(super) fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
     let map = self.edge_color_cache.lock().ok()?;
     map.get(&hwnd).map(|(color, _)| *color)
   }
@@ -3844,6 +3868,59 @@ impl AnimationManager {
     }
   }
 
+  /// Whether `window_id` slides in with a workspace switch, playing or
+  /// finished, whose surrogate has yet to hand it back.
+  pub fn awaits_peek_hand_back(&self, window_id: &Uuid) -> bool {
+    [&self.workspace_switch, &self.pending_ws_cleanup]
+      .into_iter()
+      .flatten()
+      .filter_map(|ws| ws.windows.get(window_id))
+      .any(|entry| {
+        entry.is_incoming
+          && entry.surrogate.is_some()
+          && entry.hand_back == HandBack::Pending
+      })
+  }
+
+  /// Hands incoming `window_id` of a finished switch, which the layout
+  /// keeps hidden, over to its resting peek, drawn again just before:
+  /// its surrogate's thumbnail and backdrop copy go, its ring copy stays
+  /// over the peek's until the surrogate is dropped (`WsCleanupStep`).
+  pub fn hand_back_to_peek(&mut self, window_id: Uuid) {
+    let Some(entry) = self
+      .pending_ws_cleanup
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| {
+        entry.is_incoming && entry.hand_back == HandBack::Pending
+      })
+    else {
+      return;
+    };
+
+    entry.hand_back = HandBack::ToPeek;
+    if let Some(surrogate) = entry.surrogate.as_mut() {
+      surrogate.hide_thumbnail();
+      surrogate.hide_backdrop();
+    }
+  }
+
+  /// Hands outgoing `window_id`, which a resting peek drew, over to its
+  /// workspace-switch surrogate, before the peek goes. Its real window is
+  /// cloaked already, so it needn't be hidden by its alpha.
+  pub fn take_over_from_peek(&mut self, window_id: Uuid) {
+    if let Some(surrogate) = self
+      .workspace_switch
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| !entry.is_incoming)
+      .and_then(|entry| entry.surrogate.as_mut())
+    {
+      surrogate.apply_effect_opacity();
+    }
+    self.peeks.drop_switched_out(&window_id);
+  }
+
   /// Hands outgoing `window` over to its workspace-switch surrogate, just
   /// before the window is cloaked (see `WorkspaceSurrogate::take_over`).
   pub fn take_over_outgoing(
@@ -4052,6 +4129,8 @@ fn final_overlay_rects(state: &WmState) -> Vec<(Uuid, Rect, HWND)> {
       ws.windows
         .iter()
         .filter(|(_, entry)| entry.is_incoming)
+        // Its peek draws its overlays (see `hand_back_to_peek`).
+        .filter(|(_, entry)| entry.hand_back != HandBack::ToPeek)
         .filter_map(|(id, entry)| {
           let surrogate = entry.surrogate.as_ref()?;
           let window = state.window_by_id(*id);

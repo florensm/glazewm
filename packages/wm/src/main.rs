@@ -22,9 +22,9 @@ use tracing_subscriber::{
 };
 use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
 use wm_platform::{
-  Dispatcher, DisplayListener, EventLoop, KeybindingListener,
-  MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
-  WindowListener,
+  Dispatcher, DisplayListener, EventLoop, GrabListener,
+  KeybindingListener, MouseEventKind, MouseListener, PlatformEvent,
+  SingleInstance, WindowListener,
 };
 
 use crate::{
@@ -45,6 +45,7 @@ mod drop_indicator;
 mod error_notifier;
 mod events;
 mod focus_requests;
+mod grab;
 mod ipc_server;
 mod layout;
 mod models;
@@ -127,6 +128,7 @@ async fn start_wm(
   dispatcher: &Dispatcher,
 ) -> anyhow::Result<()> {
   setup_logging(&verbosity)?;
+  log_panics();
 
   // Left on by mistake, it would make animations look broken or differ
   // from the defaults.
@@ -173,7 +175,11 @@ async fn start_wm(
         .collect::<Vec<_>>(),
       dispatcher,
     )?,
+    grab: GrabListener::new(),
   };
+
+  listeners.grab.configure(grab::settings(&config));
+  listeners.grab.arm(!wm.state.is_paused);
 
   let error_notifier = ErrorNotifier::new(dispatcher.clone());
 
@@ -199,6 +205,10 @@ async fn start_wm(
 
   loop {
     wm_platform::process_sent_messages();
+
+    if let Err(err) = wm.sync_grab(&listeners.grab, &config) {
+      error_notifier.report(&err);
+    }
 
     // Hand queued work the thread before the next animation frame. The
     // `biased` select below puts the animation tick above every other
@@ -275,6 +285,10 @@ async fn start_wm(
       // ticking while something is still animating.
       () = sleep_until(animation_watchdog) => {
         wm.recover_stalled_animations(&config)
+      },
+      Some(event) = listeners.grab.next_event() => {
+        tracing::debug!("Received grab event: {:?}", event);
+        wm.process_grab_event(event, &listeners.grab, &config)
       },
       Some(event) = listeners.mouse.next_event() => {
         tracing::debug!("Received mouse event: {:?}", event);
@@ -360,6 +374,7 @@ struct Listeners {
   mouse: MouseListener,
   window: WindowListener,
   display: DisplayListener,
+  grab: GrabListener,
 }
 
 /// Mouse events to listen for under `config`: moves only for focus
@@ -384,6 +399,7 @@ fn handle_ipc_message(
 ) {
   tracing::info!("Received IPC message: {:?}", message);
   wm_platform::perf::mark_input();
+  let _scope = wm_platform::perf::scope(wm_platform::perf::Stage::Command);
 
   if let Err(err) = ipc_server.process_message(
     message,
@@ -410,6 +426,11 @@ fn handle_wm_event(
   // Disable mouse listener when the WM is paused.
   if let WmEvent::PauseChanged { is_paused } = wm_event {
     let _ = listeners.mouse.enable(!is_paused);
+    listeners.grab.arm(!is_paused);
+  }
+
+  if let WmEvent::UserConfigChanged { .. } = wm_event {
+    listeners.grab.configure(grab::settings(config));
   }
 
   // Update keybinding and mouse listeners on config changes. While
@@ -509,6 +530,13 @@ fn catch_up_before_frame(
       continue;
     }
 
+    // A grab tracks the mouse: it can't wait for an animation to end.
+    if let Some(event) = listeners.grab.try_next_event() {
+      tracing::debug!("Received grab event ahead of tick: {event:?}");
+      wm.process_grab_event(event, &listeners.grab, config)?;
+      continue;
+    }
+
     if let Ok(message) = ipc_server.message_rx.try_recv() {
       handle_ipc_message(message, ipc_server, wm, config);
       continue;
@@ -587,10 +615,29 @@ fn catch_up_before_frame(
   Ok(())
 }
 
+/// Logs panics to `errors.log`, with their thread and a backtrace: the
+/// release WM has no console for the default hook's message, so a panic
+/// otherwise ends the WM (or one of its threads) without a trace.
+fn log_panics() {
+  let default_hook = std::panic::take_hook();
+
+  std::panic::set_hook(Box::new(move |info| {
+    tracing::error!(
+      "Panic on thread '{}': {info}\n{}",
+      std::thread::current().name().unwrap_or("unnamed"),
+      std::backtrace::Backtrace::force_capture(),
+    );
+
+    default_hook(info);
+  }));
+}
+
 /// Initialize logging with the specified verbosity level.
 ///
 /// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`, the
-/// overview's trace of picks to `~/.glzr/glazewm/overview.log`, and with
+/// overview's trace of picks to `~/.glzr/glazewm/overview.log`, how WPF
+/// windows answer the WM to `~/.glzr/glazewm/wpf.log`, how grab resizes
+/// draw each window to `~/.glzr/glazewm/grab.log`, and with
 /// `--verbose` every log to `~/.glzr/glazewm/debug.log`.
 ///
 /// The latter is the only way to read verbose logs of a release build:
@@ -633,6 +680,15 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_target(wm_platform::OVERVIEW_LOG_TARGET, Level::DEBUG),
     );
 
+  // A few lines per WPF window, so always on, in its own file.
+  let wpf_layer = fmt::Layer::new()
+    .with_ansi(false)
+    .with_writer(open_log_file(&error_log_dir, "wpf.log")?)
+    .with_filter(
+      tracing_subscriber::filter::Targets::new()
+        .with_target(wm_platform::WPF_LOG_TARGET, Level::INFO),
+    );
+
   // One line per workspace switch, so always on, in its own file.
   let switch_layer = fmt::Layer::new()
     .with_ansi(false)
@@ -640,6 +696,16 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .with_filter(
       tracing_subscriber::filter::Targets::new()
         .with_target(switch_log::SWITCH_LOG_TARGET, Level::INFO),
+    );
+
+  // A few lines per grab resize drawn on peeks, so always on, in its own
+  // file.
+  let grab_layer = fmt::Layer::new()
+    .with_ansi(false)
+    .with_writer(open_log_file(&error_log_dir, "grab.log")?)
+    .with_filter(
+      tracing_subscriber::filter::Targets::new()
+        .with_target(grab::GRAB_LOG_TARGET, Level::INFO),
     );
 
   let debug_layer = (verbosity.level() == Level::DEBUG)
@@ -665,6 +731,8 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .with(perf_layer)
     .with(overview_layer)
     .with(switch_layer)
+    .with(grab_layer)
+    .with(wpf_layer)
     .with(debug_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;

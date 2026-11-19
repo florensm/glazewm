@@ -194,6 +194,8 @@ impl OverlayWindow {
   /// Leaves the tracked state untouched on failure, so the next call
   /// retries.
   pub(crate) fn place(&mut self, rect: &Rect, anchor: HWND) -> bool {
+    let _scope = crate::perf::scope(crate::perf::Stage::OverlayPlace);
+
     // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
     let placed = unsafe {
       SetWindowPos(

@@ -6,6 +6,7 @@
 
 pub mod column_drop;
 mod dwindle;
+pub mod edge_resize;
 mod geometry;
 pub mod scrolling;
 mod split;

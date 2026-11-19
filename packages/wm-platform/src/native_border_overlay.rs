@@ -436,6 +436,18 @@ impl NativeBorderOverlay {
     outer_rect(&self.rect, self.params.outset())
   }
 
+  /// How far in from its outer edge each corner of the ring reaches: its
+  /// outset, plus the inner curve, which bends into the tracked window's
+  /// frame, plus a pixel or two of anti-aliasing. A copy cut there can
+  /// stretch its edges without bending its corners.
+  #[must_use]
+  pub fn corner_reach(&self) -> i32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let outset = self.params.outset().ceil() as i32;
+
+    outset + inner_hole_radius(&self.params) + 2
+  }
+
   /// Creates a ring parked at `window_rect` (see [`park`]), concealed
   /// before it is ever shown with `conceal`.
   ///
@@ -921,6 +933,7 @@ impl Overlay for NativeBorderOverlay {
   }
 
   fn apply_blend(&mut self, blend: StyleBlend<BorderOverlayParams>) {
+    let _scope = crate::perf::scope(crate::perf::Stage::OverlayBlend);
     let params = blend.from.lerp(&blend.to, blend.t);
     self.set_colors(params.color, params.highlight, params.rim);
     self.set_widths(params.width, params.glow);

@@ -833,7 +833,6 @@ window_effects:
       is_resizable: true,
       shadow_borders: wm_platform::RectDelta::zero(),
       min_width: 0,
-      size_to_content_released: false,
     }
   }
 

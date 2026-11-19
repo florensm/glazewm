@@ -171,6 +171,11 @@ impl KeyboardHook {
     let is_keypress =
       wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN;
 
+    // Escape cancels a mouse grab, and doesn't reach the app.
+    if super::takes_key(key_code.0, is_keypress) {
+      return LRESULT(1);
+    }
+
     let Ok(key) = Key::try_from(key_code) else {
       return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     };

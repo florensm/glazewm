@@ -1,0 +1,170 @@
+# Grab and move
+
+Hold a modifier and drag anywhere on a window with the mouse to move or
+resize it, without its title bar or border, as AltSnap does. Off by
+default.
+
+```yaml
+general:
+  grab_and_move:
+    enabled: true
+    # Key to hold: 'alt' or 'win'.
+    modifier: "alt"
+    # Right-drag resizes. Off, right clicks with the modifier reach the
+    # window as usual.
+    resize: true
+    # How a resize draws the windows it changes: 'live' or 'peeks'.
+    draw: "live"
+```
+
+Reloading the config turns it on or off, or changes the key, at once.
+
+## Gestures
+
+| Gesture | Behaviour |
+| --- | --- |
+| modifier + left-drag | Moves the window, exactly like a drag by its title bar. |
+| modifier + right-drag | Resizes the window from the edge or corner nearest to where it was pressed. |
+| Escape while dragging | Cancels: a move puts the window back where it started, a resize puts every size back. |
+
+The button is fixed: left moves, right resizes. The window is focused
+when it is grabbed, as a click would. Neither the press nor its release
+reaches the app.
+
+For the whole gesture the cursor shows what it does, as AltSnap's does:
+the move cursor for a move, and the resize cursor of the edge or corner
+dragged for a resize. A small invisible window of the WM's is kept under
+the cursor meanwhile, since only the window under the cursor can set it.
+
+Which edges a resize drags is picked from where on the window it was
+pressed: the window is cut into a 3x3 grid whose side bands are 38% of
+its width (or height) each. A corner cell drags its corner, a side cell
+its side, and the middle cell the side it is nearest to, relative to the
+window's size.
+
+## Moving
+
+A move is a title-bar drag in all but how it starts: the window follows
+the cursor, a tiling window floats once it has moved 10px, the drop
+indicator shows where it lands, and dropping it tiles it there, onto a
+stack's tab bar, or onto another monitor. A stacked window takes its
+stack and tab bar along. A floating window just moves. Across monitors of
+different DPI, the app rescales as it crosses, as in a title-bar drag.
+
+## Resizing
+
+A resize behaves like a drag of the window's own border: the edges not
+dragged stay where they are.
+
+- **Split and dwindle**: the dragged edge is the boundary with the
+  neighbour on that side (or the nearest container that has one), which
+  alone gives or takes the room. An edge of the workspace doesn't move.
+- **Scrolling**: dragging a column's left or right edge makes it wider or
+  narrower without taking room from any other column; the columns beside
+  it keep their widths and slide along the strip. Top and bottom edges
+  move the boundary with the row above or below, within the column.
+- **Stacks**: a stacked window resizes its whole stack.
+- **Floating**: the window just resizes.
+
+The cursor moves freely, and the dragged edge follows it. The neighbours
+resize along with the window as the mouse moves, not only on release.
+
+### Past the screen's edge
+
+Once the cursor is held at the desktop's outer edge, pushing the mouse on
+in that direction keeps moving the dragged edge, at the mouse's own
+(unaccelerated) speed. Coming back, the edge follows the cursor again,
+that far ahead of it.
+
+In a scrolling layout the view keeps the column's other edge where it is
+on screen while the dragged edge is in view. Once the dragged edge would
+leave the view, the view scrolls to keep it at the view's edge, and stays
+scrolled as the column shrinks again. A column can be made as wide as the
+view; a layout set to keep columns centered (`center_focused_column:
+"always"`) keeps it centered, growing both ways.
+
+### Drawing: `draw`
+
+With `live`, the default, each window is drawn by its app at its new size
+as soon as the app has applied it. Apps apply sizes at their own pace, so
+a window can show a frame or more off its border, or over its
+neighbour's.
+
+With `peeks` (in development, not yet complete), the WM draws the tiled
+windows a resize changes itself, from live copies, together with their
+borders, at the layout's rects on every frame; the real windows are
+hidden and resized behind them. Where an app has yet to fill its new
+size, the rest of its tile shows the window's edge colour; where it is
+larger, it is cut at the tile. Floating windows, stacks, and windows
+with a rounded backdrop are still drawn live. The first change of a resize shows a frame late, as the WM hands
+the windows over to their stand-ins; when the button is released, each
+is handed back once its app has reached its final size, or after
+150 ms. Reloading the config switches between the two.
+
+### Limits
+
+A window is never made smaller than its app allows (its minimum width;
+Windows only), nor a column narrower than 10% of the view. A floating
+window keeps at least 250x140px, or its own size if it started smaller.
+
+## Animations
+
+Windows placed by the mouse land at once: neither a grab nor a drag by the
+title bar or border animates the dragged window, and the windows that
+make room for it or close up after it move at once too.
+
+## What isn't grabbed
+
+The press reaches the window untouched when:
+
+- it isn't managed: ignored by a window rule, or one of the WM's own
+  windows (tab bars, borders, the overview);
+- it is fullscreen or maximized, minimized, a stack's hidden tab, or
+  drawn moving by an animation (the press on a moving window is then the
+  scroll view's, see `click_to_scroll`);
+- it belongs to an elevated app (run as administrator) while the WM
+  isn't elevated, which it couldn't move;
+- the WM is paused, or the overview is open.
+
+## Ending a grab
+
+A grab ends when its button is released. It also ends, keeping what it
+did, when its window closes, goes fullscreen or minimized, another window
+takes the foreground (e.g. a UAC prompt), or the WM is paused, and when
+its release can't be seen: the input desktop switches (a UAC prompt on
+the secure desktop, Ctrl+Alt+Del, the lock screen), or the same button is
+pressed again. The release of a press that was taken from the app is
+always taken too, so the app never sees half a click.
+
+The modifier doesn't open anything once released: the WM taps an
+unassigned key while it is held, as it does for keybindings on the mouse
+wheel, so Alt doesn't open the window's menu bar, nor Win the Start menu.
+
+## How it works
+
+A low-level mouse hook on a thread of its own takes the press and its
+release when the modifier is held over a window it may grab; mouse moves
+always pass, so the cursor moves as usual. A move hands the newest cursor
+position to a mover thread, which moves the window with a synchronous
+`SetWindowPos`: a slow app gets one current move when it is ready rather
+than a backlog of stale ones, and the WM sees the moves as it sees a
+title-bar drag, skipping moves that piled up behind newer ones. The hook
+also tells the WM the newest position, and the WM moves the window's
+border and backdrop there at once, rather than after the window reports
+its move, so they don't trail it. Until the release, the window's own
+moves move them only if its size changes (e.g. as its app rescales for
+another monitor's DPI).
+
+A resize hands the newest total to the WM, which lays the windows out
+anew on every move of the mouse, without animations. Each window whose
+rect changed and that stays shown is then placed by a thread of its own,
+again with a synchronous `SetWindowPos` given only the newest rect, so
+the dragged window never waits on a neighbour, nor on the WM's next sync.
+The WM moves those windows' borders and backdrops to the new rects at
+once, in one go; while a window's thread is still placing it, its
+reported moves leave them be, and once it has landed they follow where it
+really is, e.g. at a size its app insists on.
+Windows that show or hide (e.g. columns scrolling in or out of view) go
+through the WM's usual sync, and on release every window the resize can
+have moved is synced once more. How far the mouse pushes past the
+desktop's edge comes from raw mouse input, which the WM already reads.

@@ -13,8 +13,8 @@ use crate::{
 };
 
 /// Arbitrary defaults for minimum floating window dimensions.
-const MIN_FLOATING_WIDTH: i32 = 250;
-const MIN_FLOATING_HEIGHT: i32 = 140;
+pub const MIN_FLOATING_WIDTH: i32 = 250;
+pub const MIN_FLOATING_HEIGHT: i32 = 140;
 
 pub fn set_window_size(
   window: WindowContainer,

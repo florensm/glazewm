@@ -3,7 +3,7 @@ use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
   FloatingStateConfig, FullscreenStateConfig, WindowState,
 };
-use wm_platform::{NativeWindow, Rect};
+use wm_platform::{NativeWindow, Point, Rect};
 
 use crate::{
   commands::{
@@ -49,15 +49,35 @@ pub fn handle_window_moved_or_resized(
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
+      // Already handled at this frame: events that piled up behind a
+      // slow iteration all read the window's newest frame, so only the
+      // first does any work and the drag never trails a backlog.
+      if old_frame_position == frame_position && !is_interactive_end {
+        return Ok(());
+      }
+
       // An interactive drag moves the window through the OS, and the
       // window is dequeued from redraw for the gesture, so `platform_sync`
-      // never tracks it.
-      follow_window_frame(&window, &frame_position, state, config);
+      // never tracks it. A grab's move places them itself.
+      if !crate::grab::places_move_overlays(
+        &window,
+        &old_frame_position,
+        &frame_position,
+        state,
+      ) {
+        follow_window_frame(&window, &frame_position, state, config);
+      }
 
       // The drag operation has ended on `EVENT_SYSTEM_MOVESIZEEND`.
       if is_interactive_end {
-        return handle_window_moved_or_resized_end(&window, state, config);
+        return handle_window_moved_or_resized_end(
+          &window, None, state, config,
+        );
       }
+
+      // Windows the drag makes room for, or closes up after, follow the
+      // mouse at once, as the dragged window does.
+      state.pending_sync.suppress_animations();
 
       update_drag_state(&window, &frame_position, state, config)?;
 
@@ -299,6 +319,35 @@ pub fn handle_window_moved_or_resized(
   Ok(())
 }
 
+/// Ends the drag of `native_window` that a grab of it moved, with the
+/// window dropped where `drop_point` is, or else where the cursor is.
+pub fn end_window_drag(
+  native_window: &NativeWindow,
+  drop_point: Option<&Point>,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let Some(window) = state
+    .window_from_native(native_window)
+    .filter(|window| window.active_drag().is_some())
+  else {
+    return Ok(());
+  };
+
+  // Bound by `let` so the `native()` borrow ends here: in an `if let`
+  // scrutinee it would outlive the mutable borrows below.
+  let frame = window.native().frame();
+
+  if let Ok(frame) = frame {
+    window.update_native_properties(|properties| {
+      properties.frame = frame.clone();
+    });
+    follow_window_frame(&window, &frame, state, config);
+  }
+
+  handle_window_moved_or_resized_end(&window, drop_point, state, config)
+}
+
 /// Widens a scrolling layout's column for a window its app keeps wider
 /// than the column, once the app reports a larger minimum width than it
 /// did (e.g. after moving to a monitor of a higher DPI).
@@ -376,7 +425,8 @@ fn follow_drag_with_tab_bar(
 
 /// Keeps a shown window's overlays on it after a move nothing queued a
 /// redraw for: the app moved its own window, or the WM's asynchronous
-/// move landed after `platform_sync` had placed the overlays.
+/// move landed after `platform_sync` had placed the overlays. Not while a
+/// grab's resize is still placing it, which placed them already.
 fn follow_own_move(
   window: &WindowContainer,
   frame: &Rect,
@@ -388,6 +438,7 @@ fn follow_own_move(
 
   if is_shown
     && !state.animation_manager.has_active_surrogate(&window.id())
+    && !crate::grab::is_placing(window, state)
   {
     follow_window_frame(window, frame, state, config);
   }

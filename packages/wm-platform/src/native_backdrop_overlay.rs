@@ -201,6 +201,7 @@ impl Overlay for NativeBackdropOverlay {
   /// Also the per-tick point at which the overlay notices the desktop
   /// wallpaper changing underneath it.
   fn apply_blend(&mut self, blend: StyleBlend<BackdropOverlayParams>) {
+    let _scope = crate::perf::scope(crate::perf::Stage::OverlayBlend);
     let StyleBlend { from, to, t } = blend;
 
     // The baked knobs travel unblended: they select a surface rather than

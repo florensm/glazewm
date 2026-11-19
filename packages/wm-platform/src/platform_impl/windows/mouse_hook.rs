@@ -79,6 +79,11 @@ impl MouseHookThread {
     }
   }
 
+  /// Id of the hook's thread, to post messages to.
+  pub(crate) fn thread_id(&self) -> u32 {
+    self.thread_id
+  }
+
   /// Unhooks the mouse and ends the thread.
   pub(crate) fn terminate(&mut self) -> crate::Result<()> {
     let Some(thread) = self.thread.take() else {

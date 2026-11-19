@@ -224,7 +224,7 @@ const FILL_UNDERLAP_PX: i32 = 2;
 
 /// Where the gap fill starts, from the surrogate's top-left, under a
 /// thumbnail covering `covered` (see [`FILL_UNDERLAP_PX`]).
-fn fill_start(covered: (i32, i32)) -> (i32, i32) {
+pub(crate) fn fill_start(covered: (i32, i32)) -> (i32, i32) {
   (
     (covered.0 - FILL_UNDERLAP_PX).max(0),
     (covered.1 - FILL_UNDERLAP_PX).max(0),
@@ -569,6 +569,8 @@ impl NativeSurrogate {
     let logical_src = to_logical(source_rect, &border_inset);
     let logical_thumb = to_logical(thumbnail_rect, &border_inset);
 
+    let window_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateWindow);
     // `WS_EX_NOREDIRECTIONBITMAP` leaves the window with no GDI surface at
     // all, so everything outside the thumbnail is transparent, and lets
     // the gap fill root a composition tree on it.
@@ -583,6 +585,7 @@ impl NativeSurrogate {
     )?;
 
     style_like_window(hwnd, *corner_style);
+    drop(window_scope);
 
     // Register the DWM thumbnail at `thumbnail_rect` dimensions. For
     // shrinking animations this equals `source_rect` so the thumbnail
@@ -597,6 +600,8 @@ impl NativeSurrogate {
     //
     // Failure is non-fatal: the surrogate still shows its fill if given a
     // color.
+    let thumb_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateThumb);
     let companion = Companion::find(source_hwnd);
     let window_size = (logical_src.width(), logical_src.height());
     let (src, dst) = content_rects(
@@ -613,6 +618,7 @@ impl NativeSurrogate {
       stretch.then_some(window_size),
     );
     let thumbnail = register_thumbnail(hwnd, source_hwnd, companion, look);
+    drop(thumb_scope);
 
     // Constructed before the final `SetWindowPos` call (rather than after)
     // so that if it fails, `?`'s early return drops `this` — running
@@ -717,6 +723,8 @@ impl NativeSurrogate {
     self.last_rect = None;
     self.window_size = (logical_src.width(), logical_src.height());
 
+    let thumb_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateThumb);
     // The existing registration samples the old companion (or the window
     // itself), so a changed companion needs a new one, as does a changed
     // `stretch`, since a source rect cannot be unset once applied.
@@ -752,6 +760,7 @@ impl NativeSurrogate {
           register_thumbnail(self.hwnd(), source_hwnd, companion, look);
       }
     }
+    drop(thumb_scope);
     self.rest_opacity = opacity;
     self.set_fill_opacity(opacity);
     self.content_size = (logical_thumb.width(), logical_thumb.height());
@@ -827,21 +836,30 @@ impl NativeSurrogate {
       return None;
     };
     self.set_thumbnail_rects(src, dst);
-
-    match batch {
-      Some(batch) if self.is_visible => {
-        self.defer_reposition(batch, &visible);
-      }
-      _ => {
-        if let Err(err) = self.reposition(&visible) {
-          tracing::warn!("Surrogate clipped update failed: {err}.");
-        }
-      }
-    }
+    self.move_to(&visible, batch);
     self.set_window_opacity(opacity);
     self.set_visible(true);
 
     Some(visible)
+  }
+
+  /// Moves the surrogate to `rect`. With `batch`, a move of an already
+  /// shown surrogate is queued into it.
+  pub(crate) fn move_to(
+    &mut self,
+    rect: &Rect,
+    batch: Option<&mut SurrogateBatch>,
+  ) {
+    match batch {
+      Some(batch) if self.is_visible => {
+        self.defer_reposition(batch, rect);
+      }
+      _ => {
+        if let Err(err) = self.reposition(rect) {
+          tracing::warn!("Surrogate clipped update failed: {err}.");
+        }
+      }
+    }
   }
 
   /// Returns the raw handle of the surrogate overlay window.

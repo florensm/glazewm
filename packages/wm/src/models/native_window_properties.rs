@@ -18,10 +18,6 @@ pub struct NativeWindowProperties {
   /// if unknown. Only measured for a window being managed (see
   /// `measure_min_width`).
   pub min_width: i32,
-
-  /// Whether the window was asked to stop sizing itself to its content
-  /// (see `NativeWindow::release_size_to_content`).
-  pub size_to_content_released: bool,
 }
 
 impl NativeWindowProperties {
@@ -51,7 +47,6 @@ impl TryFrom<&NativeWindow> for NativeWindowProperties {
       is_resizable: native_window.is_resizable(),
       shadow_borders: native_window.shadow_borders()?,
       min_width: 0,
-      size_to_content_released: false,
     })
   }
 }

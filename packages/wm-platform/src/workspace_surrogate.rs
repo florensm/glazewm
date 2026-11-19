@@ -362,7 +362,7 @@ impl WorkspaceSurrogate {
 
     self
       .copies
-      .carry_ring(self.hwnd(), source, rest, &self.rect)
+      .carry_ring(self.hwnd(), source, rest, &self.rect, None)
   }
 
   /// Whether the surrogate draws the window's border ring (see

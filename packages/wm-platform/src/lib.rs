@@ -16,6 +16,7 @@ mod error;
 mod event_loop;
 mod external_color_source;
 mod frame_clock;
+mod grab_listener;
 mod hidden_alpha;
 pub mod isolation;
 mod keybinding_listener;
@@ -60,6 +61,7 @@ mod window_class;
 mod window_icons;
 mod window_listener;
 mod window_peek;
+mod window_placer;
 mod workspace_surrogate;
 
 pub use click_guard::{ClickGuard, GuardedClick};
@@ -71,6 +73,10 @@ pub use error::*;
 pub use event_loop::*;
 pub use external_color_source::*;
 pub use frame_clock::FrameClock;
+pub use grab_listener::{
+  Gesture, GrabEnd, GrabEvent, GrabListener, GrabModifier, GrabSettings,
+  ResizeEdges,
+};
 pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;
@@ -97,11 +103,16 @@ pub use thread_bound::*;
 pub use ui_thread::UiThread;
 pub use window_listener::*;
 pub use window_peek::WindowPeek;
+pub use window_placer::WindowPlacer;
 pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
 
 /// `tracing` target of the overview's trace of picks through to its
 /// closing zoom, which the WM writes to a file of its own.
 pub const OVERVIEW_LOG_TARGET: &str = "glazewm::overview";
+
+/// `tracing` target of how WPF windows answer what the WM asks of them
+/// as it sizes them, which the WM writes to a file of its own.
+pub const WPF_LOG_TARGET: &str = "glazewm::wpf";
 
 /// Stops Windows from creating "ghost" windows for this process.
 ///

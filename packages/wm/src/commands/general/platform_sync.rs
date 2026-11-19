@@ -37,6 +37,7 @@ fn animations_suppressed(state: &WmState) -> bool {
   state.pending_sync.animations_suppressed() || state.overview.is_shown()
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn platform_sync(
   state: &mut WmState,
   config: &UserConfig,
@@ -103,6 +104,12 @@ pub fn platform_sync(
   } else {
     Redraw::default()
   };
+  let _tail_scope = perf::scope(Stage::SyncTail);
+
+  // Before anything else is drawn: the switch has started or not by now.
+  if wm_platform::isolation::current().slide_peeks {
+    crate::animation::peek_view::settle_switch_peeks(state, config);
+  }
 
   // Focus is synced after `redraw_containers` so that the workspace-switch
   // animation is already set up when `sync_focus` runs. This lets the
@@ -110,11 +117,13 @@ pub fn platform_sync(
   // `SetForegroundWindow` during the slide (the animation manager
   // re-queues focus after it completes), preventing the OS from
   // asynchronously uncloaking the incoming focused window mid-animation.
+  let focus_scope = perf::scope(Stage::SyncFocus);
   let focused_id = if state.pending_sync.needs_focus_update() {
     sync_focus(&focused_container, state)
   } else {
     Ok(None)
   };
+  drop(focus_scope);
 
   // `SetForegroundWindow` may have raised a window past the surrogate of
   // its finished move, which covers it until its companion is back. Put
@@ -187,12 +196,17 @@ pub fn platform_sync(
   } else {
     crate::tab_bars::Restack::None
   };
+  let tab_bars_scope = perf::scope(Stage::TabBars);
   crate::tab_bars::sync_tab_bars(state, config, restack);
+  drop(tab_bars_scope);
 
   // After focus is synced, so the overview never hides while it is still
   // the foreground window.
+  let overview_scope = perf::scope(Stage::Overview);
   crate::overview::sync_overview(state, config);
+  drop(overview_scope);
 
+  let guards_scope = perf::scope(Stage::Guards);
   if !state.animation_manager.has_active_animations() {
     crate::animation::scroll_view::report_stuck_windows(state);
   }
@@ -204,6 +218,7 @@ pub fn platform_sync(
 
   // Once the layout has settled, so resized windows' new rects are known.
   crate::particles::show_particles(state, config);
+  drop(guards_scope);
 
   let is_animating = state.animation_manager.is_workspace_switch_playing();
   state.switch_log.note_synced(is_animating);
@@ -648,13 +663,17 @@ fn commit_pending_cloaks(
   } in pending
   {
     // A scrolling layout's peek takes over as its window is cloaked.
+    let take_over_scope = perf::scope(Stage::TakeOver);
     state
       .animation_manager
       .peeks
       .take_over(&window.id(), &window.native());
     let _ = window.native().set_cloaked(true);
+    drop(take_over_scope);
 
+    let preposition_scope = perf::scope(Stage::Preposition);
     preposition_cloaked(state, &window, &z_order, &target_rect);
+    drop(preposition_scope);
 
     // Later `Frozen` ticks then skip the cloak query.
     if let Some(session) = state
@@ -745,14 +764,28 @@ fn preposition_cloaked(
     }
     Some((false, _)) => None,
   };
+  // A window filled on its peek that shrinks keeps its size until the
+  // peek lands, as a `fill` session's does (see `resizes_at_start`).
+  let swp_flags = swp_flags.filter(|_| {
+    !state.animation_manager.peeks.defers_resize(&window.id())
+  });
 
   if let Some(swp_flags) = swp_flags {
     let current = window.native().frame_with_shadows().ok();
-    let _ = window.native().set_window_pos(
-      z_order,
-      target_rect,
-      swp_flags | discard_bits_if_resized(current.as_ref(), target_rect),
-    );
+    let flags =
+      swp_flags | discard_bits_if_resized(current.as_ref(), target_rect);
+    let _ = window.native().set_window_pos(z_order, target_rect, flags);
+
+    // Moved onto a monitor of another DPI on two peeks, its app takes the
+    // size Windows suggests for it there: sent its rect again, as
+    // `reposition_window` does, after that in its queue, it is drawn at
+    // its tile's size for the rest of the motion, not only once it
+    // lands.
+    if window.has_pending_dpi_adjustment()
+      && state.animation_manager.peeks.has_trail(&window.id())
+    {
+      let _ = window.native().set_window_pos(z_order, target_rect, flags);
+    }
   }
 }
 
@@ -924,6 +957,7 @@ fn redraw_containers(
         // `border_viewport`).
         let mut monitor_work_area = Rect::from_xy(0, 0, 0, 0);
 
+        let surrogates_scope = perf::scope(Stage::WsSurrogates);
         for window in &windows_to_update {
           let id = window.id();
           let is_incoming =
@@ -1088,6 +1122,7 @@ fn redraw_containers(
             ));
           }
         }
+        drop(surrogates_scope);
 
         let has_outgoing =
           ws_windows.iter().any(|(_, entry)| !entry.is_incoming);
@@ -1102,12 +1137,15 @@ fn redraw_containers(
         if (has_outgoing || has_incoming)
           && (direction != 0 || starts_on_screen)
         {
+          let park_scope = perf::scope(Stage::WsPark);
           park_switch_borders(
             state,
             &mut ws_windows,
             focused_container.id(),
             config,
           );
+          drop(park_scope);
+          let show_scope = perf::scope(Stage::WsShow);
           // Show outgoing surrogates before flushing: real windows are
           // still active so their DWM thumbnails are immediately
           // warm. For stationary (non-slide) styles, also show
@@ -1158,7 +1196,9 @@ fn redraw_containers(
               overlay.conceal();
             }
           }
+          drop(show_scope);
 
+          let start_scope = perf::scope(Stage::WsStart);
           // Windows still sliding on a switch this one cuts short are
           // drawn by that one's surrogates, which go as this one
           // starts.
@@ -1177,6 +1217,7 @@ fn redraw_containers(
             &monitor_work_area,
             config,
           );
+          drop(start_scope);
         }
         // If the incoming workspace is empty, or direction == 0 (workspace
         // not in config), skip the animation.
@@ -1232,9 +1273,16 @@ fn redraw_containers(
   // and whether any of them is taken over from at the shared flush.
   let mut peek_moves = Vec::new();
   let mut peeks_take_over = false;
-  // Floating windows opened on peeks this pass whose peeks go on top, and
-  // of which band.
+  // Windows of a finished switch handed to their resting peeks this pass
+  // (`slidepeeks`).
+  let mut peek_hand_backs = Vec::new();
+  // Floating windows opened on peeks this pass, and windows crossing
+  // between floating and tiling on them, whose peeks go on top, and of
+  // which band.
   let mut peek_raises: Vec<(WindowContainer, PeekRaise)> = Vec::new();
+  // Windows crossing between floating and tiling on peeks this pass,
+  // raised in their band (`peek_raises`) rather than to the top.
+  let mut band_moves = Vec::new();
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
@@ -1252,15 +1300,18 @@ fn redraw_containers(
     }
   });
 
-  // With `window_resize.style: "stretch"` and peeks, the relayout's
-  // resizes go on peeks too, scaled (`STAND_INS_PLAN.md` task 8).
-  let stretches = cycle_has_resize
-    && !suppress_animations
-    && crate::animation::peek_view::stretches_relayout(
+  // With `window_resize.style: "stretch"` (or `fill` under
+  // `GLAZEWM_ISOLATE=fillpeeks`) and peeks, the relayout's resizes go on
+  // peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
+  let resizes = if cycle_has_resize && !suppress_animations {
+    crate::animation::peek_view::resizes_relayout(
       state,
       &windows_to_redraw,
       config,
-    );
+    )
+  } else {
+    None
+  };
 
   drop(prep_scope);
   let loop_scope = perf::scope(Stage::RedrawLoop);
@@ -1397,7 +1448,7 @@ fn redraw_containers(
 
     // Here rather than where the window is moved, which an animation or
     // a drag can do instead.
-    release_size_to_content_once(window, &real_rect);
+    note_size_change(window, &real_rect);
 
     let is_visible = matches!(
       window.display_state(),
@@ -1470,6 +1521,35 @@ fn redraw_containers(
       .animation_manager
       .is_workspace_switch_incoming(&window.id())
       || state.animation_manager.peeks.is_moving(&window.id());
+
+    // A grab resize drawn on peeks puts each tile it changes on a peek it
+    // holds on its first step, which the placer can't take (see
+    // `grab::holds_on_peek`). Ahead of the animation gate, which the
+    // resize suppresses, and taken over from as a move on a peek is.
+    let held_from = previous_target
+      .as_ref()
+      .filter(|from| *from != &target_rect)
+      .filter(|_| {
+        !is_frozen_by_ws_animation
+          && previous_display_state == DisplayState::Shown
+          && !state.animation_manager.peeks.is_held(&window.id())
+          && crate::layout::scrolling::column_of(&window.as_container())
+            .is_none()
+          && crate::grab::holds_on_peek(window, state, config)
+      });
+    if let Some(from) = held_from {
+      if crate::animation::peek_view::hold_on_peek(
+        state,
+        window,
+        from,
+        &target_rect,
+        config,
+        window.id() == focused_container.id(),
+      ) {
+        is_frozen_by_ws_animation = true;
+        peek_moves.push(window.id());
+      }
+    }
 
     // A window is resizing when its dimensions change (vs. a pure
     // translation).
@@ -1657,6 +1737,15 @@ fn redraw_containers(
         .get_animation(&window.id())
         .is_some_and(|a| !a.is_complete());
 
+    // A tile that only moves or resizes goes on a peek; with `morepeeks`,
+    // also one crossing between floating and tiling (`STAND_INS_PLAN.md`
+    // 10f).
+    let moves_as_tile = if is_state_change {
+      crate::animation::peek_view::changes_state_on_peek(window)
+    } else {
+      window.state() == WindowState::Tiling
+    };
+
     // Windows frozen by an in-flight workspace-switch animation stay on
     // the animation path regardless of suppression — the switch's
     // surrogate teardown uncloaks them, so dropping them here would
@@ -1684,8 +1773,7 @@ fn redraw_containers(
         (AnimationPositionResult::Frozen, None)
       } else if wm_platform::isolation::current().peeks
         && !is_column
-        && !is_state_change
-        && window.state() == WindowState::Tiling
+        && moves_as_tile
         && previous_display_state == DisplayState::Shown
         && previous_target.as_ref().is_some_and(|from| {
           crate::animation::peek_view::move_on_peek(
@@ -1694,7 +1782,13 @@ fn redraw_containers(
             from,
             &target_rect,
             cycle_has_resize,
-            stretches,
+            if is_state_change {
+              crate::animation::peek_view::state_change_resize(
+                &config.value.animations.window_resize,
+              )
+            } else {
+              resizes
+            },
             config,
             window.id() == focused_container.id(),
           )
@@ -1704,6 +1798,44 @@ fn redraw_containers(
         // peek (`STAND_INS_PLAN.md` task 6), frozen behind it from now
         // on as an entering one is.
         peek_moves.push(window.id());
+        if is_state_change {
+          band_moves.push(window.id());
+          if let Some(raise) =
+            crate::animation::peek_view::state_change_peek_raise(
+              is_floating,
+              is_shown_on_top(window),
+              window.id() == focused_container.id(),
+            )
+          {
+            peek_raises.push(((*window).clone(), raise));
+          }
+        }
+        (AnimationPositionResult::Frozen, None)
+      } else if motion == Motion::Fullscreen
+        && previous_display_state == DisplayState::Shown
+        && previous_target.as_ref().is_some_and(|from| {
+          crate::animation::peek_view::fullscreen_on_peek(
+            state,
+            window,
+            from,
+            &target_rect,
+            config,
+            window.id() == focused_container.id(),
+          )
+        })
+      {
+        // Under `morepeeks`, a tile toggled in or out of fullscreen does
+        // so on a pinned peek (`STAND_INS_PLAN.md` 10f), taken over from
+        // as a move on a peek is.
+        peek_moves.push(window.id());
+        if let Some(raise) =
+          crate::animation::peek_view::fullscreen_peek_raise(
+            &window.state(),
+            window.prev_state().as_ref(),
+          )
+        {
+          peek_raises.push(((*window).clone(), raise));
+        }
         (AnimationPositionResult::Frozen, None)
       } else {
         state.animation_manager.start_animation_if_needed(
@@ -1751,6 +1883,13 @@ fn redraw_containers(
               cycle_has_resize,
               config,
             );
+          // One a grab holds jumps, as its steps put it.
+          let duration_ms =
+            if state.animation_manager.peeks.is_held(&window.id()) {
+              0
+            } else {
+              duration_ms
+            };
           let now = state.animation_manager.frame_now();
           state.animation_manager.peeks.retarget_tile(
             &window.id(),
@@ -1761,7 +1900,9 @@ fn redraw_containers(
               duration_ms,
             ),
             easing,
-            stretches,
+            crate::animation::peek_view::retarget_resize(
+              motion, resizes, config,
+            ),
             now,
           );
         }
@@ -1825,13 +1966,18 @@ fn redraw_containers(
               session.current_rect(),
             );
 
-            track_overlays(
-              &mut state.window_overlays,
-              window.id(),
-              session.overlay_params(),
-              placement.as_ref(),
-              &mut cloak_overlay_batch,
-            );
+            if tracks_at_take_over(
+              placement.is_some(),
+              wm_platform::isolation::current().keep_overlays,
+            ) {
+              track_overlays(
+                &mut state.window_overlays,
+                window.id(),
+                session.overlay_params(),
+                placement.as_ref(),
+                &mut cloak_overlay_batch,
+              );
+            }
           }
           state.animation_manager.reveal_session(&window.id());
           peeks_take_over |= peek_moves.contains(&window.id());
@@ -1862,7 +2008,9 @@ fn redraw_containers(
           if is_first {
             preposition_cloaked(state, window, &z_order, &real_rect);
           }
-        } else if state.animation_manager.peeks.owns_window(&window.id()) {
+        } else if state.animation_manager.peeks.owns_window(&window.id())
+          && !state.animation_manager.peeks.defers_resize(&window.id())
+        {
           follow_retargeted_column(window, &real_rect);
         }
       }
@@ -1885,7 +2033,10 @@ fn redraw_containers(
           .animation_manager
           .resize_sessions
           .contains_key(&window.id())
-          || state.animation_manager.peeks.owns_window(&window.id())
+          || hands_back_in_step(
+            state.animation_manager.peeks.owns_window(&window.id()),
+            wm_platform::isolation::current().async_hand_back,
+          )
           || (is_visible
             && state
               .animation_manager
@@ -1912,7 +2063,11 @@ fn redraw_containers(
         // surrogate or a scrolling layout's peek is first hidden by its
         // alpha, so the swap with it lands in one frame however late the
         // shell's (un)cloak does. See `HiddenAlpha`.
-        if is_outgoing_switch {
+        if is_outgoing_switch
+          && state.animation_manager.peeks.is_switching_out(&window.id())
+        {
+          state.animation_manager.take_over_from_peek(window.id());
+        } else if is_outgoing_switch {
           state
             .animation_manager
             .take_over_outgoing(window.id(), &window.native());
@@ -2002,6 +2157,16 @@ fn redraw_containers(
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
           state.animation_manager.peeks.release(&window.id());
+        } else if wm_platform::isolation::current().slide_peeks
+          && workspace.is_displayed()
+          && is_hidden_in_layout(*window)
+          && state
+            .animation_manager
+            .is_pending_ws_cleanup_incoming(&window.id())
+        {
+          // Slid in but kept hidden by the layout: its resting peek takes
+          // over below, its real window stays cloaked.
+          peek_hand_backs.push(window.id());
         }
 
         // Apply animated opacity for opacity-style focus animations. The
@@ -2062,30 +2227,64 @@ fn redraw_containers(
 
   drop(loop_scope);
 
+  // Each peek is drawn again, its ring and backdrop copies too, before its
+  // surrogate's thumbnail goes, back to back, as a cut-short slide's
+  // surrogates are swapped: a frame between shows both, never neither.
+  if !peek_hand_backs.is_empty() {
+    for id in &peek_hand_backs {
+      state.animation_manager.peeks.end_stand_by(id);
+    }
+    crate::animation::peek_view::track_overlays(
+      state,
+      config,
+      SurrogateBatch::new(),
+    );
+    for id in &peek_hand_backs {
+      state.animation_manager.hand_back_to_peek(*id);
+    }
+  }
+
   // Cloak every window that entered its first `Frozen` frame this pass,
   // behind a single shared `DwmFlush` barrier. See `pending_cloaks`. A
   // peek taking over from a moved window is new, so not composited yet:
   // the barrier is sure to run then, and its ring and backdrop are handed
   // over around it.
   if peeks_take_over {
+    let _scope = perf::scope(Stage::PeekCover);
     crate::animation::peek_view::cover_moved_overlays(state, config);
   }
   commit_pending_cloaks(state, pending_cloaks, cloak_overlay_batch);
   if peeks_take_over {
+    let _scope = perf::scope(Stage::PeekHandover);
     crate::animation::peek_view::hand_over_moved_overlays(state, config);
   }
+  let raise_scope = perf::scope(Stage::PeekRaise);
   // Only now its window is cloaked: raised while that still showed, a
   // peek's opaque backdrop copy would have hidden it.
+  // One a grab holds stays where it went up, just below its window, for
+  // the whole resize: it never passes over floating windows.
   for id in &peek_moves {
-    state.animation_manager.peeks.raise_moving(id);
+    if !state.animation_manager.peeks.is_held(id)
+      && !band_moves.contains(id)
+    {
+      state.animation_manager.peeks.raise_moving(id);
+      crate::animation::peek_view::restack_live_overlays(state, id);
+    }
   }
   for (window, raise) in &peek_raises {
     // Its cloaked window goes into the band it lands in first, so that
     // `begin_hand_back` puts the peek directly above it there, not back
-    // under the floating windows shown on top.
-    if *raise == PeekRaise::TopMost {
-      if let Err(err) = window.native().set_z_order(&WindowZOrder::TopMost)
-      {
+    // under the floating windows shown on top, nor over them for a tile
+    // that was one of them.
+    let band = match raise {
+      PeekRaise::TopMost => Some(WindowZOrder::TopMost),
+      PeekRaise::Top if window.state() == WindowState::Tiling => {
+        Some(WindowZOrder::Normal)
+      }
+      PeekRaise::Top => None,
+    };
+    if let Some(band) = band {
+      if let Err(err) = window.native().set_z_order(&band) {
         tracing::warn!("Failed to set window z-order: {err}");
       }
     }
@@ -2094,6 +2293,7 @@ fn redraw_containers(
       .peeks
       .raise_in_band(&window.id(), *raise);
   }
+  drop(raise_scope);
 
   for id in &released_covers {
     state.animation_manager.drop_companion_cover(id);
@@ -2193,47 +2393,35 @@ fn redraw_containers(
   })
 }
 
-/// Asks `window`, if it is a WPF window sizing itself to its content, to
-/// lay its content out to the WM's sizes instead (see
-/// `NativeWindow::release_size_to_content`), once the WM first changes its
-/// size to `rect`.
+/// Tells `window`'s platform side that the WM changes its size to `rect`
+/// (see `NativeWindow::note_sized`), for a WPF window to lay its content
+/// out to it.
 ///
 /// Keyed off the size changing rather than the window's state, so that a
 /// floating window the WM only moves keeps sizing itself, while one it
 /// resizes, a tile, a fullscreen window and every tab of a stack are
-/// asked.
-fn release_size_to_content_once(window: &WindowContainer, rect: &Rect) {
-  let mut was_released = true;
-  window.update_native_properties(|properties| {
-    was_released = properties.size_to_content_released;
-  });
-
-  let releases = should_release_size_to_content(
-    was_released,
+/// covered.
+pub(crate) fn note_size_change(window: &WindowContainer, rect: &Rect) {
+  let is_resized = should_note_size(
     window.state() == WindowState::Minimized,
     || window.native().frame_with_shadows().ok(),
     rect,
   );
 
-  if releases {
-    window.native().release_size_to_content();
-    window.update_native_properties(|properties| {
-      properties.size_to_content_released = true;
-    });
+  if is_resized {
+    window.native().note_sized((rect.width(), rect.height()));
   }
 }
 
-/// Whether a window at `current` is asked as the WM sizes it to `target`
-/// (see [`release_size_to_content_once`]). A minimized one is left alone:
-/// it would lay out to its minimized size.
-fn should_release_size_to_content(
-  was_released: bool,
+/// Whether a window at `current` changes size as the WM sizes it to
+/// `target` (see [`note_size_change`]). A minimized one is left
+/// alone: it would lay out to its minimized size.
+fn should_note_size(
   is_minimized: bool,
   current: impl FnOnce() -> Option<Rect>,
   target: &Rect,
 ) -> bool {
-  !was_released
-    && !is_minimized
+  !is_minimized
     && current().is_some_and(|current| {
       current.width() != target.width()
         || current.height() != target.height()
@@ -2370,6 +2558,16 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
       tracing::warn!("Failed to set taskbar visibility: {}", err);
     }
   }
+}
+
+/// Whether a window its peek hands back (`peek_hands_back`) is moved in
+/// step with it, synchronously. Its move is posted, so the WM never waits
+/// on its app, unless `GLAZEWM_ISOLATE=noasynchandback`.
+fn hands_back_in_step(
+  peek_hands_back: bool,
+  async_hand_back: bool,
+) -> bool {
+  peek_hands_back && !async_hand_back
 }
 
 /// Above this duration, `reposition_window`'s synchronous
@@ -2824,6 +3022,18 @@ fn track_overlay<O: SyncableOverlay>(
   }
 }
 
+/// Whether a `Frozen` take-over tracks the window's overlays, given
+/// whether its session's surrogate has a placement yet.
+///
+/// A new session has none until `queue_surrogate_updates` (later in the
+/// pass), so tracking hides both overlays, two `ShowWindow` calls, and the
+/// session loop has to show them again. With `keep_overlays`, off only
+/// under `GLAZEWM_ISOLATE=nokeepoverlays`, they stay where they are, as on
+/// `origin/main`.
+fn tracks_at_take_over(has_placement: bool, keep_overlays: bool) -> bool {
+  has_placement || !keep_overlays
+}
+
 /// Where the overlays of `window_id` go while its resize session's
 /// surrogate, `anchor`, draws it at `rect`, or `None` while the surrogate
 /// has nowhere to be.
@@ -2906,18 +3116,30 @@ pub(crate) fn follow_window_frame(
   state: &mut WmState,
   config: &UserConfig,
 ) {
+  let mut batch = SurrogateBatch::new();
+  defer_window_frame(window, frame, state, config, &mut batch);
+  batch.commit();
+}
+
+/// [`follow_window_frame`] into `batch`, e.g. for overlays of several
+/// windows to land in one commit.
+pub(crate) fn defer_window_frame(
+  window: &WindowContainer,
+  frame: &Rect,
+  state: &mut WmState,
+  config: &UserConfig,
+  batch: &mut SurrogateBatch,
+) {
   let is_focused = state
     .focused_container()
     .is_some_and(|container| container.id() == window.id());
 
-  let mut batch = SurrogateBatch::new();
   follow_frame::<NativeBackdropOverlay>(
-    window, frame, is_focused, state, config, &mut batch,
+    window, frame, is_focused, state, config, batch,
   );
   follow_frame::<NativeBorderOverlay>(
-    window, frame, is_focused, state, config, &mut batch,
+    window, frame, is_focused, state, config, batch,
   );
-  batch.commit();
 }
 
 fn follow_frame<O: SyncableOverlay>(
@@ -3048,7 +3270,10 @@ fn park_switch_borders(
 
     let rest = surrogate.rest_frame();
     let anchor = overlay_z_anchor(&window);
-    let conceal = entry.is_incoming;
+    // One whose resting peek drew it would reach onto the monitor beside
+    // at its rest frame (`slidepeeks`): only its copy shows it.
+    let conceal = entry.is_incoming
+      || state.animation_manager.peeks.is_switching_out(id);
 
     let slot = &mut state.window_overlays.entry(*id).or_default().border;
     let overlay = match slot {
@@ -3903,14 +4128,30 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    is_unanimated_reveal, should_release_size_to_content, FrozenStep,
-    SyncableOverlay,
+    hands_back_in_step, is_unanimated_reveal, should_note_size,
+    tracks_at_take_over, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
 
   #[test]
+  fn a_peek_hand_back_is_in_step_only_if_turned_off() {
+    assert!(hands_back_in_step(true, false));
+    assert!(!hands_back_in_step(true, true));
+    assert!(!hands_back_in_step(false, false));
+    assert!(!hands_back_in_step(false, true));
+  }
+
+  #[test]
   fn a_window_cloaked_before_its_session_is_moved_to_its_target() {
     assert_eq!(FrozenStep::of(Some(false), || true), FrozenStep::Adopt);
+  }
+
+  #[test]
+  fn a_take_over_without_a_placement_keeps_overlays_unless_turned_off() {
+    assert!(tracks_at_take_over(true, true));
+    assert!(tracks_at_take_over(true, false));
+    assert!(tracks_at_take_over(false, false));
+    assert!(!tracks_at_take_over(false, true));
   }
 
   #[test]
@@ -3930,52 +4171,24 @@ mod tests {
   }
 
   #[test]
-  fn releases_size_to_content_as_the_wm_first_resizes_a_window() {
+  fn notes_every_size_the_wm_changes() {
     let target = Rect::from_xy(0, 0, 800, 600);
     let at =
       |width, height| move || Some(Rect::from_xy(40, 40, width, height));
 
-    assert!(should_release_size_to_content(
-      false,
-      false,
-      at(400, 600),
-      &target
-    ));
-    assert!(should_release_size_to_content(
-      false,
-      false,
-      at(800, 300),
-      &target
-    ));
+    assert!(should_note_size(false, at(400, 600), &target));
+    assert!(should_note_size(false, at(800, 300), &target));
   }
 
   #[test]
-  fn keeps_size_to_content_of_a_window_only_moved() {
+  fn leaves_a_window_only_moved_or_minimized_alone() {
     let target = Rect::from_xy(0, 0, 800, 600);
     let moved = || Some(Rect::from_xy(40, 40, 800, 600));
-
-    assert!(!should_release_size_to_content(
-      false, false, moved, &target
-    ));
-    assert!(!should_release_size_to_content(
-      false,
-      false,
-      || None,
-      &target
-    ));
-  }
-
-  #[test]
-  fn releases_size_to_content_once_and_never_while_minimized() {
-    let target = Rect::from_xy(0, 0, 800, 600);
     let unasked = || -> Option<Rect> { panic!("Frame read needlessly.") };
 
-    assert!(!should_release_size_to_content(
-      true, false, unasked, &target
-    ));
-    assert!(!should_release_size_to_content(
-      false, true, unasked, &target
-    ));
+    assert!(!should_note_size(false, moved, &target));
+    assert!(!should_note_size(false, || None, &target));
+    assert!(!should_note_size(true, unasked, &target));
   }
 
   #[test]

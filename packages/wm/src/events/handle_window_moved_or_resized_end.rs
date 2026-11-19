@@ -2,7 +2,7 @@ use anyhow::Context;
 use wm_common::{
   ActiveDrag, ActiveDragOperation, FullscreenStateConfig, WindowState,
 };
-use wm_platform::{LengthValue, Point};
+use wm_platform::{Point, Rect, ResizeEdges};
 
 use crate::{
   commands::{
@@ -10,12 +10,13 @@ use crate::{
       move_container_within_tree, set_focused_descendant,
       wrap_in_container,
     },
-    window::{join_stack, set_window_size, update_window_state},
+    window::{join_stack, update_window_state},
   },
   events::{float_for_drag, update_floating_window_position},
   layout::{
     column_drop::drop_into_column,
-    scrolling::keep_right_edge,
+    edge_resize::drag_and_hold,
+    scrolling::{column_of, ColumnHold},
     window_drop::{tab_bar_at, window_drop, window_drop_on, WindowDrop},
   },
   models::{
@@ -31,12 +32,14 @@ use crate::{
 /// by the user (e.g. via the window's drag handles).
 ///
 /// This resizes the window if it's a tiling window and attach a dragged
-/// floating window.
+/// floating window, which is dropped where `drop_point` is, or else where
+/// the cursor is.
 ///
 /// TODO: Move this to a better location - maybe a new `active_drag_ext`
 /// mod.
 pub fn handle_window_moved_or_resized_end(
   window: &WindowContainer,
+  drop_point: Option<&Point>,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
@@ -45,6 +48,10 @@ pub fn handle_window_moved_or_resized_end(
   let Some(active_drag) = window.active_drag() else {
     return Ok(());
   };
+
+  // The mouse put the window where it is: it lands there at once, as do
+  // the windows around it.
+  state.pending_sync.suppress_animations();
 
   // The drag raised the window, so its stack's tab bar is put back behind
   // it wherever the stack ends up.
@@ -60,8 +67,11 @@ pub fn handle_window_moved_or_resized_end(
       let is_move =
         matches!(active_drag.operation, Some(ActiveDragOperation::Move));
 
-      if is_move && drop_onto_tab_bar(window, state, config)? {
-        return Ok(());
+      if is_move {
+        let point = drop_point_or_cursor(drop_point, state)?;
+        if drop_onto_tab_bar(window, &point, state, config)? {
+          return Ok(());
+        }
       }
 
       let is_maximized = window.native().is_maximized();
@@ -140,9 +150,8 @@ pub fn handle_window_moved_or_resized_end(
         )?;
         window.set_active_drag(None);
       } else {
-        // Seed `window_target_positions` with the current drag position so
-        // the snap-back animation starts from where the window actually
-        // is, not its stale pre-drag tiling position.
+        // Seed `window_target_positions` with the current drag position,
+        // where the window lands from.
         state
           .window_target_positions
           .insert(window.id(), window.native_properties().frame);
@@ -151,9 +160,8 @@ pub fn handle_window_moved_or_resized_end(
 
         // Window is a temporary floating window that should be
         // reverted back to tiling.
-        let mouse_pos = state.dispatcher.cursor_position()?;
-        let window =
-          drop_as_tiling_window(window, &mouse_pos, state, config)?;
+        let point = drop_point_or_cursor(drop_point, state)?;
+        let window = drop_as_tiling_window(window, &point, state, config)?;
         window.set_active_drag(None);
       }
     }
@@ -165,7 +173,18 @@ pub fn handle_window_moved_or_resized_end(
   Ok(())
 }
 
-/// Takes the size a tiling window was dragged to as its tiling size.
+fn drop_point_or_cursor(
+  drop_point: Option<&Point>,
+  state: &WmState,
+) -> anyhow::Result<Point> {
+  match drop_point {
+    Some(point) => Ok(point.clone()),
+    None => Ok(state.dispatcher.cursor_position()?),
+  }
+}
+
+/// Takes the size a tiling window was dragged to as its tiling size, by
+/// the edges its border was dragged by.
 fn end_tiling_drag(
   window: &TilingWindow,
   active_drag: &ActiveDrag,
@@ -176,28 +195,22 @@ fn end_tiling_drag(
     window.as_window_container()?
   );
 
-  let frame = window.native_properties().frame;
-
   if active_drag.operation == Some(ActiveDragOperation::Resize) {
     crate::particles::note_resize(state, &window.clone().into());
-  }
 
-  // A scrolling layout's column dragged by its left edge grows or shrinks
-  // leftwards, as it was dragged.
-  if active_drag.operation == Some(ActiveDragOperation::Resize)
-    && frame.left != active_drag.initial_position.left
-  {
-    keep_right_edge(&window.clone().into())?;
-  }
+    let (edges, delta) = dragged_edges(
+      &active_drag.initial_position,
+      &window.native_properties().frame,
+    );
 
-  // Update the window's size based on the new frame position. This means
-  // we use the actual window dimensions as the source of truth.
-  set_window_size(
-    window.clone().into(),
-    Some(LengthValue::from_px(frame.width())),
-    Some(LengthValue::from_px(frame.height())),
-    state,
-  )?;
+    let mut hold = column_of(&window.as_container())
+      .map(|(column, workspace)| ColumnHold::at(&column, &workspace))
+      .transpose()?;
+
+    for container in drag_and_hold(window, edges, delta, hold.as_mut())? {
+      state.pending_sync.queue_container_to_redraw(container);
+    }
+  }
 
   window.set_active_drag(None);
 
@@ -211,6 +224,34 @@ fn end_tiling_drag(
   state.pending_sync.queue_container_to_redraw(window.clone());
 
   Ok(())
+}
+
+/// Edges a window's border was dragged by from `start` to `frame`, and
+/// how far. One edge per axis: if both moved, the window's size changed by
+/// the difference, taken as its far edge's.
+fn dragged_edges(start: &Rect, frame: &Rect) -> (ResizeEdges, (i32, i32)) {
+  let is_left = frame.left != start.left && frame.right == start.right;
+  let is_top = frame.top != start.top && frame.bottom == start.bottom;
+
+  let edges = ResizeEdges {
+    left: is_left,
+    right: !is_left && frame.width() != start.width(),
+    top: is_top,
+    bottom: !is_top && frame.height() != start.height(),
+  };
+
+  let dx = if is_left {
+    frame.left - start.left
+  } else {
+    frame.width() - start.width()
+  };
+  let dy = if is_top {
+    frame.top - start.top
+  } else {
+    frame.height() - start.height()
+  };
+
+  (edges, (dx, dy))
 }
 
 /// Handles transition from temporary floating window to tiling window on
@@ -364,13 +405,13 @@ fn put_dropped_window(
 /// Returns whether the window was dropped onto a tab bar.
 fn drop_onto_tab_bar(
   window: &NonTilingWindow,
+  cursor: &Point,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<bool> {
-  let cursor = state.dispatcher.cursor_position()?;
   let own_stack = window.parent().and_then(|p| p.as_stack().cloned());
 
-  let Some(target) = tab_bar_at(&cursor, own_stack.as_ref(), state) else {
+  let Some(target) = tab_bar_at(cursor, own_stack.as_ref(), state) else {
     return Ok(false);
   };
 
@@ -708,6 +749,7 @@ mod tests {
 
     handle_window_moved_or_resized_end(
       &second.clone().into(),
+      None,
       &mut state,
       &config,
     )
@@ -717,6 +759,55 @@ mod tests {
     let rect = second.to_rect().unwrap();
     assert_eq!(rect.right, initial.right);
     assert!((rect.left - resized.left).abs() <= 1, "{rect:?}");
+
+    // Dragged there by the mouse, it lands there at once.
+    assert!(state.pending_sync.animations_suppressed());
+  }
+
+  #[test]
+  fn a_split_window_resized_by_its_border_only_moves_that_edge() {
+    let (left, middle, right) = (window(), window(), window());
+    let workspace = Workspace::mock()
+      .gaps_config(mock_inner_gaps())
+      .tiling_containers(vec![
+        left.clone().into(),
+        middle.clone().into(),
+        right.clone().into(),
+      ])
+      .call();
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    let (left_rect, initial) =
+      (left.to_rect().unwrap(), middle.to_rect().unwrap());
+
+    // Its right border dragged 120px right.
+    middle.set_active_drag(Some(ActiveDrag {
+      operation: Some(ActiveDragOperation::Resize),
+      is_from_floating: false,
+      initial_position: initial.clone(),
+    }));
+    middle.update_native_properties(|properties| {
+      properties.frame = Rect::from_ltrb(
+        initial.left,
+        initial.top,
+        initial.right + 120,
+        initial.bottom,
+      );
+    });
+
+    handle_window_moved_or_resized_end(
+      &middle.clone().into(),
+      None,
+      &mut state,
+      &config,
+    )
+    .unwrap();
+
+    let rect = middle.to_rect().unwrap();
+    assert_eq!(left.to_rect().unwrap(), left_rect);
+    assert_eq!(rect.left, initial.left);
+    assert!((rect.right - (initial.right + 120)).abs() <= 1, "{rect:?}");
+    assert!(middle.active_drag().is_none());
   }
 
   #[test]
