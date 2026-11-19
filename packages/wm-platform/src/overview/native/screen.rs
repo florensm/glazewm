@@ -23,18 +23,20 @@ use super::{
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{
-    draw_card, draw_search, draw_sheet, draw_spotlight, picture_size,
-    sheet_size, spotlight_margin, spotlight_size,
+  overview::{
+    chrome::{
+      draw_card, draw_search, draw_sheet, draw_spotlight, picture_size,
+      sheet_size, spotlight_margin, spotlight_size,
+    },
+    effects::{lean_toward, Entrance},
+    layout::{
+      activities, chrome_opacity, stack, Camera, CardMetrics, CardView,
+      Placement, RectF, Spring, Zoom, SEARCH_HEIGHT,
+    },
+    scene::SceneWindow,
+    state::{Control, Hit, ScreenFocus, Toward},
+    thumbnails::Picture,
   },
-  overview_effects::{lean_toward, Entrance},
-  overview_layout::{
-    activities, chrome_opacity, stack, Camera, CardMetrics, CardView,
-    Placement, RectF, Spring, Zoom, SEARCH_HEIGHT,
-  },
-  overview_scene::SceneWindow,
-  overview_state::{Control, Hit, ScreenFocus, Toward},
-  overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
   BorderOverlayParams, OverviewEffects, OverviewLayoutMode, OverviewStyle,

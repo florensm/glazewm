@@ -68,18 +68,20 @@ use self::{
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{picture_rect, CardPicture, SearchControls},
-  overview_effects::Entrance,
-  overview_layout::{
-    Camera, CardMetrics, CardView, Placement, RectF, Spring, Zoom,
+  overview::{
+    chrome::{picture_rect, CardPicture, SearchControls},
+    effects::Entrance,
+    layout::{
+      Camera, CardMetrics, CardView, Placement, RectF, Spring, Zoom,
+    },
+    scene::Scene,
+    state::{
+      all_workspaces, Hit, Interaction, Key, ScreenFocus, SearchField,
+      ShortcutGroup,
+    },
+    tab_bars::CardTabBar,
+    thumbnails::{Picture, Preview},
   },
-  overview_scene::Scene,
-  overview_state::{
-    all_workspaces, Hit, Interaction, Key, ScreenFocus, SearchField,
-    ShortcutGroup,
-  },
-  overview_tab_bars::CardTabBar,
-  overview_thumbnails::{Picture, Preview},
   platform_impl::{self, composition::OverviewBackdrop},
   window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, FrameClock, OverviewAction,
@@ -1973,7 +1975,7 @@ mod tests {
 
   use super::{is_strip_scrolled, to_alt_key, to_key};
   use crate::{
-    overview_state::Key, OverviewScreen, OverviewWorkspace, Rect,
+    overview::state::Key, OverviewScreen, OverviewWorkspace, Rect,
   };
 
   #[test]

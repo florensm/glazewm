@@ -9,8 +9,10 @@ use super::{cards::screen_rect, to_ms, Screen};
 /// past.
 const SLIDE_GAP: f32 = 48.0;
 use crate::{
-  overview_layout::{CardView, RectF},
-  overview_scene::{Scene, SceneWindow},
+  overview::{
+    layout::{CardView, RectF},
+    scene::{Scene, SceneWindow},
+  },
   OverviewLayoutMode, OverviewSwitchStyle,
 };
 
@@ -293,10 +295,10 @@ impl Screen {
 #[cfg(test)]
 mod tests {
   use super::scene_window_shown;
-  use crate::{
-    overview_layout::{RectF, Tile},
-    overview_scene::SceneWindow,
-    overview_thumbnails::Preview,
+  use crate::overview::{
+    layout::{RectF, Tile},
+    scene::SceneWindow,
+    thumbnails::Preview,
   };
 
   #[test]

@@ -25,21 +25,13 @@ mod mouse_listener;
 mod native_backdrop_overlay;
 mod native_border_overlay;
 mod native_drop_indicator;
-mod native_overview;
 mod native_particles;
 mod native_stack_tab_bar;
 mod native_surrogate;
 mod native_window;
 mod overlay_copies;
 mod overlay_window;
-mod overview_chrome;
-mod overview_effects;
-mod overview_layout;
-mod overview_overlays;
-mod overview_scene;
-mod overview_state;
-mod overview_tab_bars;
-mod overview_thumbnails;
+mod overview;
 mod paint;
 mod particles;
 mod peek_surface;
@@ -84,11 +76,11 @@ pub use mouse_listener::*;
 pub use native_backdrop_overlay::NativeBackdropOverlay;
 pub use native_border_overlay::NativeBorderOverlay;
 pub use native_drop_indicator::NativeDropIndicator;
-pub use native_overview::NativeOverview;
 pub use native_stack_tab_bar::NativeStackTabBar;
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 pub use native_window::*;
 pub use overlay_window::Overlay;
+pub use overview::*;
 pub use particles::{
   ParticleBurst, ParticleEdges, ParticleEffects, ParticleLook,
   ParticleSource, ParticleStyle,

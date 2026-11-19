@@ -6,9 +6,11 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{draw_slices, SliceLook, SLICE_MIDDLE},
-  overview_layout::{Mark, RectF},
-  overview_thumbnails::{to_opacity, to_win32, Picture},
+  overview::{
+    chrome::{draw_slices, SliceLook, SLICE_MIDDLE},
+    layout::{Mark, RectF},
+    thumbnails::{to_opacity, to_win32, Picture},
+  },
 };
 
 /// A rounded ring of any size, from one picture of it: its corners shown

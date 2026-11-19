@@ -10,16 +10,16 @@ use super::{
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{
-    card_radius, draw_label, draw_note, draw_tag, label_size, note_size,
-    tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
+  overview::{
+    chrome::{
+      card_radius, draw_label, draw_note, draw_tag, label_size, note_size,
+      tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
+    },
+    layout::{chrome_opacity, CardMetrics, RectF, SpringRect, LABEL_GAP},
+    overlays::{Highlight, Tag},
+    state::{Mode, Toward},
+    thumbnails::Picture,
   },
-  overview_layout::{
-    chrome_opacity, CardMetrics, RectF, SpringRect, LABEL_GAP,
-  },
-  overview_overlays::{Highlight, Tag},
-  overview_state::{Mode, Toward},
-  overview_thumbnails::Picture,
   OverviewLayoutMode, OverviewStyle, OverviewWindowHighlightStyle,
 };
 

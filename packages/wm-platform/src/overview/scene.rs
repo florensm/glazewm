@@ -4,8 +4,10 @@
 //! it is on screen and where the layout puts it.
 
 use crate::{
-  overview_layout::{RectF, Spring, SpringRect, Tile},
-  overview_thumbnails::Preview,
+  overview::{
+    layout::{RectF, Spring, SpringRect, Tile},
+    thumbnails::Preview,
+  },
   OverviewWindow, OverviewWorkspace,
 };
 
@@ -209,9 +211,9 @@ impl Scene {
 #[cfg(test)]
 mod tests {
   use super::SceneWindow;
-  use crate::{
-    overview_layout::{RectF, Tile},
-    overview_thumbnails::Preview,
+  use crate::overview::{
+    layout::{RectF, Tile},
+    thumbnails::Preview,
   };
 
   fn window() -> SceneWindow {
