@@ -8,7 +8,7 @@ use windows::Win32::{
 
 use crate::{
   native_surrogate::is_surrogate,
-  overlay_window::{self, Overlay, OverlayKind, OverlayWindow},
+  overlays::window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BorderVisual,
   BorderGlow, BorderOverlayParams, Color, Rect, StyleBlend,
   SurrogateBatch,
@@ -792,7 +792,7 @@ impl NativeBorderOverlay {
     slide.is_laid_out = true;
 
     if !self.is_sliding && is_laid_out {
-      overlay_window::swap(
+      crate::overlays::window::swap(
         &mut slide.window,
         viewport,
         anchor,
@@ -816,7 +816,7 @@ impl NativeBorderOverlay {
 
     match &mut self.slide {
       Some(slide) => {
-        overlay_window::swap(
+        crate::overlays::window::swap(
           &mut self.window,
           &outer,
           anchor,

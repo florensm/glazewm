@@ -11,10 +11,12 @@ use windows::Win32::Foundation::RECT;
 use super::Screen;
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{draw_ghost, GHOST_SIZE},
-  overview_effects::stretch,
-  overview_layout::{cover_crop, RectF, Spring, Tile},
-  overview_thumbnails::{to_opacity, to_win32, Picture, Preview},
+  overview::{
+    chrome::{draw_ghost, GHOST_SIZE},
+    effects::stretch,
+    layout::{cover_crop, RectF, Spring, Tile},
+    thumbnails::{to_opacity, to_win32, Picture, Preview},
+  },
   OverviewEffects, OverviewStyle,
 };
 

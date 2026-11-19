@@ -1,37 +1,22 @@
-//! The window overview: a screen per monitor, with a card per workspace
-//! of that monitor showing its windows live where they sit, to switch to
-//! a workspace or window, or move windows between workspaces.
-//!
-//! The overview is drawn and driven by `NativeOverview` on a thread of its
-//! own; the WM decides what it shows and carries out what is picked.
+//! What the overview shows, built from the WM's state.
 
-use std::{
-  collections::HashMap,
-  time::{Duration, Instant},
-};
+use std::collections::HashMap;
 
-use anyhow::Context;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, EffectSet, HotCorner, InvokeCommand, InvokeFocusCommand,
-  InvokeMoveCommand, Layout, OverviewLayout, WindowState, WorkspaceConfig,
+  EasingFunction, EffectSet, Layout, WindowState, WorkspaceConfig,
 };
 use wm_platform::{
-  Color, MouseButton, MouseEvent, NativeBackdropOverlay,
-  NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
-  OverviewBackdropFrame, OverviewCurve, OverviewFrame, OverviewInput,
-  OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
-  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
-  Rect, TabFrame,
+  NativeBackdropOverlay, NativeBorderOverlay, OverlayParams,
+  OverviewBackdropFrame, OverviewCurve, OverviewFrame, OverviewOverlay,
+  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
+  OverviewWorkspace, Rect, TabFrame,
 };
 
+use super::OpenOverview;
 use crate::{
   animation::engine::apply_easing,
-  commands::{
-    general::{surrogate_effects_for, SyncableOverlay},
-    workspace::{activate_workspace, summon_special_workspace},
-  },
+  commands::general::{surrogate_effects_for, SyncableOverlay},
   layout::{is_hidden_in_layout, scrolling},
   models::{
     is_inactive_stack_child, Container, Monitor, WindowContainer,
@@ -44,426 +29,8 @@ use crate::{
   wm_state::WmState,
 };
 
-/// The WM's side of the overview.
-pub struct Overview {
-  /// Created on first open.
-  native: Option<NativeOverview>,
-
-  /// What is shown, while open.
-  open: Option<OpenOverview>,
-
-  /// What was shown, from its close until the next sync hides it.
-  closing: Option<OpenOverview>,
-
-  /// Whether the native overview is on screen: from its open until it
-  /// says it hid, which can be a zoom after its close.
-  is_shown: bool,
-
-  /// The cursor's visit to the hot corner, which opens the overview once
-  /// per visit.
-  hot_corner: CornerVisit,
-
-  /// Where the native overview sends user actions, with their session.
-  action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
-}
-
-/// Where the cursor is with respect to the hot corner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CornerVisit {
-  /// Out of it.
-  Away,
-
-  /// In it, and opening the overview at the instant given if it stays.
-  Resting(Instant),
-
-  /// In it, the overview opened or not to be opened on this visit.
-  Spent,
-}
-
-/// Colors of an open overview, resolved once per open, since they can be
-/// read from a file.
-struct OpenOverview {
-  accent: Color,
-
-  /// Around the `framed` backdrop's panel.
-  frame_color: Color,
-}
-
-impl Overview {
-  pub fn new(
-    action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
-  ) -> Self {
-    Self {
-      native: None,
-      open: None,
-      closing: None,
-      is_shown: false,
-      hot_corner: CornerVisit::Away,
-      action_tx,
-    }
-  }
-
-  pub fn is_open(&self) -> bool {
-    self.open.is_some()
-  }
-
-  /// Whether the overview is on screen, which it still is for a moment
-  /// after its close, zooming into the pick.
-  pub fn is_shown(&self) -> bool {
-    self.is_shown
-  }
-
-  /// When the cursor resting in the hot corner opens the overview, while
-  /// it does.
-  pub fn hot_corner_deadline(&self) -> Option<Instant> {
-    match self.hot_corner {
-      CornerVisit::Resting(due) => Some(due),
-      CornerVisit::Away | CornerVisit::Spent => None,
-    }
-  }
-
-  /// Takes in that the native overview of `session` hid. Returns whether
-  /// that was the one on screen.
-  pub fn mark_hidden(&mut self, session: u64) -> bool {
-    let is_latest = self
-      .native
-      .as_ref()
-      .is_some_and(|native| native.session() == session);
-
-    is_latest && std::mem::take(&mut self.is_shown)
-  }
-
-  /// Session of the open overview, which its actions carry.
-  pub fn open_session(&self) -> Option<u64> {
-    self
-      .open
-      .as_ref()
-      .and(self.native.as_ref())
-      .map(NativeOverview::session)
-  }
-
-  /// Hands the open overview `input` to act on. Returns whether it could.
-  ///
-  /// If the overview's thread is gone, it is marked closed and hidden, so
-  /// keybindings go to the WM again rather than nowhere.
-  pub fn input(&mut self, input: OverviewInput) -> bool {
-    let is_delivered = self.is_open()
-      && self
-        .native
-        .as_ref()
-        .is_some_and(|native| native.input(input));
-
-    if !is_delivered {
-      tracing::warn!("The overview took no input; marking it closed.");
-      self.close();
-      self.is_shown = false;
-    }
-    is_delivered
-  }
-
-  /// Marks the overview closed.
-  ///
-  /// The native overview stays up until the next [`sync_overview`] (or
-  /// until its zoom into the picked workspace ends), so it only hides
-  /// once focus has moved on; hiding the foreground window first would
-  /// let the OS pick the next one.
-  pub fn close(&mut self) {
-    self.closing = self.open.take();
-  }
-
-  /// The native overview, created on first use.
-  fn native(&mut self) -> anyhow::Result<&mut NativeOverview> {
-    if self.native.is_none() {
-      let action_tx = self.action_tx.clone();
-      let on_action = Box::new(move |session, action| {
-        if let Err(err) = action_tx.send((session, action)) {
-          tracing::warn!("Failed to send overview action: {err}");
-        }
-      });
-
-      self.native = Some(NativeOverview::create(on_action)?);
-    }
-
-    self.native.as_mut().context("No native overview.")
-  }
-}
-
-/// Where a keybinding pressed while the overview is open goes.
-#[derive(Clone, Debug, PartialEq)]
-pub enum KeyRoute {
-  /// To the WM, which runs its commands as ever.
-  Wm,
-
-  /// To the overview, which does this to its selection.
-  Overview(OverviewInput),
-
-  /// Nowhere: its commands would act on the desktop behind the
-  /// overview, which has nothing like them.
-  Dropped,
-}
-
-/// Routes a keybinding running `commands` while the overview is open.
-///
-/// The overview has the keyboard then, so a keybinding acts on it rather
-/// than on the workspace behind it: `focus`, `move` and `close` do to its
-/// selection what they would do to the focused window, and the rest are
-/// dropped. Only commands on the WM itself, the overview's own toggle and
-/// launching a program still run.
-///
-/// Enabling a binding mode is dropped too: its keybindings are often on
-/// bare keys (`h`, `escape`), which the hook would then take from the
-/// overview's search and its own `Escape`.
-pub fn route_keybinding(commands: &[InvokeCommand]) -> KeyRoute {
-  let is_the_wms = |command: &InvokeCommand| {
-    matches!(
-      command,
-      InvokeCommand::ToggleOverview { .. }
-        | InvokeCommand::ShellExec { .. }
-        | InvokeCommand::WmDisableBindingMode { .. }
-        | InvokeCommand::WmExit
-        | InvokeCommand::WmRedraw
-        | InvokeCommand::WmReloadConfig
-        | InvokeCommand::WmTogglePause
-    )
-  };
-
-  if commands.iter().any(is_the_wms) {
-    return KeyRoute::Wm;
-  }
-
-  // The first that means something there, e.g. the `move` of a binding
-  // that moves a window to a workspace and follows it.
-  commands
-    .iter()
-    .find_map(overview_input)
-    .map_or(KeyRoute::Dropped, KeyRoute::Overview)
-}
-
-/// What `command` does in the overview, if anything.
-fn overview_input(command: &InvokeCommand) -> Option<OverviewInput> {
-  match command {
-    InvokeCommand::Close => Some(OverviewInput::CloseWindow),
-    InvokeCommand::Focus(InvokeFocusCommand {
-      direction: Some(direction),
-      ..
-    })
-    | InvokeCommand::Move(InvokeMoveCommand {
-      direction: Some(direction),
-      ..
-    }) => Some(OverviewInput::Move(direction.clone())),
-    InvokeCommand::Focus(focus) => {
-      if let Some(name) = &focus.workspace {
-        Some(OverviewInput::FocusWorkspace(name.clone()))
-      } else if focus.special_workspace {
-        Some(OverviewInput::FocusSpecialWorkspace)
-      } else if focus.next_workspace
-        || focus.next_active_workspace
-        || focus.next_active_workspace_on_monitor
-      {
-        Some(OverviewInput::NextWorkspace)
-      } else if focus.prev_workspace
-        || focus.prev_active_workspace
-        || focus.prev_active_workspace_on_monitor
-      {
-        Some(OverviewInput::PreviousWorkspace)
-      } else {
-        None
-      }
-    }
-    InvokeCommand::Move(to) => {
-      if let Some(name) = &to.workspace {
-        Some(OverviewInput::MoveToWorkspace(name.clone()))
-      } else if to.special_workspace {
-        Some(OverviewInput::MoveToSpecialWorkspace)
-      } else {
-        None
-      }
-    }
-    _ => None,
-  }
-}
-
-/// Opens the overview on every monitor, laid out as `layout`, with the
-/// keyboard on the focused one.
-///
-/// While open, it switches to `layout` instead, or closes when it already
-/// shows that, giving focus back to the focused window.
-pub fn toggle_overview(
-  state: &mut WmState,
-  config: &UserConfig,
-  layout: OverviewLayoutMode,
-) -> anyhow::Result<()> {
-  if state.overview.is_open() {
-    if let Some(native) = &state.overview.native {
-      native.toggle(layout);
-    }
-    return Ok(());
-  }
-
-  let overview = &config.value.overview;
-  let open = OpenOverview {
-    accent: overview
-      .accent_color
-      .as_ref()
-      .unwrap_or(&config.value.window_effects.focused_window.border.color)
-      .resolve(),
-    frame_color: overview.backdrop_frame.color.resolve(),
-  };
-  let frame = overview_frame(state, &open, config);
-  if frame.screens.is_empty() {
-    anyhow::bail!("No monitors to show the overview on.");
-  }
-
-  state.overview.native()?.open(frame, layout);
-  state.overview.open = Some(open);
-  state.overview.closing = None;
-  state.overview.is_shown = true;
-  Ok(())
-}
-
-/// Pixels from a monitor's corner, either way, that count as in it.
-const HOT_CORNER_SIZE: i32 = 2;
-
-/// Notes the cursor moving into or out of the hot corner of a monitor,
-/// opening the overview once it rests there for `hot_corner_delay_ms`.
-pub fn check_hot_corner(
-  event: &MouseEvent,
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let MouseEvent::Move { position, .. } = event else {
-    return Ok(());
-  };
-
-  let corner = config.value.overview.hot_corner;
-  let is_in = corner != HotCorner::None
-    && !state.is_paused
-    && state.monitors().iter().any(|monitor| {
-      is_in_corner(&monitor.native_properties().bounds, corner, position)
-    });
-
-  let visit = &mut state.overview.hot_corner;
-  match (*visit, is_in) {
-    (_, false) => *visit = CornerVisit::Away,
-    (CornerVisit::Away, true) => {
-      let delay = u64::from(config.value.overview.hot_corner_delay_ms);
-      *visit = CornerVisit::Resting(
-        Instant::now() + Duration::from_millis(delay),
-      );
-    }
-    _ => {}
-  }
-
-  process_hot_corner(state, config)
-}
-
-/// Opens the overview once the cursor has rested in the hot corner long
-/// enough, unless a mouse button is held, e.g. dragging a window there.
-pub fn process_hot_corner(
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let CornerVisit::Resting(due) = state.overview.hot_corner else {
-    return Ok(());
-  };
-  if Instant::now() < due {
-    return Ok(());
-  }
-  state.overview.hot_corner = CornerVisit::Spent;
-
-  let is_button_held = [MouseButton::Left, MouseButton::Right]
-    .iter()
-    .any(|button| state.dispatcher.is_mouse_down(button));
-  if is_button_held || state.overview.is_shown() {
-    return Ok(());
-  }
-
-  let layout = to_layout_mode(config.value.overview.layout);
-  toggle_overview(state, config, layout)
-}
-
-/// Whether `position` is in `corner` of `bounds`.
-fn is_in_corner(
-  bounds: &Rect,
-  corner: HotCorner,
-  position: &Point,
-) -> bool {
-  let near = |edge: i32, at: i32| (at - edge).abs() < HOT_CORNER_SIZE;
-  let (left, top) = (bounds.left, bounds.top);
-  let (right, bottom) = (bounds.right - 1, bounds.bottom - 1);
-
-  // Not `Rect::contains_point`, which counts `bounds.right` and `bottom`
-  // as in: those are the first pixels of a neighbouring monitor.
-  (left..=right).contains(&position.x)
-    && (top..=bottom).contains(&position.y)
-    && match corner {
-      HotCorner::None => false,
-      HotCorner::TopLeft => {
-        near(left, position.x) && near(top, position.y)
-      }
-      HotCorner::TopRight => {
-        near(right, position.x) && near(top, position.y)
-      }
-      HotCorner::BottomLeft => {
-        near(left, position.x) && near(bottom, position.y)
-      }
-      HotCorner::BottomRight => {
-        near(right, position.x) && near(bottom, position.y)
-      }
-    }
-}
-
-/// The native overview's layout for the config's `layout`.
-pub fn to_layout_mode(layout: OverviewLayout) -> OverviewLayoutMode {
-  match layout {
-    OverviewLayout::Activities => OverviewLayoutMode::Activities,
-    OverviewLayout::Stack => OverviewLayoutMode::Stack,
-    OverviewLayout::Expose => OverviewLayoutMode::Expose,
-  }
-}
-
-/// Brings the native overview in line with the WM's state: hides it once
-/// closed, and shows workspaces and windows as they change while open.
-///
-/// Called at the end of a platform sync, after focus has been synced.
-pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
-  let is_open = state.overview.open.is_some();
-  let shown = state
-    .overview
-    .open
-    .as_ref()
-    .or(state.overview.closing.as_ref());
-
-  // `None` once hidden, or once every monitor is gone.
-  let frame = shown
-    .map(|shown| overview_frame(state, shown, config))
-    .filter(|frame| !frame.screens.is_empty());
-
-  let overview = &mut state.overview;
-  overview.closing = None;
-
-  let Some(native) = &mut overview.native else {
-    overview.open = None;
-    return;
-  };
-
-  match frame {
-    Some(frame) if is_open => native.update(frame),
-    // Its zoom into the picked workspace lands on what the pick brought
-    // on screen.
-    Some(frame) => {
-      tracing::debug!("Hiding the overview on the pick's frame.");
-      native.hide_on(frame);
-    }
-    None => {
-      overview.open = None;
-      native.hide();
-    }
-  }
-}
-
 /// What the overview shows: a screen per monitor, left to right.
-fn overview_frame(
+pub(super) fn overview_frame(
   state: &WmState,
   open: &OpenOverview,
   config: &UserConfig,
@@ -721,45 +288,6 @@ fn digit_workspaces(state: &WmState, config: &UserConfig) -> Vec<String> {
     .collect()
 }
 
-/// Readies workspace `name` for a pick made on the screen of monitor
-/// `monitor_id`: activates it on that monitor if it is inactive (unless
-/// it is bound to a monitor), and with `summon`, brings the special
-/// workspace there.
-pub fn prepare_target(
-  state: &mut WmState,
-  config: &UserConfig,
-  name: &str,
-  monitor_id: u128,
-  summon: bool,
-) -> anyhow::Result<()> {
-  let monitor = state
-    .monitors()
-    .into_iter()
-    .find(|monitor| monitor.id().as_u128() == monitor_id)
-    .context("No monitor for the overview's pick.")?;
-
-  if config.is_special_workspace_name(name) {
-    if summon || state.workspace_by_name(name).is_none() {
-      summon_special_workspace(&monitor, state, config)?;
-    }
-    return Ok(());
-  }
-
-  if state.workspace_by_name(name).is_some() {
-    return Ok(());
-  }
-
-  let is_bound = config.value.workspaces.iter().any(|workspace| {
-    workspace.name == name && workspace.bind_to_monitor.is_some()
-  });
-  activate_workspace(
-    Some(name),
-    (!is_bound).then_some(monitor),
-    state,
-    config,
-  )
-}
-
 /// How the WM draws windows, resolved once per frame: its effects on the
 /// focused window, on urgent ones and on the others.
 struct WindowLooks {
@@ -986,15 +514,13 @@ fn overview_windows(workspace: &Workspace) -> Vec<WindowContainer> {
 
 #[cfg(test)]
 mod tests {
-  use clap::Parser;
-  use wm_common::{InvokeCommand, WindowState};
-  use wm_platform::{Direction, OverviewInput, Rect};
+  use wm_common::WindowState;
+  use wm_platform::Rect;
 
-  use super::{
-    overview_windows, route_keybinding, strip_bounds, KeyRoute,
-  };
+  use super::{overview_windows, strip_bounds};
   use crate::{
     models::{NonTilingWindow, SplitContainer, TilingWindow, Workspace},
+    test_utils::{mock_config_with, mock_right_monitor},
     traits::{CommonGetters, WindowGetters},
   };
 
@@ -1002,111 +528,15 @@ mod tests {
     TilingWindow::mock().title(title.to_string()).call()
   }
 
-  /// Where a keybinding running `commands`, as written in a config, goes
-  /// while the overview is open.
-  fn route(commands: &[&str]) -> KeyRoute {
-    let commands = commands
-      .iter()
-      .map(|command| {
-        let args = std::iter::once("").chain(command.split_whitespace());
-        InvokeCommand::try_parse_from(args).expect("a command")
-      })
-      .collect::<Vec<_>>();
-
-    route_keybinding(&commands)
-  }
-
-  #[test]
-  fn direction_keybindings_move_the_overview_selection() {
-    for (command, direction) in [
-      ("focus --direction left", Direction::Left),
-      ("focus --direction down", Direction::Down),
-      ("move --direction up", Direction::Up),
-      ("move --direction right", Direction::Right),
-    ] {
-      assert_eq!(
-        route(&[command]),
-        KeyRoute::Overview(OverviewInput::Move(direction)),
-        "{command}"
-      );
-    }
-  }
-
-  #[test]
-  fn workspace_keybindings_act_on_the_overview_selection() {
-    let named = |name: &str| name.to_string();
-
-    for (commands, input) in [
-      (
-        vec!["focus --workspace 3"],
-        OverviewInput::FocusWorkspace(named("3")),
-      ),
-      // Moving a window and following it only moves it there.
-      (
-        vec!["move --workspace 3", "focus --workspace 3"],
-        OverviewInput::MoveToWorkspace(named("3")),
-      ),
-      (
-        vec!["focus --special-workspace"],
-        OverviewInput::FocusSpecialWorkspace,
-      ),
-      (
-        vec!["move --special-workspace"],
-        OverviewInput::MoveToSpecialWorkspace,
-      ),
-      (
-        vec!["focus --next-active-workspace"],
-        OverviewInput::NextWorkspace,
-      ),
-      (
-        vec!["focus --prev-workspace"],
-        OverviewInput::PreviousWorkspace,
-      ),
-      (vec!["close"], OverviewInput::CloseWindow),
-    ] {
-      assert_eq!(
-        route(&commands),
-        KeyRoute::Overview(input),
-        "{commands:?}"
-      );
-    }
-  }
-
-  #[test]
-  fn keybindings_on_the_desktop_behind_the_overview_are_dropped() {
-    for command in [
-      "resize --width +2%",
-      "toggle-floating",
-      "toggle-tiling-direction",
-      "focus --recent-workspace",
-      "move --next-active-workspace",
-      "move-workspace --direction left",
-      "center-column",
-      "wm-enable-binding-mode --name resize",
-    ] {
-      assert_eq!(route(&[command]), KeyRoute::Dropped, "{command}");
-    }
-  }
-
-  #[test]
-  fn keybindings_on_the_wm_itself_still_run() {
-    for command in [
-      "toggle-overview",
-      "toggle-overview --layout stack",
-      "wm-exit",
-      "wm-reload-config",
-      "wm-toggle-pause",
-      "wm-disable-binding-mode --name resize",
-      "shell-exec cmd",
-    ] {
-      assert_eq!(route(&[command]), KeyRoute::Wm, "{command}");
-    }
-
-    // Whatever else they run.
-    assert_eq!(
-      route(&["focus --direction left", "wm-redraw"]),
-      KeyRoute::Wm
-    );
+  fn frame(
+    state: &crate::wm_state::WmState,
+    config: &crate::user_config::UserConfig,
+  ) -> wm_platform::OverviewFrame {
+    let open = crate::overview::OpenOverview {
+      accent: wm_platform::Color::from_abgr(0),
+      frame_color: wm_platform::Color::from_abgr(0),
+    };
+    super::overview_frame(state, &open, config)
   }
 
   #[test]
@@ -1138,50 +568,6 @@ mod tests {
     assert_eq!(titles, ["a", "b", "c", "d", "floating", "minimized"]);
   }
 
-  /// Config declaring workspaces "1" to "3", with `value` changed by
-  /// `edit`.
-  fn config_with(
-    edit: impl FnOnce(&mut wm_common::ParsedConfig),
-  ) -> crate::user_config::UserConfig {
-    let mut value = wm_common::ParsedConfig {
-      workspaces: crate::test_utils::mock_workspace_configs(&[
-        "1", "2", "3",
-      ]),
-      ..wm_common::ParsedConfig::default()
-    };
-    edit(&mut value);
-    crate::user_config::UserConfig::from_parsed(value)
-  }
-
-  /// A monitor to the right of the default mock monitor, showing
-  /// `workspaces`.
-  fn right_monitor(workspaces: Vec<Workspace>) -> crate::models::Monitor {
-    use crate::test_utils::{MOCK_MONITOR_HEIGHT, MOCK_MONITOR_WIDTH};
-
-    let bounds = Rect::from_xy(
-      MOCK_MONITOR_WIDTH,
-      0,
-      MOCK_MONITOR_WIDTH,
-      MOCK_MONITOR_HEIGHT,
-    );
-    crate::models::Monitor::mock()
-      .bounds(bounds.clone())
-      .working_area(bounds)
-      .workspaces(workspaces)
-      .call()
-  }
-
-  fn frame(
-    state: &crate::wm_state::WmState,
-    config: &crate::user_config::UserConfig,
-  ) -> wm_platform::OverviewFrame {
-    let open = super::OpenOverview {
-      accent: wm_platform::Color::from_abgr(0),
-      frame_color: wm_platform::Color::from_abgr(0),
-    };
-    super::overview_frame(state, &open, config)
-  }
-
   #[test]
   fn each_monitor_has_a_screen_left_to_right() {
     use crate::{
@@ -1190,11 +576,11 @@ mod tests {
       wm_state::WmState,
     };
 
-    let config = config_with(|_| {});
+    let config = mock_config_with(|_| {});
     let first = Workspace::mock().name("1".to_string()).call();
     let left = Monitor::mock().workspaces(vec![first]).call();
     let second = Workspace::mock().name("2".to_string()).call();
-    let right = right_monitor(vec![second.clone()]);
+    let right = mock_right_monitor(vec![second.clone()]);
     // Detected right to left.
     let state = WmState::mock(vec![right.clone(), left.clone()]);
     set_focused_descendant(&Container::from(second), None);
@@ -1229,11 +615,12 @@ mod tests {
       wm_state::WmState,
     };
 
-    let config = config_with(|_| {});
+    let config = mock_config_with(|_| {});
     let first = Workspace::mock().name("1".to_string()).call();
     let left = Monitor::mock().workspaces(vec![first.clone()]).call();
-    let right =
-      right_monitor(vec![Workspace::mock().name("2".to_string()).call()]);
+    let right = mock_right_monitor(vec![Workspace::mock()
+      .name("2".to_string())
+      .call()]);
     let state = WmState::mock(vec![left, right]);
     set_focused_descendant(&first.into(), None);
 
@@ -1247,7 +634,7 @@ mod tests {
       test_utils::MOCK_MONITOR_WIDTH, wm_state::WmState,
     };
 
-    let config = config_with(|_| {});
+    let config = mock_config_with(|_| {});
     let window = tiling("parked");
     let special = Workspace::mock()
       .name("special".to_string())
@@ -1258,8 +645,9 @@ mod tests {
     let left = Monitor::mock()
       .workspaces(vec![special.clone(), first.clone()])
       .call();
-    let right =
-      right_monitor(vec![Workspace::mock().name("2".to_string()).call()]);
+    let right = mock_right_monitor(vec![Workspace::mock()
+      .name("2".to_string())
+      .call()]);
     let state = WmState::mock(vec![left, right]);
     set_focused_descendant(&first.into(), None);
 
@@ -1295,7 +683,7 @@ mod tests {
       wm_state::WmState,
     };
 
-    let config = config_with(|value| {
+    let config = mock_config_with(|value| {
       value.special_workspace.display_name = Some("Scratch".to_string());
     });
     let first = Workspace::mock().name("1".to_string()).call();
@@ -1311,86 +699,6 @@ mod tests {
     assert_eq!(last.label, "Scratch");
   }
 
-  /// Two monitors showing "1" (focused) and "2", without the special
-  /// workspace.
-  fn two_monitors() -> (
-    crate::wm_state::WmState,
-    crate::models::Monitor,
-    crate::models::Monitor,
-  ) {
-    use crate::{
-      commands::container::set_focused_descendant, models::Monitor,
-      wm_state::WmState,
-    };
-
-    let first = Workspace::mock().name("1".to_string()).call();
-    let left = Monitor::mock().workspaces(vec![first.clone()]).call();
-    let right =
-      right_monitor(vec![Workspace::mock().name("2".to_string()).call()]);
-    let state = WmState::mock(vec![left.clone(), right.clone()]);
-    set_focused_descendant(&first.into(), None);
-
-    (state, left, right)
-  }
-
-  /// ID of the monitor workspace `name` is on.
-  fn monitor_of(
-    state: &crate::wm_state::WmState,
-    name: &str,
-  ) -> Option<u128> {
-    state
-      .workspace_by_name(name)?
-      .monitor()
-      .map(|monitor| monitor.id().as_u128())
-  }
-
-  #[test]
-  fn a_pick_activates_an_inactive_workspace_on_its_screen() {
-    use super::prepare_target;
-
-    let config = config_with(|_| {});
-    let (mut state, _, right) = two_monitors();
-    let right_id = right.id().as_u128();
-
-    prepare_target(&mut state, &config, "3", right_id, true).unwrap();
-    assert_eq!(monitor_of(&state, "3"), Some(right_id));
-  }
-
-  #[test]
-  fn a_pick_leaves_a_bound_workspace_on_its_monitor() {
-    use super::prepare_target;
-
-    let config = config_with(|value| {
-      value.workspaces[2].bind_to_monitor = Some(0);
-    });
-    let (mut state, left, right) = two_monitors();
-
-    prepare_target(&mut state, &config, "3", right.id().as_u128(), false)
-      .unwrap();
-    assert_eq!(monitor_of(&state, "3"), Some(left.id().as_u128()));
-  }
-
-  #[test]
-  fn a_pick_summons_the_special_workspace_to_its_screen() {
-    use super::prepare_target;
-
-    let config = config_with(|_| {});
-    let (mut state, left, right) = two_monitors();
-    let (left_id, right_id) = (left.id().as_u128(), right.id().as_u128());
-
-    // Moving a window into it activates it where it was picked.
-    prepare_target(&mut state, &config, "special", right_id, false)
-      .unwrap();
-    assert_eq!(monitor_of(&state, "special"), Some(right_id));
-
-    prepare_target(&mut state, &config, "special", left_id, false)
-      .unwrap();
-    assert_eq!(monitor_of(&state, "special"), Some(right_id), "stays");
-
-    prepare_target(&mut state, &config, "special", left_id, true).unwrap();
-    assert_eq!(monitor_of(&state, "special"), Some(left_id), "summoned");
-  }
-
   #[test]
   fn previews_take_on_their_windows_transparency() {
     use wm_platform::OpacityValue;
@@ -1400,7 +708,7 @@ mod tests {
       wm_state::WmState,
     };
 
-    let config = config_with(|value| {
+    let config = mock_config_with(|value| {
       let transparency =
         &mut value.window_effects.other_windows.transparency;
       transparency.enabled = true;
@@ -1430,40 +738,13 @@ mod tests {
   }
 
   #[test]
-  fn hot_corners_are_the_monitors_own_corners() {
-    use wm_common::HotCorner;
-    use wm_platform::Point;
-
-    use super::is_in_corner;
-
-    let bounds = Rect::from_xy(1920, 0, 1920, 1080);
-    let at = |x, y| Point { x, y };
-
-    assert!(is_in_corner(&bounds, HotCorner::TopLeft, &at(1920, 0)));
-    assert!(is_in_corner(&bounds, HotCorner::TopLeft, &at(1921, 1)));
-    assert!(!is_in_corner(&bounds, HotCorner::TopLeft, &at(1925, 0)));
-    assert!(!is_in_corner(&bounds, HotCorner::TopLeft, &at(1919, 0)));
-    assert!(is_in_corner(
-      &bounds,
-      HotCorner::BottomRight,
-      &at(3839, 1079)
-    ));
-    assert!(!is_in_corner(
-      &bounds,
-      HotCorner::BottomRight,
-      &at(3840, 1079)
-    ));
-    assert!(!is_in_corner(&bounds, HotCorner::None, &at(1920, 0)));
-  }
-
-  #[test]
   fn windows_on_hidden_workspaces_still_carry_their_border() {
     use crate::{
       commands::container::set_focused_descendant, models::Monitor,
       wm_state::WmState,
     };
 
-    let config = config_with(|value| {
+    let config = mock_config_with(|value| {
       value.window_effects.other_windows.border.enabled = true;
     });
     let (shown, hidden) = (tiling("shown"), tiling("hidden"));
@@ -1607,7 +888,7 @@ mod tests {
       wm_state::WmState,
     };
 
-    let config = config_with(|_| {});
+    let config = mock_config_with(|_| {});
     let bounds =
       Rect::from_xy(0, 0, MOCK_MONITOR_WIDTH, MOCK_MONITOR_HEIGHT);
     let working_area = Rect::from_ltrb(

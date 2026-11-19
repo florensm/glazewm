@@ -36,10 +36,12 @@ use windows::{
 };
 
 use crate::{
-  overlay_window::OverlayKind,
+  overlays::window::OverlayKind,
   surface::Surface,
-  tab_bar_paint::{paint_tab_bar, TabBarView},
-  tab_layout::{TabAction, TabHit, TabLayout, TabLayoutParams, TabRect},
+  tab_bar::{
+    layout::{TabAction, TabHit, TabLayout, TabLayoutParams, TabRect},
+    paint::{paint_tab_bar, TabBarView},
+  },
   window_class::{self, mouse_position},
   window_icons, Dispatcher, Rect, TabCloseMode, TabFrame,
 };

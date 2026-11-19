@@ -18,7 +18,7 @@ use windows::{
 use crate::{
   companion::Companion,
   dwm_thumbnail::Thumbnail,
-  overview_layout::{RectF, Tile},
+  overview::layout::{RectF, Tile},
   surface::Surface,
   window_class, OverviewOverlay, OverviewOverlayKind, OverviewWindow,
   Rect,
@@ -481,7 +481,7 @@ mod tests {
   use windows::Win32::Foundation::RECT;
 
   use super::around;
-  use crate::overview_layout::RectF;
+  use crate::overview::layout::RectF;
 
   fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
     RECT {

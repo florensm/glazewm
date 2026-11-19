@@ -5,7 +5,7 @@
 
 use std::f32::consts::TAU;
 
-use crate::overview_layout::{ease_out_back, ease_out_cubic, RectF};
+use crate::overview::layout::{ease_out_back, ease_out_cubic, RectF};
 
 /// How long a ripple takes to spread out and fade.
 const RIPPLE_MS: f32 = 480.0;
@@ -159,7 +159,7 @@ pub(crate) fn stretch(velocity: (f32, f32), squash: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
   use super::{lean_toward, pulse, stretch, Entrance, Ripple};
-  use crate::overview_layout::RectF;
+  use crate::overview::layout::RectF;
 
   #[test]
   fn ripple_spreads_out_and_fades() {

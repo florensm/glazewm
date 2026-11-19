@@ -7,40 +7,22 @@ compile_error!("GlazeWM only supports Windows.");
 mod backdrop_source;
 mod click_guard;
 mod companion;
-mod companion_cover;
 mod corner_bands;
 mod dispatcher;
 mod display;
-mod display_listener;
 mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;
 mod frame_clock;
-mod grab_listener;
 mod hidden_alpha;
-mod keybinding_listener;
+mod listeners;
 mod models;
-mod mouse_listener;
-mod native_backdrop_overlay;
-mod native_border_overlay;
-mod native_drop_indicator;
-mod native_overview;
 mod native_particles;
-mod native_stack_tab_bar;
 mod native_surrogate;
 mod native_window;
-mod overlay_copies;
-mod overlay_window;
-mod overview_chrome;
-mod overview_effects;
-mod overview_expose;
-mod overview_layout;
-mod overview_overlays;
-mod overview_scene;
-mod overview_state;
-mod overview_tab_bars;
-mod overview_thumbnails;
+mod overlays;
+mod overview;
 mod paint;
 mod particles;
 mod peek_surface;
@@ -51,8 +33,7 @@ mod single_instance;
 mod size_to_content;
 mod surface;
 mod system_accent_color;
-mod tab_bar_paint;
-mod tab_layout;
+mod tab_bar;
 #[cfg(feature = "test_utils")]
 pub mod test_utils;
 mod text;
@@ -61,36 +42,36 @@ mod ui_thread;
 mod window_class;
 mod window_edges;
 mod window_icons;
-mod window_listener;
 mod window_peek;
 mod window_placer;
 mod workspace_surrogate;
 
 pub use click_guard::{ClickGuard, GuardedClick};
-pub use companion::CompanionCoverage;
-pub use companion_cover::CompanionCover;
+pub use companion::{cover::CompanionCover, CompanionCoverage};
 pub use dispatcher::*;
 pub use display::*;
-pub use display_listener::*;
 pub use error::*;
 pub use event_loop::*;
 pub use external_color_source::*;
 pub use frame_clock::FrameClock;
-pub use grab_listener::{
-  Gesture, GrabEnd, GrabEvent, GrabListener, GrabModifier, GrabSettings,
-  ResizeEdges,
+pub use listeners::{
+  display::*,
+  grab::{
+    Gesture, GrabEnd, GrabEvent, GrabListener, GrabModifier, GrabSettings,
+    ResizeEdges,
+  },
+  keybinding::*,
+  mouse::*,
+  window::*,
 };
-pub use keybinding_listener::*;
 pub use models::*;
-pub use mouse_listener::*;
-pub use native_backdrop_overlay::NativeBackdropOverlay;
-pub use native_border_overlay::NativeBorderOverlay;
-pub use native_drop_indicator::NativeDropIndicator;
-pub use native_overview::NativeOverview;
-pub use native_stack_tab_bar::NativeStackTabBar;
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 pub use native_window::*;
-pub use overlay_window::Overlay;
+pub use overlays::{
+  backdrop::NativeBackdropOverlay, border::NativeBorderOverlay,
+  drop_indicator::NativeDropIndicator, window::Overlay,
+};
+pub use overview::{model::*, native::NativeOverview};
 pub use particles::{
   ParticleBurst, ParticleEdges, ParticleEffects, ParticleLook,
   ParticleSource, ParticleStyle,
@@ -99,11 +80,10 @@ pub use peek_surface::PeekSurface;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
-pub use tab_layout::TabAction;
+pub use tab_bar::{layout::TabAction, native::NativeStackTabBar};
 pub use thread_bound::*;
 pub use ui_thread::UiThread;
 pub use window_edges::{sample_edge_color_async, EdgeColorCache};
-pub use window_listener::*;
 pub use window_peek::WindowPeek;
 pub use window_placer::WindowPlacer;
 pub use workspace_surrogate::{stacking_ranks, WorkspaceSurrogate};

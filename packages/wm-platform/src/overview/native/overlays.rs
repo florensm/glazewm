@@ -10,17 +10,17 @@ use super::{
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{
-    card_radius, close_size, draw_close, draw_label, draw_note, draw_tag,
-    label_size, note_size, tag_size, with_alpha, ClosePicture,
-    LabelPicture, SliceLook, TagPicture, CLOSE_BUTTON,
+  overview::{
+    chrome::{
+      card_radius, close_size, draw_close, draw_label, draw_note,
+      draw_tag, label_size, note_size, tag_size, with_alpha, ClosePicture,
+      LabelPicture, SliceLook, TagPicture, CLOSE_BUTTON,
+    },
+    layout::{chrome_opacity, CardMetrics, RectF, SpringRect, LABEL_GAP},
+    overlays::{Highlight, Tag},
+    state::{Mode, Toward},
+    thumbnails::Picture,
   },
-  overview_layout::{
-    chrome_opacity, CardMetrics, RectF, SpringRect, LABEL_GAP,
-  },
-  overview_overlays::{Highlight, Tag},
-  overview_state::{Mode, Toward},
-  overview_thumbnails::Picture,
   OverviewLayoutMode, OverviewStyle, OverviewWindowHighlightStyle,
 };
 

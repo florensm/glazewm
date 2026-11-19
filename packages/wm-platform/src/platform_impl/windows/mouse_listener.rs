@@ -24,7 +24,7 @@ use windows::Win32::{
 
 use super::FOREGROUND_INPUT_IDENTIFIER;
 use crate::{
-  mouse_listener::MouseEventKind,
+  listeners::mouse::MouseEventKind,
   platform_event::{MouseButton, MouseEvent, PressedButtons},
   Dispatcher, Point,
 };
@@ -200,7 +200,7 @@ impl MouseListener {
     if u32::from(mouse.usFlags) & MOUSE_MOVE_ABSOLUTE == 0
       && (mouse.lLastX, mouse.lLastY) != (0, 0)
     {
-      crate::grab_listener::note_raw_motion(
+      crate::listeners::grab::note_raw_motion(
         (mouse.lLastX, mouse.lLastY),
         super::pinned_axes,
       );

@@ -10,10 +10,12 @@ use super::{cards::screen_rect, to_ms, Screen, ScreenFrame};
 const SLIDE_GAP: f32 = 48.0;
 
 use crate::{
-  overview_expose::spread,
-  overview_layout::{CardView, RectF, Tile},
-  overview_scene::{Scene, SceneWindow},
-  overview_state::ScreenFocus,
+  overview::{
+    expose::spread,
+    layout::{CardView, RectF, Tile},
+    scene::{Scene, SceneWindow},
+    state::ScreenFocus,
+  },
   OverviewExposeArrangement, OverviewStripView, OverviewSwitchStyle,
   OverviewWorkspace,
 };
@@ -443,10 +445,10 @@ impl Screen {
 #[cfg(test)]
 mod tests {
   use super::scene_window_shown;
-  use crate::{
-    overview_layout::{RectF, Tile},
-    overview_scene::SceneWindow,
-    overview_thumbnails::Preview,
+  use crate::overview::{
+    layout::{RectF, Tile},
+    scene::SceneWindow,
+    thumbnails::Preview,
   };
 
   #[test]

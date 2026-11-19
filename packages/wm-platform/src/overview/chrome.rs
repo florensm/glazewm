@@ -11,10 +11,10 @@
 use windows::Win32::Foundation::HWND;
 
 use crate::{
-  overview_layout::{
-    CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT,
+  overview::{
+    layout::{CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT},
+    state::{SearchField, ShortcutGroup},
   },
-  overview_state::{SearchField, ShortcutGroup},
   surface::Surface,
   text::{draw_text, is_installed, text_width, Align, Font, Fonts},
   window_icons::draw_window_icon,
@@ -1817,7 +1817,7 @@ mod tests {
     spotlight_size,
   };
   use crate::{
-    overview_state::{SearchField, SearchResult},
+    overview::state::{SearchField, SearchResult},
     surface::Surface,
     Color, OverviewStyle,
   };

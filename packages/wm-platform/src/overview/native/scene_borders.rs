@@ -7,9 +7,11 @@ use windows::Win32::Foundation::HWND;
 
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{fade, SliceLook},
-  overview_layout::RectF,
-  overview_overlays::NineSlice,
+  overview::{
+    chrome::{fade, SliceLook},
+    layout::RectF,
+    overlays::NineSlice,
+  },
   BorderOverlayParams,
 };
 

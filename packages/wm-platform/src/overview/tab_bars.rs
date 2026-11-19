@@ -8,10 +8,14 @@
 use windows::Win32::Foundation::HWND;
 
 use crate::{
-  overview_layout::{CardView, RectF},
-  overview_thumbnails::Picture,
-  tab_bar_paint::{paint_tab_bar, TabBarView},
-  tab_layout::{TabHit, TabLayout},
+  overview::{
+    layout::{CardView, RectF},
+    thumbnails::Picture,
+  },
+  tab_bar::{
+    layout::{TabHit, TabLayout},
+    paint::{paint_tab_bar, TabBarView},
+  },
   CornerRadii, Rect, TabFrame,
 };
 

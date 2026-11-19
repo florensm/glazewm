@@ -1,3 +1,5 @@
+pub(crate) mod cover;
+
 use std::{
   sync::{
     atomic::{AtomicU64, Ordering},

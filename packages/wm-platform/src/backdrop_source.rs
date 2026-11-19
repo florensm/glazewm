@@ -14,7 +14,7 @@ use windows::Win32::{
 };
 
 use crate::{
-  overlay_window::{OverlayKind, OverlayWindow},
+  overlays::window::{OverlayKind, OverlayWindow},
   platform_impl::composition::{
     BackdropVisual, SurrogateFill, VignetteVisual,
   },

@@ -2,7 +2,7 @@ use windows::Win32::Foundation::HWND;
 
 use crate::{
   lerp_f32,
-  overlay_window::{Overlay, OverlayKind, OverlayWindow},
+  overlays::window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BackdropVisual,
   BackdropOverlayParams, Rect, StyleBlend, SurrogateBatch,
 };

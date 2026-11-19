@@ -1,7 +1,7 @@
 use windows::Win32::Foundation::HWND;
 
 use crate::{
-  overlay_window::{OverlayKind, OverlayWindow},
+  overlays::window::{OverlayKind, OverlayWindow},
   platform_impl::composition::DropIndicatorVisual,
   window_class, Color, Rect,
 };

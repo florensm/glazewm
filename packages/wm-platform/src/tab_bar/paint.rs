@@ -6,7 +6,7 @@ use windows::Win32::Foundation::HWND;
 use crate::{
   paint::Canvas,
   surface::Surface,
-  tab_layout::{TabHit, TabLayout, TabRect},
+  tab_bar::layout::{TabHit, TabLayout, TabRect},
   text::{draw_text, text_width, Align, Fonts},
   window_icons::draw_window_icon,
   Rect, TabFrame,
@@ -252,7 +252,7 @@ mod tests {
   use super::{paint_tab_bar, TabBarView};
   use crate::{
     surface::Surface,
-    tab_layout::{TabHit, TabLayout},
+    tab_bar::layout::{TabHit, TabLayout},
     Color, CornerRadii, Rect, TabBarStyle, TabCloseMode, TabFrame,
     TabInfo,
   };

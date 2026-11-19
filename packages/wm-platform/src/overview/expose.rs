@@ -1,7 +1,7 @@
 //! Where the exposé spreads a workspace's windows: in rows filling the
 //! room's width, in about the order they sit on screen.
 
-use crate::{overview_layout::RectF, OverviewExposeArrangement};
+use crate::{overview::layout::RectF, OverviewExposeArrangement};
 
 /// Spreads windows whose screen rects are `windows` over `area`, `gap`
 /// apart and at most `max_per_row` to a row (`0` for any number), as
@@ -224,7 +224,7 @@ fn row_width(windows: &[RectF], row: &[usize]) -> f32 {
 #[cfg(test)]
 mod tests {
   use super::spread;
-  use crate::{overview_layout::RectF, OverviewExposeArrangement};
+  use crate::{overview::layout::RectF, OverviewExposeArrangement};
 
   const GRID: OverviewExposeArrangement = OverviewExposeArrangement::Grid;
   const NATURAL: OverviewExposeArrangement =

@@ -11,10 +11,12 @@ use windows::Win32::Foundation::HWND;
 use super::{overlays::RING_RADIUS, PlaceContext, Screen};
 use crate::{
   dwm_thumbnail::Thumbnail,
-  overview_chrome::{with_alpha, SliceLook},
-  overview_effects::{pulse, Ripple},
-  overview_layout::{chrome_opacity, CardMetrics, RectF},
-  overview_overlays::{Highlight, NineSlice},
+  overview::{
+    chrome::{with_alpha, SliceLook},
+    effects::{pulse, Ripple},
+    layout::{chrome_opacity, CardMetrics, RectF},
+    overlays::{Highlight, NineSlice},
+  },
   OverviewEffects, OverviewStyle, ParticleEdges, ParticleEffects,
   ParticleSource,
 };

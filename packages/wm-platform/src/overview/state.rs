@@ -20,7 +20,7 @@
 use std::{borrow::Cow, ops::Range};
 
 use crate::{
-  overview_layout::RectF, Direction, OverviewAction, OverviewInput,
+  overview::layout::RectF, Direction, OverviewAction, OverviewInput,
   OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
   Point, Rect,
 };
@@ -2077,7 +2077,7 @@ mod tests {
     Toward, BINDINGS, MAX_RESULTS,
   };
   use crate::{
-    overview_layout::RectF, Direction, OverviewAction, OverviewInput,
+    overview::layout::RectF, Direction, OverviewAction, OverviewInput,
     OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
     Point, Rect,
   };

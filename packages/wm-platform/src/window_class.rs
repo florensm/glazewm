@@ -18,7 +18,7 @@ use windows::{
   },
 };
 
-use crate::{overlay_window::OverlayKind, Rect};
+use crate::{overlays::window::OverlayKind, Rect};
 
 /// Most windows of the WM's own [`keep_behind`] walks past below an
 /// anchor: its backdrop, border and tab bar, with room to spare.

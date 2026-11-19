@@ -5,11 +5,13 @@ use windows::Win32::Foundation::HWND;
 
 use super::{to_ms, Card, Screen};
 use crate::{
-  overview_chrome::{fade, with_alpha, CardPicture, TilePicture},
-  overview_layout::{CardLook, CardSlot, CardView, RectF, Spring},
-  overview_state::Mode,
-  overview_tab_bars::CardTabBar,
-  overview_thumbnails::{visible_frame_on_screen, Picture, Preview},
+  overview::{
+    chrome::{fade, with_alpha, CardPicture, TilePicture},
+    layout::{CardLook, CardSlot, CardView, RectF, Spring},
+    state::Mode,
+    tab_bars::CardTabBar,
+    thumbnails::{visible_frame_on_screen, Picture, Preview},
+  },
   OverviewStyle, OverviewWindow, OverviewWorkspace, TabFrame,
 };
 

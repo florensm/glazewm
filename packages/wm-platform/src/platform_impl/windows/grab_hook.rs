@@ -36,7 +36,7 @@ use super::{
   WM_MASK_MODIFIERS,
 };
 use crate::{
-  grab_listener::{
+  listeners::grab::{
     GrabButton, GrabShared, Live, MoveOutcome, ReleaseOutcome,
   },
   platform_impl, GrabEnd, GrabEvent, GrabModifier, Point, Rect, WindowId,

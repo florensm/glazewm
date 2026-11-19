@@ -2483,7 +2483,7 @@ impl FramedPanel {
   #[allow(clippy::too_many_arguments)]
   fn place(
     &self,
-    inner: &crate::overview_layout::RectF,
+    inner: &crate::overview::layout::RectF,
     padding: f32,
     area: &Rect,
     monitor: &Rect,
@@ -2606,11 +2606,11 @@ fn cover_work(
 /// to cover the padding too.
 #[allow(clippy::cast_precision_loss)]
 fn monitor_on_panel(
-  inner: &crate::overview_layout::RectF,
+  inner: &crate::overview::layout::RectF,
   padding: f32,
   area: &Rect,
   monitor: &Rect,
-) -> crate::overview_layout::RectF {
+) -> crate::overview::layout::RectF {
   let scale_x = inner.w / (area.width().max(1) as f32);
   let scale_y = inner.h / (area.height().max(1) as f32);
   let grow = if inner.w > 0.0 && inner.h > 0.0 {
@@ -2624,7 +2624,7 @@ fn monitor_on_panel(
 
   let x = (monitor.x() - area.x()) as f32 * scale_x;
   let y = (monitor.y() - area.y()) as f32 * scale_y;
-  crate::overview_layout::RectF::new(
+  crate::overview::layout::RectF::new(
     grown(x, center_x) + padding,
     grown(y, center_y) + padding,
     monitor.width() as f32 * scale_x * grow,
@@ -2773,7 +2773,7 @@ impl OverviewBackdrop {
   /// `corner_radius` and its shadow sized for `scale_factor`.
   pub(crate) fn place_panel(
     &self,
-    inner: &crate::overview_layout::RectF,
+    inner: &crate::overview::layout::RectF,
     padding: f32,
     corner_radius: f32,
     scale_factor: f32,
@@ -2876,7 +2876,7 @@ mod tests {
     monitor_on_panel, rim_geometry, ring_geometry,
     wallpaper_surface::FULL_SCALE, GlowPiece, Ring, BLURRED_BAKE_SCALE,
   };
-  use crate::{overview_layout::RectF, Rect};
+  use crate::{overview::layout::RectF, Rect};
 
   /// The working area fills the panel, and the taskbar's strip of the
   /// monitor reaches past it, scaled alike.

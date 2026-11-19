@@ -3,7 +3,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
-  overlay_copies::{map_rect, scale_alpha, OverlayCopies},
+  overlays::copies::{map_rect, scale_alpha, OverlayCopies},
   perf::{self, Stage},
   platform_impl::wallpaper_surface,
   window_edges::compute_border_inset,

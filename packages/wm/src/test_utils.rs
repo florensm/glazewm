@@ -72,6 +72,34 @@ pub fn mock_config() -> UserConfig {
   UserConfig::from_parsed(ParsedConfig::default())
 }
 
+/// Config declaring workspaces "1" to "3", with `value` changed by `edit`.
+pub fn mock_config_with(
+  edit: impl FnOnce(&mut ParsedConfig),
+) -> UserConfig {
+  let mut value = ParsedConfig {
+    workspaces: mock_workspace_configs(&["1", "2", "3"]),
+    ..ParsedConfig::default()
+  };
+  edit(&mut value);
+  UserConfig::from_parsed(value)
+}
+
+/// A monitor to the right of the default mock monitor, showing
+/// `workspaces`.
+pub fn mock_right_monitor(workspaces: Vec<Workspace>) -> Monitor {
+  let bounds = Rect::from_xy(
+    MOCK_MONITOR_WIDTH,
+    0,
+    MOCK_MONITOR_WIDTH,
+    MOCK_MONITOR_HEIGHT,
+  );
+  Monitor::mock()
+    .bounds(bounds.clone())
+    .working_area(bounds)
+    .workspaces(workspaces)
+    .call()
+}
+
 /// Gaps with a 20px inner gap, so adjacent containers are told apart.
 pub fn mock_inner_gaps() -> GapsConfig {
   GapsConfig {
