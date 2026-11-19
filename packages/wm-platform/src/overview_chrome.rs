@@ -1835,6 +1835,7 @@ mod tests {
       window_highlight: crate::OverviewWindowHighlight::default(),
       strip_view: crate::OverviewStripView::default(),
       expose: crate::OverviewExpose::default(),
+      workspace_row: crate::OverviewWorkspaceRow::default(),
       particles: crate::ParticleLook::default(),
     };
     let searching = SearchField {

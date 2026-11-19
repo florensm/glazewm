@@ -6,7 +6,8 @@ use wm_platform::{
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
   OpacityValue, OverviewBackdropStyle, OverviewEffects, OverviewExpose,
   OverviewStripView, OverviewSwitchStyle, OverviewWindowHighlight,
-  OverviewZoomStyle, ParticleEffects, ParticleLook, RectDelta,
+  OverviewWorkspaceRow, OverviewZoomStyle, ParticleEffects, ParticleLook,
+  RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -763,6 +764,9 @@ pub struct OverviewConfig {
 
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
+
+  /// Whether the row of miniatures over the scene hides until wanted.
+  pub workspace_row: OverviewWorkspaceRow,
 }
 
 /// Look of the overview's `framed` backdrop.
@@ -872,6 +876,7 @@ impl Default for OverviewConfig {
       window_highlight: OverviewWindowHighlight::default(),
       strip_view: OverviewStripView::default(),
       expose: OverviewExpose::default(),
+      workspace_row: OverviewWorkspaceRow::default(),
     }
   }
 }

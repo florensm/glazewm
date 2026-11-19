@@ -431,12 +431,29 @@ pub(crate) const LABEL_GAP: f32 = 6.0;
 /// Most normal card widths a miniature is widened to.
 const MINIATURE_WIDTHS: f32 = 2.0;
 
+/// Where the activities' row of miniatures sits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowPlacement {
+  /// Above the scene, which starts below it.
+  Fixed,
+
+  /// Tucked up off the top but for a sliver, the scene taking its room.
+  Hidden,
+
+  /// Slid down over the top of a scene laid out as for `Hidden`.
+  Revealed,
+}
+
+/// How much of a hidden row's miniatures still shows, in logical pixels.
+pub(crate) const ROW_PEEK: f32 = 10.0;
+
 /// Every card in miniature in a row along the top, their names under
 /// them, and below them the scene: where the selected workspace shows
 /// large. Returns the cards' targets and the scene.
 pub(crate) fn activities(
   metrics: &CardMetrics,
   slots: &[CardSlot],
+  row: RowPlacement,
 ) -> (Targets, RectF) {
   let (view_width, view_height) = metrics.view;
   let (margin, gap, top) =
@@ -455,7 +472,13 @@ pub(crate) fn activities(
     .max(0.01);
 
   let row_width = widths * scale + gaps;
-  let cy = top + metrics.height * scale / 2.0;
+  let card_height = metrics.height * scale;
+  let cy = match row {
+    RowPlacement::Hidden => metrics.px(ROW_PEEK) - card_height / 2.0,
+    RowPlacement::Fixed | RowPlacement::Revealed => {
+      top + card_height / 2.0
+    }
+  };
   let mut x = (view_width - row_width) / 2.0;
   let cards = slots
     .iter()
@@ -468,7 +491,12 @@ pub(crate) fn activities(
     .collect();
 
   let search_y = metrics.bottom_search_y();
-  let scene_top = top + metrics.height * scale + label + metrics.px(22.0);
+  let scene_top = match row {
+    RowPlacement::Fixed => top + card_height + label + metrics.px(22.0),
+    RowPlacement::Hidden | RowPlacement::Revealed => {
+      metrics.px(ROW_PEEK) + top + metrics.px(22.0)
+    }
+  };
   let scene = RectF::new(
     margin,
     scene_top,
@@ -1243,7 +1271,8 @@ mod tests {
   use super::{
     activities, chrome_opacity, cover_crop, ease_out_back, ease_out_cubic,
     stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
-    Placement, RectF, Spring, SpringRect, Tile, Zoom, STACK_MAX_WIDTHS,
+    Placement, RectF, RowPlacement, Spring, SpringRect, Tile, Zoom,
+    ROW_PEEK, STACK_MAX_WIDTHS,
   };
   use crate::{OverviewCurve, OverviewLayoutMode};
 
@@ -1769,7 +1798,8 @@ mod tests {
       CardSlot::new(&metrics),
     ];
 
-    let (targets, scene) = activities(&metrics, &slots);
+    let (targets, scene) =
+      activities(&metrics, &slots, RowPlacement::Fixed);
     let rects = targets
       .cards
       .iter()
@@ -1791,12 +1821,33 @@ mod tests {
     assert!(scene.w > 1920.0 * 0.8);
   }
 
+  /// A row that hides gives its room to the scene, which stays put as
+  /// the row slides down over it; hidden, only a sliver of it shows.
+  #[test]
+  fn a_hiding_row_gives_the_scene_its_room() {
+    let metrics = metrics_for(OverviewLayoutMode::Activities);
+    let slots = slots(&metrics, 4);
+    let layout = |row| activities(&metrics, &slots, row);
+
+    let (_, fixed) = layout(RowPlacement::Fixed);
+    let (hidden, scene) = layout(RowPlacement::Hidden);
+    let (revealed, revealed_scene) = layout(RowPlacement::Revealed);
+
+    assert_eq!(scene, revealed_scene);
+    assert!(scene.y < fixed.y && scene.h > fixed.h);
+    assert_close(hidden.cards[0].rect(&metrics).bottom(), ROW_PEEK);
+    assert_close(
+      revealed.cards[0].rect(&metrics).y,
+      layout(RowPlacement::Fixed).0.cards[0].rect(&metrics).y,
+    );
+  }
+
   #[test]
   fn many_miniatures_shrink_to_fit_the_row() {
     let metrics = metrics_for(OverviewLayoutMode::Activities);
     let slots = slots(&metrics, 20);
 
-    let (targets, _) = activities(&metrics, &slots);
+    let (targets, _) = activities(&metrics, &slots, RowPlacement::Fixed);
     let first = targets.cards[0].rect(&metrics);
     let last = targets.cards[19].rect(&metrics);
 

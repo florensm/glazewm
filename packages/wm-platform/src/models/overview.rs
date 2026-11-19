@@ -211,6 +211,9 @@ pub struct OverviewStyle {
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
 
+  /// Whether the row of miniatures over the scene hides until wanted.
+  pub workspace_row: OverviewWorkspaceRow,
+
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
 }
@@ -227,6 +230,22 @@ pub enum OverviewStripView {
 
   /// The whole strip, scaled to fit.
   Whole,
+}
+
+/// Whether the activities' and the exposé's row of miniatures stays.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewWorkspaceRow {
+  /// Always over the scene, which starts below it.
+  #[default]
+  Shown,
+
+  /// Tucked up off the top but for a sliver, the scene taking its room.
+  /// It slides down over the scene while the cursor is at the top edge,
+  /// a window is dragged there, or the keyboard is on the workspaces.
+  AutoHide,
 }
 
 /// How the exposé spreads the shown workspace's windows.

@@ -30,15 +30,17 @@ use crate::{
   overview_effects::{lean_toward, Entrance},
   overview_layout::{
     activities, chrome_opacity, stack, Camera, CardMetrics, CardView,
-    Placement, RectF, Spring, Zoom, SEARCH_HEIGHT,
+    Placement, RectF, RowPlacement, Spring, Zoom, LABEL_GAP, LABEL_HEIGHT,
+    ROW_PEEK, SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
-  overview_state::{Control, Hit, ScreenFocus, Toward},
+  overview_state::{Control, Hit, Mode, ScreenFocus, Toward},
   overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
   BorderOverlayParams, OverviewBackdropStyle, OverviewEffects,
-  OverviewLayoutMode, OverviewStyle, OverviewWorkspace, OverviewZoomStyle,
+  OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
+  OverviewWorkspaceRow, OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -75,6 +77,11 @@ const SEARCH_LIFT: f32 = 0.02;
 /// logical pixels.
 const NUDGE_DISTANCE: f32 = 18.0;
 
+/// How far below a hidden row's sliver the cursor reaches it, and below a
+/// revealed row's names it keeps it down, in logical pixels.
+const ROW_REACH: f32 = 14.0;
+const ROW_KEEP: f32 = 24.0;
+
 /// How much larger everything is when the fade style starts opening or
 /// ends closing.
 const FADE_GROWTH: f32 = 0.05;
@@ -101,6 +108,8 @@ impl Screen {
       cards: Vec::new(),
       scenes: Vec::new(),
       scene_area: RectF::default(),
+      is_row_revealed: false,
+      row_follows_pointer: true,
       scene_shown: None,
       is_picked: false,
       scene_borders: SceneBorders::default(),
@@ -297,6 +306,7 @@ impl Screen {
     if self.frame.is_none() {
       return;
     }
+    self.sync_row();
 
     let is_redrawn = self.draw_for_layout();
     self.ensure_labels();
@@ -332,6 +342,8 @@ impl Screen {
     }
     self.scenes.clear();
     self.scene_shown = None;
+    self.is_row_revealed = false;
+    self.row_follows_pointer = true;
     self.is_picked = false;
     self.card_targets.clear();
     self.pointer = None;
@@ -563,7 +575,8 @@ impl Screen {
         targets
       }
       OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
-        let (targets, area) = activities(&self.metrics, &slots);
+        let (targets, area) =
+          activities(&self.metrics, &slots, self.row_placement());
         self.scene_area = area.inset(self.frame_padding());
         targets
       }
@@ -673,11 +686,74 @@ impl Screen {
       return;
     }
     self.pointer = pointer;
+    if pointer.is_some() {
+      self.row_follows_pointer = true;
+    }
+
+    if self.frame.is_some() && self.sync_row() {
+      self.retarget(false);
+      return;
+    }
 
     let leans = self.style().is_some_and(|style| style.effects.lean > 0.0);
     if leans && self.focus.hover.is_some() && self.frame.is_some() {
       self.aim_cards(false);
     }
+  }
+
+  /// Where the row of miniatures sits, as the style and the user have it.
+  pub(super) fn row_placement(&self) -> RowPlacement {
+    let hides = self.style().is_some_and(|style| {
+      style.workspace_row == OverviewWorkspaceRow::AutoHide
+    });
+    match (hides, self.is_row_revealed) {
+      (false, _) => RowPlacement::Fixed,
+      (true, false) => RowPlacement::Hidden,
+      (true, true) => RowPlacement::Revealed,
+    }
+  }
+
+  /// Whether a hiding row is wanted down: the cursor at the top edge, or
+  /// over the row once it is down, or else the keyboard on the
+  /// workspaces, but not while searching, whose box the row would cover.
+  fn wants_row(&self) -> bool {
+    if !self.row_follows_pointer {
+      return self.focus.is_active
+        && self.focus.query.is_empty()
+        && matches!(self.focus.mode, Mode::Spaces | Mode::Carrying);
+    }
+
+    let Some((_, y)) = self.pointer else {
+      return false;
+    };
+    let reach = if self.is_row_revealed {
+      let bottom = self
+        .card_targets
+        .iter()
+        .zip(&self.cards)
+        .map(|(target, card)| target.rect(&card.metrics).bottom())
+        .fold(0.0, f32::max);
+      bottom + self.metrics.px(LABEL_GAP + LABEL_HEIGHT + ROW_KEEP)
+    } else {
+      self.metrics.px(ROW_PEEK + ROW_REACH)
+    };
+    y < reach
+  }
+
+  /// Slides a hiding row down or up as `wants_row` has it, but not while
+  /// zooming into a pick. Returns whether that changes the layout.
+  fn sync_row(&mut self) -> bool {
+    if !self.focus.layout.has_scene()
+      || self.row_placement() == RowPlacement::Fixed
+      || self.is_closing()
+    {
+      return false;
+    }
+
+    let wants = self.wants_row();
+    let is_changed = wants != self.is_row_revealed;
+    self.is_row_revealed = wants;
+    is_changed
   }
 
   /// Bumps what the keyboard is on `toward` and lets it spring back, for

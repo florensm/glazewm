@@ -531,6 +531,7 @@ fn overview_frame(
       window_highlight: overview.window_highlight,
       strip_view: overview.strip_view,
       expose: overview.expose,
+      workspace_row: overview.workspace_row,
       particles: config.value.animations.particles.look(),
     },
   }

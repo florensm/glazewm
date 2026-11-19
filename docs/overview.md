@@ -50,6 +50,21 @@ overview's own outline instead.
 
 On the cards, each window shows its app's icon in its middle.
 
+### Workspace row
+
+With `workspace_row: "auto_hide"`, the activities' and the exposé's row
+of miniatures tucks up off the top, a sliver of it still showing as a
+hint, and the shown workspace takes its room. It slides down over the
+top of the workspace, which stays where it is, while:
+
+- the cursor is at the top edge, or over the row once it is down;
+- a window is dragged up there, to drop it on another workspace;
+- the keyboard is on the workspaces, e.g. after `←` `→`, or carrying a
+  window (but not while a search is on, whose box it would cover).
+
+It slides back up once the cursor leaves it, or the keyboard goes in
+among the windows.
+
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
 goes through them while it is open (unless a search is on, which it then
 steps through). Cards are drawn at the size each layout
@@ -472,6 +487,10 @@ overview:
   # How much of a scrolling workspace the activities show large: "visible"
   # (the columns on screen) or "whole" (the whole strip, scaled to fit).
   strip_view: "visible"
+
+  # Whether the activities' and exposé's row of miniatures stays: "shown"
+  # or "auto_hide" (see "Workspace row" above).
+  workspace_row: "shown"
 
   # How the exposé spreads the windows: at most `max_per_row` side by side
   # before wrapping onto another row, `gap` logical pixels apart.

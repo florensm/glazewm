@@ -73,6 +73,10 @@ overview:
   strip_view: "visible"
 
   # Exposé: windows per row before wrapping, and the gap between them.
+  # 'shown', or 'auto_hide': the row of workspaces tucks up off the top
+  # until the cursor goes there or the keyboard is on the workspaces.
+  workspace_row: "shown"
+
   expose:
     max_per_row: 4
     gap: 32
