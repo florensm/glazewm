@@ -203,6 +203,17 @@ impl NativeWindow {
     self.inner.min_window_size()
   }
 
+  /// Makes a WPF window lay its content out to whatever size it is given
+  /// from now on, as after a user's resize, rather than keep the size of
+  /// its content (`SizeToContent`), which the WM's moves bypass. No-op for
+  /// other windows.
+  ///
+  /// Sent in the background; an app that turns `SizeToContent` on again
+  /// later isn't asked again.
+  pub fn release_size_to_content(&self) {
+    self.inner.release_size_to_content();
+  }
+
   /// Whether the window has an owner window.
   #[must_use]
   pub fn has_owner_window(&self) -> bool {
@@ -320,6 +331,13 @@ impl NativeWindow {
     self.inner.set_cloaked(cloaked)
   }
 
+  /// Cloaks the window if the shell has a view of it to cloak it by (see
+  /// `set_cloaked_or_hidden`). Returns whether it did; without a view the
+  /// window is left as it is.
+  pub fn cloak_if_viewed(&self) -> crate::Result<bool> {
+    self.inner.cloak_if_viewed()
+  }
+
   /// Cloaks or uncloaks the window, or hides or shows it if it can't be
   /// cloaked.
   ///
@@ -328,15 +346,6 @@ impl NativeWindow {
   /// cloaked window, a hidden one is not rendered for thumbnails.
   pub fn set_cloaked_or_hidden(&self, hidden: bool) -> crate::Result<()> {
     self.inner.set_cloaked_or_hidden(hidden)
-  }
-
-  /// Whether the shell has a view of the window to cloak it by. Without
-  /// one, `set_cloaked_or_hidden` hides the window instead.
-  ///
-  /// `false` as well if the shell can't be asked.
-  #[must_use]
-  pub fn can_be_cloaked(&self) -> bool {
-    self.inner.can_be_cloaked()
   }
 
   /// Returns whether the window is currently cloaked by DWM.

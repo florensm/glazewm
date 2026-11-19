@@ -43,7 +43,7 @@ fn frame_rects(
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
 enum SurrogateMode {
-  /// The surrogate spans the whole monitor viewport, created once and
+  /// The surrogate spans the working area (`viewport`), created once and
   /// never repositioned; all motion is expressed via
   /// `rcSource`/`rcDestination` clipping, avoiding any per-frame
   /// `SetWindowPos` call. Used for windows with no backdrop configured
@@ -84,7 +84,7 @@ pub struct LiveFrame {
 /// Both outgoing and incoming windows move together so the whole workspace
 /// slides as a single panel. For windows with no live backdrop
 /// ([`SurrogateMode::PinnedViewport`]), the surrogate is created at the
-/// full monitor rect (`viewport`) and never repositioned; all per-frame
+/// monitor's working area (`viewport`) and never repositioned; all per-frame
 /// animation is expressed via `rcSource`/`rcDestination` in
 /// `DwmUpdateThumbnailProperties`, avoiding any per-frame `SetWindowPos`
 /// calls. Windows with a live backdrop ([`SurrogateMode::Live`]) are
@@ -96,7 +96,7 @@ pub struct WorkspaceSurrogate {
   /// Final screen rect of the window (target position for incoming,
   /// current screen rect for outgoing).
   pub rect: Rect,
-  /// Monitor rect used as the surrogate window's fixed position and size
+  /// Working area used as the surrogate window's fixed position and size
   /// in [`SurrogateMode::PinnedViewport`] mode.
   ///
   /// In that mode the surrogate is created at `viewport` and stays there
@@ -108,11 +108,11 @@ pub struct WorkspaceSurrogate {
   /// clipping still uses the monitor bounds passed to each `update_*`
   /// call, so a sliding window never spills onto an adjacent monitor.
   viewport: Rect,
-  /// DWM thumbnail opacity (0–255) derived from the window-effects
-  /// config.
+  /// The window's own alpha (0–255) from the window-effects config. The
+  /// thumbnail is drawn at `window_opacity()` instead.
   opacity: u8,
   /// The non-full-opacity end of the opacity animation, as a fraction of
-  /// `opacity` (0.0–1.0).
+  /// `window_opacity()` (0.0–1.0).
   ///
   /// For outgoing windows this is the final opacity fraction (start =
   /// 1.0, end = `opacity_endpoint`). For incoming windows it is the
@@ -120,6 +120,10 @@ pub struct WorkspaceSurrogate {
   /// At `1.0` (default) the opacity is constant throughout the
   /// animation; at `0.0` the window fully fades out or in.
   opacity_endpoint: f32,
+  /// The fraction of `window_opacity()` the window's thumbnail was last
+  /// drawn at, or `None` while it warms up (see
+  /// [`show_initial`](Self::show_initial)).
+  drawn_frac: Option<f32>,
   /// Positioning strategy, chosen once at creation based on whether the
   /// window has a backdrop configured.
   mode: SurrogateMode,
@@ -177,6 +181,12 @@ pub struct WorkspaceSurrogate {
   /// The window the surrogate shows.
   source: isize,
 
+  /// Whether the surrogate was put above its window (see
+  /// [`cover_window`]).
+  ///
+  /// [`cover_window`]: WorkspaceSurrogate::cover_window
+  covers_window: bool,
+
   /// Copies of the window's border ring and backdrop. See [`carry_ring`]
   /// and [`carry_backdrop`].
   ///
@@ -188,9 +198,11 @@ pub struct WorkspaceSurrogate {
 impl WorkspaceSurrogate {
   /// Creates a hidden surrogate for a workspace-switch animation.
   ///
-  /// `viewport` is the monitor rect; `rect` is the source window's screen
-  /// rect, used as the thumbnail registration dimensions and the reference
-  /// for per-frame coordinate math.
+  /// `viewport` is the monitor's working area, not its bounds: a window
+  /// covering a whole monitor counts as a fullscreen app to Explorer.
+  /// `rect` is the source window's screen rect, used as the thumbnail
+  /// registration dimensions and the reference for per-frame coordinate
+  /// math.
   ///
   /// `frame_rect` is the same window's frame rect (what
   /// `DWMWA_EXTENDED_FRAME_BOUNDS` reports), which callers pass explicitly
@@ -210,7 +222,7 @@ impl WorkspaceSurrogate {
   /// surrogate when it carries a live backdrop
   /// ([`SurrogateMode::Live`]), matching the real window's configured
   /// style. Ignored in [`SurrogateMode::PinnedViewport`] mode, where the
-  /// surrogate spans the whole monitor and must not be rounded.
+  /// surrogate spans the whole viewport and must not be rounded.
   ///
   /// `overlay_tint` is the WM's own configured tint
   /// (`BackdropEffectConfig::overlay_tint`), or `None` when `backdrop`
@@ -270,7 +282,7 @@ impl WorkspaceSurrogate {
     // rect every frame, so — like resize sessions — it must be
     // deflated by the window's invisible resize border to avoid
     // overshooting into the configured gap. PinnedViewport mode sizes
-    // `source_rect` to the full monitor viewport, which has no
+    // `source_rect` to the whole viewport, which has no
     // invisible border of its own; deflating it here would incorrectly
     // shrink the pinned surrogate.
     let border_inset = compute_border_inset(hwnd);
@@ -314,6 +326,7 @@ impl WorkspaceSurrogate {
       viewport: viewport.clone(),
       opacity,
       opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
+      drawn_frac: Some(1.0),
       mode,
       border_inset,
       live_frame: None,
@@ -322,6 +335,7 @@ impl WorkspaceSurrogate {
       frame_inset,
       hidden_alpha: HiddenAlpha::default(),
       source: hwnd.0,
+      covers_window: false,
       copies: OverlayCopies::default(),
     })
   }
@@ -440,10 +454,51 @@ impl WorkspaceSurrogate {
   /// Draws the window, ring and backdrop at `frac` of their own
   /// opacities.
   fn set_opacity_frac(&mut self, frac: f32) {
+    self.drawn_frac = Some(frac);
     self.set_opacities(
-      scale_alpha(self.opacity, frac),
+      scale_alpha(self.window_opacity(), frac),
       scale_alpha(u8::MAX, frac),
     );
+  }
+
+  /// Opacity the window's thumbnail is drawn at outside of fades: the
+  /// window's own, or opaque for its companion (see
+  /// `NativeSurrogate::stand_in_opacity`).
+  fn window_opacity(&self) -> u8 {
+    self.inner.stand_in_opacity(self.opacity)
+  }
+
+  /// Switches the window's thumbnail to its companion if one was shown
+  /// since the surrogate last looked, e.g. for a window shades had not
+  /// covered yet as the switch began. Looks at most every 100 ms (see
+  /// `NativeSurrogate::rechecks_companion`).
+  pub fn refresh_companion(&mut self) {
+    if self.inner.rechecks_companion() {
+      self.adopt_companion();
+    }
+  }
+
+  /// [`refresh_companion`](Self::refresh_companion), unthrottled, e.g.
+  /// right before the hand-back, which then takes the companion's path.
+  /// A surrogate whose thumbnail is hidden, e.g. handed back, keeps it.
+  ///
+  /// The companion is drawn as the window was, then at the same fraction
+  /// of its own opacity, and the ring copy is put back over it.
+  pub fn adopt_companion(&mut self) {
+    let opacity = self.drawn_frac.map_or(WARM_UP_OPACITY, |frac| {
+      scale_alpha(self.window_opacity(), frac)
+    });
+    if !self.inner.adopt_companion(HWND(self.source), opacity) {
+      return;
+    }
+
+    if let Some(frac) = self.drawn_frac {
+      self
+        .inner
+        .set_window_opacity(scale_alpha(self.window_opacity(), frac));
+    }
+    let dest = self.hwnd();
+    self.copies.raise_ring(dest);
   }
 
   /// Live footprint for the current animation frame, when in
@@ -595,15 +650,22 @@ impl WorkspaceSurrogate {
   /// Called right after the real window is uncloaked. With both shown,
   /// DWM blends the thumbnail (at configured opacity) on top of the real
   /// window (also at configured opacity), a double-blend that appears
-  /// fully opaque.
+  /// fully opaque. One showing a companion, drawn opaque, first waits for
+  /// the companion to cover the window again (see
+  /// [`awaits_companion`](Self::awaits_companion)).
   ///
   /// The ring copy stays: the ring is revealed under it only after this,
-  /// and it goes with the surrogate.
+  /// and it goes with the surrogate. So does the backdrop copy, unless the
+  /// surrogate covers its window, which the copy would then hide.
   ///
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn hide_thumbnail(&mut self) {
     self.restore_alpha();
     self.inner.hide_thumbnail();
+
+    if self.covers_window {
+      self.hide_backdrop();
+    }
   }
 
   /// Whether the surrogate should keep covering its uncloaked window
@@ -613,16 +675,45 @@ impl WorkspaceSurrogate {
     self.inner.awaits_companion()
   }
 
+  /// Whether the surrogate draws its window's companion (e.g. shades'
+  /// recolored copy) rather than the window itself.
+  #[must_use]
+  pub fn shows_companion(&self) -> bool {
+    self.inner.shows_companion()
+  }
+
+  /// Puts the surrogate above its window, unless it already is, so it
+  /// covers the window until handing it back.
+  ///
+  /// It otherwise sits just below the window, where an opaque window
+  /// shows over it as it really is (e.g. without its companion's colors)
+  /// once uncloaked or raised. A semi-transparent one is hidden by its
+  /// alpha instead (see [`prepare_hand_back`]).
+  ///
+  /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
+  pub fn cover_window(&mut self) {
+    self.covers_window = true;
+    self.inner.keep_above(HWND(self.source));
+  }
+
+  /// Whether [`cover_window`](Self::cover_window) put the surrogate above
+  /// its window.
+  #[must_use]
+  pub fn covers_window(&self) -> bool {
+    self.covers_window
+  }
+
   /// Shows the surrogate with the thumbnail at the window's natural
   /// (unscaled) position within the monitor viewport, cut to it like
-  /// every later frame, but too faint to see, so the real window still
-  /// shows as it is while DWM warms the thumbnail up. [`take_over`] then
-  /// swaps the two.
+  /// every later frame, but too faint to see, so what is under it still
+  /// shows as it is while DWM warms the thumbnail up. For an outgoing
+  /// window, [`take_over`] then swaps the two.
   ///
   /// [`take_over`]: WorkspaceSurrogate::take_over
   pub fn show_initial(&mut self) {
     self.show_at_rest();
     self.set_opacities(WARM_UP_OPACITY, WARM_UP_OPACITY);
+    self.drawn_frac = None;
   }
 
   /// Takes over showing the window from `window`, which is about to be
@@ -639,11 +730,19 @@ impl WorkspaceSurrogate {
   /// Readies handing the window back to `window`, which is about to be
   /// uncloaked: a semi-transparent `window` goes to no alpha, so its
   /// uncloak lands unseen and `hide_thumbnail` swaps the two in one frame
-  /// (see [`take_over`]).
+  /// (see [`take_over`]). An opaque one that a companion draws over is
+  /// covered instead (see [`cover_window`]). The wait for a companion
+  /// starts afresh (see [`awaits_companion`](Self::awaits_companion)).
   ///
   /// [`take_over`]: WorkspaceSurrogate::take_over
+  /// [`cover_window`]: WorkspaceSurrogate::cover_window
   pub fn prepare_hand_back(&mut self, window: &NativeWindow) {
+    self.inner.begin_hand_back();
     self.hidden_alpha.hide(&window.inner);
+
+    if self.shows_companion() && !self.hidden_alpha.is_hiding() {
+      self.cover_window();
+    }
   }
 
   /// Gives the real window back the alpha a handover set aside, unless it
@@ -660,16 +759,16 @@ impl WorkspaceSurrogate {
     self.show_frame(None, &rect, viewport.clone(), &viewport);
   }
 
-  /// Updates the DWM thumbnail opacity to the configured `opacity`, and
-  /// the ring copy's to full, without changing the surrogate window
-  /// position or size.
+  /// Updates the DWM thumbnail opacity to its effect opacity (see
+  /// [`window_opacity`](Self::window_opacity)), and the ring copy's to
+  /// full, without changing the surrogate window position or size.
   pub fn apply_effect_opacity(&mut self) {
     self.set_opacity_frac(1.0);
   }
 
-  /// Retargets the effect opacity, for a window whose transparency
+  /// Retargets the window's own alpha, for a window whose transparency
   /// transitions with its focus state during the switch. Takes effect
-  /// with the next per-frame update.
+  /// with the next per-frame update, unless it shows a companion.
   pub fn set_effect_opacity(&mut self, opacity: u8) {
     self.opacity = opacity;
   }
@@ -681,7 +780,7 @@ impl WorkspaceSurrogate {
   /// Use for incoming windows in stationary transitions (fade, zoom) so
   /// DWM warms the thumbnail before the animation begins. The start
   /// opacity is derived from `opacity_endpoint`: `opacity_endpoint *
-  /// effect_opacity`. At `opacity_endpoint = 0.0` the surrogate is
+  /// window_opacity()`. At `opacity_endpoint = 0.0` the surrogate is
   /// invisible but the thumbnail is registered; at `1.0` it starts fully
   /// opaque. [`update_fade`] or [`update_zoom`] then drives the
   /// per-frame opacity from this initial state.

@@ -1,6 +1,9 @@
 use std::{
   collections::HashMap,
-  sync::{Arc, Mutex},
+  sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+  },
   time::{Duration, Instant},
 };
 
@@ -38,9 +41,12 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
 use crate::{
-  discard_bits_if_resized, native_surrogate::to_logical,
-  platform_impl::NativeWindow, window_class, Color, CornerStyle,
-  NativeSurrogate, OverlayParams, Rect, SurrogateBatch,
+  companion::COMPANION_OPACITY,
+  discard_bits_if_resized,
+  native_surrogate::{fade_fraction, to_logical},
+  platform_impl::NativeWindow,
+  window_class, Color, CornerStyle, NativeSurrogate, OverlayParams, Rect,
+  SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -99,12 +105,10 @@ pub struct ResizeSession {
   /// to the logical (visible-content) rects that the surrogate is sized
   /// to.
   border_inset: RECT,
-  /// DWM thumbnail opacity (0–255) from the window-effects config.
-  ///
-  /// Used as the surrogate opacity when the animation has no per-frame
-  /// fade component, so the thumbnail matches the real window's
-  /// `SetLayeredWindowAttributes` opacity throughout the move/resize.
-  pub effect_opacity: u8,
+  /// DWM thumbnail opacity (0–255): from the window-effects config, or
+  /// [`COMPANION_OPACITY`] while the surrogate shows a companion. See
+  /// [`effect_opacity`](ResizeSession::effect_opacity).
+  effect_opacity: u8,
   /// Color the surrogate's gap fill paints, from [`SessionOptions`] or
   /// picked up later via [`set_edge_color`] once a background sample
   /// lands.
@@ -157,6 +161,13 @@ pub struct ResizeSession {
   /// [`update_zoom_fade`]: ResizeSession::update_zoom_fade
   /// [`overlay_params`]: ResizeSession::overlay_params
   zoom_progress: f32,
+  /// How far the stand-in is faded, as a fraction of `effect_opacity`.
+  /// The overlays are separate windows, so [`overlay_params`] scales them
+  /// by it: left at full strength they outlast a window fading out, then
+  /// vanish in one frame.
+  ///
+  /// [`overlay_params`]: ResizeSession::overlay_params
+  fade: f32,
   /// `true` once the real window has been repositioned at the current
   /// `target_rect` (at session start for growing curtain-reveals, or
   /// mid-animation via [`maybe_handoff`]). Reset whenever a redirect
@@ -185,6 +196,8 @@ pub struct ResizeSession {
   /// to fire on the first `Frozen` frame (where the cloak state is
   /// unknown) and after the session is torn down.
   session_cloaked: bool,
+  /// Whether [`adopt`](ResizeSession::adopt) has been called.
+  adopted: bool,
   /// Thumbnail content dims that need to be applied on the next animation
   /// tick via `DwmUpdateThumbnailProperties`.
   ///
@@ -298,16 +311,12 @@ impl ResizeSession {
     let is_move_only = target_rect.width() == source_rect.width()
       && target_rect.height() == source_rect.height();
 
-    let effect_opacity = options.effect_opacity;
-
     // The fill stands in for the settled window in whatever strip the
     // thumbnail has not reached, so it is the window's own color as
-    // sampled off the screen -- already composited over its backdrop.
-    // It sits on the surrogate beneath the thumbnail, at the
-    // thumbnail's opacity, so it is correct whether or not the window
-    // is transparent or has a backdrop overlay behind it. A cache miss
-    // starts without one; `set_edge_color` fills it in when the
-    // background sample lands.
+    // sampled off the screen -- already composited over its backdrop,
+    // so drawn opaque, faded only as the thumbnail fades (see
+    // `fade_fraction`). A cache miss starts without one;
+    // `set_edge_color` fills it in when the background sample lands.
     let edge_color = options.edge_color;
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
@@ -319,13 +328,13 @@ impl ResizeSession {
     // giving up outright -- rare (would mean the warm surrogate's own
     // window handle went bad), but a brand new surrogate window is a
     // reasonable recovery, not just "no surrogate for this resize."
-    let surrogate = warm_surrogate
+    let mut surrogate = warm_surrogate
       .and_then(|mut surrogate| {
         match surrogate.revive(
           hwnd,
           source_rect,
           source_rect,
-          effect_opacity,
+          options.effect_opacity,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -346,7 +355,7 @@ impl ResizeSession {
           hwnd,
           source_rect,
           source_rect,
-          effect_opacity,
+          options.effect_opacity,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -363,6 +372,16 @@ impl ResizeSession {
         }
       });
 
+    // Decided from what the surrogate samples, not a second
+    // `Companion::find` that could disagree with it.
+    let effect_opacity = match &mut surrogate {
+      Some(surrogate) if surrogate.shows_companion() => {
+        surrogate.set_rest_opacity(COMPANION_OPACITY);
+        COMPANION_OPACITY
+      }
+      _ => options.effect_opacity,
+    };
+
     let mut session = Self {
       hwnd: hwnd.0,
       target_rect: target_rect.clone(),
@@ -375,10 +394,12 @@ impl ResizeSession {
       stretch: options.stretch,
       zoom: false,
       zoom_progress: 1.0,
+      fade: 1.0,
       handoff_done: is_growing,
       poll_parity: false,
       commit_poll_parity: false,
       session_cloaked: false,
+      adopted: false,
       pending_thumbnail_dims: None,
       overlays: options.overlays,
       current_rect: None,
@@ -389,20 +410,35 @@ impl ResizeSession {
     session
   }
 
+  /// Thumbnail opacity the surrogate is drawn at when the animation has no
+  /// fade of its own, matching the real window's alpha, or the
+  /// companion's (see [`COMPANION_OPACITY`]).
+  #[must_use]
+  pub fn effect_opacity(&self) -> u8 {
+    self.effect_opacity
+  }
+
   /// Returns the params for the overlay trackers in `AnimationManager`
   /// and `platform_sync`.
   ///
-  /// For `zoom` sessions, both overlays' opacity is scaled by
-  /// `zoom_progress` so they fade in/out alongside the thumbnail's own
-  /// zoom instead of sitting at full opacity for the whole animation --
-  /// see `zoom_progress`'s doc comment.
+  /// Both overlays' opacity follows the stand-in's fade, and a `zoom`
+  /// session's `zoom_progress` when that is lower, so they come and go
+  /// with the window instead of sitting at full opacity around it.
   #[must_use]
   pub fn overlay_params(&self) -> OverlayParams {
-    if self.zoom {
-      self.overlays.with_opacity_scaled(self.zoom_progress)
+    let factor =
+      overlay_factor(self.zoom.then_some(self.zoom_progress), self.fade);
+
+    if factor < 1.0 {
+      self.overlays.with_opacity_scaled(factor)
     } else {
       self.overlays
     }
+  }
+
+  /// Records the opacity the stand-in is drawn at as its fade.
+  fn note_opacity(&mut self, opacity: u8) {
+    self.fade = fade_fraction(opacity, self.effect_opacity);
   }
 
   /// `HWND` of this session's surrogate, or `None` when surrogate creation
@@ -543,6 +579,18 @@ impl ResizeSession {
     self.session_cloaked = true;
   }
 
+  /// Notes that the session's window, found cloaked as the session began,
+  /// is being sent to its target. Returns whether this is the first time.
+  ///
+  /// Kept apart from [`mark_session_cloaked`]: such a session goes on
+  /// checking its window's cloak, as the shell uncloaks a window that is
+  /// activated, which a newly opened one often is.
+  ///
+  /// [`mark_session_cloaked`]: ResizeSession::mark_session_cloaked
+  pub fn adopt(&mut self) -> bool {
+    !std::mem::replace(&mut self.adopted, true)
+  }
+
   /// Whether a surrogate overlay with a valid DWM thumbnail is active.
   ///
   /// Returns `false` when surrogate creation failed, or when the surrogate
@@ -559,14 +607,78 @@ impl ResizeSession {
   }
 
   /// Whether the fade-out tail should keep the surrogate fully opaque a
-  /// little longer: it shows the window's companion (see
-  /// [`NativeSurrogate::is_companion_off_screen`]), which is not back on
-  /// screen yet, so fading now would reveal the window's own pixels.
+  /// little longer: it shows the window's companion, which is not back
+  /// over the window yet, so fading now would reveal the window's own
+  /// pixels.
+  ///
+  /// Puts the surrogate back over the window first, should something
+  /// (e.g. focusing it) have raised the window past it.
   pub fn awaits_companion(&mut self) -> bool {
+    self.cover_window();
     self
       .surrogate
       .as_mut()
       .is_some_and(NativeSurrogate::awaits_companion)
+  }
+
+  /// Switches the surrogate to the window's companion if one was shown
+  /// since it last looked, e.g. for a window just opened, as its owner
+  /// takes some time to make one. Looks at most every 100 ms, and never
+  /// again once it has one (see `NativeSurrogate::rechecks_companion`).
+  ///
+  /// Returns the effect opacity the session had, if it just switched, so
+  /// callers can rescale opacities derived from it: the session is opaque
+  /// from then on (see [`COMPANION_OPACITY`]).
+  pub fn refresh_companion(&mut self) -> Option<u8> {
+    if !self
+      .surrogate
+      .as_ref()
+      .is_some_and(NativeSurrogate::rechecks_companion)
+    {
+      return None;
+    }
+    self.adopt_companion()
+  }
+
+  /// [`refresh_companion`](Self::refresh_companion), unthrottled.
+  fn adopt_companion(&mut self) -> Option<u8> {
+    let window = self.window_hwnd()?;
+    let surrogate = self.surrogate.as_mut()?;
+
+    if !surrogate.adopt_companion(window, COMPANION_OPACITY) {
+      return None;
+    }
+    Some(std::mem::replace(
+      &mut self.effect_opacity,
+      COMPANION_OPACITY,
+    ))
+  }
+
+  /// Whether the surrogate shows the window's companion rather than the
+  /// window itself.
+  #[must_use]
+  pub fn shows_companion(&self) -> bool {
+    self
+      .surrogate
+      .as_ref()
+      .is_some_and(NativeSurrogate::shows_companion)
+  }
+
+  /// Puts a surrogate showing the window's companion directly above the
+  /// window, unless it already is above it, so the window never shows
+  /// over it as it really is before the companion is back. No-op for
+  /// other surrogates.
+  pub fn cover_window(&self) {
+    let Some(surrogate) = self
+      .surrogate
+      .as_ref()
+      .filter(|surrogate| surrogate.shows_companion())
+    else {
+      return;
+    };
+    if let Some(window) = self.window_hwnd() {
+      surrogate.keep_above(window);
+    }
   }
 
   /// Takes this session's surrogate, if any, for reuse via
@@ -603,9 +715,9 @@ impl ResizeSession {
   /// full surrogate). Used for zoom-in (open) and zoom-out (close)
   /// effects. The surrogate window itself stays fixed; only the
   /// thumbnail rect animates.
-  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
   pub fn update_zoom_fade(&mut self, progress: f32, opacity: u8) {
     self.zoom_progress = progress;
+    self.note_opacity(opacity);
     self.sync_fill();
 
     let Some(ref mut surrogate) = self.surrogate else {
@@ -614,13 +726,8 @@ impl ResizeSession {
     let logical = to_logical(&self.target_rect, &self.border_inset);
     let w = logical.width();
     let h = logical.height();
-    let half_w = (w as f32 / 2.0 * progress).round() as i32;
-    let half_h = (h as f32 / 2.0 * progress).round() as i32;
-    if half_w <= 0 || half_h <= 0 {
-      surrogate.set_visible(false);
-    } else {
-      let cx = w / 2;
-      let cy = h / 2;
+
+    if let Some(destination) = zoom_destination(w, h, progress) {
       // `rcSource` samples from the real window's coordinate space, so it
       // must carry the same `border_inset` offset as `register_thumbnail`/
       // `update_thumbnail_dims` -- otherwise every zoom-fade frame samples
@@ -635,14 +742,11 @@ impl ResizeSession {
           right: self.border_inset.left + w,
           bottom: self.border_inset.top + h,
         },
-        RECT {
-          left: cx - half_w,
-          top: cy - half_h,
-          right: cx + half_w,
-          bottom: cy + half_h,
-        },
+        destination,
       );
       surrogate.set_visible(true);
+    } else {
+      surrogate.set_visible(false);
     }
     surrogate.set_window_opacity(opacity);
   }
@@ -668,12 +772,12 @@ impl ResizeSession {
   ///
   /// No-op for zoom sessions (close animations must never move the real
   /// window — their target rect may be off-screen) and when the current
-  /// target has already been handed off.
+  /// target has already been handed off. Returns whether it handed off.
   ///
   /// [`sync_registration`]: ResizeSession::sync_registration
-  pub fn maybe_handoff(&mut self) {
+  pub fn maybe_handoff(&mut self) -> bool {
     if self.handoff_done || self.zoom || self.hwnd == 0 {
-      return;
+      return false;
     }
     self.handoff_done = true;
 
@@ -699,6 +803,8 @@ impl ResizeSession {
         );
       }
     }
+
+    true
   }
 
   /// Moves the real window to `target` asynchronously, without touching
@@ -792,6 +898,7 @@ impl ResizeSession {
   /// `opacity` maps to the DWM thumbnail opacity (0 = transparent, 255 =
   /// opaque). Pass `255` for resize animations where no fade is needed.
   pub fn update(&mut self, current_rect: &Rect, opacity: u8) {
+    self.note_opacity(opacity);
     self.sync_registration();
     let logical = to_logical(current_rect, &self.border_inset);
     self.current_rect = Some(logical.clone());
@@ -817,6 +924,8 @@ impl ResizeSession {
     current_rect: &Rect,
     opacity: u8,
   ) {
+    self.note_opacity(opacity);
+
     // Apply deferred thumbnail dims before `sync_registration` so the
     // short-circuit check (`content_size == target_dims`) succeeds on this
     // tick rather than falling back to `GetWindowRect`.
@@ -851,6 +960,8 @@ impl ResizeSession {
     monitor_rect: &Rect,
     opacity: u8,
   ) {
+    self.note_opacity(opacity);
+
     let Some(surrogate) = &mut self.surrogate else {
       self.current_rect = None;
       return;
@@ -1040,6 +1151,9 @@ impl ResizeSession {
     }
 
     let Some(started) = self.commit_started_at else {
+      // A last look before the hand-back, which then waits for it.
+      self.adopt_companion();
+
       // First call since this target was set. Skip the move entirely when
       // the real window is already there -- `maybe_handoff` (shrinking
       // sessions) and the initial async preposition (growing sessions)
@@ -1104,6 +1218,17 @@ impl ResizeSession {
         );
       }
     }
+    // A zoom's last frame is drawn before its animation completes, so
+    // short of full size: by a few percent of the window with an ease-out
+    // curve. Left there, the window is uncloaked under a smaller copy of
+    // itself.
+    if self.zoom {
+      self.update_zoom_fade(1.0, self.effect_opacity);
+    }
+
+    // Drawn at rest below, past the last frame of any fade.
+    self.fade = 1.0;
+
     let logical = to_logical(&self.target_rect, &self.border_inset);
     self.current_rect = Some(logical.clone());
     if let Some(surrogate) = &mut self.surrogate {
@@ -1126,7 +1251,12 @@ impl ResizeSession {
       if let Err(err) = surrogate.update(&logical, self.effect_opacity) {
         tracing::warn!("Surrogate pre-commit update failed: {err}.");
       }
+      surrogate.begin_hand_back();
     }
+
+    // The window is uncloaked next. Raised past the surrogate meanwhile,
+    // e.g. by the OS activating it, it would show uncolored.
+    self.cover_window();
   }
 
   /// Moves the real window to its final target rect and destroys the
@@ -1161,6 +1291,38 @@ impl ResizeSession {
   }
 }
 
+/// What a session's overlays are scaled by: its fade, or its zoom's
+/// progress when that is lower.
+fn overlay_factor(zoom_progress: Option<f32>, fade: f32) -> f32 {
+  zoom_progress.map_or(fade, |progress| progress.min(fade))
+}
+
+/// Where a zoom at `progress` (0 to 1) draws a `width` x `height` window
+/// within its stand-in: centered, and the whole stand-in at 1. `None`
+/// while it has no size.
+///
+/// Inset from each edge rather than grown from the center, which is half
+/// a pixel off it for an odd size and so ended a pixel too large.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn zoom_destination(
+  width: i32,
+  height: i32,
+  progress: f32,
+) -> Option<RECT> {
+  let inset = |extent: i32| {
+    (extent as f32 * (1.0 - progress.clamp(0.0, 1.0)) / 2.0).round() as i32
+  };
+  let (left, top) = (inset(width), inset(height));
+  let (right, bottom) = (width - left, height - top);
+
+  (right > left && bottom > top).then_some(RECT {
+    left,
+    top,
+    right,
+    bottom,
+  })
+}
+
 /// Shared cache of recently sampled surrogate backdrop colors, keyed by
 /// window handle. Mirrors the shape `AnimationManager` stores on the WM's
 /// main thread; wrapped in `Arc<Mutex<_>>` so
@@ -1180,6 +1342,10 @@ pub type EdgeColorCache = Arc<Mutex<HashMap<isize, (Color, Instant)>>>;
 /// is a no-op if the window is gone, hidden, cloaked or minimized (its
 /// screen pixels are something else) or sampling fails.
 ///
+/// A sample is dropped if `animating` is set, or the window has moved, by
+/// the time it is read: a stand-in or a border ring may then have crossed
+/// the strips it reads, and a ring's flat color wins over content.
+///
 /// `prune_len`/`ttl` mirror the caller's own cache-eviction policy (e.g.
 /// `AnimationManager`'s
 /// `EDGE_COLOR_CACHE_PRUNE_LEN`/`EDGE_COLOR_CACHE_TTL`) -- pruning happens
@@ -1190,6 +1356,7 @@ pub fn sample_edge_color_async(
   cache: EdgeColorCache,
   prune_len: usize,
   ttl: Duration,
+  animating: Arc<AtomicBool>,
 ) {
   let hwnd_raw = hwnd.0;
   tokio::task::spawn_blocking(move || {
@@ -1206,6 +1373,11 @@ pub fn sample_edge_color_async(
       logical_src.width(),
       logical_src.height(),
     ) {
+      if animating.load(Ordering::Relaxed)
+        || sampleable_rect(hwnd).as_ref() != Some(&source_rect)
+      {
+        return;
+      }
       if let Ok(mut map) = cache.lock() {
         if map.len() >= prune_len {
           map.retain(|_, (_, inserted_at)| inserted_at.elapsed() < ttl);
@@ -1357,14 +1529,14 @@ fn sample_edge_color(
   // are independent allocations that outlive this scope.
   unsafe { ReleaseDC(HWND(0), hdc_screen) };
 
-  let mut counts: HashMap<u32, u32> = HashMap::with_capacity(64);
+  let mut pixels = Vec::with_capacity(2 * EDGE_SAMPLES as usize);
 
   for i in 0..EDGE_SAMPLES {
     let sy = (strip_h - 1) * i / (EDGE_SAMPLES - 1);
     // SAFETY: hdc_right is a valid DC with hbm_right selected.
     let c = unsafe { GetPixel(hdc_right, 0, sy) };
     if c.0 != 0xFFFF_FFFF {
-      *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+      pixels.push(c.0);
     }
   }
   for i in 0..EDGE_SAMPLES {
@@ -1372,7 +1544,7 @@ fn sample_edge_color(
     // SAFETY: hdc_bottom is a valid DC with hbm_bottom selected.
     let c = unsafe { GetPixel(hdc_bottom, sx, 0) };
     if c.0 != 0xFFFF_FFFF {
-      *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+      pixels.push(c.0);
     }
   }
 
@@ -1387,16 +1559,58 @@ fn sample_edge_color(
     let _ = DeleteObject(HGDIOBJ(hbm_bottom.0));
   }
 
-  // COLORREF is 0x00BBGGRR.
-  counts
-    .into_iter()
-    .max_by_key(|(_, n)| *n)
-    .map(|(colorref, _)| crate::Color {
-      r: (colorref & 0xFF) as u8,
-      g: ((colorref >> 8) & 0xFF) as u8,
-      b: ((colorref >> 16) & 0xFF) as u8,
-      a: 255,
-    })
+  dominant_color(&pixels)
+}
+
+/// Bits dropped from each channel to bucket sampled pixels by colour.
+///
+/// Steps of 32 absorb a see-through window's backdrop noise, which leaves
+/// no two pixels alike, yet keep a ring's or another window's colour apart
+/// from it; the bucket's mean then restores the precision.
+const EDGE_COLOR_BUCKET_SHIFT: u32 = 5;
+
+/// The mean of the most common colour bucket among `pixels`
+/// (`COLORREF`s, `0x00BBGGRR`), or `None` for no pixels.
+///
+/// A tie goes to the bucket seen first.
+fn dominant_color(pixels: &[u32]) -> Option<crate::Color> {
+  // Per bucket: its key, member count and channel sums.
+  let mut buckets: Vec<(u32, u32, [u32; 3])> = Vec::new();
+
+  for &pixel in pixels {
+    let channels =
+      [pixel & 0xFF, (pixel >> 8) & 0xFF, (pixel >> 16) & 0xFF];
+    let key = channels
+      .iter()
+      .fold(0, |key, c| (key << 8) | (c >> EDGE_COLOR_BUCKET_SHIFT));
+
+    match buckets.iter_mut().find(|(k, ..)| *k == key) {
+      Some((_, count, sums)) => {
+        *count += 1;
+        for (sum, c) in sums.iter_mut().zip(channels) {
+          *sum += c;
+        }
+      }
+      None => buckets.push((key, 1, channels)),
+    }
+  }
+
+  let (_, count, sums) = buckets.into_iter().reduce(|best, bucket| {
+    if bucket.1 > best.1 {
+      bucket
+    } else {
+      best
+    }
+  })?;
+  #[allow(clippy::cast_possible_truncation)]
+  let mean = |sum: u32| ((sum + count / 2) / count) as u8;
+
+  Some(crate::Color {
+    r: mean(sums[0]),
+    g: mean(sums[1]),
+    b: mean(sums[2]),
+    a: 255,
+  })
 }
 
 /// Computes the invisible border insets of `hwnd` in physical pixels.
@@ -1416,5 +1630,95 @@ pub(crate) fn compute_border_inset(hwnd: HWND) -> RECT {
     top: (frame.top - window.top).max(0),
     right: (window.right - frame.right).max(0),
     bottom: (window.bottom - frame.bottom).max(0),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn ltrb(rect: RECT) -> (i32, i32, i32, i32) {
+    (rect.left, rect.top, rect.right, rect.bottom)
+  }
+
+  fn colorref(r: u32, g: u32, b: u32) -> u32 {
+    r | (g << 8) | (b << 16)
+  }
+
+  fn rgb(color: Color) -> (u8, u8, u8) {
+    (color.r, color.g, color.b)
+  }
+
+  #[test]
+  fn noisy_content_beats_a_smaller_flat_intruder() {
+    // A see-through window's edge: no two pixels alike.
+    let mut pixels: Vec<u32> = (0..40)
+      .map(|i| colorref(40 + i % 7, 44 + i / 7, 52 + i % 5))
+      .collect();
+    // A border ring's flat colour crossing the strip.
+    pixels.extend(std::iter::repeat_n(colorref(0, 200, 80), 24));
+
+    let (r, g, b) =
+      rgb(dominant_color(&pixels).expect("pixels were sampled"));
+    assert!((40..47).contains(&r), "{r}");
+    assert!((44..51).contains(&g), "{g}");
+    assert!((52..59).contains(&b), "{b}");
+  }
+
+  #[test]
+  fn a_clearly_dominant_color_wins_exactly() {
+    let mut pixels = vec![colorref(30, 30, 30); 50];
+    pixels.extend((0..14).map(|i| colorref(200, 10 * i, 255 - 10 * i)));
+
+    assert_eq!(dominant_color(&pixels).map(rgb), Some((30, 30, 30)));
+  }
+
+  #[test]
+  fn no_pixels_give_no_color() {
+    assert!(dominant_color(&[]).is_none());
+  }
+
+  #[test]
+  fn a_full_zoom_covers_exactly_the_stand_in() {
+    for (width, height) in [(800, 600), (801, 601), (1, 1)] {
+      assert_eq!(
+        zoom_destination(width, height, 1.0).map(ltrb),
+        Some((0, 0, width, height)),
+      );
+    }
+  }
+
+  #[test]
+  fn a_zoom_stays_centered() {
+    assert_eq!(
+      zoom_destination(801, 601, 0.5).map(ltrb),
+      Some((200, 150, 601, 451)),
+    );
+  }
+
+  #[test]
+  fn a_zoom_of_no_size_is_not_drawn() {
+    assert_eq!(zoom_destination(800, 600, 0.0), None);
+    assert_eq!(zoom_destination(0, 600, 1.0), None);
+  }
+
+  #[test]
+  fn a_fade_is_measured_against_the_resting_opacity() {
+    assert_eq!(fade_fraction(204, 204), 1.0);
+    assert_eq!(fade_fraction(102, 204), 0.5);
+    assert_eq!(fade_fraction(0, 204), 0.0);
+  }
+
+  #[test]
+  fn an_opacity_above_the_resting_one_is_no_fade() {
+    assert_eq!(fade_fraction(u8::MAX, 204), 1.0);
+    assert_eq!(fade_fraction(0, 0), 1.0);
+  }
+
+  #[test]
+  fn overlays_follow_the_lower_of_zoom_and_fade() {
+    assert_eq!(overlay_factor(None, 0.25), 0.25);
+    assert_eq!(overlay_factor(Some(0.5), 1.0), 0.5);
+    assert_eq!(overlay_factor(Some(0.5), 0.25), 0.25);
   }
 }

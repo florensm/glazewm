@@ -113,6 +113,28 @@ mod tests {
     assert!((progress - 0.5).abs() < 0.1);
   }
 
+  /// A curve time-reversed for a restore runs its original backwards:
+  /// at `t` it is as far along as the original is short of the end at
+  /// `1 - t`.
+  #[test]
+  fn time_reversed_curves_run_backwards() {
+    for easing in [
+      EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
+      EasingFunction::CubicBezier(0.42, 0.0, 1.0, 1.0),
+      EasingFunction::CubicBezier(0.2, -0.5, 0.6, 1.3),
+    ] {
+      let reversed = easing.time_reversed();
+      for t in [0.1, 0.25, 0.5, 0.8] {
+        let expected = 1.0 - apply_easing(1.0 - t, &easing);
+        let actual = apply_easing(t, &reversed);
+        assert!(
+          (actual - expected).abs() < 1e-3,
+          "{easing:?} at {t}: {actual} vs {expected}"
+        );
+      }
+    }
+  }
+
   #[test]
   fn test_interpolate_rect() {
     let start = Rect::from_xy(0, 0, 100, 100);

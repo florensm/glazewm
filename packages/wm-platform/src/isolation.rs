@@ -1,5 +1,6 @@
 //! `GLAZEWM_ISOLATE`: a switch for finding what draws an artifact on
-//! moving windows in a live session, by leaving parts out one at a time.
+//! moving windows in a live session, by leaving parts out one at a time,
+//! and for comparing animations with the way they were drawn before.
 //!
 //! A comma-separated list of:
 //!
@@ -9,19 +10,41 @@
 //!   without it.
 //! - `live`: copy no backdrop, so windows with one move in surrogates and
 //!   peeks that move with them, as before backdrops were copied.
+//! - `nopeeks`: draw open, close, minimize, restore and moves with
+//!   `ResizeSession` again instead of pinned peeks, to compare the two or
+//!   to fall back. `peeks` is still accepted and changes nothing.
+//! - `peeksfirst`: on an animation tick with peeks to draw, draw their
+//!   frame before the main loop's catch-up on queued events, then the rest
+//!   of the tick, rather than all of it after the catch-up. With or
+//!   without `nopeeks`: scrolling columns move on peeks either way.
 //!
-//! Unset, nothing changes. Read once per process.
+//! Read once per process.
 
 use std::sync::OnceLock;
 
-/// What `GLAZEWM_ISOLATE` leaves out.
+/// What `GLAZEWM_ISOLATE` leaves out or turns on.
 // Independent switches, any combination of which is valid.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Isolation {
   pub no_backdrop: bool,
   pub no_ring: bool,
   pub live: bool,
+  /// On unless `nopeeks` is given.
+  pub peeks: bool,
+  pub peeks_first: bool,
+}
+
+impl Default for Isolation {
+  fn default() -> Self {
+    Self {
+      no_backdrop: false,
+      no_ring: false,
+      live: false,
+      peeks: true,
+      peeks_first: false,
+    }
+  }
 }
 
 impl Isolation {
@@ -37,6 +60,9 @@ impl Isolation {
         "nobackdrop" => isolation.no_backdrop = true,
         "noring" => isolation.no_ring = true,
         "live" => isolation.live = true,
+        "peeks" => {}
+        "nopeeks" => isolation.peeks = false,
+        "peeksfirst" => isolation.peeks_first = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -45,7 +71,7 @@ impl Isolation {
   }
 }
 
-/// What `GLAZEWM_ISOLATE` leaves out, read on first call.
+/// What `GLAZEWM_ISOLATE` leaves out or turns on, read on first call.
 pub fn current() -> Isolation {
   static ISOLATION: OnceLock<Isolation> = OnceLock::new();
 
@@ -62,17 +88,55 @@ mod tests {
   #[test]
   fn empty_leaves_nothing_out() {
     assert_eq!(Isolation::parse(""), Isolation::default());
+    assert!(Isolation::default().peeks);
+    assert!(!Isolation::default().peeks_first);
   }
 
   #[test]
   fn flags_are_read_from_a_list() {
     assert_eq!(
-      Isolation::parse("nobackdrop, Live,,bogus noring"),
+      Isolation::parse("nobackdrop, Live,,bogus noring PEEKS"),
       Isolation {
         no_backdrop: true,
         no_ring: true,
         live: true,
+        peeks: true,
+        peeks_first: false,
       }
     );
+    assert_eq!(Isolation::parse("peeks"), Isolation::default());
+  }
+
+  #[test]
+  fn peeks_are_on_unless_turned_off() {
+    assert_eq!(
+      Isolation::parse("NoPeeks"),
+      Isolation {
+        peeks: false,
+        ..Isolation::default()
+      }
+    );
+    assert!(!Isolation::parse("peeks,nopeeks").peeks);
+    assert!(Isolation::parse("noring").peeks);
+  }
+
+  #[test]
+  fn peeks_first_is_its_own_word() {
+    assert_eq!(
+      Isolation::parse("PeeksFirst"),
+      Isolation {
+        peeks_first: true,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(
+      Isolation::parse("peeks,peeksfirst"),
+      Isolation {
+        peeks: true,
+        peeks_first: true,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(Isolation::parse("peeks_first"), Isolation::default());
   }
 }

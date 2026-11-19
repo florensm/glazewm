@@ -299,21 +299,24 @@ impl Rect {
   ///
   /// `progress` should be a value between 0.0 (this rect) and 1.0 (other
   /// rect).
-  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+  ///
+  /// Each edge moves by its own travel, rounded once, so edges that travel
+  /// equally stay exactly as far apart: neighbours keep a fixed gap and a
+  /// pure move keeps its size on every frame. Rounding position and size
+  /// separately let a gap flicker by a pixel.
+  #[allow(clippy::cast_possible_truncation)]
   #[must_use]
   pub fn interpolate(&self, other: &Rect, progress: f32) -> Rect {
-    let x = self.x() as f32 + (other.x() - self.x()) as f32 * progress;
-    let y = self.y() as f32 + (other.y() - self.y()) as f32 * progress;
-    let width = self.width() as f32
-      + (other.width() - self.width()) as f32 * progress;
-    let height = self.height() as f32
-      + (other.height() - self.height()) as f32 * progress;
+    let progress = f64::from(progress);
+    let edge = |from: i32, to: i32| {
+      from + (f64::from(to - from) * progress).round() as i32
+    };
 
-    Rect::from_xy(
-      x.round() as i32,
-      y.round() as i32,
-      width.round() as i32,
-      height.round() as i32,
+    Rect::from_ltrb(
+      edge(self.left, other.left),
+      edge(self.top, other.top),
+      edge(self.right, other.right),
+      edge(self.bottom, other.bottom),
     )
   }
 }
@@ -377,5 +380,83 @@ mod tests {
     let r1 = Rect::from_xy(0, 0, 100, 100);
     let r2 = Rect::from_xy(100, 0, 100, 100);
     assert_eq!(r1.intersection_area(&r2), 0);
+  }
+
+  /// Progress steps from 0 to 1 inclusive, 1/1000 apart.
+  #[allow(clippy::cast_precision_loss)]
+  fn progress_steps() -> impl Iterator<Item = f32> {
+    (0..=1000).map(|step| step as f32 / 1000.0)
+  }
+
+  #[test]
+  fn interpolate_hits_both_ends_exactly() {
+    let start = Rect::from_ltrb(-37, 13, 411, 289);
+    let end = Rect::from_ltrb(1903, -7, 2561, 1077);
+
+    assert_eq!(start.interpolate(&end, 0.0), start);
+    assert_eq!(start.interpolate(&end, 1.0), end);
+  }
+
+  #[test]
+  fn interpolate_keeps_a_fixed_gap_between_neighbours() {
+    // Three tiles 10 px apart whose middle one shrinks as the last grows:
+    // rounding x and width apart drew the gaps 10 or 11 px wide.
+    let gap = 10;
+    let tiles = [
+      (
+        Rect::from_ltrb(0, 0, 100, 500),
+        Rect::from_ltrb(0, 0, 150, 500),
+      ),
+      (
+        Rect::from_ltrb(100 + gap, 0, 300, 500),
+        Rect::from_ltrb(150 + gap, 0, 250, 500),
+      ),
+      (
+        Rect::from_ltrb(300 + gap, 0, 500, 500),
+        Rect::from_ltrb(250 + gap, 0, 500, 500),
+      ),
+    ];
+
+    for progress in progress_steps() {
+      let drawn = tiles
+        .iter()
+        .map(|(start, end)| start.interpolate(end, progress))
+        .collect::<Vec<_>>();
+
+      for pair in drawn.windows(2) {
+        assert_eq!(pair[1].left - pair[0].right, gap, "at {progress}");
+      }
+    }
+  }
+
+  #[test]
+  fn interpolate_keeps_shared_edges_shared() {
+    let top = (
+      Rect::from_ltrb(0, 0, 640, 333),
+      Rect::from_ltrb(0, 0, 640, 517),
+    );
+    let bottom = (
+      Rect::from_ltrb(0, 333, 640, 1000),
+      Rect::from_ltrb(0, 517, 640, 1000),
+    );
+
+    for progress in progress_steps() {
+      assert_eq!(
+        top.0.interpolate(&top.1, progress).bottom,
+        bottom.0.interpolate(&bottom.1, progress).top,
+        "at {progress}"
+      );
+    }
+  }
+
+  #[test]
+  fn interpolate_keeps_a_moved_rect_its_size() {
+    let start = Rect::from_xy(13, 7, 333, 211);
+    let end = Rect::from_xy(1001, -390, 333, 211);
+
+    for progress in progress_steps() {
+      let drawn = start.interpolate(&end, progress);
+      assert_eq!((drawn.width(), drawn.height()), (333, 211));
+    }
   }
 }

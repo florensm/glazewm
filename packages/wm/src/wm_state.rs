@@ -26,6 +26,7 @@ use crate::{
   },
   overview::Overview,
   pending_sync::PendingSync,
+  switch_log::SwitchLog,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   window_overlays::WindowOverlays,
@@ -46,6 +47,9 @@ pub struct WmState {
   /// Tracks the target position for each window to prevent animation
   /// restart loops.
   pub window_target_positions: HashMap<Uuid, Rect>,
+
+  /// Tiles under a fullscreen window, whose redraws are held meanwhile.
+  pub covered_tiles: crate::covered_tiles::CoveredTiles,
 
   /// Name of the most recently focused workspace.
   ///
@@ -91,6 +95,9 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
+  /// Windows the WM asked the OS to focus, awaiting their focus event.
+  pub focus_requests: crate::focus_requests::FocusRequests,
+
   /// Backdrop and border overlay windows keyed by managed-window UUID.
   ///
   /// Each overlay is a `WS_POPUP` window rooting a
@@ -106,6 +113,9 @@ pub struct WmState {
 
   /// Overview of every monitor's workspaces and their windows.
   pub overview: Overview,
+
+  /// Times each workspace switch for `switch.log`.
+  pub switch_log: SwitchLog,
 
   /// Whether the initial state has been populated.
   has_initialized: bool,
@@ -149,7 +159,7 @@ impl WmState {
     animation_tick_tx: mpsc::UnboundedSender<()>,
     overview_action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
     tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
-    guarded_click_tx: mpsc::UnboundedSender<NativeWindow>,
+    guarded_click_tx: mpsc::UnboundedSender<wm_platform::GuardedClick>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
@@ -157,9 +167,11 @@ impl WmState {
       pending_sync: PendingSync::default(),
       animation_manager: AnimationManager::new(animation_tick_tx),
       window_target_positions: HashMap::new(),
+      covered_tiles: crate::covered_tiles::CoveredTiles::default(),
       window_overlays: HashMap::new(),
       drop_indicator: None,
       overview: Overview::new(overview_action_tx),
+      switch_log: SwitchLog::default(),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
@@ -172,6 +184,7 @@ impl WmState {
       ),
       is_paused: false,
       is_focus_synced: false,
+      focus_requests: crate::focus_requests::FocusRequests::default(),
       has_initialized: false,
       event_tx,
       exit_tx,

@@ -28,10 +28,11 @@
 //! Full resolution costs `width * height * 4` bytes of VRAM per surface
 //! (~20 MB on a 3440x1440 display), and there is one surface per distinct
 //! set of knobs -- normally one, or two when `focused_window` and
-//! `other_windows` are configured differently. Baking at reduced
-//! resolution and letting the brush scale it back up would be nearly free
-//! visually, since the blur has already destroyed the detail, and is the
-//! obvious lever if that ever matters.
+//! `other_windows` are configured differently. A surface baked at a
+//! reduced scale and stretched back out is nearly free visually, since the
+//! blur has already destroyed the detail: the overview's blurred copy is
+//! (see `fill_brush`). The windows' are not: a brush cropped by its offset
+//! needs `CompositionSurfaceBrush.Scale` to be stretched, a new API.
 //!
 //! # Threading
 //!
@@ -105,8 +106,8 @@ use windows::{
     },
     System::WinRT::Composition::ICompositionDrawingSurfaceInterop,
     UI::WindowsAndMessaging::{
-      GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-      SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+      GetSystemMetrics, SM_CMONITORS, SM_CXVIRTUALSCREEN,
+      SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     },
   },
   UI::Composition::{
@@ -164,6 +165,20 @@ impl From<BackdropOverlayParams> for BakeKnobs {
 struct WallpaperKey {
   wallpaper: MonitorWallpaper,
   knobs: BakeKnobs,
+
+  /// Size of the surface per axis, as a fraction of the monitor's.
+  scale: f32,
+}
+
+/// Bake scale of a surface as large as its monitor.
+pub(crate) const FULL_SCALE: f32 = 1.0;
+
+/// Size of the surface holding a `monitor`-sized image baked at `scale`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn surface_size(monitor: &Rect, scale: f32) -> (i32, i32) {
+  let scaled =
+    |length: i32| ((length as f32 * scale).ceil() as i32).max(1);
+  (scaled(monitor.width()), scaled(monitor.height()))
 }
 
 /// A baked surface and the description it was baked from.
@@ -177,20 +192,27 @@ struct CachedSurface {
   last_used: u64,
 }
 
-/// Most baked surfaces kept alive at once.
+/// Baked surfaces kept per display: the focused, unfocused and urgent
+/// window styles, and the overview's plain and blurred wallpaper.
 ///
-/// A display needs two in normal use, since `focused_window` and
-/// `other_windows` can carry different knobs, so this covers a couple of
-/// them. The cap is not about steady state: it exists because changing a
-/// knob produces a *new* key rather than replacing an old one, so every
-/// config reload that touches the backdrop would otherwise leave its
+/// The cap is not about steady state: it exists because changing a knob
+/// produces a *new* key rather than replacing an old one, so every config
+/// reload that touches the backdrop would otherwise leave its
 /// predecessor's surface -- ~20 MB on a 3440x1440 display -- cached for
 /// the life of the process.
 ///
-/// Evicting is always safe: a surface a brush still points at stays alive
-/// through that reference, and dropping it from the cache only means a
-/// later request for the same key re-bakes instead of reusing it.
-const MAX_CACHED_SURFACES: usize = 4;
+/// It has to cover every key in use, though. Evicting one of those frees
+/// nothing, as the brushes showing it keep it alive, and the next request
+/// for it (a new window, a focus change, a display change) bakes a second
+/// copy: the wallpaper decoded and blurred again, and both copies held
+/// until the last brush on the first goes. A flat cap of four did that
+/// with two displays once the overview had been opened (eight keys).
+const CACHED_SURFACES_PER_DISPLAY: usize = 5;
+
+/// Most baked surfaces kept in the cache with `display_count` displays.
+fn max_cached_surfaces(display_count: usize) -> usize {
+  CACHED_SURFACES_PER_DISPLAY * display_count.max(1)
+}
 
 /// Monotonic counter stamped onto entries as they are used.
 static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
@@ -322,7 +344,7 @@ pub(crate) fn crop_brush(
   parallax: f32,
 ) -> windows::core::Result<(CompositionSurfaceBrush, Rect)> {
   let monitor = monitor_bounds(rect);
-  let surface = surface_for(compositor, &monitor, knobs)?;
+  let surface = surface_for(compositor, &monitor, knobs, FULL_SCALE)?;
 
   let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
   brush.SetStretch(CompositionStretch::None)?;
@@ -335,6 +357,25 @@ pub(crate) fn crop_brush(
   brush.SetVerticalAlignmentRatio(0.0)?;
 
   set_crop(&brush, rect, &monitor, parallax);
+  Ok((brush, monitor))
+}
+
+/// Returns a brush painting the whole wallpaper of the monitor `rect`
+/// sits on, baked at `scale` and stretched over whatever it fills: a
+/// sprite as large as the monitor shows it as the desktop does.
+///
+/// Must be called on the composition thread.
+pub(crate) fn fill_brush(
+  compositor: &Compositor,
+  rect: &Rect,
+  knobs: BakeKnobs,
+  scale: f32,
+) -> windows::core::Result<(CompositionSurfaceBrush, Rect)> {
+  let monitor = monitor_bounds(rect);
+  let surface = surface_for(compositor, &monitor, knobs, scale)?;
+
+  let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
+  brush.SetStretch(CompositionStretch::Fill)?;
   Ok((brush, monitor))
 }
 
@@ -365,8 +406,8 @@ pub(crate) fn set_crop(
   }
 }
 
-/// Swaps `brush` onto another monitor's baked wallpaper, baking it if
-/// needed. Called when a window is moved across displays.
+/// Swaps `brush` onto another monitor's wallpaper baked at `scale`,
+/// baking it if needed. Called when a window is moved across displays.
 ///
 /// Must be called on the composition thread.
 pub(crate) fn rebind(
@@ -374,8 +415,9 @@ pub(crate) fn rebind(
   brush: &CompositionSurfaceBrush,
   monitor: &Rect,
   knobs: BakeKnobs,
+  scale: f32,
 ) -> windows::core::Result<()> {
-  let surface = surface_for(compositor, monitor, knobs)?;
+  let surface = surface_for(compositor, monitor, knobs, scale)?;
   brush.SetSurface(&surface)
 }
 
@@ -485,10 +527,12 @@ fn surface_for(
   compositor: &Compositor,
   monitor: &Rect,
   knobs: BakeKnobs,
+  scale: f32,
 ) -> windows::core::Result<CompositionDrawingSurface> {
   let key = WallpaperKey {
     wallpaper: wallpaper_for(monitor),
     knobs,
+    scale,
   };
 
   let now = CACHE_CLOCK.fetch_add(1, Ordering::Relaxed);
@@ -521,13 +565,14 @@ fn surface_for(
     let mut cache = cache.borrow_mut();
 
     // Drop only the entry this bake actually replaces: same monitor, same
-    // knobs, older wallpaper. Evicting every entry for the monitor instead
-    // would thrash whenever `focused_window` and `other_windows` are
-    // configured with different knobs -- the two would take turns baking
-    // each other out on every focus change.
+    // knobs and scale, older wallpaper. Evicting every entry for the
+    // monitor instead would thrash whenever `focused_window` and
+    // `other_windows` are configured with different knobs -- the two
+    // would take turns baking each other out on every focus change.
     cache.retain(|entry| {
       entry.key.wallpaper.monitor != key.wallpaper.monitor
         || entry.key.knobs != key.knobs
+        || entry.key.scale != key.scale
     });
 
     cache.push(CachedSurface {
@@ -536,9 +581,14 @@ fn surface_for(
       last_used: now,
     });
 
+    // SAFETY: No preconditions.
+    let display_count = unsafe { GetSystemMetrics(SM_CMONITORS) };
+    let cap =
+      max_cached_surfaces(usize::try_from(display_count).unwrap_or(1));
+
     // Anything above the cap is a knob set nothing is asking for any more
     // -- most often the values in force before the last config reload.
-    while cache.len() > MAX_CACHED_SURFACES {
+    while cache.len() > cap {
       let Some(oldest) = cache
         .iter()
         .enumerate()
@@ -579,8 +629,8 @@ pub(crate) fn redraw_cached(compositor: &Compositor) {
   }
 }
 
-/// Allocates a monitor-sized surface and draws the blurred wallpaper into
-/// it.
+/// Allocates a surface of the monitor's size at the key's scale and draws
+/// the blurred wallpaper into it.
 ///
 /// `DirectXAlphaMode::Ignore` is the point of the whole backdrop: it makes
 /// the surface opaque, which is what lets DWM stop compositing everything
@@ -589,16 +639,7 @@ fn bake(
   device: &GraphicsDevice,
   key: &WallpaperKey,
 ) -> windows::core::Result<CompositionDrawingSurface> {
-  let monitor = &key.wallpaper.monitor;
-
-  let surface = device.composition.CreateDrawingSurface2(
-    SizeInt32 {
-      Width: monitor.width(),
-      Height: monitor.height(),
-    },
-    DirectXPixelFormat::B8G8R8A8UIntNormalized,
-    DirectXAlphaMode::Ignore,
-  )?;
+  let surface = create_surface(device, key)?;
 
   if !draw_into(device, &surface, key)? {
     // Not an error -- a color-only desktop renders exactly like this --
@@ -612,6 +653,23 @@ fn bake(
   }
 
   Ok(surface)
+}
+
+/// An empty surface of the size `key` is baked at.
+fn create_surface(
+  device: &GraphicsDevice,
+  key: &WallpaperKey,
+) -> windows::core::Result<CompositionDrawingSurface> {
+  let (width, height) = surface_size(&key.wallpaper.monitor, key.scale);
+
+  device.composition.CreateDrawingSurface2(
+    SizeInt32 {
+      Width: width,
+      Height: height,
+    },
+    DirectXPixelFormat::B8G8R8A8UIntNormalized,
+    DirectXAlphaMode::Ignore,
+  )
 }
 
 /// Renders `key`'s wallpaper into an already-allocated `surface`,
@@ -648,7 +706,7 @@ fn draw_into(
 /// background.
 ///
 /// A composition surface hands back a device context targeting a *shared*
-/// atlas, of which only `origin`-plus-monitor-size belongs to this
+/// atlas, of which only `origin`-plus-surface-size belongs to this
 /// surface, so everything here is clipped to that region -- an unclipped
 /// `Clear` alone would wipe unrelated surfaces.
 fn draw(
@@ -657,10 +715,10 @@ fn draw(
   origin: POINT,
   key: &WallpaperKey,
 ) -> windows::core::Result<bool> {
-  let monitor = &key.wallpaper.monitor;
+  let (width, height) = surface_size(&key.wallpaper.monitor, key.scale);
 
   #[allow(clippy::cast_precision_loss)]
-  let (width, height) = (monitor.width() as f32, monitor.height() as f32);
+  let (width, height) = (width as f32, height as f32);
   #[allow(clippy::cast_precision_loss)]
   let (left, top) = (origin.x as f32, origin.y as f32);
 
@@ -687,7 +745,7 @@ fn draw(
   }
 
   let result =
-    draw_wallpaper(device, context, left, top, width, height, key);
+    draw_wallpaper(device, context, left, top, (width, height), key);
 
   // SAFETY: Paired with the `PushAxisAlignedClip` above; must run even on
   // failure so the context is left balanced.
@@ -701,16 +759,22 @@ fn draw(
 /// Composes and draws the wallpaper image itself, returning whether it
 /// drew one. No-op when the desktop has no image, in which case the
 /// background `Clear` already produced the right result.
-#[allow(clippy::too_many_arguments)]
+///
+/// The image is composed, blurred and graded at the monitor's size, then
+/// scaled into `surface`, the surface's size: the knobs are in monitor
+/// pixels, so a smaller surface looks the same stretched back out.
 fn draw_wallpaper(
   device: &GraphicsDevice,
   context: &ID2D1DeviceContext,
   left: f32,
   top: f32,
-  width: f32,
-  height: f32,
+  surface: (f32, f32),
   key: &WallpaperKey,
 ) -> windows::core::Result<bool> {
+  let monitor = &key.wallpaper.monitor;
+  #[allow(clippy::cast_precision_loss)]
+  let (width, height) = (monitor.width() as f32, monitor.height() as f32);
+
   let Some(path) = key.wallpaper.image.as_deref() else {
     return Ok(false);
   };
@@ -764,6 +828,7 @@ fn draw_wallpaper(
   // (E_INVALIDARG, raised at `EndDraw` rather than by the draw call
   // itself).
   let finished = crop_to(context, &grained, width, height)?;
+  let finished = scale_to(context, &finished, (width, height), surface)?;
 
   // SAFETY: Every effect above is live, and the target offset places the
   // graph's (0, 0) at this surface's own corner of the atlas.
@@ -1021,6 +1086,44 @@ fn crop_to(
     },
   )?;
   Ok(cropped)
+}
+
+/// Scales `input`, which covers `from` at the origin, to cover `to`.
+#[allow(clippy::float_cmp)]
+fn scale_to(
+  context: &ID2D1DeviceContext,
+  input: &ID2D1Effect,
+  from: (f32, f32),
+  to: (f32, f32),
+) -> windows::core::Result<ID2D1Effect> {
+  if from == to {
+    return Ok(input.clone());
+  }
+
+  // Clamped past its edges first: scaling samples just outside them,
+  // which would otherwise darken the outermost pixels.
+  let extended = border(context, input, D2D1_BORDER_EDGE_MODE_CLAMP.0)?;
+
+  let scaled = effect(context, &CLSID_D2D12DAffineTransform, &extended)?;
+  set_matrix(
+    &scaled,
+    D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX.0,
+    Matrix3x2 {
+      M11: to.0 / from.0,
+      M12: 0.0,
+      M21: 0.0,
+      M22: to.1 / from.1,
+      M31: 0.0,
+      M32: 0.0,
+    },
+  )?;
+  set_enum(
+    &scaled,
+    D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE.0,
+    D2D1_INTERPOLATION_MODE_LINEAR.0,
+  )?;
+
+  crop_to(context, &scaled, to.0, to.1)
 }
 
 /// Extends `input` past its own extent in both axes with the given edge
@@ -1342,11 +1445,36 @@ fn to_vector4(color: crate::Color) -> Vector4 {
 
 #[cfg(test)]
 mod tests {
-  use super::{place, Placement};
+  use super::{
+    max_cached_surfaces, place, surface_size, Placement, FULL_SCALE,
+  };
   use crate::{
     platform_impl::wallpaper::{MonitorWallpaper, WallpaperFit},
     Color, Rect,
   };
+
+  /// Two window styles and the overview's two images per display are in
+  /// use at once; evicting any of them bakes it again.
+  #[test]
+  fn cache_holds_every_surface_in_use() {
+    let in_use = |displays: usize| displays * (2 + 2);
+
+    for displays in 1..=4 {
+      assert!(max_cached_surfaces(displays) >= in_use(displays));
+    }
+    assert!(max_cached_surfaces(0) >= in_use(1));
+  }
+
+  #[test]
+  fn surface_is_the_monitor_at_its_scale_rounded_up() {
+    let monitor = Rect::from_xy(1920, 0, 2560, 1440);
+    assert_eq!(surface_size(&monitor, FULL_SCALE), (2560, 1440));
+    assert_eq!(surface_size(&monitor, 0.5), (1280, 720));
+
+    let odd = Rect::from_xy(0, 0, 1367, 769);
+    assert_eq!(surface_size(&odd, 0.5), (684, 385));
+    assert_eq!(surface_size(&Rect::from_xy(0, 0, 1, 1), 0.25), (1, 1));
+  }
 
   /// A single 1920x1080 monitor at the virtual origin, plus a second one
   /// to its right so `Span` and `Tile` have somewhere to continue onto.
@@ -1487,47 +1615,49 @@ mod tests {
       grain: 0.0,
     };
 
+    let full = |knobs| (knobs, FULL_SCALE);
     let cases = [
-      ("blur only", neutral),
+      ("blur only", full(neutral)),
+      ("half size", (neutral, 0.5)),
       (
         "saturation",
-        super::BakeKnobs {
+        full(super::BakeKnobs {
           saturation: 1.4,
           ..neutral
-        },
+        }),
       ),
       (
         "exposure",
-        super::BakeKnobs {
+        full(super::BakeKnobs {
           exposure: -0.3,
           ..neutral
-        },
+        }),
       ),
       (
         "contrast",
-        super::BakeKnobs {
+        full(super::BakeKnobs {
           contrast: 0.2,
           ..neutral
-        },
+        }),
       ),
       (
         "highlights/shadows",
-        super::BakeKnobs {
+        full(super::BakeKnobs {
           highlights: -0.5,
           shadows: 0.3,
           ..neutral
-        },
+        }),
       ),
       (
         "grain",
-        super::BakeKnobs {
+        full(super::BakeKnobs {
           grain: 0.1,
           ..neutral
-        },
+        }),
       ),
       (
         "everything",
-        super::BakeKnobs {
+        full(super::BakeKnobs {
           saturation: 1.4,
           exposure: -0.3,
           contrast: 0.2,
@@ -1535,7 +1665,7 @@ mod tests {
           shadows: 0.3,
           grain: 0.1,
           ..neutral
-        },
+        }),
       ),
     ];
 
@@ -1547,25 +1677,18 @@ mod tests {
 
     let mut failures = Vec::new();
 
-    for (label, knobs) in cases {
+    for (label, (knobs, scale)) in cases {
       let key = super::WallpaperKey {
         wallpaper: MonitorWallpaper::query(&monitor, &virtual_screen),
         knobs,
+        scale,
       };
 
       let drew =
         crate::platform_impl::composition::with_composition_thread(
           move |compositor, _| {
             super::with_graphics_device(&compositor, |device| {
-              let surface = device.composition.CreateDrawingSurface2(
-                super::SizeInt32 {
-                  Width: key.wallpaper.monitor.width(),
-                  Height: key.wallpaper.monitor.height(),
-                },
-                super::DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                super::DirectXAlphaMode::Ignore,
-              )?;
-
+              let surface = super::create_surface(device, &key)?;
               super::draw_into(device, &surface, &key)
             })
           },

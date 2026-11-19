@@ -46,6 +46,12 @@ impl HiddenAlpha {
     }
   }
 
+  /// Whether it hides a window, i.e. set its alpha aside.
+  #[must_use]
+  pub(crate) fn is_hiding(&self) -> bool {
+    self.0.is_some()
+  }
+
   /// Gives the window back the alpha set aside, unless it was set again
   /// since, e.g. by a focus change's effects. No-op otherwise.
   pub(crate) fn restore(&mut self) {

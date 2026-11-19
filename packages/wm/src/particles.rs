@@ -383,9 +383,8 @@ impl Thrower<'_> {
 
     let switch = &self.config.value.animations.workspace_switch;
     if switch.enabled && !self.state.pending_sync.animations_suppressed() {
-      burst.delay = Duration::from_millis(u64::from(
-        switch.easing.duration_ms(switch.duration_ms),
-      ));
+      burst.delay =
+        Duration::from_millis(u64::from(switch.effective_duration_ms()));
     }
     Some(burst)
   }

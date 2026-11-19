@@ -277,9 +277,13 @@ impl BackdropLayer {
     let monitor = self.monitor.clone();
 
     dispatch_on_composition_thread(queue, move || {
-      if let Err(err) =
-        wallpaper_surface::rebind(&compositor, &brush, &monitor, knobs)
-      {
+      if let Err(err) = wallpaper_surface::rebind(
+        &compositor,
+        &brush,
+        &monitor,
+        knobs,
+        wallpaper_surface::FULL_SCALE,
+      ) {
         tracing::warn!("Wallpaper backdrop re-bake failed: {err}.");
       }
     })?;
@@ -2089,6 +2093,8 @@ pub(crate) struct OverviewBackdrop {
   _target: DesktopWindowTarget,
   compositor: Compositor,
   queue: DispatcherQueue,
+  /// Holds every layer, to fade the backdrop as a whole.
+  root: ContainerVisual,
   sharp: CompositionSurfaceBrush,
   blurred: CompositionSurfaceBrush,
   blurred_sprite: SpriteVisual,
@@ -2116,6 +2122,37 @@ fn overview_wallpaper_knobs(blur: f32) -> BakeKnobs {
     shadows: 0.0,
     grain: 0.0,
   }
+}
+
+/// Blur from which the overview's blurred copy is baked at
+/// `BLURRED_BAKE_SCALE`: it leaves no detail a smaller surface would lose.
+const BLURRED_SCALED_FROM: f32 = 8.0;
+
+/// A quarter of the pixels, and so of the memory held while the WM runs.
+const BLURRED_BAKE_SCALE: f32 = 0.5;
+
+/// Bake scale of the overview's wallpaper copy blurred by `blur`.
+fn blurred_bake_scale(blur: f32) -> f32 {
+  if blur >= BLURRED_SCALED_FROM {
+    BLURRED_BAKE_SCALE
+  } else {
+    wallpaper_surface::FULL_SCALE
+  }
+}
+
+/// Lays `sprite` over the whole of `monitor`, on a window covering
+/// `rect`, which cuts it to what the desktop shows there.
+fn cover_monitor(
+  sprite: &SpriteVisual,
+  rect: &Rect,
+  monitor: &Rect,
+) -> windows::core::Result<()> {
+  sprite.SetOffset(Vector3 {
+    X: pixels_to_dips(monitor.x() - rect.x()),
+    Y: pixels_to_dips(monitor.y() - rect.y()),
+    Z: 0.0,
+  })?;
+  sprite.SetSize(rect_size(monitor))
 }
 
 impl OverviewBackdrop {
@@ -2146,11 +2183,11 @@ impl OverviewBackdrop {
         overview_wallpaper_knobs(0.0),
         1.0,
       )?;
-      let (blurred, _) = wallpaper_surface::crop_brush(
+      let (blurred, _) = wallpaper_surface::fill_brush(
         &compositor,
         &rect,
         overview_wallpaper_knobs(blur),
-        1.0,
+        blurred_bake_scale(blur),
       )?;
       let tint_brush =
         compositor.CreateColorBrushWithColor(to_ui_color(tint))?;
@@ -2160,14 +2197,17 @@ impl OverviewBackdrop {
       let blurred_sprite = compositor.CreateSpriteVisual()?;
       blurred_sprite.SetBrush(&blurred)?;
       blurred_sprite.SetOpacity(0.0)?;
+      cover_monitor(&blurred_sprite, &rect, &monitor)?;
       let tint_sprite = compositor.CreateSpriteVisual()?;
       tint_sprite.SetBrush(&tint_brush)?;
       tint_sprite.SetOpacity(0.0)?;
 
       let root = compositor.CreateContainerVisual()?;
       root.SetRelativeSizeAdjustment(FILL_PARENT)?;
-      for sprite in [&sharp_sprite, &blurred_sprite, &tint_sprite] {
+      for sprite in [&sharp_sprite, &tint_sprite] {
         sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      }
+      for sprite in [&sharp_sprite, &blurred_sprite, &tint_sprite] {
         root.Children()?.InsertAtTop(sprite)?;
       }
       target.SetRoot(&root)?;
@@ -2176,6 +2216,7 @@ impl OverviewBackdrop {
         _target: target,
         compositor: compositor.clone(),
         queue: queue.clone(),
+        root,
         sharp,
         blurred,
         blurred_sprite,
@@ -2193,6 +2234,13 @@ impl OverviewBackdrop {
     let progress = progress.clamp(0.0, 1.0);
     self.blurred_sprite.SetOpacity(progress)?;
     self.tint_sprite.SetOpacity(progress)?;
+    Ok(())
+  }
+
+  /// Shows it as a whole `opacity` strong, from 0 (the desktop behind
+  /// shows through) to 1.
+  pub(crate) fn set_opacity(&self, opacity: f32) -> crate::Result<()> {
+    self.root.SetOpacity(opacity.clamp(0.0, 1.0))?;
     Ok(())
   }
 
@@ -2227,6 +2275,7 @@ impl OverviewBackdrop {
           &sharp,
           &target,
           overview_wallpaper_knobs(0.0),
+          wallpaper_surface::FULL_SCALE,
         )
         .and_then(|()| {
           wallpaper_surface::rebind(
@@ -2234,6 +2283,7 @@ impl OverviewBackdrop {
             &blurred,
             &target,
             overview_wallpaper_knobs(blur),
+            blurred_bake_scale(blur),
           )
         });
 
@@ -2248,7 +2298,7 @@ impl OverviewBackdrop {
     }
 
     wallpaper_surface::set_crop(&self.sharp, rect, &self.monitor, 1.0);
-    wallpaper_surface::set_crop(&self.blurred, rect, &self.monitor, 1.0);
+    cover_monitor(&self.blurred_sprite, rect, &self.monitor)?;
     Ok(())
   }
 }
@@ -2257,7 +2307,21 @@ impl OverviewBackdrop {
 mod tests {
   use windows::Foundation::Numerics::Vector2;
 
-  use super::{glow_band_geometry, rim_geometry, ring_geometry, Ring};
+  use super::{
+    blurred_bake_scale, glow_band_geometry, rim_geometry, ring_geometry,
+    wallpaper_surface::FULL_SCALE, Ring, BLURRED_BAKE_SCALE,
+  };
+
+  /// A light blur still shows detail, which a smaller surface would
+  /// soften further.
+  #[test]
+  #[allow(clippy::float_cmp)]
+  fn only_a_strong_blur_is_baked_smaller() {
+    assert_eq!(blurred_bake_scale(0.0), FULL_SCALE);
+    assert_eq!(blurred_bake_scale(4.0), FULL_SCALE);
+    assert_eq!(blurred_bake_scale(8.0), BLURRED_BAKE_SCALE);
+    assert_eq!(blurred_bake_scale(40.0), BLURRED_BAKE_SCALE);
+  }
 
   /// A ring's stroke straddles its geometry, so the path sits half a width
   /// inside the overlay on every side and its radius shrinks by that same

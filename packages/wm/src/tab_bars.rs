@@ -254,18 +254,16 @@ fn shown_tab_frame(
   let active = stack.active_child()?;
   let stack_rect = stack.to_rect().ok()?;
 
-  let stand_in = match animation_manager
-    .scroll_view
-    .stand_in(&active.id(), &stack_rect)
-  {
-    Some(peek) => Some(peek),
-    // A column kept off the monitor beside it shows only through a
-    // peek, which it has none of while out of view.
-    None if !scrolling::shows_real_window(&active) => return None,
-    None => {
-      animation_manager.animation_stand_in(&active.id(), &stack_rect)
-    }
-  };
+  let stand_in =
+    match animation_manager.peeks.stand_in(&active.id(), &stack_rect) {
+      Some(peek) => Some(peek),
+      // A column kept off the monitor beside it shows only through a
+      // peek, which it has none of while out of view.
+      None if !scrolling::shows_real_window(&active) => return None,
+      None => {
+        animation_manager.animation_stand_in(&active.id(), &stack_rect)
+      }
+    };
 
   let Some(stand_in) = stand_in else {
     return tab_frame_at(stack, &stack_rect, settings, config, focused_id);
@@ -393,10 +391,26 @@ pub fn sync_tab_bars(
 
   let animation_manager = &state.animation_manager;
 
+  // A stack under a fullscreen window keeps its bar where its windows are
+  // still drawn (see `covered_tiles`).
+  let covered = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| {
+      stack
+        .windows()
+        .iter()
+        .any(|window| state.covered_tiles.contains(&window.id()))
+    })
+    .map(|stack| stack.id())
+    .collect::<std::collections::HashSet<_>>();
+
   let frames = state
     .root_container
     .descendants()
     .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| !covered.contains(&stack.id()))
     .map(|stack| {
       let is_shown = stack.workspace().is_some_and(|ws| ws.is_displayed())
         && !stack.windows().iter().any(|window| {
@@ -419,7 +433,9 @@ pub fn sync_tab_bars(
     })
     .collect::<HashMap<_, _>>();
 
-  state.tab_bars.retain(|id, _| frames.contains_key(id));
+  state
+    .tab_bars
+    .retain(|id, _| frames.contains_key(id) || covered.contains(id));
 
   for (stack_id, frame) in frames {
     let Some(frame) = frame else {

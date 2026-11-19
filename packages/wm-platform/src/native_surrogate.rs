@@ -1,4 +1,7 @@
-use std::sync::OnceLock;
+use std::{
+  sync::OnceLock,
+  time::{Duration, Instant},
+};
 
 use windows::{
   core::{w, PCWSTR},
@@ -14,7 +17,7 @@ use windows::{
 };
 
 use crate::{
-  companion::{Companion, HandoffWait},
+  companion::{Companion, HandoffWait, COMPANION_OPACITY},
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   platform_impl::{self, composition::SurrogateFill},
   window_class::{self, DeferredPositions},
@@ -22,6 +25,12 @@ use crate::{
 };
 
 const CLASS_NAME: PCWSTR = w!("GlazeWM_Surrogate");
+
+/// How often a stand-in showing no companion looks for one shown since
+/// (see [`NativeSurrogate::rechecks_companion`]). Time-based, as ticks run
+/// at up to the fastest monitor's refresh rate, and each look past
+/// `Companion::find`'s cache is an `EnumWindows` scan.
+const COMPANION_RECHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 fn ensure_class_registered() {
   static REGISTERED: OnceLock<()> = OnceLock::new();
@@ -203,6 +212,37 @@ fn covered_extent(
   } else {
     (look.dest.right, look.dest.bottom)
   }
+}
+
+/// Pixels of the thumbnail's trailing edges the gap fill reaches under.
+///
+/// A window's visible frame ends in the border DWM draws on it, which the
+/// WM hides: in a thumbnail those rows are see-through. Met exactly at the
+/// thumbnail's edge, the fill left them showing the backdrop, as a line
+/// between content and fill for as long as the fill showed.
+const FILL_UNDERLAP_PX: i32 = 2;
+
+/// Where the gap fill starts, from the surrogate's top-left, under a
+/// thumbnail covering `covered` (see [`FILL_UNDERLAP_PX`]).
+fn fill_start(covered: (i32, i32)) -> (i32, i32) {
+  (
+    (covered.0 - FILL_UNDERLAP_PX).max(0),
+    (covered.1 - FILL_UNDERLAP_PX).max(0),
+  )
+}
+
+/// How opaque the gap fill is under a thumbnail drawn at `opacity` that
+/// rests at `rest_opacity`: only as faded as the thumbnail is.
+///
+/// Its color is sampled off the screen, so already blended with what is
+/// behind a see-through window. Drawn at the thumbnail's own opacity it
+/// was blended a second time, toward the backdrop.
+pub(crate) fn fade_fraction(opacity: u8, rest_opacity: u8) -> f32 {
+  if rest_opacity == 0 {
+    return 1.0;
+  }
+
+  (f32::from(opacity) / f32::from(rest_opacity)).min(1.0)
 }
 
 /// Destination rect that scales a whole-window thumbnail to a surrogate of
@@ -416,6 +456,9 @@ pub struct NativeSurrogate {
   companion: Option<Companion>,
   /// See [`NativeSurrogate::awaits_companion`].
   companion_wait: HandoffWait,
+  /// When the surrogate last looked for a companion. See
+  /// [`COMPANION_RECHECK_INTERVAL`].
+  companion_checked_at: Instant,
   /// Logical (visible-content) dimensions the main thumbnail samples.
   /// Updated by [`reregister_thumbnail`] when the registration size
   /// changes.
@@ -431,6 +474,9 @@ pub struct NativeSurrogate {
   /// used to skip redundant calls when opacity has not changed between
   /// frames.
   last_opacity: u8,
+  /// Opacity the thumbnail is drawn at when not faded, which the fill's
+  /// own opacity is measured against (see [`fade_fraction`]).
+  rest_opacity: u8,
   /// Last rect passed to `SetWindowPos` via `reposition`; used to skip
   /// redundant calls when the position and size have not changed.
   last_rect: Option<Rect>,
@@ -577,10 +623,12 @@ impl NativeSurrogate {
       thumbnail,
       companion,
       companion_wait: HandoffWait::default(),
+      companion_checked_at: Instant::now(),
       content_size: (logical_thumb.width(), logical_thumb.height()),
       border_inset,
       is_visible: false,
       last_opacity: opacity,
+      rest_opacity: opacity,
       last_rect: None,
       covered: covered_extent(&look, stretch, window_size),
       fill: None,
@@ -679,6 +727,7 @@ impl NativeSurrogate {
       self.stretch = stretch;
     }
     self.companion_wait = HandoffWait::default();
+    self.companion_checked_at = Instant::now();
 
     let (src, dst) = content_rects(
       logical_thumb.width(),
@@ -703,6 +752,7 @@ impl NativeSurrogate {
           register_thumbnail(self.hwnd(), source_hwnd, companion, look);
       }
     }
+    self.rest_opacity = opacity;
     self.set_fill_opacity(opacity);
     self.content_size = (logical_thumb.width(), logical_thumb.height());
     self.set_covered(covered_extent(&look, stretch, self.window_size));
@@ -817,10 +867,163 @@ impl NativeSurrogate {
     self.companion_wait.awaits(self.companion)
   }
 
+  /// [`awaits_companion`](Self::awaits_companion), also while any of
+  /// `obstructions` shows over the companion (see
+  /// [`HandoffWait::awaits_unobstructed`]).
+  pub(crate) fn awaits_unobstructed_companion(
+    &mut self,
+    obstructions: &[Companion],
+  ) -> bool {
+    self
+      .companion_wait
+      .awaits_unobstructed(self.companion, obstructions)
+  }
+
+  /// Starts a fresh companion wait (see [`HandoffWait::restart`]), as the
+  /// stand-in begins handing its window back.
+  pub(crate) fn begin_hand_back(&mut self) {
+    self.companion_wait.restart();
+  }
+
+  /// Whether the thumbnail samples the source window's companion rather
+  /// than the window itself.
+  #[must_use]
+  pub(crate) fn shows_companion(&self) -> bool {
+    self.companion.is_some()
+  }
+
+  /// Opacity to draw the thumbnail at for a window whose own alpha is
+  /// `window_alpha`: [`COMPANION_OPACITY`] while it samples the window's
+  /// companion.
+  #[must_use]
+  pub(crate) fn stand_in_opacity(&self, window_alpha: u8) -> u8 {
+    if self.shows_companion() {
+      COMPANION_OPACITY
+    } else {
+      window_alpha
+    }
+  }
+
+  /// Whether it is time to look for a companion shown since the
+  /// surrogate last did (see [`adopt_companion`](Self::adopt_companion)):
+  /// at most every [`COMPANION_RECHECK_INTERVAL`], and never once it has
+  /// one.
+  #[must_use]
+  pub(crate) fn rechecks_companion(&self) -> bool {
+    self.companion.is_none()
+      && self.companion_checked_at.elapsed() >= COMPANION_RECHECK_INTERVAL
+  }
+
+  /// Switches the thumbnail from `source_hwnd` to its companion, drawn at
+  /// `opacity`, if it has none yet and one is shown now. Returns whether
+  /// it did. A hidden thumbnail, e.g. one handed back, is left as it is.
+  ///
+  /// The companion's thumbnail is registered before the window's goes, so
+  /// it stacks above it and no composition shows neither, but also above
+  /// any thumbnail registered since the window's. It keeps what the
+  /// window's showed, mapped onto the companion.
+  pub(crate) fn adopt_companion(
+    &mut self,
+    source_hwnd: HWND,
+    opacity: u8,
+  ) -> bool {
+    if self.companion.is_some() {
+      return false;
+    }
+    let Some(shown) = self
+      .thumbnail
+      .as_ref()
+      .map(|thumbnail| *thumbnail.look())
+      .filter(|look| look.visible)
+    else {
+      return false;
+    };
+
+    self.companion_checked_at = Instant::now();
+    let Some(companion) = Companion::find(source_hwnd) else {
+      return false;
+    };
+
+    let (src, dst) = shown.source.map_or_else(
+      || {
+        content_rects(
+          self.content_size.0,
+          self.content_size.1,
+          self.border_inset,
+        )
+      },
+      |src| (src, shown.dest),
+    );
+    let look = thumbnail_look(
+      Some(companion),
+      src,
+      dst,
+      self.border_inset,
+      opacity,
+      self.stretch.then_some(self.window_size),
+    );
+    let Some(thumbnail) =
+      register_thumbnail(self.hwnd(), source_hwnd, Some(companion), look)
+    else {
+      return false;
+    };
+
+    self.thumbnail = Some(thumbnail);
+    self.companion = Some(companion);
+    self.companion_wait = HandoffWait::default();
+    self.rest_opacity = opacity;
+    self.set_fill_opacity(opacity);
+    self.set_covered(covered_extent(
+      &look,
+      self.stretch,
+      self.window_size,
+    ));
+
+    true
+  }
+
   /// Restacks the surrogate directly above `window`, so it covers the
   /// window once uncloaked instead of sitting behind it.
   pub fn raise_above(&self, window: HWND) -> crate::Result<()> {
     window_class::place_above(self.hwnd(), window)
+  }
+
+  /// Restacks the surrogate at the top of the non-topmost windows, as
+  /// [`create`](Self::create) places it given `HWND(0)` (`HWND_TOP`).
+  pub fn raise_to_top(&self) -> crate::Result<()> {
+    // SAFETY: `HWND(self.hwnd)` is valid until `drop`; the flags leave
+    // position, size and activation untouched.
+    unsafe {
+      SetWindowPos(
+        HWND(self.hwnd),
+        HWND(0),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+      )
+    }?;
+    Ok(())
+  }
+
+  /// Restacks the surrogate at the top of the always-on-top band if
+  /// `topmost`, else at the top of the other windows.
+  pub fn raise_to_top_of_band(&self, topmost: bool) -> crate::Result<()> {
+    window_class::raise_to_top_of_band(self.hwnd(), topmost)
+  }
+
+  /// Puts the surrogate directly above `anchor`, unless it already is
+  /// anywhere above it, so it keeps covering a window raised past it.
+  pub(crate) fn keep_above(&self, anchor: HWND) {
+    if crate::companion::is_above(self.hwnd(), anchor) {
+      return;
+    }
+    if let Err(err) = self.raise_above(anchor) {
+      tracing::warn!(
+        "Failed to raise a surrogate above its window: {err}"
+      );
+    }
   }
 
   /// Returns the logical dimensions the main thumbnail currently samples.
@@ -899,6 +1102,15 @@ impl NativeSurrogate {
     if opacity == self.last_opacity {
       return;
     }
+    self.set_fill_opacity(opacity);
+    if let Some(thumbnail) = &mut self.thumbnail {
+      let _ = thumbnail.set_opacity(opacity);
+    }
+  }
+
+  /// Draws the thumbnail at `opacity`, which it rests at from now on.
+  pub(crate) fn set_rest_opacity(&mut self, opacity: u8) {
+    self.rest_opacity = opacity;
     self.set_fill_opacity(opacity);
     if let Some(thumbnail) = &mut self.thumbnail {
       let _ = thumbnail.set_opacity(opacity);
@@ -1056,8 +1268,8 @@ impl NativeSurrogate {
     Ok(())
   }
 
-  /// Paints everything the thumbnail does not cover in `color`, at the
-  /// thumbnail's own opacity, or clears it when `None`.
+  /// Paints everything the thumbnail does not cover in `color`, as faded
+  /// as the thumbnail is, or clears it when `None`.
   ///
   /// The fill is rooted on the surrogate itself, so it can never lag the
   /// surrogate, and it is sized relative to the window, so it costs
@@ -1077,9 +1289,13 @@ impl NativeSurrogate {
           return;
         }
       };
-      let initialized = fill.set_covered(self.covered).and_then(|()| {
-        fill.set_opacity(f32::from(self.last_opacity) / 255.0)
-      });
+      let initialized =
+        fill.set_covered(fill_start(self.covered)).and_then(|()| {
+          fill.set_opacity(fade_fraction(
+            self.last_opacity,
+            self.rest_opacity,
+          ))
+        });
       if let Err(err) = initialized {
         tracing::warn!("Failed to initialize surrogate fill: {err}.");
       }
@@ -1094,11 +1310,12 @@ impl NativeSurrogate {
     }
   }
 
-  /// Records the thumbnail opacity and mirrors it onto the fill.
+  /// Records the thumbnail opacity and mirrors its fade onto the fill.
   fn set_fill_opacity(&mut self, opacity: u8) {
     self.last_opacity = opacity;
     if let Some(fill) = &self.fill {
-      if let Err(err) = fill.set_opacity(f32::from(opacity) / 255.0) {
+      let fade = fade_fraction(opacity, self.rest_opacity);
+      if let Err(err) = fill.set_opacity(fade) {
         tracing::warn!("Surrogate fill opacity update failed: {err}.");
       }
     }
@@ -1111,7 +1328,7 @@ impl NativeSurrogate {
     }
     self.covered = covered;
     if let Some(fill) = &self.fill {
-      if let Err(err) = fill.set_covered(covered) {
+      if let Err(err) = fill.set_covered(fill_start(covered)) {
         tracing::warn!("Surrogate fill resize failed: {err}.");
       }
     }
@@ -1159,10 +1376,11 @@ mod tests {
   };
 
   use super::{
-    ensure_class_registered, is_surrogate, placed_rects,
-    stretched_destination, window_class, DeferredPositions, DestroyWindow,
-    Rect, SurrogateBatch, CLASS_NAME, HWND, RECT, SWP_NOSENDCHANGING,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    ensure_class_registered, fade_fraction, fill_start, is_surrogate,
+    placed_rects, stretched_destination, window_class, DeferredPositions,
+    DestroyWindow, Rect, SurrogateBatch, CLASS_NAME, HWND, RECT,
+    SWP_NOSENDCHANGING, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
   };
 
   /// Batch commits performed by the leak regression test.
@@ -1235,7 +1453,25 @@ mod tests {
     assert_eq!(ltrb(dst), (200, 100, 300, 250));
   }
 
-  /// Returns this process's current USER-object count.
+  /// A see-through window's fill is opaque at rest, as its color was
+  /// sampled blended already, and fades only as far as the thumbnail.
+  #[test]
+  fn the_fill_fades_with_the_thumbnail_not_with_its_alpha() {
+    assert_eq!(fade_fraction(204, 204), 1.0);
+    assert_eq!(fade_fraction(102, 204), 0.5);
+    assert_eq!(fade_fraction(0, 204), 0.0);
+    assert_eq!(fade_fraction(u8::MAX, 204), 1.0);
+    assert_eq!(fade_fraction(0, 0), 1.0);
+  }
+
+  /// The fill reaches under the thumbnail's trailing rows and columns,
+  /// and never starts before the surrogate does.
+  #[test]
+  fn the_fill_starts_under_the_thumbnails_trailing_edges() {
+    assert_eq!(fill_start((800, 600)), (798, 598));
+    assert_eq!(fill_start((1, 0)), (0, 0));
+  }
+
   /// The invisible resize borders of a whole-window thumbnail must land
   /// outside the surrogate, so only content is drawn inside it.
   #[test]
@@ -1253,6 +1489,7 @@ mod tests {
     );
   }
 
+  /// Returns this process's current USER-object count.
   fn user_objects() -> i64 {
     // SAFETY: The pseudo-handle returned by `GetCurrentProcess` is always
     // valid and needs no closing.

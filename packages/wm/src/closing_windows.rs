@@ -245,6 +245,20 @@ mod tests {
   }
 
   #[test]
+  fn window_destroyed_mid_animation_is_closed() {
+    let now = Instant::now();
+    let (mut windows, id) = tracked(now);
+
+    let actions = windows.poll(now + ANIMATION / 2, |_| WindowProbe {
+      is_alive: false,
+      ..SHOWN
+    });
+
+    assert_eq!(actions, resolved(id, CloseOutcome::Closed));
+    assert_eq!(windows.next_check(), None);
+  }
+
+  #[test]
   fn hidden_window_is_hidden() {
     let now = Instant::now();
     let (mut windows, id) = tracked(now);

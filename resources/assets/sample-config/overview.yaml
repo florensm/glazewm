@@ -19,7 +19,9 @@ overview:
   # Falls back to Segoe UI on Windows 10.
   font_family: "Segoe UI Variable Text"
 
-  # 'activities', 'stage', 'carousel' or 'grid'. Tab cycles them while open.
+  # 'activities' (a row of miniatures over the shown workspace) or 'stack'
+  # (every workspace stacked top to bottom, each strip at full length; the
+  # wheel turned sideways, or with shift, pans it). Tab switches while open.
   layout: "activities"
 
   # Corner that opens the overview as the cursor rests in it: 'none',
@@ -28,15 +30,21 @@ overview:
   # How long the cursor rests in the corner first, in ms; 0 is at once.
   hot_corner_delay_ms: 300
 
-  # Most columns of the grid layout.
-  grid_columns: 5
-
+  # How it opens and closes: 'zoom' (everything zooms out of the workspace
+  # on screen and back into the one picked), 'fade' or 'none'.
+  zoom_style: "zoom"
+  # Pace of the open and close: any animation easing, e.g. "ease_out" or
+  # "spring(1.0, 800, 0.0001)" (which ignores the durations).
+  zoom_easing: "cubic_bezier(0.25, 1, 0.5, 1)"
   # 0 makes them instant.
-  open_duration_ms: 250
-  close_duration_ms: 200
+  open_duration_ms: 200
+  close_duration_ms: 150
+  # How the activities change the workspace they show large: 'slide',
+  # 'fade' or 'miniature' (its windows fly out of its miniature).
+  switch_style: "slide"
   # Moving to another workspace or layout while open.
   switch_duration_ms: 300
-  # Selection and hover highlights gliding and fading.
+  # Selection and hover highlights settling and fading.
   highlight_duration_ms: 170
   # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
   bounce: 0.25

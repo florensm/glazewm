@@ -10,14 +10,15 @@ use windows::Win32::{
 };
 
 use super::MouseHookThread;
+use crate::Point;
 
 /// Callback stored in [`HOOK`] for button presses.
-type HookCallback = Box<dyn FnMut(HWND) -> bool>;
+type HookCallback = Box<dyn FnMut(Option<HWND>, Point) -> bool>;
 
 thread_local! {
   /// The callback of the hook's thread, called with the top-level window
-  /// under the cursor for every press of a mouse button. Returns `true`
-  /// to swallow the press.
+  /// under the cursor, if any, and the cursor position for every press of
+  /// a mouse button. Returns `true` to swallow the press.
   static HOOK: Cell<Option<HookCallback>> = Cell::default();
 
   /// Buttons whose press was swallowed, as [`button_bit`]s, so that
@@ -35,12 +36,12 @@ pub struct ClickHook {
 impl ClickHook {
   /// Creates an instance of `ClickHook`.
   ///
-  /// `callback` is called with the top-level window under the cursor for
-  /// every press of a mouse button, and returns `true` to keep the press
-  /// and its release from that window.
+  /// `callback` is called with the top-level window under the cursor, if
+  /// any, and the cursor position for every press of a mouse button, and
+  /// returns `true` to keep the press and its release from that window.
   pub fn new<F>(callback: F) -> crate::Result<Self>
   where
-    F: FnMut(HWND) -> bool + Send + 'static,
+    F: FnMut(Option<HWND>, Point) -> bool + Send + 'static,
   {
     let thread = MouseHookThread::spawn(
       "click-hook",
@@ -105,28 +106,29 @@ impl ClickHook {
     }
   }
 
-  /// Whether the callback guards the top-level window under the cursor.
+  /// Whether the callback guards the press at the cursor.
   fn is_guarded_at(input: MSLLHOOKSTRUCT) -> bool {
     // `WindowFromPoint` sends no hit-test messages to windows of other
     // threads, so a hung app can't stall the hook here.
     // SAFETY: No preconditions.
     let window = unsafe { WindowFromPoint(input.pt) };
-    if window.0 == 0 {
-      return false;
-    }
 
     // SAFETY: A stale handle just makes `GetAncestor` return `HWND(0)`.
-    let root = unsafe { GetAncestor(window, GA_ROOT) };
-    if root.0 == 0 {
-      return false;
-    }
+    let root = (window.0 != 0)
+      .then(|| unsafe { GetAncestor(window, GA_ROOT) })
+      .filter(|root| root.0 != 0);
+
+    let point = Point {
+      x: input.pt.x,
+      y: input.pt.y,
+    };
 
     HOOK.with(|state| {
       let Some(mut callback) = state.take() else {
         return false;
       };
 
-      let result = callback(root);
+      let result = callback(root, point);
       state.set(Some(callback));
       result
     })

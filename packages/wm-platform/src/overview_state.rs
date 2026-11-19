@@ -6,17 +6,23 @@
 //! to another workspace. The mouse does the same directly: click to go,
 //! drag to move.
 //!
+//! Every typed character goes to the search, so no command is on a
+//! letter, digit or symbol: commands are on the keys that type nothing
+//! (arrows, `Tab`, `Delete`, ...) and on `Alt` chords, which mirror the
+//! sample config's `focus` and `move` keybindings. Keybindings the WM
+//! takes before they get here come in as an [`OverviewInput`] instead.
+//!
 //! Each monitor has a screen of its own, and the keyboard is on one of
 //! them at a time. Workspaces are indexed across every screen, screen
 //! after screen, so a window can be carried, dragged or searched for
 //! anywhere.
 
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use crate::{
-  overview_layout::{GridCells, RectF},
-  OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
-  OverviewWorkspace, Point, Rect,
+  overview_layout::RectF, Direction, OverviewAction, OverviewInput,
+  OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
+  Point, Rect,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -45,14 +51,22 @@ pub(crate) enum Key {
   Enter,
   Space,
   Backspace,
+  Delete,
   Tab,
-  Escape,
 
-  /// A digit key, 0 to 9.
-  Digit(u8),
+  /// `Tab` with `Shift` held.
+  BackTab,
+  Escape,
+  F1,
 
   /// A typed character other than whitespace.
   Text(char),
+
+  /// A letter, digit or `-` pressed with `Alt` held, in lower case.
+  Alt(char),
+
+  /// The same with `Shift` held too.
+  AltShift(char),
 }
 
 impl Key {
@@ -68,62 +82,88 @@ impl Key {
       Self::Enter => "\u{23ce}".into(),
       Self::Space => "Space".into(),
       Self::Backspace => "\u{232b}".into(),
+      Self::Delete => "Del".into(),
       Self::Tab => "Tab".into(),
+      Self::BackTab => "\u{21e7}Tab".into(),
       Self::Escape => "Esc".into(),
-      Self::Digit(digit) => digit.to_string(),
+      Self::F1 => "F1".into(),
       Self::Text(text) => text.to_string(),
+      Self::Alt(key) => format!("Alt+{}", key.to_ascii_uppercase()),
+      Self::AltShift(key) => {
+        format!("Alt+\u{21e7}{}", key.to_ascii_uppercase())
+      }
     }
   }
 }
 
-/// What a key does outside the search field.
+/// What a key does. None is on a key that types a character, which all
+/// go to the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
   Cancel,
-  Search,
   ShowShortcuts,
-  NextMatch,
-  PreviousMatch,
   CloseWindow,
-  NextLayout,
+
+  /// The next match of a search, or else the next layout.
+  Next,
+
+  /// The previous match of a search, or else the previous layout.
+  Previous,
   Space,
   Back,
   Move(Toward),
   First,
   Last,
   Enter,
+
+  /// Go to the special workspace.
   Special,
 
-  /// Go to, or send to, the workspace of a digit.
+  /// Send the picked or carried window to the special workspace.
+  SendToSpecial,
+
+  /// Go to the workspace of a digit.
   Workspace(u8),
+
+  /// Send the picked or carried window to the workspace of a digit.
+  SendToWorkspace(u8),
 }
 
-/// The keys of every command but [`Command::Workspace`], which digits
-/// give. The shortcut sheet shows the first key of each.
+/// The keys of every command but those of a digit, which `Alt` and
+/// `Alt` + `Shift` with it give. The shortcut sheet shows the first key
+/// of each.
 const BINDINGS: &[(Command, &[Key])] = &[
   (Command::Cancel, &[Key::Escape]),
-  (Command::Search, &[Key::Text('/')]),
-  (Command::ShowShortcuts, &[Key::Text('?')]),
-  (Command::NextMatch, &[Key::Text('n')]),
-  (Command::PreviousMatch, &[Key::Text('N')]),
-  (Command::CloseWindow, &[Key::Text('x'), Key::Text('X')]),
-  (Command::NextLayout, &[Key::Tab]),
+  (Command::ShowShortcuts, &[Key::F1]),
+  (Command::CloseWindow, &[Key::Delete]),
+  (Command::Next, &[Key::Tab]),
+  (Command::Previous, &[Key::BackTab]),
   (Command::Space, &[Key::Space]),
   (Command::Back, &[Key::Backspace]),
-  (Command::Move(Toward::Left), &[Key::Left, Key::Text('h')]),
-  (Command::Move(Toward::Right), &[Key::Right, Key::Text('l')]),
-  (Command::Move(Toward::Up), &[Key::Up, Key::Text('k')]),
-  (Command::Move(Toward::Down), &[Key::Down, Key::Text('j')]),
+  (Command::Move(Toward::Left), &[Key::Left, Key::Alt('h')]),
+  (Command::Move(Toward::Right), &[Key::Right, Key::Alt('l')]),
+  (Command::Move(Toward::Up), &[Key::Up, Key::Alt('k')]),
+  (Command::Move(Toward::Down), &[Key::Down, Key::Alt('j')]),
   (Command::First, &[Key::Home]),
   (Command::Last, &[Key::End]),
   (Command::Enter, &[Key::Enter]),
-  (Command::Special, &[Key::Text('s')]),
+  (Command::Special, &[Key::Alt('-')]),
+  (Command::SendToSpecial, &[Key::AltShift('-')]),
 ];
 
 impl Command {
   fn of(key: Key) -> Option<Self> {
-    if let Key::Digit(digit) = key {
-      return Some(Self::Workspace(digit));
+    let digit =
+      |key: char| key.to_digit(10).and_then(|d| u8::try_from(d).ok());
+
+    match key {
+      Key::Alt(key) if key.is_ascii_digit() => {
+        return digit(key).map(Self::Workspace);
+      }
+      Key::AltShift(key) if key.is_ascii_digit() => {
+        return digit(key).map(Self::SendToWorkspace);
+      }
+      _ => {}
     }
 
     BINDINGS
@@ -132,30 +172,22 @@ impl Command {
       .map(|(command, _)| *command)
   }
 
-  /// The key the shortcut sheet shows for it. Letters show as key caps,
-  /// in capitals, unless the other case does something else.
+  /// The key the shortcut sheet shows for it.
   fn label(self) -> String {
-    if let Self::Workspace(_) = self {
-      return "1\u{2013}9".into();
-    }
-
-    let key = BINDINGS
-      .iter()
-      .find(|(command, _)| *command == self)
-      .and_then(|(_, keys)| keys.first().copied());
-
-    match key {
-      Some(Key::Text(text))
-        if Self::of(Key::Text(text.to_ascii_uppercase()))
-          .is_none_or(|other| other == self) =>
-      {
-        text.to_ascii_uppercase().to_string()
-      }
-      Some(key) => key.label(),
-      None => String::new(),
+    match self {
+      Self::Workspace(_) => "Alt+1\u{2013}9".into(),
+      Self::SendToWorkspace(_) => "Alt+\u{21e7}1\u{2013}9".into(),
+      _ => BINDINGS
+        .iter()
+        .find(|(command, _)| *command == self)
+        .and_then(|(_, keys)| keys.first())
+        .map_or_else(String::new, |key| key.label()),
     }
   }
 }
+
+/// How the shortcut sheet shows the `Alt` chords that do as the arrows.
+const ALT_ARROWS: &str = "Alt+H J K L";
 
 /// The labels of `commands`, one after another.
 fn joined_labels(commands: impl IntoIterator<Item = Command>) -> String {
@@ -169,6 +201,17 @@ pub(crate) enum Toward {
   Right,
   Up,
   Down,
+}
+
+impl From<&Direction> for Toward {
+  fn from(direction: &Direction) -> Self {
+    match direction {
+      Direction::Left => Self::Left,
+      Direction::Right => Self::Right,
+      Direction::Up => Self::Up,
+      Direction::Down => Self::Down,
+    }
+  }
 }
 
 impl Toward {
@@ -200,7 +243,7 @@ pub(crate) struct Hit {
 /// A control along the bottom of a screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Control {
-  /// The search field, which starts a search.
+  /// The search field, which typing goes to wherever the cursor is.
   Search,
 
   /// The chip beside it, which shows the keyboard shortcuts.
@@ -235,10 +278,10 @@ impl Shortcut {
 pub(crate) struct SearchField {
   pub query: String,
 
-  /// Whether typed characters still go to it.
-  pub is_typing: bool,
-
   pub hits: usize,
+
+  /// Which of its matches is picked, from 0, if one is.
+  pub current: Option<usize>,
 }
 
 /// A window being dragged with the mouse.
@@ -254,6 +297,13 @@ pub(crate) struct Drag {
 
   /// Where in `target`, as `Hit::point` has it.
   pub point: Option<(i32, i32)>,
+}
+
+/// A window matching the search, and the workspace it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Match {
+  workspace: usize,
+  hwnd: isize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -277,15 +327,18 @@ pub(crate) struct ScreenCursor {
 
   /// Workspace it shows: the selected one while it has the keyboard.
   pub shown: usize,
+}
 
-  /// Card of its row of workspaces the row is centered on: the shown
-  /// one, or while the special workspace's dock is shown, the one it was
-  /// entered from, which moving up goes back to.
-  pub row_selected: usize,
+/// How the picked window was picked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PickedBy {
+  /// Pointed at with the mouse, or the strip panned under it: the stack
+  /// leaves its strip where it is rather than panning the pick into view
+  /// under the cursor.
+  Mouse,
 
-  /// Where its grid puts each of its cards, counted from its first, for
-  /// moving a row up or down.
-  pub grid: GridCells,
+  /// Any other way, e.g. with the arrows or a search.
+  Other,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -302,20 +355,22 @@ pub(crate) struct Interaction {
   /// Window picked inside the selected workspace.
   pub selected_window: Option<isize>,
 
-  /// Whether the picked window was stepped to with the keyboard, whose
-  /// ring glides along; any other pick settles in place.
-  steps_window: bool,
+  /// How the picked window was picked.
+  picked_by: PickedBy,
 
   /// Window held while picking a workspace for it.
   pub carried: Option<isize>,
 
-  /// Whether typed characters go to the search query.
-  pub searching: bool,
-
-  /// Search query, over every screen's windows; its matches stay
-  /// highlighted after typing ends.
+  /// Search query, over every screen's windows: a search is on while
+  /// there is one.
   pub query: String,
 
+  /// Windows matching `query`, best first. Found as the query or the
+  /// workspaces change, rather than for each key and screen that asks.
+  matches: Vec<Match>,
+
+  /// Match a search last went to while carrying, which picks no window
+  /// to tell by.
   match_index: Option<usize>,
 
   /// Whether the sheet of keyboard shortcuts is open.
@@ -354,7 +409,7 @@ impl Interaction {
     layout: OverviewLayoutMode,
     drag_threshold: f32,
   ) -> Self {
-    let mut interaction = Self {
+    Self {
       screens: cursors(screens),
       active: screens
         .iter()
@@ -363,10 +418,10 @@ impl Interaction {
       mode: Mode::Spaces,
       layout,
       selected_window: None,
-      steps_window: false,
+      picked_by: PickedBy::Other,
       carried: None,
-      searching: false,
       query: String::new(),
+      matches: Vec::new(),
       match_index: None,
       shows_shortcuts: false,
       hover: None,
@@ -377,10 +432,7 @@ impl Interaction {
       drag_threshold,
       digit_workspaces: Vec::new(),
       nav: Vec::new(),
-    };
-
-    interaction.center_rows(&all_workspaces(screens));
-    interaction
+    }
   }
 
   /// Index of the selected workspace: the one shown on the screen with the
@@ -427,7 +479,7 @@ impl Interaction {
           .screens
           .iter()
           .find(|screen| screen.monitor == cursor.monitor)?;
-        Some((remap(old.shown), remap(old.row_selected), old.grid.clone()))
+        remap(old.shown)
       })
       .collect::<Vec<_>>();
     let selected = remap(self.selected());
@@ -436,12 +488,9 @@ impl Interaction {
       self.drag.and_then(|drag| drag.target).and_then(remap);
 
     for (cursor, kept) in cursors.iter_mut().zip(kept) {
-      let Some((shown, row_selected, grid)) = kept else {
-        continue;
-      };
-      cursor.shown = shown.unwrap_or(cursor.shown);
-      cursor.row_selected = row_selected.unwrap_or(cursor.shown);
-      cursor.grid = grid;
+      if let Some(shown) = kept {
+        cursor.shown = shown;
+      }
     }
 
     let monitor = self.screens.get(self.active).map(|s| s.monitor);
@@ -460,7 +509,8 @@ impl Interaction {
       .unwrap_or(0);
     self.screens = cursors;
     self.hover = hover;
-    self.center_rows(&new);
+
+    self.matches = find_matches(&self.query, &new);
 
     let exists = |hwnd: isize| find(&new, hwnd).is_some();
 
@@ -498,11 +548,7 @@ impl Interaction {
 
   /// Moves the keyboard to `screen`, onto the workspace it shows. Returns
   /// whether it moved.
-  pub fn activate(
-    &mut self,
-    screen: usize,
-    workspaces: &[OverviewWorkspace],
-  ) -> bool {
+  pub fn activate(&mut self, screen: usize) -> bool {
     let shown = self
       .screens
       .get(screen)
@@ -512,55 +558,102 @@ impl Interaction {
       .map(|cursor| cursor.shown);
 
     if let Some(shown) = shown {
-      self.select(shown, workspaces);
+      self.select(shown);
     }
     shown.is_some()
   }
 
   /// Shows workspace `index` on its screen, leaving the keyboard where it
   /// is: e.g. the one the overview zooms into there as it closes.
-  pub fn show(&mut self, index: usize, workspaces: &[OverviewWorkspace]) {
+  pub fn show(&mut self, index: usize) {
     match self.screen_of(index) {
       Some(screen) if screen == self.active => {
-        self.select(index, workspaces);
+        self.select(index);
       }
-      Some(screen) => self.set_shown(screen, index, workspaces),
+      Some(screen) => self.set_shown(screen, index),
       None => {}
     }
   }
 
-  /// Acts on `key`.
+  /// Acts on `key`: a typed character goes to the search, and any other
+  /// key does its command.
   pub fn key(
     &mut self,
     key: Key,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
-    self.steps_window = false;
+    self.picked_by = PickedBy::Other;
+    let command = Command::of(key);
 
-    // Any key closes the shortcut sheet; `?` and `Escape` do nothing more.
+    // Any key closes the shortcut sheet; its own and `Escape` do nothing
+    // more.
     if std::mem::take(&mut self.shows_shortcuts)
-      && matches!(
-        Command::of(key),
-        Some(Command::ShowShortcuts | Command::Cancel)
-      )
+      && matches!(command, Some(Command::ShowShortcuts | Command::Cancel))
     {
       return None;
     }
 
-    if self.searching {
-      return self.search_key(key, workspaces);
+    match key {
+      Key::Text(text) => {
+        self.type_text(text, workspaces);
+        None
+      }
+      // A space only ever comes between the words of a query.
+      Key::Space if self.is_searching() => {
+        self.type_text(' ', workspaces);
+        None
+      }
+      _ => self.run(command?, workspaces),
+    }
+  }
+
+  /// Acts on `input`, a keybinding of the WM's pressed while the overview
+  /// has the keyboard, as on the key of its own that does the same.
+  pub fn input(
+    &mut self,
+    input: &OverviewInput,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
+    self.picked_by = PickedBy::Other;
+    self.shows_shortcuts = false;
+
+    let command = match input {
+      OverviewInput::Move(direction) => Command::Move(direction.into()),
+      OverviewInput::FocusWorkspace(name) => {
+        let monitor = self.monitor_for(name, workspaces);
+        return self.go_to(name.clone(), monitor, workspaces);
+      }
+      OverviewInput::MoveToWorkspace(name) => {
+        let monitor = self.monitor_for(name, workspaces);
+        return self.send_to(name.clone(), monitor, workspaces);
+      }
+      OverviewInput::FocusSpecialWorkspace => Command::Special,
+      OverviewInput::MoveToSpecialWorkspace => Command::SendToSpecial,
+      OverviewInput::NextWorkspace | OverviewInput::PreviousWorkspace => {
+        self.wheel(*input == OverviewInput::NextWorkspace, workspaces);
+        return None;
+      }
+      OverviewInput::CloseWindow => Command::CloseWindow,
+    };
+
+    self.run(command, workspaces)
+  }
+
+  /// Carries out `command`. During a search, the keys that move the
+  /// cursor go through its matches instead, and those that step back
+  /// take the query back first.
+  fn run(
+    &mut self,
+    command: Command,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
+    if self.is_searching() && self.run_in_search(command, workspaces) {
+      return None;
     }
 
-    match Command::of(key)? {
+    match command {
       Command::Cancel => return Some(OverviewAction::Cancel),
-      Command::Search => self.start_search(),
       Command::ShowShortcuts => self.shows_shortcuts = true,
-      Command::NextMatch => {
-        self.goto_match(1, workspaces);
-      }
-      Command::PreviousMatch => {
-        self.goto_match(-1, workspaces);
-      }
       Command::CloseWindow => {
         let hwnd =
           self.selected_window.filter(|_| self.mode == Mode::Windows);
@@ -569,9 +662,8 @@ impl Interaction {
           return Some(OverviewAction::CloseWindow(hwnd));
         }
       }
-      Command::NextLayout => {
-        self.set_layout(self.layout.next(), workspaces);
-      }
+      Command::Next => self.layout = self.layout.next(),
+      Command::Previous => self.layout = self.layout.previous(),
       Command::Space => return self.space(workspaces),
       Command::Back => match self.mode {
         Mode::Carrying => {
@@ -589,64 +681,118 @@ impl Interaction {
       Command::Last => self.edge(true, workspaces),
       Command::Enter => return self.enter(workspaces),
       Command::Workspace(digit) => {
-        let name = digit_target(
-          digit,
-          workspaces,
-          self.active_cards(),
-          &self.digit_workspaces,
-        )?;
-        let monitor = self.monitor_for(&name, workspaces);
+        let (name, monitor) = self.digit_workspace(digit, workspaces)?;
         return self.go_to(name, monitor, workspaces);
       }
+      Command::SendToWorkspace(digit) => {
+        let (name, monitor) = self.digit_workspace(digit, workspaces)?;
+        return self.send_to(name, monitor, workspaces);
+      }
       Command::Special => {
-        let special = self
-          .active_cards()
-          .find(|index| is_special(workspaces, *index))?;
-        let name = workspaces.get(special)?.name.clone();
-        return self.go_to(
-          name,
-          self.monitor_of(Some(special)),
-          workspaces,
-        );
+        let (name, monitor) = self.special_workspace(workspaces)?;
+        return self.go_to(name, monitor, workspaces);
+      }
+      Command::SendToSpecial => {
+        let (name, monitor) = self.special_workspace(workspaces)?;
+        return self.send_to(name, monitor, workspaces);
       }
     }
 
     None
   }
 
-  /// Lays the cards out as `layout`.
-  pub fn set_layout(
+  /// Does what `command` does to a search, if that is something else
+  /// during one. Returns whether it was.
+  fn run_in_search(
     &mut self,
-    layout: OverviewLayoutMode,
+    command: Command,
     workspaces: &[OverviewWorkspace],
-  ) {
-    self.layout = layout;
-    self.center_rows(workspaces);
-
-    // The grid is too small to pick a window in.
-    if layout == OverviewLayoutMode::Grid && self.mode == Mode::Windows {
-      self.mode = Mode::Spaces;
-      self.selected_window = None;
+  ) -> bool {
+    match command {
+      // The pick stays on the match gone to.
+      Command::Cancel => self.end_search(),
+      Command::Back => {
+        self.query.pop();
+        self.follow_search(workspaces);
+      }
+      Command::Next | Command::Move(Toward::Down | Toward::Right) => {
+        self.goto_match(1);
+      }
+      Command::Previous | Command::Move(Toward::Up | Toward::Left) => {
+        self.goto_match(-1);
+      }
+      Command::First => {
+        self.goto_nth_match(0);
+      }
+      Command::Last => {
+        self.goto_nth_match(self.matches.len().saturating_sub(1));
+      }
+      // Never the workspace the cursor happens to be on.
+      Command::Enter if self.matches.is_empty() => {}
+      _ => return false,
     }
+
+    true
   }
 
-  /// Goes straight to workspace `name`, picked on `monitor`'s screen:
-  /// switches to it, sends the picked window there, or drops the carried
-  /// one there.
+  /// Name and monitor of the workspace digit key `digit` stands for.
+  fn digit_workspace(
+    &self,
+    digit: u8,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<(String, u128)> {
+    let name = digit_target(
+      digit,
+      workspaces,
+      self.active_cards(),
+      &self.digit_workspaces,
+    )?;
+    let monitor = self.monitor_for(&name, workspaces);
+    Some((name, monitor))
+  }
+
+  /// Name and monitor of the special workspace, as carded on the screen
+  /// with the keyboard.
+  fn special_workspace(
+    &self,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<(String, u128)> {
+    let special = self
+      .active_cards()
+      .find(|index| is_special(workspaces, *index))?;
+    let name = workspaces.get(special)?.name.clone();
+    Some((name, self.monitor_of(Some(special))))
+  }
+
+  /// Switches to workspace `name`, picked on `monitor`'s screen, or drops
+  /// the carried window there.
   fn go_to(
     &mut self,
     name: String,
     monitor: u128,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
+    if self.mode == Mode::Carrying {
+      return self.send_to(name, monitor, workspaces);
+    }
+    Some(OverviewAction::FocusWorkspace { name, monitor })
+  }
+
+  /// Sends the picked window to workspace `name`, picked on `monitor`'s
+  /// screen, or drops the carried one there. There is none to send while
+  /// browsing workspaces.
+  fn send_to(
+    &mut self,
+    name: String,
+    monitor: u128,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
     match self.mode {
-      Mode::Spaces => {
-        Some(OverviewAction::FocusWorkspace { name, monitor })
+      Mode::Spaces => None,
+      Mode::Windows => {
+        let hwnd = self.selected_window?;
+        self.send(hwnd, name, monitor, workspaces)
       }
-      Mode::Windows => match self.selected_window {
-        Some(hwnd) => self.send(hwnd, name, monitor, workspaces),
-        None => Some(OverviewAction::FocusWorkspace { name, monitor }),
-      },
       Mode::Carrying => {
         let action = self
           .carried
@@ -657,48 +803,31 @@ impl Interaction {
     }
   }
 
-  /// Starts typing a new search.
-  fn start_search(&mut self) {
-    self.searching = true;
-    self.query.clear();
-    self.match_index = None;
+  /// Whether a search is on, which typed characters and the keys that
+  /// move the cursor then go to.
+  pub fn is_searching(&self) -> bool {
+    !self.query.is_empty()
   }
 
-  /// Types `key` into the search: `Enter` goes to the best match, and
-  /// the arrows stop typing on the next or previous match, which `n` and
-  /// `N` then go on through.
-  fn search_key(
-    &mut self,
-    key: Key,
-    workspaces: &[OverviewWorkspace],
-  ) -> Option<OverviewAction> {
-    match key {
-      Key::Escape => {
-        self.searching = false;
-        self.query.clear();
-      }
-      Key::Backspace => {
-        if self.query.pop().is_none() {
-          self.searching = false;
-        }
-      }
-      Key::Enter => {
-        self.searching = false;
-        self.match_index = None;
-        if self.goto_match(1, workspaces) {
-          return self.enter(workspaces);
-        }
-      }
-      Key::Down | Key::Up => {
-        self.searching = false;
-        self.goto_match(if key == Key::Down { 1 } else { -1 }, workspaces);
-      }
-      Key::Space => self.query.push(' '),
-      Key::Text(text) => self.query.push(text),
-      // Digits arrive as text too.
-      _ => {}
-    }
-    None
+  /// Types `text` into the search, which goes to its best match.
+  fn type_text(&mut self, text: char, workspaces: &[OverviewWorkspace]) {
+    self.query.push(text);
+    self.follow_search(workspaces);
+  }
+
+  /// Finds the matches of the query as it is now and goes to the best,
+  /// staying put without one.
+  fn follow_search(&mut self, workspaces: &[OverviewWorkspace]) {
+    self.matches = find_matches(&self.query, workspaces);
+    self.match_index = None;
+    self.goto_nth_match(0);
+  }
+
+  /// Ends the search, leaving the cursor where it is.
+  fn end_search(&mut self) {
+    self.query.clear();
+    self.matches.clear();
+    self.match_index = None;
   }
 
   /// Looks inside the selected workspace, lifts the selected window, or
@@ -767,8 +896,7 @@ impl Interaction {
     self.mode = Mode::Spaces;
     self.carried = None;
     self.selected_window = None;
-    self.searching = false;
-    self.query.clear();
+    self.end_search();
   }
 
   /// Sends the picked window `hwnd` to workspace `name`, and moves the
@@ -800,7 +928,7 @@ impl Interaction {
   }
 
   /// Selects workspace `index`, moving the keyboard to its screen.
-  fn select(&mut self, index: usize, workspaces: &[OverviewWorkspace]) {
+  fn select(&mut self, index: usize) {
     let Some(screen) = self.screen_of(index) else {
       return;
     };
@@ -815,36 +943,19 @@ impl Interaction {
     }
 
     self.active = screen;
-    self.set_shown(screen, index, workspaces);
+    self.set_shown(screen, index);
   }
 
-  /// Shows workspace `index` on `screen`, and centers its row on it.
-  fn set_shown(
-    &mut self,
-    screen: usize,
-    index: usize,
-    workspaces: &[OverviewWorkspace],
-  ) {
-    let layout = self.layout;
+  /// Shows workspace `index` on `screen`.
+  fn set_shown(&mut self, screen: usize, index: usize) {
     if let Some(cursor) = self.screens.get_mut(screen) {
       cursor.shown = index;
-      cursor.row_selected = row_card(
-        workspaces,
-        &cursor.cards,
-        index,
-        Some(cursor.row_selected),
-        layout,
-      )
-      .unwrap_or(cursor.cards.start);
     }
   }
 
-  /// Centers each screen's row anew, e.g. for another layout.
-  fn center_rows(&mut self, workspaces: &[OverviewWorkspace]) {
-    for screen in 0..self.screens.len() {
-      let shown = self.screens[screen].shown;
-      self.set_shown(screen, shown, workspaces);
-    }
+  /// Index of screen `screen`'s first workspace among every screen's.
+  pub fn first_card(&self, screen: usize) -> Option<usize> {
+    self.screens.get(screen).map(|cursor| cursor.cards.start)
   }
 
   /// Screen workspace `index` is on.
@@ -891,35 +1002,16 @@ impl Interaction {
     self.monitor_of(card)
   }
 
-  /// Moves along the row of workspaces of the screen with the keyboard,
-  /// which the special workspace's dock below it isn't part of; from the
-  /// dock, back to the row.
+  /// Moves along the workspaces of the screen with the keyboard.
   fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
     let cards = self.active_cards();
-    let selected = self.selected();
+    let target = self
+      .selected()
+      .checked_add_signed(delta)
+      .filter(|index| cards.contains(index) && *index < workspaces.len());
 
-    if is_docked(workspaces, selected, self.layout) {
-      let row_selected = self
-        .screens
-        .get(self.active)
-        .map_or(selected, |screen| screen.row_selected);
-      let back =
-        row_card(workspaces, &cards, row_selected, None, self.layout);
-      if let Some(index) = back {
-        self.select(index, workspaces);
-      }
-      return;
-    }
-
-    let row = row_indices(workspaces, &cards, self.layout);
-    let Some(position) = row.iter().position(|i| *i == selected) else {
-      return;
-    };
-
-    if let Some(index) =
-      position.checked_add_signed(delta).and_then(|i| row.get(i))
-    {
-      self.select(*index, workspaces);
+    if let Some(index) = target {
+      self.select(index);
     }
   }
 
@@ -952,7 +1044,7 @@ impl Interaction {
   }
 
   /// Goes on to the screen next to this one `toward`: onto the end of its
-  /// row nearest this one when the row runs that way, else onto the
+  /// workspaces nearest this one when they run that way, else onto the
   /// workspace it shows.
   fn cross(&mut self, toward: Toward, workspaces: &[OverviewWorkspace]) {
     let Some(cursor) = self
@@ -962,11 +1054,15 @@ impl Interaction {
       return;
     };
 
-    let row = row_indices(workspaces, &cursor.cards, self.layout);
-    let (back, forward, _) = arrows(self.layout);
+    let row = cursor
+      .cards
+      .clone()
+      .filter(|index| *index < workspaces.len())
+      .collect::<Vec<_>>();
+    let forward = geometry(self.layout).forward;
     let target = if toward == forward {
       row.first().copied()
-    } else if toward == back {
+    } else if toward == forward.opposite() {
       row.last().copied()
     } else {
       Some(cursor.shown)
@@ -975,39 +1071,34 @@ impl Interaction {
     };
 
     if let Some(index) = target {
-      self.select(index, workspaces);
+      self.select(index);
     }
   }
 
-  /// Moves the window cursor, or else the workspace cursor, `toward`.
-  /// With nowhere to go that way on its screen, on to the screen that
-  /// way.
+  /// Moves the cursor to what lies `toward` on screen: a window, a
+  /// workspace, the selected workspace's windows where the layout shows
+  /// them apart, or else the screen that way. With nothing that way, it
+  /// bumps.
   fn arrow(&mut self, toward: Toward, workspaces: &[OverviewWorkspace]) {
+    let before = (self.selected(), self.mode, self.selected_window);
+    let geometry = geometry(self.layout);
+
     if self.mode == Mode::Windows {
       self.move_window_cursor(toward, workspaces);
-      return;
+    } else if let Some(delta) = geometry.step(toward) {
+      self.step(delta, workspaces);
+    } else if geometry.windows == Some(toward) && self.mode == Mode::Spaces
+    {
+      self.enter_windows(workspaces);
     }
 
-    let before = (self.selected(), self.mode);
-    let (back, forward, inside) = arrows(self.layout);
-    if toward == back {
-      self.step(-1, workspaces);
-    } else if toward == forward {
-      self.step(1, workspaces);
-    } else if Some(toward) == inside {
-      if self.mode == Mode::Spaces {
-        self.enter_windows(workspaces);
-      }
-    } else if toward == Toward::Up {
-      self.vertical(-1, workspaces);
-    } else if toward == Toward::Down {
-      self.vertical(1, workspaces);
-    }
-
-    if (self.selected(), self.mode) == before {
+    let is_unmoved = |state: &Self| {
+      (state.selected(), state.mode, state.selected_window) == before
+    };
+    if is_unmoved(self) {
       self.cross(toward, workspaces);
     }
-    if (self.selected(), self.mode) == before {
+    if is_unmoved(self) {
       self.nudge = Some(toward);
     }
   }
@@ -1018,50 +1109,10 @@ impl Interaction {
     self.nudge.take()
   }
 
-  /// Moves between the carousel's row and the special workspace's dock,
-  /// or between the grid's rows, on the screen with the keyboard.
-  fn vertical(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
-    let selected = self.selected();
-    let cards = self.active_cards();
-    let Some(screen) = self.screens.get(self.active) else {
-      return;
-    };
-
-    // Up from the dock goes back to where it was entered from. Down onto
-    // the dock is from the carousel, or from the grid's last row, below
-    // which `GridCells` puts it.
-    let target = if is_special(workspaces, selected) {
-      (delta < 0)
-        .then(|| {
-          row_card(
-            workspaces,
-            &cards,
-            screen.row_selected,
-            None,
-            self.layout,
-          )
-        })
-        .flatten()
-    } else if self.layout == OverviewLayoutMode::Grid {
-      selected
-        .checked_sub(cards.start)
-        .and_then(|card| screen.grid.vertical_neighbour(card, delta))
-        .map(|card| cards.start + card)
-    } else {
-      cards
-        .clone()
-        .find(|index| is_special(workspaces, *index))
-        .filter(|_| delta > 0 && self.layout.docks_special())
-    };
-
-    if let Some(index) = target {
-      self.select(index, workspaces);
-    }
-  }
-
-  /// Moves the window cursor to the nearest window `toward`; off the edge
-  /// the windows were entered from, back to the workspaces, and off any
-  /// other, on to the screen that way.
+  /// Moves the window cursor to the nearest window `toward`. Off the
+  /// windows' edge, it goes where the layout has the workspaces: back out
+  /// to their row, or on to the next one where the windows show on their
+  /// cards.
   fn move_window_cursor(
     &mut self,
     toward: Toward,
@@ -1081,13 +1132,15 @@ impl Interaction {
       None => nav.first().map(|(hwnd, _)| *hwnd),
     };
 
+    let geometry = geometry(self.layout);
     if let Some(hwnd) = next {
       self.selected_window = Some(hwnd);
-      self.steps_window = true;
-    } else if Some(toward) == arrows(self.layout).2.map(Toward::opposite) {
+    } else if geometry.windows == Some(toward.opposite()) {
       self.mode = Mode::Spaces;
-    } else {
-      self.cross(toward, workspaces);
+    } else if let Some(delta) =
+      geometry.step(toward).filter(|_| geometry.windows.is_none())
+    {
+      self.step(delta, workspaces);
     }
   }
 
@@ -1104,20 +1157,18 @@ impl Interaction {
       return;
     };
 
-    // Picking a window is a zoomed-in thing; the grid is too small to aim
-    // at one.
-    if self.layout == OverviewLayoutMode::Grid {
-      self.set_layout(OverviewLayoutMode::Carousel, workspaces);
-    }
     self.mode = Mode::Windows;
     self.selected_window = Some(hwnd);
   }
 
   /// Where the selected workspace's windows show, first to last: as laid
   /// out, or else where they are on screen.
-  fn nav(&self, workspaces: &[OverviewWorkspace]) -> Vec<(isize, RectF)> {
+  fn nav(
+    &self,
+    workspaces: &[OverviewWorkspace],
+  ) -> Cow<'_, [(isize, RectF)]> {
     if !self.nav.is_empty() {
-      return self.nav.clone();
+      return Cow::Borrowed(&self.nav);
     }
 
     workspaces
@@ -1128,6 +1179,7 @@ impl Interaction {
           .map(|window| (window.hwnd, RectF::from_rect(&window.rect)))
           .collect()
       })
+      .into()
   }
 
   /// Selects the first (or last) workspace of the screen with the
@@ -1136,96 +1188,71 @@ impl Interaction {
     if self.mode == Mode::Windows {
       let nav = self.nav(workspaces);
       let window = if is_last { nav.last() } else { nav.first() };
-      if let Some((hwnd, _)) = window {
-        self.selected_window = Some(*hwnd);
-        self.steps_window = true;
+      if let Some(hwnd) = window.map(|(hwnd, _)| *hwnd) {
+        self.selected_window = Some(hwnd);
       }
     } else {
-      let row = row_indices(workspaces, &self.active_cards(), self.layout);
-      let index = if is_last { row.last() } else { row.first() };
-      if let Some(index) = index {
-        self.select(*index, workspaces);
+      let cards = self.active_cards();
+      let last = cards.end.min(workspaces.len()).checked_sub(1);
+      let index = if is_last { last } else { Some(cards.start) };
+      if let Some(index) = index.filter(|index| cards.contains(index)) {
+        self.select(index);
       }
     }
   }
 
-  /// Search matches on every screen, best first, then in order. The
-  /// special workspace's windows count once, on the screen showing it if
-  /// any does, else on the first.
-  pub fn matches<'a>(
-    &self,
-    workspaces: &'a [OverviewWorkspace],
-  ) -> Vec<(usize, &'a OverviewWindow)> {
-    let special = home_special(workspaces);
+  /// Which match the cursor is on: the picked window, or while carrying,
+  /// which picks none, the match last gone to.
+  fn match_position(&self) -> Option<usize> {
+    if self.mode == Mode::Carrying {
+      return self.match_index.filter(|index| *index < self.matches.len());
+    }
 
-    let mut matches = workspaces
-      .iter()
-      .enumerate()
-      .filter(|(index, workspace)| {
-        !workspace.is_special || Some(*index) == special
-      })
-      .flat_map(|(index, workspace)| {
-        let unshown = workspace
-          .windows
-          .iter()
-          .filter(|window| window.is_minimized || window.is_hidden_tab);
-        ordered(workspace).into_iter().chain(unshown).filter_map(
-          move |window| {
-            let score = match_score(window, &self.query)?;
-            Some((score, index, window))
-          },
-        )
-      })
-      .collect::<Vec<_>>();
-
-    matches.sort_by_key(|(score, ..)| *score);
-    matches
-      .into_iter()
-      .map(|(_, index, window)| (index, window))
-      .collect()
+    let hwnd = self
+      .selected_window
+      .filter(|_| self.mode == Mode::Windows)?;
+    self.matches.iter().position(|found| found.hwnd == hwnd)
   }
 
-  /// Selects the next (or previous) search match, on whichever screen it
-  /// is.
-  /// Selects the match `delta` on from the current one, or the first (or
-  /// last) without one. Returns whether there was a match.
-  fn goto_match(
-    &mut self,
-    delta: isize,
-    workspaces: &[OverviewWorkspace],
-  ) -> bool {
-    let matches = self.matches(workspaces);
-    if matches.is_empty() {
+  /// Selects the match `delta` on from the one the cursor is on, around
+  /// the ends, or the first (or last) when it is on none. Returns whether
+  /// there was a match.
+  fn goto_match(&mut self, delta: isize) -> bool {
+    let Ok(len) = isize::try_from(self.matches.len()) else {
+      return false;
+    };
+    if len == 0 {
       return false;
     }
 
-    let len = isize::try_from(matches.len()).unwrap_or(isize::MAX);
-    let next = match self.match_index {
+    let next = match self.match_position() {
       Some(index) => isize::try_from(index)
         .unwrap_or(0)
         .saturating_add(delta)
         .rem_euclid(len),
-      None => {
-        if delta > 0 {
-          0
-        } else {
-          len - 1
-        }
-      }
+      None if delta > 0 => 0,
+      None => len - 1,
     };
-    let next = usize::try_from(next).unwrap_or(0);
-    self.match_index = Some(next);
 
-    let Some((index, window)) = matches.get(next) else {
+    self.goto_nth_match(usize::try_from(next).unwrap_or(0))
+  }
+
+  /// Selects match `index`, on whichever screen it is, as the arrows
+  /// would have: its workspace, and its window in it. Returns whether
+  /// there is one.
+  fn goto_nth_match(&mut self, index: usize) -> bool {
+    let Some(found) = self.matches.get(index).copied() else {
       return false;
     };
-    self.select(*index, workspaces);
+
+    self.match_index = Some(index);
+    self.select(found.workspace);
 
     // While carrying, a search only aims the drop; selecting the match
     // would make the space bar pick it up instead.
     if self.mode != Mode::Carrying {
       self.mode = Mode::Windows;
-      self.selected_window = Some(window.hwnd);
+      self.selected_window = Some(found.hwnd);
     }
     true
   }
@@ -1257,8 +1284,7 @@ impl Interaction {
     // Pointing at a window of the shown workspace picks it, as the arrows
     // would.
     let pointed = hit.window.filter(|_| {
-      self.layout.shows_selected_large()
-        && hit.workspace == Some(self.selected())
+      hit.workspace == Some(self.selected())
         && self.mode != Mode::Carrying
         && !is_left_down
     });
@@ -1266,7 +1292,7 @@ impl Interaction {
       if self.mode != Mode::Windows || self.selected_window != Some(hwnd) {
         self.mode = Mode::Windows;
         self.selected_window = Some(hwnd);
-        self.steps_window = false;
+        self.picked_by = PickedBy::Mouse;
         changed = true;
       }
     }
@@ -1330,12 +1356,9 @@ impl Interaction {
         self.shows_shortcuts = !showed_shortcuts;
         return None;
       }
+      // Typing goes to the field as it is.
+      Some(Control::Search) => return None,
       _ if showed_shortcuts => return None,
-      // Typing goes to the field again, its query kept.
-      Some(Control::Search) => {
-        self.searching = true;
-        return None;
-      }
       None => {}
     }
 
@@ -1352,7 +1375,7 @@ impl Interaction {
         workspace: Some(index),
         ..
       } => {
-        self.select(index, workspaces);
+        self.select(index);
         workspaces.get(index).map(|workspace| {
           OverviewAction::FocusWorkspace {
             name: workspace.name.clone(),
@@ -1375,9 +1398,16 @@ impl Interaction {
     self.step(if is_down { 1 } else { -1 }, workspaces);
 
     if self.selected() == before {
-      let (back, forward, _) = arrows(self.layout);
-      self.nudge = Some(if is_down { forward } else { back });
+      let forward = geometry(self.layout).forward;
+      self.nudge =
+        Some(if is_down { forward } else { forward.opposite() });
     }
+  }
+
+  /// Notes that the strip was panned by the mouse, which then keeps it
+  /// where it is panned to rather than on the picked window.
+  pub fn pan(&mut self) {
+    self.picked_by = PickedBy::Mouse;
   }
 
   /// Workspace held down by the left button, until it is let go of or
@@ -1459,7 +1489,6 @@ impl Interaction {
       is_active,
       mode: if is_active { self.mode } else { Mode::Spaces },
       selected: local(cursor.shown).unwrap_or(0),
-      row_selected: local(cursor.row_selected).unwrap_or(0),
       selected_window: self.selected_window.filter(|_| is_active),
       hover: self.hover.and_then(local),
       pressed: self.pressed().and_then(local),
@@ -1467,80 +1496,65 @@ impl Interaction {
       drop: self.drop_target().and_then(local),
       drop_beside: self.drop_beside(workspaces),
       is_dragging: self.drag.is_some(),
-      window_ring_glides: self.steps_window,
+      keeps_window_in_view: self.picked_by != PickedBy::Mouse,
       marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
-      search: self.search_field(workspaces),
+      search: self.search_field(),
       shortcuts: (is_active && self.shows_shortcuts)
         .then(|| self.shortcuts()),
     }
   }
 
   /// The search field every screen shows.
-  pub fn search_field(
-    &self,
-    workspaces: &[OverviewWorkspace],
-  ) -> SearchField {
+  pub fn search_field(&self) -> SearchField {
     SearchField {
       query: self.query.clone(),
-      is_typing: self.searching,
-      hits: if self.query.is_empty() {
-        0
-      } else {
-        self.matches(workspaces).len()
-      },
+      hits: self.matches.len(),
+      current: self.match_position(),
     }
   }
 
   /// The keyboard shortcuts of every step, with the arrows `layout` goes
   /// by.
   pub fn shortcuts(&self) -> Vec<ShortcutGroup> {
-    let (back, forward, inside) = arrows(self.layout);
-    let workspace_arrows = if self.layout == OverviewLayoutMode::Grid {
-      joined_labels(Toward::ALL.map(Command::Move))
-    } else {
-      joined_labels([back, forward].map(Command::Move))
-    };
+    let geometry = geometry(self.layout);
+    let workspace_arrows = joined_labels(
+      [geometry.forward.opposite(), geometry.forward].map(Command::Move),
+    );
     let window_arrows = joined_labels(Toward::ALL.map(Command::Move));
-    let look_inside = match inside {
-      Some(toward) => Some(Command::Move(toward).label()),
-      // The grid is too small to pick a window in.
-      None if self.layout == OverviewLayoutMode::Grid => None,
-      None => Some(Command::Space.label()),
-    };
-    let to_workspace = format!(
-      "{} {}",
-      Command::Workspace(1).label(),
-      Command::Special.label()
+    // The arrow into the windows too, where one points at them.
+    let look_inside = joined_labels(
+      std::iter::once(Command::Space)
+        .chain(geometry.windows.map(Command::Move)),
     );
-    let next_and_previous = format!(
+    let send = format!(
       "{} {}",
-      Command::NextMatch.label(),
-      Command::PreviousMatch.label()
+      Command::SendToWorkspace(1).label(),
+      Command::SendToSpecial.label()
     );
+    let matches =
+      format!("{} {}", Command::Next.label(), Command::Previous.label());
 
-    let mut windows = look_inside
-      .map(|key| Shortcut::new(&key, "look inside"))
-      .into_iter()
-      .collect::<Vec<_>>();
-    windows.extend([
+    let windows = vec![
+      Shortcut::new(&look_inside, "look inside"),
       Shortcut::new(&window_arrows, "pick a window"),
       Shortcut::new(&Command::Enter.label(), "go to it"),
       Shortcut::new(&Command::CloseWindow.label(), "close it"),
-      Shortcut::new(&to_workspace, "send it there"),
+      Shortcut::new(&send, "send it there"),
       Shortcut::new(&Command::Back.label(), "back"),
-    ]);
+    ];
 
     vec![
       ShortcutGroup {
         title: "Workspaces",
         shortcuts: vec![
           Shortcut::new(&workspace_arrows, "select"),
+          Shortcut::new(ALT_ARROWS, "as the arrows"),
           Shortcut::new(&Command::Workspace(1).label(), "go to one"),
           Shortcut::new(&Command::Special.label(), "special"),
           Shortcut::new(&Command::Enter.label(), "go there"),
           Shortcut::new(
-            &Command::NextLayout.label(),
+            &Command::Next.label(),
             &format!("{} layout", self.layout.next().name()),
           ),
           Shortcut::new(&Command::Cancel.label(), "close"),
@@ -1555,22 +1569,18 @@ impl Interaction {
         shortcuts: vec![
           Shortcut::new(&Command::Space.label(), "lift / drop"),
           Shortcut::new(&workspace_arrows, "pick a workspace"),
-          Shortcut::new(&to_workspace, "drop on that one"),
+          Shortcut::new(&send, "drop on that one"),
           Shortcut::new(&Command::Back.label(), "put it down"),
         ],
       },
       ShortcutGroup {
         title: "Search",
         shortcuts: vec![
-          Shortcut::new(&Command::Search.label(), "search windows"),
-          // Typed into the search field, which takes these itself.
-          Shortcut::new(&Key::Enter.label(), "go to best match"),
-          Shortcut::new(
-            &format!("{}{}", Key::Up.label(), Key::Down.label()),
-            "pick a match",
-          ),
-          Shortcut::new(&next_and_previous, "next / previous"),
-          Shortcut::new(&Key::Escape.label(), "clear"),
+          Shortcut::new("A\u{2013}Z", "type to search"),
+          Shortcut::new(&matches, "next / previous"),
+          Shortcut::new(&Command::Enter.label(), "go to the match"),
+          Shortcut::new(&Command::Back.label(), "erase"),
+          Shortcut::new(&Command::Cancel.label(), "clear"),
         ],
       },
     ]
@@ -1594,9 +1604,6 @@ pub(crate) struct ScreenFocus {
   /// Workspace it shows.
   pub selected: usize,
 
-  /// Card its row is centered on.
-  pub row_selected: usize,
-
   /// Window picked on it.
   pub selected_window: Option<isize>,
 
@@ -1618,9 +1625,10 @@ pub(crate) struct ScreenFocus {
   /// Whether a window is dragged, over whichever screen.
   pub is_dragging: bool,
 
-  /// Whether the picked window's ring glides to it, as the arrows step
-  /// there, rather than settling in place.
-  pub window_ring_glides: bool,
+  /// Whether the stack pans the picked window's strip to keep it in
+  /// view: not for one pointed at, which would slide away under the
+  /// cursor.
+  pub keeps_window_in_view: bool,
 
   /// Whether it marks that the keyboard is on it, as one of several
   /// screens.
@@ -1664,8 +1672,6 @@ fn cursors(screens: &[OverviewScreen]) -> Vec<ScreenCursor> {
         rect: screen.rect.clone(),
         cards,
         shown,
-        row_selected: shown,
-        grid: GridCells::default(),
       }
     })
     .collect()
@@ -1698,20 +1704,85 @@ fn home_special(workspaces: &[OverviewWorkspace]) -> Option<usize> {
     .map(|(index, _)| index)
 }
 
-/// The arrows that go to the previous and the next workspace in
-/// `layout`, and the one that goes in among the selected workspace's
-/// windows, if any does.
-fn arrows(layout: OverviewLayoutMode) -> (Toward, Toward, Option<Toward>) {
+/// The windows matching `query` on every screen, best first, then in
+/// order. The special workspace's windows count once, on the screen
+/// showing it if any does, else on the first.
+fn find_matches(
+  query: &str,
+  workspaces: &[OverviewWorkspace],
+) -> Vec<Match> {
+  if query.is_empty() {
+    return Vec::new();
+  }
+
+  let special = home_special(workspaces);
+  let query = query.to_lowercase();
+
+  let mut matches = workspaces
+    .iter()
+    .enumerate()
+    .filter(|(index, workspace)| {
+      !workspace.is_special || Some(*index) == special
+    })
+    .flat_map(|(index, workspace)| {
+      let unshown = workspace
+        .windows
+        .iter()
+        .filter(|window| window.is_minimized || window.is_hidden_tab);
+      let query = &query;
+      ordered(workspace).into_iter().chain(unshown).filter_map(
+        move |window| {
+          let score = lowercase_match_score(window, query)?;
+          let found = Match {
+            workspace: index,
+            hwnd: window.hwnd,
+          };
+          Some((score, found))
+        },
+      )
+    })
+    .collect::<Vec<_>>();
+
+  matches.sort_by_key(|(score, _)| *score);
+  matches.into_iter().map(|(_, found)| found).collect()
+}
+
+/// Where a layout puts things on screen, which the arrows go by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Geometry {
+  /// Way its workspaces run, first to last.
+  forward: Toward,
+
+  /// Way from the workspaces to the selected one's windows, where those
+  /// show apart from them. `None` where they show on its card, which no
+  /// arrow points into.
+  windows: Option<Toward>,
+}
+
+impl Geometry {
+  /// How many workspaces on an arrow `toward` goes, if it runs along
+  /// them.
+  fn step(self, toward: Toward) -> Option<isize> {
+    if toward == self.forward {
+      Some(1)
+    } else if toward == self.forward.opposite() {
+      Some(-1)
+    } else {
+      None
+    }
+  }
+}
+
+fn geometry(layout: OverviewLayoutMode) -> Geometry {
   match layout {
-    OverviewLayoutMode::Stage => {
-      (Toward::Up, Toward::Down, Some(Toward::Right))
-    }
-    OverviewLayoutMode::Activities => {
-      (Toward::Left, Toward::Right, Some(Toward::Down))
-    }
-    OverviewLayoutMode::Carousel | OverviewLayoutMode::Grid => {
-      (Toward::Left, Toward::Right, None)
-    }
+    OverviewLayoutMode::Activities => Geometry {
+      forward: Toward::Right,
+      windows: Some(Toward::Down),
+    },
+    OverviewLayoutMode::Stack => Geometry {
+      forward: Toward::Down,
+      windows: None,
+    },
   }
 }
 
@@ -1810,7 +1881,7 @@ fn move_action(
 /// Name of the workspace digit key `digit` stands for, 0 being the tenth:
 /// the one named after it when workspaces are numbered, whether it has a
 /// card on any screen or is one of `others`, else the one at its position
-/// among `cards` (not counting the special workspace's, which `s` goes
+/// among `cards` (not counting the special workspace's, which `-` goes
 /// to).
 fn digit_target(
   digit: u8,
@@ -1864,35 +1935,18 @@ fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
   if query.is_empty() {
     return None;
   }
-
-  let query = query.to_lowercase();
-  [&window.title, &window.process_name]
-    .into_iter()
-    .filter_map(|text| text.to_lowercase().find(&query))
-    .min()
+  lowercase_match_score(window, &query.to_lowercase())
 }
 
-/// The row card of a screen's `cards` to center its row on with card
-/// `selected` selected in `layout`: that card, or for the special
-/// workspace's docked card, `previous` (if still a row card) or else the
-/// first. `None` when there are no row cards.
-fn row_card(
-  workspaces: &[OverviewWorkspace],
-  cards: &Range<usize>,
-  selected: usize,
-  previous: Option<usize>,
-  layout: OverviewLayoutMode,
+/// `match_score` for a `query` already in lower case.
+fn lowercase_match_score(
+  window: &OverviewWindow,
+  query: &str,
 ) -> Option<usize> {
-  let is_row_card = |index: &usize| {
-    cards.contains(index)
-      && *index < workspaces.len()
-      && !is_docked(workspaces, *index, layout)
-  };
-
-  Some(selected)
-    .filter(is_row_card)
-    .or_else(|| previous.filter(is_row_card))
-    .or_else(|| row_indices(workspaces, cards, layout).first().copied())
+  [&window.title, &window.process_name]
+    .into_iter()
+    .filter_map(|text| text.to_lowercase().find(query))
+    .min()
 }
 
 /// Whether card `index` is the special workspace's.
@@ -1902,31 +1956,6 @@ fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
     .is_some_and(|workspace| workspace.is_special)
 }
 
-/// Whether card `index` is the special workspace's, docked below the rest
-/// in `layout`.
-fn is_docked(
-  workspaces: &[OverviewWorkspace],
-  index: usize,
-  layout: OverviewLayoutMode,
-) -> bool {
-  layout.docks_special() && is_special(workspaces, index)
-}
-
-/// A screen's `cards` of its row (or grid, or stack of rows) in `layout`:
-/// all but the special workspace's if it is docked.
-fn row_indices(
-  workspaces: &[OverviewWorkspace],
-  cards: &Range<usize>,
-  layout: OverviewLayoutMode,
-) -> Vec<usize> {
-  cards
-    .clone()
-    .filter(|index| {
-      *index < workspaces.len() && !is_docked(workspaces, *index, layout)
-    })
-    .collect()
-}
-
 #[cfg(test)]
 mod tests {
   use super::{
@@ -1934,9 +1963,9 @@ mod tests {
     Toward, BINDINGS,
   };
   use crate::{
-    overview_layout::{CardMetrics, CardSlot, GridCells, RectF},
-    OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
-    OverviewWorkspace, Point, Rect,
+    overview_layout::RectF, Direction, OverviewAction, OverviewInput,
+    OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
+    Point, Rect,
   };
 
   /// ID of the monitor of the screen most tests have.
@@ -2026,7 +2055,7 @@ mod tests {
   }
 
   fn interaction() -> Interaction {
-    single(&workspaces(), OverviewLayoutMode::Carousel)
+    single(&workspaces(), OverviewLayoutMode::Activities)
   }
 
   fn press(
@@ -2039,9 +2068,33 @@ mod tests {
       .fold(None, |_, key| state.key(*key, &workspaces))
   }
 
+  /// The keys that type `text`.
+  fn typed(text: &str) -> Vec<Key> {
+    text
+      .chars()
+      .map(|text| {
+        if text == ' ' {
+          Key::Space
+        } else {
+          Key::Text(text)
+        }
+      })
+      .collect()
+  }
+
   #[test]
   fn starts_on_the_focused_workspace() {
     assert_eq!(interaction().selected(), 1);
+  }
+
+  #[test]
+  fn no_command_is_on_a_key_that_types() {
+    for (command, keys) in BINDINGS {
+      assert!(
+        keys.iter().all(|key| !matches!(key, Key::Text(_))),
+        "{command:?} is on a typed character"
+      );
+    }
   }
 
   #[test]
@@ -2077,22 +2130,34 @@ mod tests {
       [
         vec![
           "\u{2190}\u{2192}",
-          "1\u{2013}9",
-          "S",
+          "Alt+H J K L",
+          "Alt+1\u{2013}9",
+          "Alt+-",
           "\u{23ce}",
           "Tab",
           "Esc"
         ],
         vec![
-          "Space",
+          "Space\u{2193}",
           "\u{2190}\u{2191}\u{2193}\u{2192}",
           "\u{23ce}",
-          "X",
-          "1\u{2013}9 S",
+          "Del",
+          "Alt+\u{21e7}1\u{2013}9 Alt+\u{21e7}-",
           "\u{232b}",
         ],
-        vec!["Space", "\u{2190}\u{2192}", "1\u{2013}9 S", "\u{232b}"],
-        vec!["/", "\u{23ce}", "\u{2191}\u{2193}", "n N", "Esc"],
+        vec![
+          "Space",
+          "\u{2190}\u{2192}",
+          "Alt+\u{21e7}1\u{2013}9 Alt+\u{21e7}-",
+          "\u{232b}"
+        ],
+        vec![
+          "A\u{2013}Z",
+          "Tab \u{21e7}Tab",
+          "\u{23ce}",
+          "\u{232b}",
+          "Esc"
+        ],
       ]
     );
   }
@@ -2104,7 +2169,7 @@ mod tests {
     press(&mut state, &[Key::Left, Key::Left]);
     assert_eq!(state.selected(), 0);
 
-    press(&mut state, &[Key::Text('l'), Key::Right, Key::Right]);
+    press(&mut state, &[Key::Alt('l'), Key::Right, Key::Right]);
     assert_eq!(state.selected(), 2);
 
     press(&mut state, &[Key::Home]);
@@ -2126,23 +2191,23 @@ mod tests {
     let mut state = interaction();
 
     assert_eq!(
-      press(&mut state, &[Key::Digit(3)]),
+      press(&mut state, &[Key::Alt('3')]),
       Some(focus_workspace("3"))
     );
-    assert_eq!(press(&mut state, &[Key::Digit(9)]), None);
+    assert_eq!(press(&mut state, &[Key::Alt('9')]), None);
   }
 
   #[test]
   fn digits_go_by_name_when_workspaces_are_numbered() {
     let mut workspaces = workspaces();
     workspaces.remove(1);
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
 
     assert_eq!(
-      state.key(Key::Digit(3), &workspaces),
+      state.key(Key::Alt('3'), &workspaces),
       Some(focus_workspace("3"))
     );
-    assert_eq!(state.key(Key::Digit(2), &workspaces), None, "not shown");
+    assert_eq!(state.key(Key::Alt('2'), &workspaces), None, "not shown");
   }
 
   #[test]
@@ -2153,10 +2218,10 @@ mod tests {
     {
       workspace.name = name.to_string();
     }
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
 
     assert_eq!(
-      state.key(Key::Digit(1), &workspaces),
+      state.key(Key::Alt('1'), &workspaces),
       Some(focus_workspace("web"))
     );
   }
@@ -2167,12 +2232,12 @@ mod tests {
     state.digit_workspaces = vec!["5".to_string()];
 
     assert_eq!(
-      press(&mut state, &[Key::Digit(5)]),
+      press(&mut state, &[Key::Alt('5')]),
       Some(focus_workspace("5"))
     );
-    assert_eq!(press(&mut state, &[Key::Digit(6)]), None);
+    assert_eq!(press(&mut state, &[Key::Alt('6')]), None);
     assert_eq!(
-      press(&mut state, &[Key::Space, Key::Digit(5)]),
+      press(&mut state, &[Key::Space, Key::AltShift('5')]),
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "5".to_string(),
@@ -2182,17 +2247,22 @@ mod tests {
   }
 
   #[test]
-  fn digits_send_the_picked_window_and_move_on() {
+  fn shifted_digits_send_the_picked_window_and_move_on() {
     let mut state = interaction();
+    assert_eq!(
+      press(&mut state, &[Key::AltShift('3')]),
+      None,
+      "no window to send while browsing"
+    );
     press(&mut state, &[Key::Left, Key::Space]);
 
     assert_eq!(
-      press(&mut state, &[Key::Digit(1)]),
+      press(&mut state, &[Key::AltShift('1')]),
       None,
       "already on workspace 1"
     );
     assert_eq!(
-      press(&mut state, &[Key::Digit(3)]),
+      press(&mut state, &[Key::AltShift('3')]),
       Some(OverviewAction::MoveWindow {
         hwnd: 11,
         workspace: "3".to_string(),
@@ -2201,22 +2271,30 @@ mod tests {
     );
     assert_eq!(state.mode, Mode::Windows);
     assert_eq!(state.selected_window, Some(12), "next window picked");
+
+    // A plain digit chord still goes there, whatever is picked.
+    assert_eq!(
+      press(&mut state, &[Key::Alt('3')]),
+      Some(focus_workspace("3"))
+    );
   }
 
   #[test]
   fn digits_drop_a_carried_window() {
-    let mut state = interaction();
+    for digit in [Key::Alt('1'), Key::AltShift('1')] {
+      let mut state = interaction();
 
-    assert_eq!(
-      press(&mut state, &[Key::Space, Key::Space, Key::Digit(1)]),
-      Some(OverviewAction::MoveWindow {
-        hwnd: 21,
-        workspace: "1".to_string(),
-        monitor: MONITOR,
-      })
-    );
-    assert_eq!(state.mode, Mode::Spaces);
-    assert_eq!(state.carried, None);
+      assert_eq!(
+        press(&mut state, &[Key::Space, Key::Space, digit]),
+        Some(OverviewAction::MoveWindow {
+          hwnd: 21,
+          workspace: "1".to_string(),
+          monitor: MONITOR,
+        })
+      );
+      assert_eq!(state.mode, Mode::Spaces);
+      assert_eq!(state.carried, None);
+    }
   }
 
   #[test]
@@ -2226,7 +2304,7 @@ mod tests {
       is_new: true,
       ..card("4")
     });
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
 
     let mut press = |keys: &[Key]| {
       keys
@@ -2252,7 +2330,7 @@ mod tests {
       is_hidden_tab: true,
       ..window(13, "Docs", Rect::from_xy(0, 0, 960, 1000))
     });
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -2266,13 +2344,10 @@ mod tests {
       "steps over the hidden tab"
     );
 
-    press(&mut state, &[Key::Backspace, Key::Text('/')]);
-    press(
-      &mut state,
-      &"docs".chars().map(Key::Text).collect::<Vec<_>>(),
-    );
+    press(&mut state, &[Key::Backspace]);
+    press(&mut state, &typed("docs"));
     assert_eq!(
-      press(&mut state, &[Key::Enter, Key::Enter]),
+      press(&mut state, &[Key::Enter]),
       Some(focus_window(13)),
       "search finds it"
     );
@@ -2305,49 +2380,27 @@ mod tests {
   }
 
   #[test]
-  fn tab_to_the_grid_stops_picking_a_window() {
-    let mut state = interaction();
-
-    press(&mut state, &[Key::Space, Key::Tab]);
-    assert_eq!(state.layout, OverviewLayoutMode::Grid);
-    assert_eq!(state.mode, Mode::Spaces);
-    assert_eq!(state.selected_window, None);
-
-    // Over to the stage to pick one up, then around to the grid again.
-    press(&mut state, &[Key::Tab, Key::Tab]);
-    assert_eq!(state.layout, OverviewLayoutMode::Stage);
-    press(&mut state, &[Key::Space, Key::Space]);
-    press(&mut state, &[Key::Tab, Key::Tab]);
-    assert_eq!(state.layout, OverviewLayoutMode::Grid);
-    assert_eq!(state.mode, Mode::Carrying, "carrying works in the grid");
-  }
-
-  #[test]
   fn tab_goes_through_every_layout() {
     let mut state = interaction();
     let mut seen = vec![state.layout];
-    for _ in 0..4 {
-      press(&mut state, &[Key::Tab]);
+    for key in [Key::Tab, Key::BackTab] {
+      press(&mut state, &[key]);
       seen.push(state.layout);
     }
 
     assert_eq!(
       seen,
       vec![
-        OverviewLayoutMode::Carousel,
-        OverviewLayoutMode::Grid,
         OverviewLayoutMode::Activities,
-        OverviewLayoutMode::Stage,
-        OverviewLayoutMode::Carousel,
+        OverviewLayoutMode::Stack,
+        OverviewLayoutMode::Activities,
       ]
     );
   }
 
   #[test]
-  fn looking_inside_keeps_the_activities_and_the_stage() {
-    for layout in
-      [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
-    {
+  fn looking_inside_keeps_the_layout() {
+    for layout in OverviewLayoutMode::ALL {
       let mut state = single(&workspaces(), layout);
       assert_eq!(state.mode, Mode::Spaces);
       press(&mut state, &[Key::Space]);
@@ -2407,9 +2460,9 @@ mod tests {
   }
 
   #[test]
-  fn the_stage_steps_down_its_column_and_goes_right_into_windows() {
+  fn the_stack_steps_down_its_column_and_only_space_goes_inside() {
     let workspaces = workspaces();
-    let mut state = single(&workspaces, OverviewLayoutMode::Stage);
+    let mut state = single(&workspaces, OverviewLayoutMode::Stack);
     let mut press = |keys: &[Key]| {
       for key in keys {
         state.key(*key, &workspaces);
@@ -2419,12 +2472,63 @@ mod tests {
 
     assert_eq!(press(&[Key::Down]), (2, Mode::Spaces, None));
     assert_eq!(press(&[Key::Up, Key::Up]), (0, Mode::Spaces, None));
-    assert_eq!(press(&[Key::Right]), (0, Mode::Windows, Some(11)));
+
+    // No arrow points into a card's windows: sideways only bumps.
+    assert_eq!(press(&[Key::Right]), (0, Mode::Spaces, None));
+    assert_eq!(press(&[Key::Left]), (0, Mode::Spaces, None));
+
+    assert_eq!(press(&[Key::Space]), (0, Mode::Windows, Some(11)));
     assert_eq!(press(&[Key::Right]), (0, Mode::Windows, Some(12)));
     assert_eq!(
-      press(&[Key::Left, Key::Left]),
-      (0, Mode::Spaces, Some(11))
+      press(&[Key::Right]),
+      (0, Mode::Windows, Some(12)),
+      "nothing further right"
     );
+    assert_eq!(press(&[Key::Left]), (0, Mode::Windows, Some(11)));
+    assert_eq!(press(&[Key::Left]), (0, Mode::Windows, Some(11)));
+  }
+
+  #[test]
+  fn the_stack_leaves_a_workspace_windows_up_and_down() {
+    let workspaces = workspaces();
+    let mut state = single(&workspaces, OverviewLayoutMode::Stack);
+    let mut press = |keys: &[Key]| {
+      for key in keys {
+        state.key(*key, &workspaces);
+      }
+      (state.selected(), state.mode)
+    };
+
+    // Off the windows' bottom edge is the workspace below, and off their
+    // top the one above.
+    assert_eq!(press(&[Key::Space]), (1, Mode::Windows));
+    assert_eq!(press(&[Key::Down]), (2, Mode::Spaces));
+    assert_eq!(press(&[Key::Up, Key::Space, Key::Up]), (0, Mode::Spaces));
+
+    // Off the first workspace's, there is nowhere to go.
+    assert_eq!(press(&[Key::Space, Key::Up]), (0, Mode::Windows));
+    assert_eq!(state.take_nudge(), Some(Toward::Up));
+  }
+
+  #[test]
+  fn arrows_bump_alike_both_ways_in_every_layout() {
+    for layout in OverviewLayoutMode::ALL {
+      let workspaces = workspaces();
+      let mut state = single(&workspaces, layout);
+      let across = match layout {
+        OverviewLayoutMode::Activities => [Key::Up, Key::Up],
+        OverviewLayoutMode::Stack => [Key::Left, Key::Right],
+      };
+
+      for (key, toward) in across.into_iter().zip(
+        [[Toward::Up, Toward::Up], [Toward::Left, Toward::Right]]
+          [usize::from(layout == OverviewLayoutMode::Stack)],
+      ) {
+        state.key(key, &workspaces);
+        assert_eq!((state.selected(), state.mode), (1, Mode::Spaces));
+        assert_eq!(state.take_nudge(), Some(toward), "{layout:?}");
+      }
+    }
   }
 
   #[test]
@@ -2458,7 +2562,7 @@ mod tests {
     let workspaces = workspaces();
 
     for layout in
-      [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
+      [OverviewLayoutMode::Activities, OverviewLayoutMode::Stack]
     {
       let mut state = single(&workspaces, layout);
       state.mouse_down(
@@ -2479,38 +2583,39 @@ mod tests {
   }
 
   #[test]
-  fn only_a_window_stepped_to_with_the_arrows_glides_its_ring() {
-    // Staging the workspace with two windows to step between.
+  fn only_a_window_picked_by_the_mouse_stays_where_it_is() {
+    // On the workspace with two windows to step between.
     let mut workspaces = workspaces();
     workspaces[0].is_displayed = true;
     workspaces[1].is_displayed = false;
-    let mut state = single(&workspaces, OverviewLayoutMode::Stage);
-    let glides =
-      |state: &Interaction| state.focus(0, &workspaces).window_ring_glides;
+    let mut state = single(&workspaces, OverviewLayoutMode::Stack);
+    let keeps = |state: &Interaction| {
+      state.focus(0, &workspaces).keeps_window_in_view
+    };
 
-    state.key(Key::Right, &workspaces);
-    state.key(Key::Right, &workspaces);
-    assert_eq!(state.selected_window, Some(12));
-    assert!(glides(&state));
+    state.key(Key::Space, &workspaces);
+    assert_eq!(state.selected_window, Some(11));
+    assert!(keeps(&state), "stepped to");
 
     let pointed = Hit {
       workspace: Some(0),
-      window: Some(11),
+      window: Some(12),
       ..Hit::default()
     };
     state.mouse_move((10.0, 10.0), pointed, false);
-    assert_eq!(state.selected_window, Some(11));
-    assert!(!glides(&state), "pointed at");
+    assert_eq!(state.selected_window, Some(12));
+    assert!(!keeps(&state), "pointed at");
 
-    state.key(Key::Right, &workspaces);
-    state.key(Key::Text('x'), &workspaces);
-    assert!(!glides(&state), "closed");
+    state.key(Key::Left, &workspaces);
+    assert!(keeps(&state), "stepped to again");
+    state.pan();
+    assert!(!keeps(&state), "panned away from");
   }
 
   #[test]
   fn pointing_at_a_shown_window_picks_it() {
     let workspaces = workspaces();
-    let mut state = single(&workspaces, OverviewLayoutMode::Stage);
+    let mut state = single(&workspaces, OverviewLayoutMode::Stack);
 
     let changed = state.mouse_move(
       (10.0, 10.0),
@@ -2595,110 +2700,253 @@ mod tests {
   }
 
   #[test]
-  fn escape_cancels_and_x_closes_the_picked_window() {
+  fn escape_cancels_and_delete_closes_the_picked_window() {
     let mut state = interaction();
     assert_eq!(
       press(&mut state, &[Key::Escape]),
       Some(OverviewAction::Cancel)
     );
 
+    assert_eq!(press(&mut state, &[Key::Delete]), None, "nothing picked");
     assert_eq!(
-      press(&mut state, &[Key::Text('x')]),
-      None,
-      "nothing picked"
-    );
-    assert_eq!(
-      press(&mut state, &[Key::Space, Key::Text('x')]),
+      press(&mut state, &[Key::Space, Key::Delete]),
       Some(OverviewAction::CloseWindow(21))
     );
   }
 
   #[test]
-  fn up_and_down_move_a_row_in_the_grid_only() {
+  fn the_wm_keybindings_do_as_the_overview_keys() {
     let workspaces = workspaces();
-    let metrics =
-      CardMetrics::new(1920.0, 1040.0, 1.0, OverviewLayoutMode::Grid);
+    let named = |name: &str| name.to_string();
+
+    // `focus --direction` and `move --direction` are the arrows.
     let mut state = interaction();
-    state.screens[0].grid = GridCells::new(
-      &metrics,
-      &vec![CardSlot::new(&metrics, false); workspaces.len()],
-      2,
+    state.input(&OverviewInput::Move(Direction::Left), &workspaces);
+    assert_eq!(state.selected(), 0);
+    state.input(&OverviewInput::Move(Direction::Down), &workspaces);
+    assert_eq!(
+      (state.mode, state.selected_window),
+      (Mode::Windows, Some(11))
+    );
+    state.input(&OverviewInput::Move(Direction::Right), &workspaces);
+    assert_eq!(state.selected_window, Some(12));
+
+    // `move --workspace` sends what is picked, `close` closes it, and
+    // `focus --workspace` goes there.
+    assert_eq!(
+      state
+        .input(&OverviewInput::MoveToWorkspace(named("3")), &workspaces),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 12,
+        workspace: named("3"),
+        monitor: MONITOR,
+      })
+    );
+    assert_eq!(
+      state.input(&OverviewInput::CloseWindow, &workspaces),
+      Some(OverviewAction::CloseWindow(11))
+    );
+    assert_eq!(
+      state.input(&OverviewInput::FocusWorkspace(named("3")), &workspaces),
+      Some(focus_workspace("3"))
     );
 
-    press(&mut state, &[Key::Left, Key::Down]);
-    assert_eq!(state.selected(), 0, "no rows in the carousel");
-
-    press(&mut state, &[Key::Tab, Key::Down]);
-    assert_eq!(state.layout, OverviewLayoutMode::Grid);
+    // The next and previous workspace are stepped to, not switched to.
+    let mut state = interaction();
+    assert_eq!(
+      state.input(&OverviewInput::NextWorkspace, &workspaces),
+      None
+    );
     assert_eq!(state.selected(), 2);
+    state.input(&OverviewInput::PreviousWorkspace, &workspaces);
+    assert_eq!(state.selected(), 1);
 
-    press(&mut state, &[Key::Text('k')]);
-    assert_eq!(state.selected(), 0);
+    // During a search, a direction steps through its matches.
+    press(&mut state, &typed("e"));
+    let first = state.selected_window;
+    state.input(&OverviewInput::Move(Direction::Down), &workspaces);
+    assert_ne!(state.selected_window, first);
+    assert_eq!(state.query, "e");
   }
 
   #[test]
-  fn search_jumps_to_the_best_match() {
+  fn the_wm_keybindings_reach_the_special_workspace() {
+    let workspaces = with_special();
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
+
+    assert_eq!(
+      state.input(&OverviewInput::MoveToSpecialWorkspace, &workspaces),
+      None,
+      "no window to send while browsing"
+    );
+    assert_eq!(
+      state.input(&OverviewInput::FocusSpecialWorkspace, &workspaces),
+      Some(focus_workspace("special"))
+    );
+  }
+
+  #[test]
+  fn typing_starts_a_search_that_follows_its_best_match() {
     let mut state = interaction();
-    let query = "term".chars().map(Key::Text).collect::<Vec<_>>();
+    assert!(!state.is_searching());
 
-    press(&mut state, &[Key::Text('/')]);
-    press(&mut state, &query);
-    assert!(state.searching);
-    assert_eq!(state.query, "term");
-    assert_eq!(state.selected(), 1, "typing doesn't move the selection");
+    // The first character already searches, and picks.
+    press(&mut state, &[Key::Text('t')]);
+    assert!(state.is_searching());
+    assert_eq!(state.query, "t");
+    assert_eq!(state.selected_window, Some(11), "Terminal, at its start");
 
-    press(&mut state, &[Key::Down]);
-    assert!(!state.searching);
-    assert_eq!(state.selected(), 0);
-    assert_eq!(state.mode, Mode::Windows);
+    // "Editor" has it later than "Terminal", which a longer query drops.
+    press(&mut state, &typed("o"));
+    assert_eq!(state.query, "to");
+    assert_eq!((state.selected(), state.mode), (0, Mode::Windows));
+    assert_eq!(state.selected_window, Some(12));
+
+    // Taking a character back follows the best match again.
+    press(&mut state, &[Key::Backspace]);
+    assert_eq!(state.query, "t");
     assert_eq!(state.selected_window, Some(11));
   }
 
   #[test]
-  fn enter_in_a_search_goes_to_the_best_match() {
-    let mut state = interaction();
-    let query = "term".chars().map(Key::Text).collect::<Vec<_>>();
+  fn every_typed_character_is_searched_for() {
+    // What used to be commands, and the digits.
+    for text in ['/', '?', 'x', 's', 'n', 'N', 'h', 'j', 'k', 'l', '1'] {
+      let mut state = interaction();
+      assert_eq!(press(&mut state, &[Key::Text(text)]), None);
+      assert_eq!(state.query, text.to_string());
+      assert!(!state.shows_shortcuts);
+      assert_eq!(state.layout, OverviewLayoutMode::Activities);
+    }
+  }
 
-    press(&mut state, &[Key::Text('/')]);
-    press(&mut state, &query);
+  #[test]
+  fn a_space_is_typed_only_into_a_query() {
+    let mut state = interaction();
+
+    press(&mut state, &[Key::Space]);
+    assert_eq!(state.query, "");
+    assert_eq!(state.mode, Mode::Windows, "looks inside");
+
+    press(&mut state, &typed("my file"));
+    assert_eq!(state.query, "my file");
+    assert_eq!(state.carried, None, "lifts nothing");
+  }
+
+  #[test]
+  fn a_query_without_a_match_leaves_the_cursor_where_it_is() {
+    let mut state = interaction();
+
+    press(&mut state, &typed("zzz"));
+    assert_eq!((state.selected(), state.mode), (1, Mode::Spaces));
+    assert_eq!(press(&mut state, &[Key::Enter]), None);
+    assert_eq!(press(&mut state, &[Key::Down, Key::Tab]), None);
+    assert_eq!((state.selected(), state.mode), (1, Mode::Spaces));
+    assert_eq!(state.query, "zzz", "still typing");
+  }
+
+  #[test]
+  fn enter_in_a_search_goes_to_the_picked_match() {
+    let mut state = interaction();
+
+    press(&mut state, &typed("term"));
     assert_eq!(press(&mut state, &[Key::Enter]), Some(focus_window(11)));
 
-    // Without a match, it only stops typing.
     let mut state = interaction();
-    let query = "zzz".chars().map(Key::Text).collect::<Vec<_>>();
-    press(&mut state, &[Key::Text('/')]);
-    press(&mut state, &query);
-    assert_eq!(press(&mut state, &[Key::Enter]), None);
-    assert!(!state.searching);
+    press(&mut state, &typed(".exe"));
+    assert_eq!(
+      press(&mut state, &[Key::Tab, Key::Enter]),
+      Some(focus_window(21)),
+      "the one stepped to"
+    );
   }
 
   #[test]
-  fn search_matches_process_names_and_n_walks_them() {
+  fn matches_are_stepped_through_while_typing_goes_on() {
     let mut state = interaction();
-    let query = ".exe".chars().map(Key::Text).collect::<Vec<_>>();
+    let at = |state: &Interaction| {
+      (state.selected_window, state.search_field().current)
+    };
 
-    press(&mut state, &[Key::Text('/')]);
-    press(&mut state, &query);
-    press(&mut state, &[Key::Down]);
-    let first = state.selected_window;
+    // All three match ".exe" alike, so in order: 11, 12, 21.
+    press(&mut state, &typed("e"));
+    assert_eq!(state.search_field().hits, 3);
+    assert_eq!(at(&state), (Some(12), Some(0)), "Editor, at its start");
 
-    press(&mut state, &[Key::Text('n')]);
-    assert_ne!(state.selected_window, first);
+    for (keys, expected) in [
+      ([Key::Tab], (Some(11), Some(1))),
+      ([Key::Down], (Some(21), Some(2))),
+      ([Key::Right], (Some(12), Some(0))),
+      ([Key::Alt('k')], (Some(21), Some(2))),
+      ([Key::BackTab], (Some(11), Some(1))),
+      ([Key::Left], (Some(12), Some(0))),
+      ([Key::Up], (Some(21), Some(2))),
+      ([Key::Home], (Some(12), Some(0))),
+      ([Key::End], (Some(21), Some(2))),
+    ] {
+      press(&mut state, &keys);
+      assert_eq!(at(&state), expected, "{keys:?}");
+      assert_eq!(state.query, "e", "the search stays on");
+    }
 
-    press(&mut state, &[Key::Text('N')]);
-    assert_eq!(state.selected_window, first);
+    // Typing on narrows it down from wherever the cursor was.
+    press(&mut state, &typed("d"));
+    assert_eq!(state.query, "ed");
+    assert_eq!(at(&state), (Some(12), Some(0)));
   }
 
   #[test]
-  fn escape_leaves_search_without_closing() {
+  fn escape_clears_a_query_before_it_closes() {
     let mut state = interaction();
+
+    assert_eq!(press(&mut state, &typed("term")), None);
+    assert_eq!(press(&mut state, &[Key::Escape]), None);
+    assert_eq!(state.query, "");
+    assert_eq!(state.selected_window, Some(11), "the pick stays");
 
     assert_eq!(
-      press(&mut state, &[Key::Text('/'), Key::Text('q'), Key::Escape]),
-      None
+      press(&mut state, &[Key::Escape]),
+      Some(OverviewAction::Cancel)
     );
-    assert!(!state.searching);
+  }
+
+  #[test]
+  fn backspace_empties_a_query_before_it_steps_back() {
+    let mut state = interaction();
+
+    press(&mut state, &typed("te"));
+    press(&mut state, &[Key::Backspace, Key::Backspace]);
     assert_eq!(state.query, "");
+    assert_eq!(state.mode, Mode::Windows, "the pick stays");
+
+    // With none left, it steps back as ever, and the arrows move again.
+    press(&mut state, &[Key::Backspace]);
+    assert_eq!(state.mode, Mode::Spaces);
+    press(&mut state, &[Key::Right]);
+    assert_eq!(state.selected(), 1);
+  }
+
+  #[test]
+  fn a_search_while_carrying_aims_the_drop() {
+    let mut state = interaction();
+
+    press(&mut state, &[Key::Space, Key::Space]);
+    press(&mut state, &typed("e"));
+    assert_eq!((state.selected(), state.mode), (0, Mode::Carrying));
+    press(&mut state, &[Key::End]);
+    assert_eq!(state.selected(), 1, "its last match");
+    assert_eq!(state.carried, Some(21));
+
+    press(&mut state, &[Key::Home]);
+    assert_eq!(
+      press(&mut state, &[Key::Enter]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 21,
+        workspace: "1".to_string(),
+        monitor: MONITOR,
+      })
+    );
+    assert_eq!(state.query, "", "dropping ends the search");
   }
 
   #[test]
@@ -2923,6 +3171,20 @@ mod tests {
   }
 
   #[test]
+  fn sync_finds_the_matches_among_the_windows_there_now() {
+    let old = workspaces();
+    let mut state = interaction();
+    press(&mut state, &typed("e"));
+    assert_eq!(state.search_field().hits, 3);
+
+    // Workspace 1 goes away, along with two of them.
+    state.sync(&old, &[screen(MONITOR, old[1..].to_vec())]);
+    assert_eq!(state.search_field().hits, 1);
+    assert_eq!(press(&mut state, &[Key::Tab]), None);
+    assert_eq!((state.selected(), state.selected_window), (0, Some(21)));
+  }
+
+  #[test]
   fn sync_keeps_the_selection_by_name() {
     let old = workspaces();
     let mut state = interaction();
@@ -2949,13 +3211,13 @@ mod tests {
   }
 
   #[test]
-  fn the_special_workspace_comes_last_where_it_isnt_docked() {
+  fn the_special_workspace_comes_last() {
     let workspaces = with_special();
     let special = workspaces.len() - 1;
 
     for (layout, back, forward) in [
       (OverviewLayoutMode::Activities, Key::Left, Key::Right),
-      (OverviewLayoutMode::Stage, Key::Up, Key::Down),
+      (OverviewLayoutMode::Stack, Key::Up, Key::Down),
     ] {
       let mut state = single(&workspaces, layout);
       let mut press = |keys: &[Key]| {
@@ -2973,9 +3235,9 @@ mod tests {
   }
 
   #[test]
-  fn s_goes_to_the_special_workspace_like_a_digit() {
+  fn minus_goes_to_the_special_workspace_like_a_digit() {
     let workspaces = with_special();
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -2983,11 +3245,11 @@ mod tests {
     };
 
     assert_eq!(
-      press(&mut state, &[Key::Text('s')]),
+      press(&mut state, &[Key::Alt('-')]),
       Some(focus_workspace("special"))
     );
     assert_eq!(
-      press(&mut state, &[Key::Space, Key::Text('s')]),
+      press(&mut state, &[Key::Space, Key::AltShift('-')]),
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "special".to_string(),
@@ -2996,9 +3258,9 @@ mod tests {
       "sends the picked window"
     );
 
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
     assert_eq!(
-      press(&mut state, &[Key::Space, Key::Space, Key::Text('s')]),
+      press(&mut state, &[Key::Space, Key::Space, Key::Alt('-')]),
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "special".to_string(),
@@ -3008,15 +3270,18 @@ mod tests {
     );
     assert_eq!(state.mode, Mode::Spaces);
 
-    // While searching, it is typed.
-    assert_eq!(press(&mut state, &[Key::Text('/'), Key::Text('s')]), None);
-    assert_eq!(state.query, "s");
+    // During a search too, as it types nothing.
+    press(&mut state, &typed("zzz"));
+    assert_eq!(
+      press(&mut state, &[Key::Alt('-')]),
+      Some(focus_workspace("special"))
+    );
   }
 
   #[test]
-  fn s_does_nothing_without_a_special_card() {
+  fn minus_does_nothing_without_a_special_card() {
     let mut state = interaction();
-    assert_eq!(press(&mut state, &[Key::Text('s')]), None);
+    assert_eq!(press(&mut state, &[Key::Alt('-')]), None);
   }
 
   #[test]
@@ -3028,102 +3293,13 @@ mod tests {
       workspace.name = name.to_string();
     }
     workspaces.swap(0, 3);
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
 
     assert_eq!(
-      state.key(Key::Digit(1), &workspaces),
+      state.key(Key::Alt('1'), &workspaces),
       Some(focus_workspace("code"))
     );
-    assert_eq!(state.key(Key::Digit(4), &workspaces), None);
-  }
-
-  #[test]
-  fn the_dock_is_below_the_row_not_at_its_end() {
-    let workspaces = with_special();
-    let press = |state: &mut Interaction, keys: &[Key]| {
-      keys
-        .iter()
-        .fold(None, |_, key| state.key(*key, &workspaces))
-    };
-
-    for layout in [OverviewLayoutMode::Carousel, OverviewLayoutMode::Grid]
-    {
-      let mut state = single(&workspaces, layout);
-      if layout == OverviewLayoutMode::Grid {
-        state.screens[0].grid = GridCells::new(
-          &CardMetrics::new(1920.0, 1080.0, 1.0, OverviewLayoutMode::Grid),
-          &workspaces
-            .iter()
-            .map(|w| {
-              CardSlot::new(
-                &CardMetrics::new(
-                  1920.0,
-                  1080.0,
-                  1.0,
-                  OverviewLayoutMode::Grid,
-                ),
-                w.is_special,
-              )
-            })
-            .collect::<Vec<_>>(),
-          5,
-        );
-      }
-
-      press(&mut state, &[Key::Right, Key::Right, Key::Right]);
-      assert_eq!(state.selected(), 2, "left/right stay in the row");
-      press(&mut state, &[Key::End]);
-      assert_eq!(state.selected(), 2, "the row's end, not the dock");
-
-      press(&mut state, &[Key::Home, Key::Down]);
-      assert_eq!(state.selected(), 3, "down goes to the dock");
-      assert_eq!(
-        state.screens[0].row_selected, 0,
-        "the row stays on the card the dock was entered from"
-      );
-      press(&mut state, &[Key::Down]);
-      assert_eq!(state.selected(), 3);
-      press(&mut state, &[Key::Up]);
-      assert_eq!(state.selected(), 0, "up goes back where it came from");
-
-      press(&mut state, &[Key::Down, Key::Right]);
-      assert_eq!(state.selected(), 0, "sideways leaves the dock too");
-    }
-  }
-
-  #[test]
-  fn opened_on_the_special_workspace_the_row_starts_at_its_first_card() {
-    let mut workspaces = with_special();
-    for workspace in &mut workspaces {
-      workspace.is_displayed = workspace.is_special;
-    }
-
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
-    assert_eq!(state.selected(), 3);
-    assert_eq!(state.screens[0].row_selected, 0);
-
-    state.key(Key::Up, &workspaces);
-    assert_eq!(state.selected(), 0);
-  }
-
-  #[test]
-  fn a_carried_window_drops_on_the_dock_below() {
-    let workspaces = with_special();
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
-    let press = |state: &mut Interaction, keys: &[Key]| {
-      keys
-        .iter()
-        .fold(None, |_, key| state.key(*key, &workspaces))
-    };
-
-    assert_eq!(
-      press(&mut state, &[Key::Space, Key::Space, Key::Down, Key::Space]),
-      Some(OverviewAction::MoveWindow {
-        hwnd: 21,
-        workspace: "special".to_string(),
-        monitor: MONITOR,
-      })
-    );
+    assert_eq!(state.key(Key::Alt('4'), &workspaces), None);
   }
 
   /// Working area of the first screen of `two_screens`.
@@ -3137,7 +3313,7 @@ mod tests {
   /// A screen of monitor 1, focused, showing "1" (with "Terminal") and
   /// "2" (with "Editor"), and one of monitor 2 at `second` showing "3"
   /// (with "Browser") and "4"; each with the special workspace's card,
-  /// docked in the carousel, last.
+  /// last.
   fn two_screens_at(second: Rect) -> Vec<OverviewScreen> {
     let special = || OverviewWorkspace {
       is_special: true,
@@ -3194,8 +3370,11 @@ mod tests {
 
   #[test]
   fn each_screen_starts_on_its_displayed_workspace() {
-    let state =
-      Interaction::new(&two_screens(), OverviewLayoutMode::Carousel, 6.0);
+    let state = Interaction::new(
+      &two_screens(),
+      OverviewLayoutMode::Activities,
+      6.0,
+    );
 
     assert_eq!(state.active, 0, "the focused screen has the keyboard");
     assert_eq!(state.selected(), 0);
@@ -3208,20 +3387,26 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
     press_on(&mut state, &workspaces, &[Key::Right, Key::Right]);
-    assert_eq!((state.active, state.selected()), (1, 3), "past the dock");
-    assert_eq!(state.screens[0].shown, 1, "the left one stays put");
+    assert_eq!((state.active, state.selected()), (0, 2), "its special");
+    press_on(&mut state, &workspaces, &[Key::Right]);
+    assert_eq!((state.active, state.selected()), (1, 3), "past its end");
+    assert_eq!(state.screens[0].shown, 2, "the left one stays put");
 
-    press_on(&mut state, &workspaces, &[Key::Right, Key::Right]);
-    assert_eq!(state.selected(), 4, "nothing further right");
+    press_on(
+      &mut state,
+      &workspaces,
+      &[Key::Right, Key::Right, Key::Right],
+    );
+    assert_eq!(state.selected(), 5, "nothing further right");
 
     press_on(&mut state, &workspaces, &[Key::Home, Key::Left]);
-    assert_eq!((state.active, state.selected()), (0, 1));
+    assert_eq!((state.active, state.selected()), (0, 2));
 
-    press_on(&mut state, &workspaces, &[Key::End]);
-    assert_eq!(state.selected(), 1, "the end of its own row");
+    press_on(&mut state, &workspaces, &[Key::Home, Key::End]);
+    assert_eq!(state.selected(), 2, "the end of its own row");
   }
 
   #[test]
@@ -3229,13 +3414,13 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
     press_on(&mut state, &workspaces, &[Key::Left, Key::Up]);
     assert_eq!((state.active, state.selected()), (0, 0));
 
     press_on(&mut state, &workspaces, &[Key::Down, Key::Down]);
-    assert_eq!((state.active, state.selected()), (0, 2), "on the dock");
+    assert_eq!((state.active, state.selected()), (0, 0), "none below");
   }
 
   #[test]
@@ -3243,10 +3428,10 @@ mod tests {
     let screens = two_screens_at(Rect::from_xy(1920, 1040, 1920, 1040));
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
     press_on(&mut state, &workspaces, &[Key::End, Key::Right]);
-    assert_eq!((state.active, state.selected()), (0, 1));
+    assert_eq!((state.active, state.selected()), (0, 2));
   }
 
   #[test]
@@ -3260,7 +3445,7 @@ mod tests {
     assert_eq!((state.active, state.selected()), (0, 2), "nothing right");
 
     // Down into the windows, then off their bottom edge onto the screen
-    // below, where it shows what that screen shows.
+    // below, onto what that screen shows.
     press_on(&mut state, &workspaces, &[Key::Home, Key::Down]);
     assert_eq!(state.mode, Mode::Windows);
     press_on(&mut state, &workspaces, &[Key::Down]);
@@ -3272,20 +3457,45 @@ mod tests {
   }
 
   #[test]
-  fn the_stage_crosses_sideways_onto_the_shown_workspace() {
+  fn the_stack_crosses_sideways_onto_the_shown_workspace() {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Stage, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Stack, 6.0);
 
-    // Right goes in among the windows, and past them to the next screen.
+    // Sideways is the next screen, whether browsing or among windows.
     press_on(&mut state, &workspaces, &[Key::Down, Key::Up, Key::Right]);
-    assert_eq!(state.mode, Mode::Windows);
-    press_on(&mut state, &workspaces, &[Key::Right]);
     assert_eq!((state.active, state.selected()), (1, 3));
+    assert_eq!(state.mode, Mode::Spaces);
 
     press_on(&mut state, &workspaces, &[Key::Down, Key::Left]);
     assert_eq!((state.active, state.selected()), (0, 0), "its shown one");
+
+    press_on(&mut state, &workspaces, &[Key::Space, Key::Right]);
+    assert_eq!((state.active, state.selected()), (1, 4));
+    assert_eq!(state.mode, Mode::Spaces);
+
+    press_on(&mut state, &workspaces, &[Key::Right]);
+    assert_eq!((state.active, state.selected()), (1, 4), "none further");
+    assert_eq!(state.take_nudge(), Some(Toward::Right));
+  }
+
+  #[test]
+  fn stacked_screens_are_crossed_past_the_ends_of_the_stack() {
+    let screens = two_screens_at(Rect::from_xy(0, 1040, 1920, 1040));
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Stack, 6.0);
+
+    // Off the windows of the last workspace with any, down its stack and
+    // past its end onto the start of the one below.
+    press_on(&mut state, &workspaces, &[Key::Down, Key::Space, Key::Down]);
+    assert_eq!((state.active, state.selected()), (0, 2));
+    press_on(&mut state, &workspaces, &[Key::Down]);
+    assert_eq!((state.active, state.selected()), (1, 3));
+
+    press_on(&mut state, &workspaces, &[Key::Space, Key::Up]);
+    assert_eq!((state.active, state.selected()), (0, 2), "its last");
   }
 
   #[test]
@@ -3293,16 +3503,16 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
     assert!(state.focus(0, &workspaces).marks_keyboard);
     assert!(!state.focus(1, &workspaces).marks_keyboard);
 
-    state.activate(1, &workspaces);
+    state.activate(1);
     assert!(!state.focus(0, &workspaces).marks_keyboard);
     assert!(state.focus(1, &workspaces).marks_keyboard);
 
-    let alone = single(&workspaces[..3], OverviewLayoutMode::Carousel);
+    let alone = single(&workspaces[..3], OverviewLayoutMode::Activities);
     assert!(!alone.focus(0, &workspaces).marks_keyboard, "one screen");
   }
 
@@ -3311,11 +3521,12 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
-    state.wheel(true, &workspaces);
-    state.wheel(true, &workspaces);
-    assert_eq!((state.active, state.selected()), (0, 1));
+    for _ in 0..4 {
+      state.wheel(true, &workspaces);
+    }
+    assert_eq!((state.active, state.selected()), (0, 2));
   }
 
   #[test]
@@ -3323,13 +3534,20 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
     assert_eq!(
       press_on(
         &mut state,
         &workspaces,
-        &[Key::Space, Key::Space, Key::Right, Key::Right, Key::Space],
+        &[
+          Key::Space,
+          Key::Space,
+          Key::Right,
+          Key::Right,
+          Key::Right,
+          Key::Space,
+        ],
       ),
       Some(OverviewAction::MoveWindow {
         hwnd: 11,
@@ -3346,12 +3564,7 @@ mod tests {
     let mut state =
       Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
-    press_on(&mut state, &workspaces, &[Key::Text('/')]);
-    press_on(
-      &mut state,
-      &workspaces,
-      &"brow".chars().map(Key::Text).collect::<Vec<_>>(),
-    );
+    press_on(&mut state, &workspaces, &typed("brow"));
 
     assert_eq!(
       state.focus(1, &workspaces).search.hits,
@@ -3359,7 +3572,7 @@ mod tests {
       "on every screen"
     );
 
-    press_on(&mut state, &workspaces, &[Key::Down]);
+    // Typing alone took the keyboard to its screen.
     assert_eq!((state.active, state.selected()), (1, 3));
     assert_eq!(state.selected_window, Some(31));
     assert_eq!(
@@ -3383,62 +3596,80 @@ mod tests {
     screens[1].workspaces[2].is_displayed = true;
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
-    state.query = "notes".to_string();
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
+    press_on(&mut state, &workspaces, &typed("notes"));
 
-    let matches = state
-      .matches(&workspaces)
-      .into_iter()
-      .map(|(index, window)| (index, window.hwnd))
-      .collect::<Vec<_>>();
-    assert_eq!(matches, [(5, 51)], "on the screen showing it");
+    assert_eq!(state.search_field().hits, 1);
+    assert_eq!(
+      (state.active, state.selected(), state.selected_window),
+      (1, 5, Some(51)),
+      "on the screen showing it"
+    );
   }
 
   #[test]
   fn the_search_field_shows_what_is_typed() {
-    let workspaces = workspaces();
     let mut state = interaction();
     let typing_e = SearchField {
       query: "e".to_string(),
-      is_typing: true,
       hits: 3,
+      current: Some(0),
     };
-    assert_eq!(state.search_field(&workspaces), SearchField::default());
+    assert_eq!(state.search_field(), SearchField::default());
 
-    press(&mut state, &[Key::Text('/'), Key::Text('e')]);
-    assert_eq!(state.search_field(&workspaces), typing_e);
+    press(&mut state, &[Key::Text('e')]);
+    assert_eq!(state.search_field(), typing_e);
 
-    // Its matches stay picked after typing ends.
+    // Which match is picked shows as they are stepped through.
     press(&mut state, &[Key::Down]);
     assert_eq!(
-      state.search_field(&workspaces),
+      state.search_field(),
       SearchField {
-        is_typing: false,
-        ..typing_e
+        current: Some(1),
+        ..typing_e.clone()
       }
     );
 
-    press(&mut state, &[Key::Text('/'), Key::Escape]);
-    assert_eq!(state.search_field(&workspaces), SearchField::default());
+    // With the cursor on a window that is no match, e.g. one pointed
+    // at, none of them is picked.
+    press(&mut state, &typed("d"));
+    assert_eq!(state.selected_window, Some(12), "Editor alone");
+    let terminal = Hit {
+      workspace: Some(0),
+      window: Some(11),
+      ..Hit::default()
+    };
+    state.mouse_move((10.0, 10.0), terminal, false);
+    assert_eq!(
+      state.search_field(),
+      SearchField {
+        query: "ed".to_string(),
+        hits: 1,
+        current: None,
+      }
+    );
+
+    press(&mut state, &[Key::Escape]);
+    assert_eq!(state.search_field(), SearchField::default());
   }
 
   #[test]
-  fn question_mark_toggles_the_shortcut_sheet() {
+  fn f1_toggles_the_shortcut_sheet() {
     let workspaces = workspaces();
     let mut state = interaction();
 
-    press(&mut state, &[Key::Text('?')]);
+    press(&mut state, &[Key::F1]);
     assert!(state.focus(0, &workspaces).shortcuts.is_some());
 
     // Escape closes the sheet, not the overview.
     assert_eq!(press(&mut state, &[Key::Escape]), None);
     assert_eq!(state.focus(0, &workspaces).shortcuts, None);
 
-    press(&mut state, &[Key::Text('?'), Key::Text('?')]);
+    press(&mut state, &[Key::F1, Key::F1]);
     assert!(!state.shows_shortcuts);
 
     // Any other key closes it and does what it does.
-    press(&mut state, &[Key::Text('?'), Key::Right]);
+    press(&mut state, &[Key::F1, Key::Right]);
     assert!(!state.shows_shortcuts);
     assert_eq!(state.selected(), 2);
   }
@@ -3461,21 +3692,14 @@ mod tests {
     assert_eq!(click(&mut state, control(Control::Shortcuts)), None);
     assert!(!state.shows_shortcuts);
 
-    // A click on the field later types on into its query.
+    // A click on the field changes nothing: typing goes to it anyway.
+    press(&mut state, &[Key::Text('e')]);
+    let before = state.search_field();
     assert_eq!(click(&mut state, control(Control::Search)), None);
-    press(&mut state, &[Key::Text('e'), Key::Enter]);
-    assert_eq!(click(&mut state, control(Control::Search)), None);
-    assert_eq!(
-      state.search_field(&workspaces),
-      SearchField {
-        query: "e".to_string(),
-        is_typing: true,
-        hits: 3,
-      }
-    );
+    assert_eq!(state.search_field(), before);
 
     // While the sheet is open, a click anywhere only closes it.
-    press(&mut state, &[Key::Escape, Key::Text('?')]);
+    press(&mut state, &[Key::Escape, Key::F1]);
     assert_eq!(click(&mut state, Hit::default()), None);
     assert!(!state.shows_shortcuts);
     assert_eq!(
@@ -3489,31 +3713,31 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
     let focus = |name: &str, monitor| OverviewAction::FocusWorkspace {
       name: name.to_string(),
       monitor,
     };
 
     assert_eq!(
-      press_on(&mut state, &workspaces, &[Key::Text('s')]),
+      press_on(&mut state, &workspaces, &[Key::Alt('-')]),
       Some(focus("special", 1))
     );
     assert_eq!(
-      press_on(&mut state, &workspaces, &[Key::Digit(4)]),
+      press_on(&mut state, &workspaces, &[Key::Alt('4')]),
       Some(focus("4", 2)),
       "where its card is"
     );
 
-    state.activate(1, &workspaces);
+    state.activate(1);
     assert_eq!(
-      press_on(&mut state, &workspaces, &[Key::Text('s')]),
+      press_on(&mut state, &workspaces, &[Key::Alt('-')]),
       Some(focus("special", 2))
     );
 
     state.digit_workspaces = vec!["7".to_string()];
     assert_eq!(
-      press_on(&mut state, &workspaces, &[Key::Digit(7)]),
+      press_on(&mut state, &workspaces, &[Key::Alt('7')]),
       Some(focus("7", 2)),
       "without a card, where the keyboard is"
     );
@@ -3532,11 +3756,11 @@ mod tests {
     }
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
-    state.activate(1, &workspaces);
+    state.activate(1);
     assert_eq!(
-      press_on(&mut state, &workspaces, &[Key::Digit(2)]),
+      press_on(&mut state, &workspaces, &[Key::Alt('2')]),
       Some(OverviewAction::FocusWorkspace {
         name: "mail".to_string(),
         monitor: 2,
@@ -3549,7 +3773,7 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
     let grab = Hit {
       workspace: Some(0),
       window: Some(11),
@@ -3589,7 +3813,7 @@ mod tests {
     }
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
     state.mouse_down(
       (100.0, 100.0),
@@ -3623,11 +3847,11 @@ mod tests {
     press_on(&mut state, &workspaces, &[Key::Down]);
     assert_eq!(state.mode, Mode::Windows);
 
-    assert!(state.activate(1, &workspaces));
+    assert!(state.activate(1));
     assert_eq!((state.active, state.selected()), (1, 3));
     assert_eq!(state.mode, Mode::Spaces);
     assert_eq!(state.selected_window, None);
-    assert!(!state.activate(1, &workspaces), "already there");
+    assert!(!state.activate(1), "already there");
   }
 
   #[test]
@@ -3635,18 +3859,25 @@ mod tests {
     let screens = two_screens();
     let workspaces = all_workspaces(&screens);
     let mut state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
 
     press_on(
       &mut state,
       &workspaces,
-      &[Key::Space, Key::Space, Key::Right, Key::Right, Key::Right],
+      &[
+        Key::Space,
+        Key::Space,
+        Key::Right,
+        Key::Right,
+        Key::Right,
+        Key::Right,
+      ],
     );
     let (left, right) =
       (state.focus(0, &workspaces), state.focus(1, &workspaces));
 
     assert!(!left.is_active && right.is_active);
-    assert_eq!((left.selected, left.mode), (1, Mode::Spaces));
+    assert_eq!((left.selected, left.mode), (2, Mode::Spaces));
     assert_eq!((right.selected, right.mode), (1, Mode::Carrying));
     assert_eq!((left.drop, right.drop), (None, Some(1)));
     assert_eq!(left.floating, Some(11), "lifted on every screen");
@@ -3658,8 +3889,12 @@ mod tests {
     let old_screens = two_screens();
     let old = all_workspaces(&old_screens);
     let mut state =
-      Interaction::new(&old_screens, OverviewLayoutMode::Carousel, 6.0);
-    press_on(&mut state, &old, &[Key::Right, Key::Right, Key::Right]);
+      Interaction::new(&old_screens, OverviewLayoutMode::Activities, 6.0);
+    press_on(
+      &mut state,
+      &old,
+      &[Key::Right, Key::Right, Key::Right, Key::Right],
+    );
     assert_eq!(state.selected(), 4);
 
     // A workspace shows up on the left, moving the right one's cards.
@@ -3668,12 +3903,12 @@ mod tests {
     state.sync(&old, &screens);
 
     assert_eq!((state.active, state.selected()), (1, 5), "still on 4");
-    assert_eq!(state.screens[0].shown, 2, "still on 2");
+    assert_eq!(state.screens[0].shown, 3, "still on the special one");
 
     // The right monitor goes away.
     let old = all_workspaces(&screens);
     screens.truncate(1);
     state.sync(&old, &screens);
-    assert_eq!((state.active, state.selected()), (0, 2));
+    assert_eq!((state.active, state.selected()), (0, 3));
   }
 }

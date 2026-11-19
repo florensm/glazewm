@@ -65,9 +65,9 @@ use super::{
   SENT_KEY_MARKER,
 };
 use crate::{
-  discard_bits_if_resized, window_class, Color, CornerStyle, Delta,
-  Dispatcher, Key, KeyCode, LengthValue, OpacityValue, Point, Rect,
-  RectDelta, WindowId, WindowZOrder,
+  discard_bits_if_resized, size_to_content, window_class, Color,
+  CornerStyle, Delta, Dispatcher, Key, KeyCode, LengthValue, OpacityValue,
+  Point, Rect, RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -403,6 +403,20 @@ impl NativeWindow {
       .then_some((info.ptMinTrackSize.x, info.ptMinTrackSize.y))
   }
 
+  /// Implements [`crate::NativeWindow::release_size_to_content`].
+  pub(crate) fn release_size_to_content(&self) {
+    let is_wpf = self
+      .class_name()
+      .is_ok_and(|class| size_to_content::is_wpf_class(&class));
+
+    if is_wpf && size_to_content::release(self.handle) {
+      tracing::debug!(
+        "Asking WPF window {:#x} to turn off SizeToContent.",
+        self.handle
+      );
+    }
+  }
+
   /// Implements [`crate::NativeWindow::has_owner_window`].
   pub(crate) fn has_owner_window(&self) -> bool {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
@@ -690,6 +704,15 @@ impl NativeWindow {
     }
   }
 
+  /// Implements [`crate::NativeWindow::cloak_if_viewed`].
+  pub(crate) fn cloak_if_viewed(&self) -> crate::Result<bool> {
+    let is_cloaked = self.set_view_cloaked(true)?;
+    if !is_cloaked {
+      self.report_viewless();
+    }
+    Ok(is_cloaked)
+  }
+
   /// Logs, once per window, that it has no shell view to cloak it by. Its
   /// fallbacks, hiding it outright or leaving it shown while something
   /// else draws it, can show as flicker.
@@ -711,17 +734,6 @@ impl NativeWindow {
         self.class_name().unwrap_or_default(),
       );
     }
-  }
-
-  /// Implements [`crate::NativeWindow::can_be_cloaked`].
-  pub(crate) fn can_be_cloaked(&self) -> bool {
-    COM_INIT
-      .with(|com_init| {
-        com_init.borrow_mut().with_retry(|com| {
-          Ok(application_view(com, self.hwnd())?.is_some())
-        })
-      })
-      .unwrap_or(false)
   }
 
   /// Cloaks or uncloaks the window through its shell application view.
@@ -887,7 +899,12 @@ impl NativeWindow {
       tokio::time::sleep(Duration::from_millis(10)).await;
       // Re-check at fire time: the initial call has usually landed by now,
       // making this retry a no-op that would otherwise repaint the window.
-      if !Self::is_z_order_correct(handle, z_order_hwnd) {
+      // Not for a window hidden since, e.g. as a stack's background tab
+      // switched away from at once, which `SWP_SHOWWINDOW` would show
+      // again.
+      // SAFETY: A stale handle just returns false.
+      let is_shown = unsafe { IsWindowVisible(HWND(handle)) }.as_bool();
+      if is_shown && !Self::is_z_order_correct(handle, z_order_hwnd) {
         // SAFETY: A stale `handle` (window destroyed during the 10ms
         // delay) just makes the call fail, which is discarded
         // below.

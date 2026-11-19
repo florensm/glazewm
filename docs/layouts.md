@@ -151,11 +151,19 @@ The view follows focus:
   strut, less the gap, so there is always something to click on. Column
   widths are percentages of the room between the struts, and the strip's
   first and last columns sit a strut in from the edge too.
-- The overview shows a scrolling workspace's whole strip in its card.
+- The overview shows a scrolling workspace's whole strip in its card. In
+  its stack layout, picking a window pans the card to center it, without
+  scrolling the workspace itself (see [the overview](./overview.md#scrolling-workspaces)).
 - Clicking a column partly off screen focuses it and scrolls it into
   view, without the click reaching its window, so it can't select text
   or press a button as the column slides in. Set `click_to_scroll` to
   `false` to let the click through.
+- A click on a column while the strip is moving focuses the column
+  drawn under the cursor, and the strip heads to it, as niri hit tests
+  windows where it draws them. The click doesn't reach the app: mid-move
+  a column is a stand-in, its real window hidden. The same goes for a
+  window sliding in with a workspace switch; one sliding out ignores the
+  click. Floating windows over the strip keep their clicks.
 - With `focus_follows_cursor`, hovering a column partly off screen
   focuses and scrolls to it, unless `focus_follows_cursor_max_scroll`
   limits how far that may scroll.

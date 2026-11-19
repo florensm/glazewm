@@ -32,26 +32,31 @@ use windows::{
   core::w,
   Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
-    System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+    System::{
+      Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+      SystemServices::MK_SHIFT,
+    },
     UI::{
       Controls::WM_MOUSELEAVE,
       Input::KeyboardAndMouse::{
-        ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE,
-        TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0, VK_9, VK_BACK, VK_DOWN,
-        VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NUMPAD0, VK_NUMPAD9,
-        VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
+        GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent,
+        TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0, VK_9, VK_A,
+        VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME,
+        VK_LEFT, VK_OEM_MINUS, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
+        VK_TAB, VK_UP, VK_Z,
       },
       WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
         GetCursorPos, LoadCursorW, PeekMessageW, PostMessageW,
         PostQuitMessage, SetCursor, SetForegroundWindow, TranslateMessage,
         WaitMessage, HTCLIENT, HWND_MESSAGE, IDC_ARROW, IDC_HAND,
-        IDC_SIZEALL, MSG, PM_REMOVE, SC_KEYMENU, WA_INACTIVE,
+        IDC_SIZEALL, MSG, PM_REMOVE, SC_KEYMENU, WA_INACTIVE, WHEEL_DELTA,
         WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR,
         WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
-        WM_SETCURSOR, WM_SYSCOMMAND, WS_EX_NOACTIVATE,
-        WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WM_MBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND, WM_SYSKEYDOWN,
+        WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST,
       },
     },
   },
@@ -66,8 +71,7 @@ use crate::{
   overview_chrome::{picture_rect, CardPicture, SearchControls},
   overview_effects::Entrance,
   overview_layout::{
-    Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
-    Zoom,
+    Camera, CardMetrics, CardView, Placement, RectF, Spring, Zoom,
   },
   overview_scene::Scene,
   overview_state::{
@@ -78,9 +82,9 @@ use crate::{
   overview_thumbnails::{Picture, Preview},
   platform_impl::{self, composition::OverviewBackdrop},
   window_class::{self, mouse_position},
-  window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
-  OverviewLayoutMode, OverviewScreen, OverviewStyle, OverviewWorkspace,
-  Rect,
+  window_icons, DxgiVsyncWaiter, FrameClock, OverviewAction,
+  OverviewFrame, OverviewInput, OverviewLayoutMode, OverviewScreen,
+  OverviewStyle, OverviewWorkspace, OverviewZoomStyle, Rect,
 };
 
 /// Posted with a `Box<Open>` in `WPARAM`.
@@ -100,6 +104,10 @@ const WM_HIDE_OVERVIEW: u32 = WM_APP + 4;
 /// Posted by the icon thread once an icon is cached.
 const WM_ICON_READY: u32 = WM_APP + 5;
 
+/// Posted with a `Box<OverviewInput>` in `WPARAM`: a keybinding of the
+/// WM's pressed while the overview has the keyboard.
+const WM_OVERVIEW_INPUT: u32 = WM_APP + 6;
+
 /// How long the zoom into a pick waits for the WM to carry it out before
 /// starting regardless, a safety net for a pick it never answers.
 ///
@@ -108,6 +116,9 @@ const WM_ICON_READY: u32 = WM_APP + 5;
 /// for where the windows were, then veers off once the WM's answer says
 /// where they landed.
 const PICK_TIMEOUT: Duration = Duration::from_millis(400);
+
+/// How many monitor widths a notch of the wheel pans the stack's strip.
+const PAN_PER_NOTCH: f32 = 0.5;
 
 /// What the WM thread posts to open the overview.
 struct Open {
@@ -169,12 +180,14 @@ impl NativeOverview {
     self.session += 1;
     self.last_frame = Some(frame.clone());
 
-    let open = Box::new(Open {
-      session: self.session,
-      frame,
-      layout,
-    });
-    self.post(WM_OPEN_OVERVIEW, Box::into_raw(open) as usize);
+    self.post_boxed(
+      WM_OPEN_OVERVIEW,
+      Open {
+        session: self.session,
+        frame,
+        layout,
+      },
+    );
   }
 
   /// Shows `frame` in the open overview.
@@ -186,7 +199,7 @@ impl NativeOverview {
     }
 
     self.last_frame = Some(frame.clone());
-    self.post(WM_UPDATE_OVERVIEW, Box::into_raw(Box::new(frame)) as usize);
+    self.post_boxed(WM_UPDATE_OVERVIEW, frame);
   }
 
   /// Switches the open overview to `layout`, or cancels it if it already
@@ -197,6 +210,14 @@ impl NativeOverview {
       .position(|other| *other == layout)
       .unwrap_or(0);
     self.post(WM_TOGGLE_OVERVIEW, index);
+  }
+
+  /// Hands the open overview `input`, which it acts on as on a key of
+  /// its own, or drops once it is closing. Returns whether it got there:
+  /// not if the overview's thread is gone.
+  #[must_use]
+  pub fn input(&self, input: OverviewInput) -> bool {
+    self.post_boxed(WM_OVERVIEW_INPUT, input)
   }
 
   /// Closes the overview once its zoom into the picked workspace ends.
@@ -228,12 +249,25 @@ impl NativeOverview {
     self.session
   }
 
-  fn post(&self, msg: u32, wparam: usize) {
-    // SAFETY: A boxed payload passes to the window procedure, which frees
-    // it. If the post fails the window is gone and it leaks.
+  /// Posts `msg` with `payload` boxed in `WPARAM`, for the window
+  /// procedure to free. Returns whether it was posted.
+  fn post_boxed<T>(&self, msg: u32, payload: T) -> bool {
+    let payload = Box::into_raw(Box::new(payload));
+    let is_posted = self.post(msg, payload as usize);
+
+    if !is_posted {
+      // SAFETY: The post failed, so the payload is still this side's.
+      drop(unsafe { Box::from_raw(payload) });
+    }
+    is_posted
+  }
+
+  /// Returns whether the message was posted: not if the window is gone.
+  fn post(&self, msg: u32, wparam: usize) -> bool {
+    // SAFETY: Only plain values are passed; a boxed payload goes through
+    // `post_boxed`.
     unsafe {
-      let _ =
-        PostMessageW(HWND(self.hwnd), msg, WPARAM(wparam), LPARAM(0));
+      PostMessageW(HWND(self.hwnd), msg, WPARAM(wparam), LPARAM(0)).is_ok()
     }
   }
 }
@@ -315,7 +349,12 @@ fn run(
     .flatten();
 
     match vsync {
-      Some(waiter) => wait_for_frame(waiter.as_ref()),
+      Some(waiter) => {
+        wait_for_frame(waiter.as_ref());
+        with_overview(|overview| {
+          overview.clock.note_vblank(Instant::now());
+        });
+      }
       // SAFETY: No preconditions.
       None => unsafe {
         let _ = WaitMessage();
@@ -450,7 +489,7 @@ impl Card {
     std::iter::once(self.picture)
       .chain(self.tab_bars.into_iter().map(|bar| bar.picture))
       .map(|mut picture| {
-        picture.thumbnail = None;
+        picture.unregister();
         picture
       })
   }
@@ -470,9 +509,9 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
-  /// How far its zoom has moved things: `fade`, or past it for a moment
-  /// as an open overshoots.
-  reach: f32,
+  /// How strongly the overview shows over the desktop as a whole: the
+  /// openness while it fades in or out, else fully.
+  presence: f32,
   /// The screen's own rect.
   view: RectF,
   /// Card the screen zooms out of or into.
@@ -486,10 +525,10 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   let PlaceContext {
     camera,
     fade,
+    presence,
     view,
     zoom_card,
     entrance,
-    ..
   } = context;
   let (appear, pop) = entrance
     .map_or((1.0, 1.0), |(entrance, elapsed)| {
@@ -513,6 +552,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   } else {
     (1.0, placement.opacity)
   };
+  let alpha = alpha * presence;
 
   for preview in &mut card.previews {
     let dest = camera.apply(&placement.map(&metrics, &preview.tile.rect));
@@ -534,16 +574,16 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
 
     if is_visible {
       bar.picture.place(&dest, view, opacity * alpha);
-    } else if let Some(thumbnail) = &mut bar.picture.thumbnail {
-      thumbnail.hide();
+    } else {
+      bar.picture.hide();
     }
   }
 
   if is_visible {
     let picture = camera.apply(&picture_rect(&metrics, &placement));
     card.picture.place(&picture, view, fade * alpha);
-  } else if let Some(thumbnail) = &mut card.picture.thumbnail {
-    thumbnail.hide();
+  } else {
+    card.picture.hide();
   }
 }
 
@@ -658,15 +698,14 @@ struct Screen {
   sheet_drawn: Option<Vec<ShortcutGroup>>,
   sheet_alpha: Spring,
 
-  /// Where the special workspace's card is docked, from the last layout.
-  dock: Option<RectF>,
-
   /// Thumbnails replaced by a new registration, kept up until the next
   /// placement puts their replacements where they are.
   retired: Vec<Thumbnail>,
 
-  /// Where the grid puts each card, for moving a row up or down.
-  grid: GridCells,
+  /// The stack's pan along the strip of the card it was last laid out
+  /// on, in card units at scale 1, as left after keeping what is picked
+  /// in view.
+  pan: Option<(usize, f32)>,
 
   /// Where the shown workspace's windows show once settled, first to
   /// last, for the arrows to go between them.
@@ -683,11 +722,6 @@ struct Screen {
   is_gliding: bool,
 
   is_tracking_leave: bool,
-
-  /// Whether a window was dragged when last placed, so the highlights
-  /// that followed where it would drop show back on the selection in
-  /// place as it is let go of.
-  was_dragging: bool,
 
   /// Bumped as window icons arrive.
   icons: u64,
@@ -770,6 +804,10 @@ struct Overview {
 
   /// Paces animation frames to the focused monitor.
   vsync: Option<DxgiVsyncWaiter>,
+  /// When the frames waited for happen, which animations step by: the
+  /// time between wake-ups for them varies, so stepped by that the zoom
+  /// advances unevenly.
+  clock: FrameClock,
 }
 
 impl Overview {
@@ -794,6 +832,7 @@ impl Overview {
       is_done: false,
       pending_pick: None,
       vsync: None,
+      clock: FrameClock::new(FrameClock::DEFAULT_PERIOD),
     }
   }
 
@@ -839,7 +878,8 @@ impl Overview {
 
     window_icons::forget_closed();
 
-    let animate = frame.style.open_duration_ms > 0;
+    let animate = frame.style.open_duration_ms > 0
+      && frame.style.zoom_style != OverviewZoomStyle::None;
     for (index, screen) in self.screens.iter_mut().enumerate() {
       let focus = self.interaction.focus(index, &self.workspaces);
       screen.open(
@@ -878,6 +918,14 @@ impl Overview {
 
     let monitor = DxgiVsyncWaiter::window_monitor(foreground);
     self.vsync = DxgiVsyncWaiter::for_monitor(monitor).ok();
+    self.clock.reset(
+      self
+        .vsync
+        .as_ref()
+        .map_or(FrameClock::DEFAULT_PERIOD, |waiter| {
+          Duration::from_micros(waiter.frame_period_us())
+        }),
+    );
   }
 
   /// Shows a new `frame` in the open overview, keeping the selection.
@@ -965,7 +1013,7 @@ impl Overview {
     let is_gone = |hwnd: isize| {
       !workspaces
         .iter()
-        .any(|workspace| workspace.windows.iter().any(|w| w.hwnd == hwnd))
+        .any(|workspace| workspace.window(hwnd).is_some())
     };
 
     let (gone, waiting) = std::mem::take(&mut self.closing)
@@ -1038,12 +1086,6 @@ impl Overview {
   /// Tells the interaction what the screens laid out, and moves the
   /// floating window along.
   fn after_layout(&mut self) {
-    for (cursor, screen) in
-      self.interaction.screens.iter_mut().zip(&self.screens)
-    {
-      cursor.grid.clone_from(&screen.grid);
-    }
-
     if let Some(screen) = self.screens.get(self.interaction.active) {
       self.interaction.nav.clone_from(&screen.nav);
     }
@@ -1081,13 +1123,11 @@ impl Overview {
       None => ghost.park(screen),
     }
 
-    let title = self.workspaces.iter().find_map(|workspace| {
-      workspace
-        .windows
-        .iter()
-        .find(|window| window.hwnd == ghost.hwnd)
-        .map(|window| window.title.clone())
-    });
+    let title = self
+      .workspaces
+      .iter()
+      .find_map(|workspace| workspace.window(ghost.hwnd))
+      .map(|window| window.title.clone());
     if let (Some(title), Some(style)) = (title, screen.style()) {
       ghost.draw(&title, screen.metrics.scale_factor, style);
     }
@@ -1127,12 +1167,7 @@ impl Overview {
         screen
           .workspaces()
           .iter()
-          .position(|workspace| {
-            workspace
-              .windows
-              .iter()
-              .any(|window| window.hwnd == ghost.hwnd)
-          })
+          .position(|workspace| workspace.window(ghost.hwnd).is_some())
           .map(|card| (index, card))
       })
     };
@@ -1184,6 +1219,7 @@ impl Overview {
     let duration = self
       .frame
       .as_ref()
+      .filter(|frame| frame.style.zoom_style != OverviewZoomStyle::None)
       .map_or(0, |frame| frame.style.close_duration_ms);
     let cards = (0..self.screens.len())
       .map(|index| self.closing_card(index, action))
@@ -1211,10 +1247,9 @@ impl Overview {
     // The scenes zoom into the picked workspace's own windows, so they
     // show it first.
     for (index, card) in cards.iter().enumerate() {
-      let start =
-        self.interaction.screens.get(index).map(|s| s.cards.start);
+      let start = self.interaction.first_card(index);
       if let (Some(card), Some(start)) = (card, start) {
-        self.interaction.show(start + card, &self.workspaces);
+        self.interaction.show(start + card);
       }
     }
 
@@ -1242,9 +1277,9 @@ impl Overview {
 
     match action {
       OverviewAction::FocusWindow { hwnd, monitor } if *monitor == id => {
-        workspaces.iter().position(|workspace| {
-          workspace.windows.iter().any(|window| window.hwnd == *hwnd)
-        })
+        workspaces
+          .iter()
+          .position(|workspace| workspace.window(*hwnd).is_some())
       }
       OverviewAction::FocusWorkspace { name, monitor }
         if *monitor == id =>
@@ -1269,12 +1304,15 @@ impl Overview {
       return false;
     }
 
+    // The wall clock for a step nothing was waited for, e.g. the first
+    // after input.
     let now = Instant::now();
+    let now = self.clock.vblank_at(now).unwrap_or(now);
     let dt = now
-      .duration_since(self.last_tick)
+      .saturating_duration_since(self.last_tick)
       .as_secs_f32()
       .min(1.0 / 30.0);
-    self.last_tick = now;
+    self.last_tick = self.last_tick.max(now);
 
     // The WM hasn't carried out the pick in time: zoom anyway, so the
     // overview still closes.
@@ -1360,11 +1398,7 @@ impl Overview {
     };
 
     let hit = self.screens[index].hit(x, y);
-    let start = self
-      .interaction
-      .screens
-      .get(index)
-      .map_or(0, |screen| screen.cards.start);
+    let start = self.interaction.first_card(index).unwrap_or(0);
 
     (
       Some(index),
@@ -1448,11 +1482,16 @@ impl Overview {
     self.after_input(action);
   }
 
+  fn on_input(&mut self, input: &OverviewInput) {
+    let action = self.interaction.input(input, &self.workspaces);
+    self.after_input(action);
+  }
+
   fn on_toggle(&mut self, layout: OverviewLayoutMode) {
     if self.interaction.layout == layout {
       self.after_input(Some(OverviewAction::Cancel));
     } else {
-      self.interaction.set_layout(layout, &self.workspaces);
+      self.interaction.layout = layout;
       self.after_input(None);
     }
   }
@@ -1481,9 +1520,8 @@ impl Overview {
     let (screen, hit) = self.hit(point);
     self.point_at(point);
     // The keyboard goes where the mouse is.
-    let is_activated = screen.is_some_and(|screen| {
-      self.interaction.activate(screen, &self.workspaces)
-    });
+    let is_activated =
+      screen.is_some_and(|screen| self.interaction.activate(screen));
     let was_dragging = self.interaction.drag.is_some();
 
     if self.interaction.mouse_move(point, hit, is_left_down)
@@ -1558,11 +1596,7 @@ impl Overview {
 
     let card = screen.zip(hit.workspace).filter(|_| hit.control.is_none());
     if let Some((screen, workspace)) = card {
-      let start = self
-        .interaction
-        .screens
-        .get(screen)
-        .map_or(0, |cursor| cursor.cards.start);
+      let start = self.interaction.first_card(screen).unwrap_or(0);
       self.screens[screen].ripple(workspace - start);
     }
 
@@ -1595,11 +1629,26 @@ impl Overview {
   #[allow(clippy::cast_precision_loss)]
   fn on_wheel(&mut self, (x, y): (i32, i32), is_down: bool) {
     if let Some((screen, _)) = self.locate((x as f32, y as f32)) {
-      self.interaction.activate(screen, &self.workspaces);
+      self.interaction.activate(screen);
     }
 
     self.interaction.wheel(is_down, &self.workspaces);
     self.after_input(None);
+  }
+
+  /// Pans the strip shown on the screen at screen point `point` by
+  /// `delta` wheel units, a notch (`WHEEL_DELTA`) of them half a monitor.
+  #[allow(clippy::cast_precision_loss)]
+  fn on_pan(&mut self, (x, y): (i32, i32), delta: f32) {
+    if let Some((screen, _)) = self.locate((x as f32, y as f32)) {
+      self.interaction.activate(screen);
+    }
+
+    self.interaction.pan();
+    self.after_input(None);
+    if let Some(screen) = self.screens.get_mut(self.interaction.active) {
+      screen.pan_by(delta / WHEEL_DELTA as f32 * PAN_PER_NOTCH);
+    }
   }
 
   /// Closes as the WM asks: zooming into the pick it carried out, whose
@@ -1701,6 +1750,14 @@ impl Overview {
           .copied()
           .unwrap_or_default(),
       ),
+      WM_OVERVIEW_INPUT => {
+        // SAFETY: Posted by `NativeOverview::input` with an owned input.
+        let input =
+          unsafe { Box::from_raw(wparam.0 as *mut OverviewInput) };
+        if is_open {
+          self.on_input(&input);
+        }
+      }
       WM_HIDE_OVERVIEW => self.on_hide(),
       WM_ICON_READY => {
         for screen in &mut self.screens {
@@ -1719,9 +1776,19 @@ impl Overview {
       WM_SYSCOMMAND if (wparam.0 & 0xfff0) == SC_KEYMENU as usize => {}
       WM_KEYDOWN if is_open => {
         #[allow(clippy::cast_possible_truncation)]
-        if let Some(key) = to_key(VIRTUAL_KEY(wparam.0 as u16)) {
+        if let Some(key) =
+          to_key(VIRTUAL_KEY(wparam.0 as u16), is_shifted())
+        {
           self.on_key(key);
         }
+      }
+      // A key pressed with `Alt` held, which types nothing. Those that
+      // aren't the overview's keep their default handling, e.g.
+      // `Alt` + `F4`.
+      WM_SYSKEYDOWN if is_open => {
+        #[allow(clippy::cast_possible_truncation)]
+        let key = to_alt_key(VIRTUAL_KEY(wparam.0 as u16), is_shifted())?;
+        self.on_key(key);
       }
       WM_CHAR if is_open => {
         let text = u32::try_from(wparam.0).ok().and_then(char::from_u32);
@@ -1751,12 +1818,22 @@ impl Overview {
       WM_MBUTTONDOWN if is_open => {
         self.on_middle_down(hwnd, mouse_position(lparam));
       }
-      WM_MOUSEWHEEL if is_open => {
-        // The high word of `wparam` is the signed wheel delta, and
-        // `lparam` the cursor in screen coordinates.
+      WM_MOUSEWHEEL | WM_MOUSEHWHEEL if is_open => {
+        // The high word of `wparam` is the signed wheel delta, its low
+        // word the keys held, and `lparam` the cursor in screen
+        // coordinates.
         #[allow(clippy::cast_possible_truncation)]
         let delta = ((wparam.0 >> 16) as u16).cast_signed();
-        self.on_wheel(mouse_position(lparam), delta < 0);
+        let is_shifted = wparam.0 & MK_SHIFT.0 as usize != 0;
+        let position = mouse_position(lparam);
+
+        // Sideways pans the stack's strip: right for a tilt right, and
+        // for the wheel turned down while holding shift.
+        match (msg == WM_MOUSEHWHEEL, is_shifted) {
+          (true, _) => self.on_pan(position, f32::from(delta)),
+          (false, true) => self.on_pan(position, -f32::from(delta)),
+          (false, false) => self.on_wheel(position, delta < 0),
+        }
       }
       WM_SETCURSOR if u32::try_from(lparam.0 & 0xffff) == Ok(HTCLIENT) => {
         // SAFETY: The cursors are system cursors.
@@ -1774,11 +1851,15 @@ impl Overview {
   }
 }
 
-/// The overview's key for a key press, if it acts on it.
-fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
-  let digit =
-    |base: VIRTUAL_KEY| u8::try_from(key.0 - base.0).ok().map(Key::Digit);
+/// Whether a `Shift` key is held, as of the message being handled.
+fn is_shifted() -> bool {
+  // SAFETY: No preconditions.
+  unsafe { GetKeyState(i32::from(VK_SHIFT.0)) < 0 }
+}
 
+/// The overview's key for a key press that types nothing, if it acts on
+/// it. Typed characters arrive as `WM_CHAR` instead.
+fn to_key(key: VIRTUAL_KEY, is_shifted: bool) -> Option<Key> {
   match key {
     VK_LEFT => Some(Key::Left),
     VK_RIGHT => Some(Key::Right),
@@ -1789,13 +1870,35 @@ fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
     VK_RETURN => Some(Key::Enter),
     VK_SPACE => Some(Key::Space),
     VK_BACK => Some(Key::Backspace),
+    VK_DELETE => Some(Key::Delete),
+    VK_TAB if is_shifted => Some(Key::BackTab),
     VK_TAB => Some(Key::Tab),
     VK_ESCAPE => Some(Key::Escape),
-    _ if (VK_0.0..=VK_9.0).contains(&key.0) => digit(VK_0),
-    _ if (VK_NUMPAD0.0..=VK_NUMPAD9.0).contains(&key.0) => {
-      digit(VK_NUMPAD0)
-    }
+    VK_F1 => Some(Key::F1),
     _ => None,
+  }
+}
+
+/// The overview's key for a key pressed with `Alt` held, if it acts on
+/// it: a letter, digit or `-` as a chord, and any other key as without
+/// `Alt`, e.g. the arrows.
+fn to_alt_key(key: VIRTUAL_KEY, is_shifted: bool) -> Option<Key> {
+  let is_letter = (VK_A.0..=VK_Z.0).contains(&key.0);
+  let is_digit = (VK_0.0..=VK_9.0).contains(&key.0);
+
+  // The virtual-key codes of letters and digits are their ASCII codes.
+  let chord = match key {
+    VK_OEM_MINUS => Some('-'),
+    _ if is_letter || is_digit => u8::try_from(key.0)
+      .ok()
+      .map(|code| char::from(code).to_ascii_lowercase()),
+    _ => None,
+  };
+
+  match chord {
+    Some(chord) if is_shifted => Some(Key::AltShift(chord)),
+    Some(chord) => Some(Key::Alt(chord)),
+    None => to_key(key, is_shifted),
   }
 }
 
@@ -1804,7 +1907,7 @@ fn elapsed_ms(started: Instant) -> f32 {
   started.elapsed().as_secs_f32() * 1000.0
 }
 
-/// A duration of the style, as springs and glides take it.
+/// A duration of the style, as springs and marks take it.
 #[allow(clippy::cast_precision_loss)]
 fn to_ms(duration_ms: u32) -> f32 {
   duration_ms as f32
@@ -1878,8 +1981,37 @@ unsafe extern "system" fn screen_proc(
 
 #[cfg(test)]
 mod tests {
-  use super::is_strip_scrolled;
-  use crate::{OverviewScreen, OverviewWorkspace, Rect};
+  use windows::Win32::UI::Input::KeyboardAndMouse::{
+    VK_1, VK_DELETE, VK_F4, VK_H, VK_LEFT, VK_MENU, VK_OEM_MINUS, VK_TAB,
+  };
+
+  use super::{is_strip_scrolled, to_alt_key, to_key};
+  use crate::{
+    overview_state::Key, OverviewScreen, OverviewWorkspace, Rect,
+  };
+
+  #[test]
+  fn keys_that_type_are_left_to_their_characters() {
+    assert_eq!(to_key(VK_H, false), None);
+    assert_eq!(to_key(VK_1, false), None);
+    assert_eq!(to_key(VK_OEM_MINUS, false), None);
+
+    assert_eq!(to_key(VK_DELETE, false), Some(Key::Delete));
+    assert_eq!(to_key(VK_TAB, false), Some(Key::Tab));
+    assert_eq!(to_key(VK_TAB, true), Some(Key::BackTab));
+  }
+
+  #[test]
+  fn alt_makes_chords_of_letters_digits_and_minus() {
+    assert_eq!(to_alt_key(VK_H, false), Some(Key::Alt('h')));
+    assert_eq!(to_alt_key(VK_1, true), Some(Key::AltShift('1')));
+    assert_eq!(to_alt_key(VK_OEM_MINUS, false), Some(Key::Alt('-')));
+
+    // Other keys do as without it, and the rest are the system's.
+    assert_eq!(to_alt_key(VK_LEFT, false), Some(Key::Left));
+    assert_eq!(to_alt_key(VK_F4, false), None);
+    assert_eq!(to_alt_key(VK_MENU, false), None);
+  }
 
   fn workspace(name: &str, content_rect: Rect) -> OverviewWorkspace {
     OverviewWorkspace {

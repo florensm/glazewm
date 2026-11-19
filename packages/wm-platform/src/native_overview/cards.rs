@@ -6,9 +6,7 @@ use windows::Win32::Foundation::HWND;
 use super::{to_ms, Card, Screen};
 use crate::{
   overview_chrome::{fade, with_alpha, CardPicture, TilePicture},
-  overview_layout::{
-    CardLook, CardSlot, CardView, GridCells, RectF, Spring,
-  },
+  overview_layout::{CardLook, CardSlot, CardView, RectF, Spring},
   overview_state::Mode,
   overview_tab_bars::CardTabBar,
   overview_thumbnails::{visible_frame_on_screen, Picture, Preview},
@@ -141,11 +139,6 @@ impl Screen {
 
     self.cards = cards;
     self.spare = spare;
-    self.grid = GridCells::fitting(
-      &self.metrics,
-      &self.slots(),
-      frame.style.grid_columns,
-    );
     is_changed
   }
 
@@ -170,25 +163,21 @@ impl Screen {
         bar.update(bar.frame.clone(), &card.view);
       }
     }
-
-    let columns = frame.style.grid_columns;
-    self.grid = GridCells::fitting(&self.metrics, &self.slots(), columns);
   }
 
   /// What the layouts need of each card: where its monitor's view is,
-  /// and on the selected card, the window being picked.
+  /// and on the selected card, the window being picked, unless pointed
+  /// at.
   pub(super) fn slots(&self) -> Vec<CardSlot> {
-    let picked = self
-      .focus
-      .selected_window
-      .filter(|_| self.focus.mode == Mode::Windows);
+    let picked = self.focus.selected_window.filter(|_| {
+      self.focus.mode == Mode::Windows && self.focus.keeps_window_in_view
+    });
 
     self
       .cards
       .iter()
-      .zip(self.workspaces())
       .enumerate()
-      .map(|(index, (card, workspace))| {
+      .map(|(index, card)| {
         let view = card.view.map(&self.area);
         let keep = picked
           .filter(|_| index == self.focus.selected)
@@ -213,7 +202,7 @@ impl Screen {
         CardSlot {
           view_center: view.x + view.w / 2.0,
           keep,
-          ..CardSlot::new(&card.metrics, workspace.is_special)
+          ..CardSlot::new(&card.metrics)
         }
       })
       .collect()
@@ -248,7 +237,7 @@ impl Screen {
 
     spare.extend(old.into_iter().map(|bar| {
       let mut picture = bar.picture;
-      picture.thumbnail = None;
+      picture.unregister();
       picture
     }));
     tab_bars
@@ -267,9 +256,7 @@ impl Screen {
       && !self
         .workspaces()
         .get(index)
-        .and_then(|workspace| {
-          workspace.windows.iter().find(|window| window.hwnd == hwnd)
-        })
+        .and_then(|workspace| workspace.window(hwnd))
         .is_some_and(|window| focus.is_match(window));
 
     if is_miss {
@@ -301,9 +288,8 @@ impl Screen {
         .previews
         .iter()
         .map(|preview| {
-          let window = workspace.and_then(|workspace| {
-            workspace.windows.iter().find(|w| w.hwnd == preview.hwnd)
-          });
+          let window =
+            workspace.and_then(|workspace| workspace.window(preview.hwnd));
           let is_match = window.is_some_and(|w| focus.is_match(w));
           let is_picked = focus.floating == Some(preview.hwnd);
           let is_focused = focused_window == Some(preview.hwnd);

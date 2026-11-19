@@ -40,9 +40,11 @@ mod auto_stack;
 mod closing_windows;
 mod commands;
 mod config_files;
+mod covered_tiles;
 mod drop_indicator;
 mod error_notifier;
 mod events;
+mod focus_requests;
 mod ipc_server;
 mod layout;
 mod models;
@@ -50,6 +52,7 @@ mod overview;
 mod particles;
 mod pending_sync;
 mod stay_interactive;
+mod switch_log;
 mod sys_tray;
 mod tab_bars;
 mod traits;
@@ -125,11 +128,13 @@ async fn start_wm(
 ) -> anyhow::Result<()> {
   setup_logging(&verbosity)?;
 
-  // Left on by mistake, it would make every animation look broken.
+  // Left on by mistake, it would make animations look broken or differ
+  // from the defaults.
   let isolation = wm_platform::isolation::current();
   if isolation != wm_platform::isolation::Isolation::default() {
     tracing::warn!(
-      "GLAZEWM_ISOLATE leaves parts of moving windows out: {isolation:?}."
+      "GLAZEWM_ISOLATE changes how moving windows are drawn: \
+       {isolation:?}."
     );
   }
 
@@ -203,14 +208,21 @@ async fn start_wm(
     // ~577ms on an eight-window relayout, and IPC commands, tab clicks
     // and timers waited for the animation to end. The catch-up is bounded
     // per frame so a burst cannot starve the animation in turn.
-    if let Err(err) = catch_up_before_frame(
-      &mut wm,
-      &mut config,
-      &mut listeners,
-      &mut ipc_server,
-      &mut tray,
-    ) {
-      error_notifier.report(&err);
+    //
+    // Behind `GLAZEWM_ISOLATE=peeksfirst`, a tick with peeks to draw runs
+    // the catch-up after drawing them instead (see the tick's branch).
+    let peeks_first = isolation.peeks_first
+      && wm.state.animation_manager.peeks.is_active();
+    if !peeks_first {
+      if let Err(err) = catch_up_before_frame(
+        &mut wm,
+        &mut config,
+        &mut listeners,
+        &mut ipc_server,
+        &mut tray,
+      ) {
+        error_notifier.report(&err);
+      }
     }
 
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
@@ -240,7 +252,24 @@ async fn start_wm(
         // Drain any stale ticks that piled up while the previous frame was
         // processing, so each update_animations call covers the freshest state.
         while wm.animation_tick_rx.try_recv().is_ok() {}
-        wm.update_animations(&config)
+        if peeks_first {
+          // Thumbnail updates only, so they land early in the frame and
+          // close together, ahead of any composition the catch-up's work
+          // would let fall between them (`STAND_INS_PLAN.md` task 7).
+          let drawn = wm.draw_peeks_first(&config);
+          if let Err(err) = catch_up_before_frame(
+            &mut wm,
+            &mut config,
+            &mut listeners,
+            &mut ipc_server,
+            &mut tray,
+          ) {
+            error_notifier.report(&err);
+          }
+          wm.finish_animations(&config, drawn)
+        } else {
+          wm.update_animations(&config)
+        }
       },
       // Reached only when no tick is pending, i.e. the timer stopped
       // ticking while something is still animating.
@@ -289,8 +318,8 @@ async fn start_wm(
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
       },
-      Some(window) = wm.guarded_click_rx.recv() => {
-        wm.process_guarded_click(&window, &config)
+      Some(click) = wm.guarded_click_rx.recv() => {
+        wm.process_guarded_click(&click, &config)
       },
       Some(wm_event) = wm.event_rx.recv() => {
         handle_wm_event(
@@ -490,8 +519,8 @@ fn catch_up_before_frame(
       continue;
     }
 
-    if let Ok(window) = wm.guarded_click_rx.try_recv() {
-      wm.process_guarded_click(&window, config)?;
+    if let Ok(click) = wm.guarded_click_rx.try_recv() {
+      wm.process_guarded_click(&click, config)?;
       continue;
     }
 
@@ -604,6 +633,15 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_target(wm_platform::OVERVIEW_LOG_TARGET, Level::DEBUG),
     );
 
+  // One line per workspace switch, so always on, in its own file.
+  let switch_layer = fmt::Layer::new()
+    .with_ansi(false)
+    .with_writer(open_log_file(&error_log_dir, "switch.log")?)
+    .with_filter(
+      tracing_subscriber::filter::Targets::new()
+        .with_target(switch_log::SWITCH_LOG_TARGET, Level::INFO),
+    );
+
   let debug_layer = (verbosity.level() == Level::DEBUG)
     .then(|| open_log_file(&error_log_dir, "debug.log"))
     .transpose()?
@@ -626,6 +664,7 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     )
     .with(perf_layer)
     .with(overview_layer)
+    .with(switch_layer)
     .with(debug_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;

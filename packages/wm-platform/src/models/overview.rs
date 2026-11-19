@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-  BorderOverlayParams, Color, ParticleEffects, ParticleLook,
+  BorderOverlayParams, Color, Direction, ParticleEffects, ParticleLook,
   ParticleStyle, Point, Rect, TabFrame,
 };
 
@@ -58,7 +58,7 @@ pub struct OverviewWorkspace {
   pub is_new: bool,
 
   /// The special workspace: shown on every monitor's overview, set apart
-  /// after the others, and reached with the `s` key.
+  /// after the others, and reached with `Alt` + `-`.
   pub is_special: bool,
 
   /// Area its card shows, in physical pixels: the monitor's working area,
@@ -71,6 +71,14 @@ pub struct OverviewWorkspace {
 
   /// Tab bars of its stacks, as the stacks' own bars draw them.
   pub tab_bars: Vec<TabFrame>,
+}
+
+impl OverviewWorkspace {
+  /// Its window `hwnd`, if it has it.
+  #[must_use]
+  pub fn window(&self, hwnd: isize) -> Option<&OverviewWindow> {
+    self.windows.iter().find(|window| window.hwnd == hwnd)
+  }
 }
 
 /// A window shown in the overview.
@@ -159,21 +167,26 @@ pub struct OverviewStyle {
 
   pub font_family: String,
 
-  /// Columns of the grid of every workspace.
-  pub grid_columns: usize,
+  /// How it opens and closes.
+  pub zoom_style: OverviewZoomStyle,
 
-  /// Length of the zoom out when opening; 0 opens instantly.
+  /// Pace of the open and close, from 0 to 1 over their durations.
+  pub zoom_curve: OverviewCurve,
+
+  /// Length of the open; 0 opens instantly.
   pub open_duration_ms: u32,
 
-  /// Length of the zoom into the picked workspace when closing; 0 closes
-  /// instantly.
+  /// Length of the close, into the picked workspace; 0 closes instantly.
   pub close_duration_ms: u32,
+
+  /// How the activities change the workspace they show large.
+  pub switch_style: OverviewSwitchStyle,
 
   /// About how long cards and windows take to move to a new selection or
   /// layout; 0 moves them at once.
   pub switch_duration_ms: u32,
 
-  /// How long highlights take to glide to what they mark next and to
+  /// How long highlights take to settle onto what they mark next and to
   /// fade, as the shortcut sheet does; 0 snaps them.
   pub highlight_duration_ms: u32,
 
@@ -185,6 +198,88 @@ pub struct OverviewStyle {
 
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
+}
+
+/// How the overview opens and closes.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewZoomStyle {
+  /// Everything zooms out of the workspace on screen as one, and back
+  /// into the one picked, as hyprexpo and niri do.
+  #[default]
+  Zoom,
+
+  /// It fades in over the desktop settling from a little larger, and
+  /// fades back out growing.
+  Fade,
+
+  /// At once.
+  None,
+}
+
+/// How the activities change the workspace they show large.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewSwitchStyle {
+  /// The new one slides in from the side its miniature is on, as a
+  /// workspace switch does, and the last one out the other way.
+  #[default]
+  Slide,
+
+  /// One fades into the other in place.
+  Fade,
+
+  /// The new one's windows fly out of its miniature, and the last one's
+  /// back into theirs.
+  Miniature,
+}
+
+/// An easing curve sampled at even steps from progress 0 to 1, so the
+/// overview's thread needn't know how the config describes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverviewCurve {
+  samples: Vec<f32>,
+}
+
+impl OverviewCurve {
+  /// The curve through `samples`, taken at even steps from 0 to 1; a
+  /// straight line for fewer than two.
+  #[must_use]
+  pub fn new(samples: Vec<f32>) -> Self {
+    Self { samples }
+  }
+
+  /// Its value at `progress`, between the samples either side of it.
+  #[must_use]
+  #[allow(clippy::cast_precision_loss)]
+  pub fn at(&self, progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    let steps = self.samples.len().saturating_sub(1);
+    if steps == 0 {
+      return progress;
+    }
+
+    let position = progress * steps as f32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let index = (position.floor() as usize).min(steps - 1);
+    let (from, to) = (self.samples[index], self.samples[index + 1]);
+    from + (to - from) * (position - index as f32)
+  }
+}
+
+impl Default for OverviewCurve {
+  /// Fast at first, gently settling: a quartic ease-out.
+  fn default() -> Self {
+    Self::new(
+      (0..=32_u8)
+        .map(|step| 1.0 - (1.0 - f32::from(step) / 32.0).powi(4))
+        .collect(),
+    )
+  }
 }
 
 /// Extra flourishes of the overview, each of which can be turned off.
@@ -293,22 +388,14 @@ pub enum OverviewLayoutMode {
   #[default]
   Activities,
 
-  /// The shown workspace large and as laid out, the others in a column
-  /// at the side.
-  Stage,
-
-  /// One row, the selected workspace in the middle and larger than the
-  /// rest.
-  Carousel,
-
-  /// Every workspace at once.
-  Grid,
+  /// Every workspace at the same zoom, stacked top to bottom, each strip
+  /// at its full length and panned to keep what is picked in view.
+  Stack,
 }
 
 impl OverviewLayoutMode {
   /// Every layout, in the order `Tab` goes through them.
-  pub const ALL: [Self; 4] =
-    [Self::Activities, Self::Stage, Self::Carousel, Self::Grid];
+  pub const ALL: [Self; 2] = [Self::Activities, Self::Stack];
 
   /// The layout `Tab` goes on to.
   #[must_use]
@@ -317,11 +404,12 @@ impl OverviewLayoutMode {
     Self::ALL[index.map_or(0, |index| (index + 1) % Self::ALL.len())]
   }
 
-  /// Whether the special workspace's card is docked at the bottom, apart
-  /// from the others, rather than coming after them.
+  /// The layout `Shift` + `Tab` goes back to.
   #[must_use]
-  pub fn docks_special(self) -> bool {
-    matches!(self, Self::Carousel | Self::Grid)
+  pub fn previous(self) -> Self {
+    let count = Self::ALL.len();
+    let index = Self::ALL.iter().position(|layout| *layout == self);
+    Self::ALL[index.map_or(0, |index| (index + count - 1) % count)]
   }
 
   /// Whether the selected workspace's windows are laid out on their own
@@ -331,23 +419,41 @@ impl OverviewLayoutMode {
     self == Self::Activities
   }
 
-  /// Whether the selected workspace shows large, its windows big enough
-  /// to point at and to tag with their titles.
-  #[must_use]
-  pub fn shows_selected_large(self) -> bool {
-    matches!(self, Self::Activities | Self::Stage)
-  }
-
   /// Name of the layout, as in the config.
   #[must_use]
   pub fn name(self) -> &'static str {
     match self {
       Self::Activities => "activities",
-      Self::Stage => "stage",
-      Self::Carousel => "carousel",
-      Self::Grid => "grid",
+      Self::Stack => "stack",
     }
   }
+}
+
+/// What one of the WM's keybindings does in the open overview, which has
+/// the keyboard: what its command would do on the desktop, done to the
+/// overview's selection instead.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverviewInput {
+  /// Move the selection, as an arrow key does.
+  Move(Direction),
+
+  /// Switch to the named workspace and close, or drop the carried window
+  /// there.
+  FocusWorkspace(String),
+
+  /// Send the picked or carried window to the named workspace.
+  MoveToWorkspace(String),
+
+  /// The same for the special workspace.
+  FocusSpecialWorkspace,
+  MoveToSpecialWorkspace,
+
+  /// Select the next or previous workspace, as the wheel does.
+  NextWorkspace,
+  PreviousWorkspace,
+
+  /// Close the picked window.
+  CloseWindow,
 }
 
 /// What the user did in the overview.

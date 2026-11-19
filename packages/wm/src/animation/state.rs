@@ -96,6 +96,11 @@ impl WindowAnimationState {
     }
   }
 
+  /// Whether the clock has started, i.e. a frame of it has been drawn.
+  pub fn is_running(&self) -> bool {
+    self.start_time.get().is_some()
+  }
+
   /// Gets the eased progress in [0.0, 1.0] at an explicit `now` instant.
   ///
   /// Allows callers to supply a predictive timestamp (e.g. vsync wake-up
@@ -207,6 +212,11 @@ impl WindowAnimationState {
   /// the curve's initial slope, keeping its second, which shapes the
   /// ending, so it can't start out heading back. A spring starts at that
   /// speed, heading back first if it was. Other easings start from rest.
+  ///
+  /// Its clock is left to the caller: started at `now` (the time frames
+  /// are evaluated at, not the wall clock) it carries on from exactly
+  /// where this one was drawn, whenever the next frame lands. Started a
+  /// tick later instead, it repeats or skips up to a frame of travel.
   pub fn retargeted(
     &self,
     target: Rect,
@@ -279,11 +289,16 @@ impl WindowAnimationState {
   /// Eased progress per millisecond at `now`, measured over the moments
   /// before it.
   ///
-  /// An animation whose clock hasn't started (e.g. one retargeted earlier
-  /// in the same frame) still reads 0 there, so it gets the speed it
+  /// An animation that hasn't run that long (e.g. one retargeted earlier
+  /// in the same frame) reads 0 before its start, so it gets the speed it
   /// starts out at instead.
   fn progress_per_ms(&self, now: Instant) -> f32 {
-    if self.start_time.get().is_none() {
+    let has_run_long = self.start_time.get().is_some_and(|start| {
+      now.saturating_duration_since(start + self.start_delay)
+        >= SPEED_SAMPLE
+    });
+
+    if !has_run_long {
       let duration_ms = self.duration.as_secs_f32() * 1000.0;
       if !self.start_delay.is_zero() || duration_ms <= 0.0 {
         return 0.0;
@@ -345,6 +360,23 @@ impl WindowAnimationState {
       _ => None,
     };
     (rect, opacity)
+  }
+
+  /// Rescales the opacity track, given as fractions of `from` alpha, to
+  /// the same fractions of `to`, e.g. for a stand-in drawn at a different
+  /// opacity from mid-animation on. No-op without a track or from 0.
+  pub fn rescale_opacity(&mut self, from: u8, to: u8) {
+    if from == 0 || from == to {
+      return;
+    }
+
+    let factor = f32::from(to) / f32::from(from);
+    for opacity in [&mut self.start_opacity, &mut self.target_opacity]
+      .into_iter()
+      .flatten()
+    {
+      opacity.0 = (opacity.0 * factor).clamp(0.0, 1.0);
+    }
   }
 }
 
@@ -557,6 +589,43 @@ mod tests {
     assert!(current.x() > 0);
   }
 
+  /// Frames a steady period apart, with a retarget between two of them:
+  /// started at the frame time it was sampled at, the new movement keeps
+  /// every step alike, wherever in the frame the retarget came.
+  #[test]
+  fn retarget_on_the_frame_clock_keeps_steps_even() {
+    let period = Duration::from_micros(16_667);
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(3_000, 0, 100, 100),
+      600,
+      linear(),
+    );
+    let t0 = Instant::now();
+    anim.start_clock(t0);
+
+    // Drawn at frame 6, then retargeted to twice as far in twice the
+    // time, i.e. at the same speed.
+    let frame = |n: u32| t0 + period * n;
+    let drawn = anim.current_state_at(frame(6)).0;
+    let retargeted = anim.retargeted(
+      Rect::from_xy(6_000, 0, 100, 100),
+      1_200 - 100,
+      linear(),
+      frame(6),
+    );
+    retargeted.start_clock(frame(6));
+    assert_eq!(retargeted.current_state_at(frame(6)).0, drawn);
+
+    let step = anim.current_state_at(frame(6)).0.x()
+      - anim.current_state_at(frame(5)).0.x();
+    for n in 6..12 {
+      let next = retargeted.current_state_at(frame(n + 1)).0.x()
+        - retargeted.current_state_at(frame(n)).0.x();
+      assert!((next - step).abs() <= 2, "frame {n}: {next} vs {step}");
+    }
+  }
+
   /// `start_delay` holds the animation at progress 0.0 until the delay
   /// elapses (used by the window-open paint grace period).
   #[test]
@@ -614,5 +683,26 @@ mod tests {
     let half =
       anim.eased_progress_at(first_tick + Duration::from_millis(50));
     assert!((half - 0.5).abs() < 0.01, "got {half}");
+  }
+
+  /// A fade from 40% to 80% alpha, at a window alpha of 80%, becomes one
+  /// from 50% to 100% at full alpha.
+  #[test]
+  fn rescaled_opacity_keeps_fractions_of_the_new_alpha() {
+    let mut anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(0, 0, 100, 100),
+      100,
+      linear(),
+    );
+    anim.start_opacity = Some(OpacityValue(0.4));
+    anim.target_opacity = Some(OpacityValue(0.8));
+
+    anim.rescale_opacity(204, 255);
+
+    let start = anim.start_opacity.as_ref().map(|opacity| opacity.0);
+    let target = anim.target_opacity.as_ref().map(|opacity| opacity.0);
+    assert!(start.is_some_and(|start| (start - 0.5).abs() < 1e-3));
+    assert!(target.is_some_and(|target| (target - 1.0).abs() < 1e-3));
   }
 }

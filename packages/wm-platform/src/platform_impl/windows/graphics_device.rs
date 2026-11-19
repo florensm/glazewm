@@ -29,7 +29,7 @@ use windows::{
         D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         D3D11_SDK_VERSION,
       },
-      Dxgi::IDXGIDevice,
+      Dxgi::{IDXGIDevice, DXGI_ADAPTER_DESC},
       Imaging::{CLSID_WICImagingFactory, IWICImagingFactory},
     },
     System::{
@@ -66,6 +66,12 @@ impl GraphicsDevice {
 
     // SAFETY: Every D3D11 device implements `IDXGIDevice`.
     let dxgi: IDXGIDevice = d3d.cast()?;
+
+    if let Err(err) = log_adapter(&dxgi) {
+      tracing::debug!(
+        "Couldn't tell the backdrop device's adapter: {err}."
+      );
+    }
 
     // SAFETY: `dxgi` is a live device; passing no creation properties
     // takes D2D's defaults (single-threaded, matching this module's
@@ -136,6 +142,44 @@ fn create_d3d_device() -> windows::core::Result<ID3D11Device> {
     tracing::debug!("No hardware D3D11 device for the wallpaper backdrop, falling back to WARP: {err}.");
     create(D3D_DRIVER_TYPE_WARP)
   })
+}
+
+/// Logs which adapter `device` was created on, as a warning when another
+/// adapter drives a display: the device is created with no adapter, so
+/// which one it gets is up to Windows (and its per-app graphics
+/// preference). Backdrops drawn on one adapter and shown on another are
+/// copied across, and a device on a discrete GPU keeps it powered.
+fn log_adapter(device: &IDXGIDevice) -> crate::Result<()> {
+  let mut desc = DXGI_ADAPTER_DESC::default();
+
+  // SAFETY: `device` is live, and `desc` a stack-allocated out-parameter.
+  unsafe { device.GetAdapter()?.GetDesc(&raw mut desc)? };
+  let luid = (desc.AdapterLuid.LowPart, desc.AdapterLuid.HighPart);
+
+  let adapters = crate::display_adapters()?;
+  let name = adapters
+    .iter()
+    .find(|adapter| adapter.luid == luid)
+    .map_or("an unlisted adapter", |adapter| adapter.name.as_str());
+
+  let others = adapters
+    .iter()
+    .filter(|adapter| adapter.luid != luid && !adapter.displays.is_empty())
+    .map(|adapter| {
+      format!("{} on \"{}\"", adapter.displays.join(", "), adapter.name)
+    })
+    .collect::<Vec<_>>();
+
+  if others.is_empty() {
+    tracing::info!("Backdrops are drawn on \"{name}\".");
+  } else {
+    tracing::warn!(
+      "Backdrops are drawn on \"{name}\", but another adapter drives {}.",
+      others.join("; ")
+    );
+  }
+
+  Ok(())
 }
 
 thread_local! {

@@ -4,7 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, Key, Keybinding, LengthUnit, LengthValue, OpacityValue,
-  OverviewEffects, ParticleEffects, ParticleLook, RectDelta,
+  OverviewEffects, OverviewSwitchStyle, OverviewZoomStyle,
+  ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -650,9 +651,6 @@ pub struct OverviewConfig {
   /// Font of the overview's text; Segoe UI when it isn't installed.
   pub font_family: String,
 
-  /// Columns of the grid of every workspace.
-  pub grid_columns: usize,
-
   /// Layout `toggle-overview` opens on, unless it names one.
   pub layout: OverviewLayout,
 
@@ -664,27 +662,35 @@ pub struct OverviewConfig {
   /// overview; `0` opens it at once.
   pub hot_corner_delay_ms: u32,
 
-  /// Length of the zoom out when the overview opens; `0` opens it
-  /// instantly.
+  /// How the overview opens and closes.
+  pub zoom_style: OverviewZoomStyle,
+
+  /// Pace of the open and close, written as an animation's `easing`. A
+  /// spring takes as long as it needs to settle, whatever the durations.
+  pub zoom_easing: EasingFunction,
+
+  /// Length of the open; `0` opens it instantly.
   pub open_duration_ms: u32,
 
-  /// Length of the zoom into the picked workspace when the overview
-  /// closes; `0` closes it instantly.
+  /// Length of the close, into the picked workspace; `0` closes it
+  /// instantly.
   pub close_duration_ms: u32,
+
+  /// How the activities change the workspace they show large.
+  pub switch_style: OverviewSwitchStyle,
 
   /// About how long cards and windows take to move to a new selection or
   /// layout, e.g. the shown workspace sliding over to the next; `0` moves
   /// them at once.
   pub switch_duration_ms: u32,
 
-  /// How long the selection and hover highlights take to glide to what
-  /// they mark next and to fade in or out, as the shortcut sheet does;
-  /// `0` snaps them.
+  /// How long the selection and hover highlights take to settle onto
+  /// what they mark next and to fade in or out, as the shortcut sheet
+  /// does; `0` snaps them.
   pub highlight_duration_ms: u32,
 
-  /// How far cards, windows and highlights overshoot where they head
-  /// before settling back, from `0` (not at all) to `0.8` (wobbly). The
-  /// opening zoom overshoots by it too.
+  /// How far cards and windows overshoot where they head before settling
+  /// back, from `0` (not at all) to `0.8` (wobbly).
   pub bounce: f32,
 
   /// Glow, ripples and particles, each of which can be turned off.
@@ -709,14 +715,9 @@ pub enum OverviewLayout {
   /// workspace in miniature.
   #[default]
   Activities,
-  /// The shown workspace large and as laid out, the others in a column
-  /// at the side.
-  Stage,
-  /// One row, the selected workspace in the middle and larger than the
-  /// rest.
-  Carousel,
-  /// Every workspace at once.
-  Grid,
+  /// Every workspace at the same zoom, stacked top to bottom, each
+  /// strip at its full length.
+  Stack,
 }
 
 /// Corner of a monitor that opens the overview.
@@ -753,12 +754,14 @@ impl Default for OverviewConfig {
       subtext_color: color(0xcdc3_ceff),
       search_color: color(0x89b4_faff),
       font_family: "Segoe UI Variable Text".to_string(),
-      grid_columns: 5,
       layout: OverviewLayout::default(),
       hot_corner: HotCorner::default(),
       hot_corner_delay_ms: 300,
-      open_duration_ms: 250,
-      close_duration_ms: 200,
+      zoom_style: OverviewZoomStyle::default(),
+      zoom_easing: EasingFunction::CubicBezier(0.25, 1.0, 0.5, 1.0),
+      open_duration_ms: 200,
+      close_duration_ms: 150,
+      switch_style: OverviewSwitchStyle::default(),
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
       bounce: 0.25,
@@ -1574,6 +1577,9 @@ pub struct AnimationsConfig {
   pub scroll: AnimationTypeConfig,
   /// Animation settings for operations that change window size.
   pub window_resize: WindowResizeConfig,
+  /// Animation settings for a window going in or out of fullscreen via
+  /// `set-fullscreen`/`toggle-fullscreen`.
+  pub window_fullscreen: WindowFullscreenConfig,
   /// Animation settings for when a new window appears.
   pub window_open: WindowOpenConfig,
   /// Animation settings for workspace-switch slide transitions.
@@ -1600,6 +1606,7 @@ impl Default for AnimationsConfig {
         ..AnimationTypeConfig::default()
       },
       window_resize: WindowResizeConfig::default(),
+      window_fullscreen: WindowFullscreenConfig::default(),
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
@@ -1786,6 +1793,16 @@ impl WindowTransitionParams {
       away_opacity: config.opacity_to,
     }
   }
+
+  /// A restore from minimized: the minimize played backwards, its curve
+  /// included (see [`EasingFunction::time_reversed`]).
+  #[must_use]
+  pub fn from_restore(config: &WindowMinimizeConfig) -> Self {
+    Self {
+      easing: config.easing.time_reversed(),
+      ..Self::from_minimize(config)
+    }
+  }
 }
 
 /// Animation settings for when a new window appears.
@@ -1847,7 +1864,7 @@ pub struct WindowCloseConfig {
 impl Default for WindowCloseConfig {
   fn default() -> Self {
     WindowCloseConfig {
-      enabled: false,
+      enabled: true,
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
       style: WindowTransitionStyle::None,
@@ -1863,7 +1880,8 @@ impl Default for WindowCloseConfig {
 /// is shared between open and close: a window that minimizes with
 /// `slide_bottom` (exiting toward the bottom edge) restores by entering
 /// from that same edge. `opacity_to` is the minimize-out target, and is
-/// played in reverse as the restore-in starting opacity.
+/// played in reverse as the restore-in starting opacity. So is `easing`,
+/// time-reversed: an ease-in minimize restores easing out.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowMinimizeConfig {
@@ -1912,41 +1930,32 @@ pub enum WorkspaceSwitchStyle {
   /// from it. Opacities are also animated via `opacity_outgoing` /
   /// `opacity_incoming`.
   Zoom,
-  /// Iris wipe: a frozen snapshot of the outgoing workspace stays on top
-  /// while a circular hole grows from `iris_origin`, revealing the live
-  /// incoming workspace beneath. Requires Windows; falls back to an
-  /// instant switch when the monitor cannot be captured.
-  Iris,
+  /// Swaps the workspaces in a single frame, without motion. Surrogates
+  /// draw the windows while the real ones are hidden and shown, so the
+  /// switch never shows half done. Ignores `duration_ms`, `easing` and
+  /// the opacities.
+  ///
+  /// `iris`, a since-removed style that covered the switch with a
+  /// snapshot of the monitor, parses as this.
+  #[serde(alias = "iris")]
+  Cut,
+  /// The incoming workspace slides a short way in along `direction` while
+  /// fading in, and the outgoing one a short way out while fading out.
+  /// Ignores the opacities.
+  Drift,
+  /// The incoming workspace grows to full size from slightly smaller
+  /// while fading in, and the outgoing one grows slightly past full
+  /// size while fading out. Ignores the opacities.
+  SoftZoom,
 }
 
 impl WorkspaceSwitchStyle {
-  /// Returns `true` when the transition has no positional slide component.
+  /// Whether incoming windows start on screen, rather than a whole monitor
+  /// away as a full slide's do.
   #[must_use]
-  pub fn is_no_slide(&self) -> bool {
-    matches!(self, Self::Fade | Self::Zoom)
+  pub fn starts_on_screen(&self) -> bool {
+    !matches!(self, Self::Slide)
   }
-
-  /// Returns `true` for the iris-wipe style, which is driven by a single
-  /// snapshot overlay rather than per-window surrogates.
-  #[must_use]
-  pub fn is_iris(&self) -> bool {
-    matches!(self, Self::Iris)
-  }
-}
-
-/// Origin point from which the iris-wipe circle grows.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceSwitchIrisOrigin {
-  /// Grow from the center of the monitor (default).
-  #[default]
-  Center,
-  /// Grow from the current mouse-cursor position.
-  Cursor,
-  /// Grow from the center of the newly focused window on the incoming
-  /// workspace. Falls back to the monitor center when the incoming
-  /// workspace has no focusable window.
-  FocusedWindow,
 }
 
 /// Slide axis for the `slide` workspace-switch style.
@@ -1972,14 +1981,12 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
+  /// Motion type: `slide` (default), `fade`, `zoom`, `drift`,
+  /// `soft_zoom`, or `cut`.
   pub style: WorkspaceSwitchStyle,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or
   /// `vertical`.
   pub direction: WorkspaceSwitchDirection,
-  /// Origin of the iris circle when `style` is `iris`: `center`
-  /// (default), `cursor`, or `focused_window`. Ignored by other styles.
-  pub iris_origin: WorkspaceSwitchIrisOrigin,
   /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
   ///
   /// At `1.0` (default) the outgoing workspace stays fully opaque. At
@@ -1998,8 +2005,8 @@ pub struct WorkspaceSwitchAnimationConfig {
   /// The outgoing workspace shrinks from `1.0` to `1.0 - zoom_factor` as
   /// it exits; the incoming grows from `1.0 - zoom_factor` to `1.0` as
   /// it enters. Scaling is from the monitor center so all windows move
-  /// inward together, preserving the workspace-as-a-panel illusion. Has
-  /// no effect on `fade` or `zoom` styles. Valid range: `0.0` (no zoom)
+  /// inward together, preserving the workspace-as-a-panel illusion. Only
+  /// used by the `slide` style. Valid range: `0.0` (no zoom)
   /// to `1.0` (collapses to a point). Recommended range: `0.05`–`0.15`
   /// for a subtle depth effect.
   pub zoom_factor: f32,
@@ -2013,10 +2020,33 @@ impl Default for WorkspaceSwitchAnimationConfig {
       easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
       style: WorkspaceSwitchStyle::default(),
       direction: WorkspaceSwitchDirection::default(),
-      iris_origin: WorkspaceSwitchIrisOrigin::default(),
       opacity_outgoing: 1.0,
       opacity_incoming: 1.0,
       zoom_factor: 0.1,
+    }
+  }
+}
+
+impl WorkspaceSwitchAnimationConfig {
+  /// How long the switch plays: not at all for a cut, which lands on its
+  /// first frame.
+  #[must_use]
+  pub fn effective_duration_ms(&self) -> u32 {
+    match self.style {
+      WorkspaceSwitchStyle::Cut => 0,
+      _ => self.easing.duration_ms(self.duration_ms),
+    }
+  }
+
+  /// Opacities the outgoing workspace ends at and the incoming one starts
+  /// at: none for the styles that always fade both, else as configured.
+  #[must_use]
+  pub fn effective_opacities(&self) -> (f32, f32) {
+    match self.style {
+      WorkspaceSwitchStyle::Drift | WorkspaceSwitchStyle::SoftZoom => {
+        (0.0, 0.0)
+      }
+      _ => (self.opacity_outgoing, self.opacity_incoming),
     }
   }
 }
@@ -2072,6 +2102,30 @@ impl Default for WindowResizeConfig {
   }
 }
 
+/// Animation settings for a window going in or out of fullscreen.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowFullscreenConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// How the window's content is shown while it grows or shrinks.
+  /// Defaults to `stretch`: `fill` would paint most of the monitor in the
+  /// window's edge color until the app has redrawn at its new size.
+  pub style: ResizeStyle,
+}
+
+impl Default for WindowFullscreenConfig {
+  fn default() -> Self {
+    WindowFullscreenConfig {
+      enabled: true,
+      duration_ms: 220,
+      easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+      style: ResizeStyle::Stretch,
+    }
+  }
+}
+
 /// How a window's content is shown while its size animates.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq,
@@ -2085,7 +2139,10 @@ pub enum ResizeStyle {
   #[default]
   Fill,
   /// Content is scaled to the animated size. The real window is sent its
-  /// final size on the first frame, and no edge color is sampled.
+  /// final size on the first frame, and no edge color is sampled. With
+  /// peeks (the default), the picture always covers the moving tile and
+  /// its scale eases, rather than steps, as the app's new content
+  /// arrives.
   Stretch,
 }
 
@@ -2268,6 +2325,22 @@ impl EasingFunction {
         u32::try_from(spring.duration().as_millis()).unwrap_or(u32::MAX)
       }
       _ => duration_ms,
+    }
+  }
+
+  /// The curve played backwards in time, whose value at `t` is `1 -
+  /// self(1 - t)`: an ease-in becomes the matching ease-out. Named curves
+  /// are beziers already. A spring is left as it is, as is
+  /// `EaseOutSpring`: reversed, either would wind up before it moved.
+  #[must_use]
+  pub fn time_reversed(&self) -> Self {
+    match self {
+      EasingFunction::CubicBezier(x1, y1, x2, y2) => {
+        EasingFunction::CubicBezier(1. - x2, 1. - y2, 1. - x1, 1. - y1)
+      }
+      EasingFunction::EaseOutSpring | EasingFunction::Spring(_) => {
+        self.clone()
+      }
     }
   }
 }
@@ -2507,9 +2580,60 @@ mod tests {
   use super::{
     BackdropEffectConfig, BorderEffectConfig, BorderGlow,
     BorderGlowConfig, Color, EasingFunction, GapsConfig, LengthValue,
-    OverviewConfig, OverviewEffects, OverviewLayout, ParticlesConfig,
-    ScrollingLayoutConfig, SpringParams,
+    OverviewConfig, OverviewEffects, OverviewLayout, OverviewSwitchStyle,
+    OverviewZoomStyle, ParticlesConfig, ScrollingLayoutConfig,
+    SpringParams, WorkspaceSwitchAnimationConfig, WorkspaceSwitchStyle,
   };
+
+  /// A cut lands at once whatever its duration, and `iris`, the removed
+  /// style it replaced, parses as one, so configs naming it keep loading.
+  #[test]
+  fn cut_ignores_duration_and_replaces_iris() {
+    for style in ["cut", "iris"] {
+      let config: WorkspaceSwitchAnimationConfig =
+        serde_json::from_value(serde_json::json!({
+          "style": style,
+          "duration_ms": 300,
+        }))
+        .expect("style should parse");
+
+      assert_eq!(config.style, WorkspaceSwitchStyle::Cut);
+      assert_eq!(config.effective_duration_ms(), 0);
+    }
+
+    let slide = WorkspaceSwitchAnimationConfig::default();
+    assert_eq!(slide.effective_duration_ms(), slide.duration_ms);
+  }
+
+  /// `drift` and `soft_zoom` always fade both workspaces fully, whatever
+  /// the configured opacities; other styles keep them.
+  #[test]
+  fn drift_and_soft_zoom_always_fade() {
+    for (style, expected) in [
+      ("drift", WorkspaceSwitchStyle::Drift),
+      ("soft_zoom", WorkspaceSwitchStyle::SoftZoom),
+    ] {
+      let config: WorkspaceSwitchAnimationConfig =
+        serde_json::from_value(serde_json::json!({
+          "style": style,
+          "opacity_outgoing": 1.0,
+          "opacity_incoming": 1.0,
+        }))
+        .expect("style should parse");
+
+      assert_eq!(config.style, expected);
+      assert_eq!(config.effective_opacities(), (0.0, 0.0));
+      assert!(config.style.starts_on_screen());
+    }
+
+    let fade = WorkspaceSwitchAnimationConfig {
+      style: WorkspaceSwitchStyle::Fade,
+      opacity_outgoing: 0.5,
+      ..WorkspaceSwitchAnimationConfig::default()
+    };
+    assert_eq!(fade.effective_opacities(), (0.5, 1.0));
+    assert!(!WorkspaceSwitchStyle::Slide.starts_on_screen());
+  }
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
@@ -2647,12 +2771,38 @@ mod tests {
     };
 
     assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
-    assert_eq!(layout("stage"), Some(OverviewLayout::Stage));
+    assert_eq!(layout("stack"), Some(OverviewLayout::Stack));
+    assert_eq!(layout("grid"), None);
     assert_eq!(layout("nope"), None);
     assert_eq!(
       OverviewConfig::default().layout,
       OverviewLayout::Activities
     );
+  }
+
+  #[test]
+  fn overview_zoom_and_switch_styles_read_their_names() {
+    let config =
+      serde_json::from_value::<OverviewConfig>(serde_json::json!({
+        "zoom_style": "fade",
+        "zoom_easing": "spring(1.0, 600, 0.001)",
+        "switch_style": "miniature",
+      }))
+      .expect("parses");
+
+    assert_eq!(config.zoom_style, OverviewZoomStyle::Fade);
+    assert_eq!(config.switch_style, OverviewSwitchStyle::Miniature);
+    assert!(matches!(config.zoom_easing, EasingFunction::Spring(_)));
+
+    // As the sample config and the docs write the default.
+    assert_eq!(
+      easing("cubic_bezier(0.25, 1, 0.5, 1)").ok(),
+      Some(OverviewConfig::default().zoom_easing)
+    );
+
+    let defaults = OverviewConfig::default();
+    assert_eq!(defaults.zoom_style, OverviewZoomStyle::Zoom);
+    assert_eq!(defaults.switch_style, OverviewSwitchStyle::Slide);
   }
 
   #[test]
@@ -2804,6 +2954,65 @@ mod tests {
         a: 1
       })
     );
+  }
+
+  /// Whether two curves are the same, up to float rounding.
+  fn near(a: &EasingFunction, b: &EasingFunction) -> bool {
+    match (a, b) {
+      (
+        EasingFunction::CubicBezier(a1, a2, a3, a4),
+        EasingFunction::CubicBezier(b1, b2, b3, b4),
+      ) => [a1 - b1, a2 - b2, a3 - b3, a4 - b4]
+        .iter()
+        .all(|d| d.abs() < 1e-6),
+      _ => a == b,
+    }
+  }
+
+  /// A bezier's control points mirror through the curve's centre, so
+  /// `ease_in_cubic` restores as `ease_out_cubic`; springs stay as they
+  /// are.
+  #[test]
+  fn time_reversal_mirrors_beziers_and_keeps_springs() {
+    let parse = |name: &str| {
+      serde_json::from_value::<EasingFunction>(serde_json::json!(name))
+        .expect("easing should parse")
+    };
+    assert!(near(
+      &parse("ease_in_cubic").time_reversed(),
+      &parse("ease_out_cubic")
+    ));
+    assert!(near(&parse("ease_in").time_reversed(), &parse("ease_out")));
+    for symmetric in ["linear", "ease_in_out", "ease_in_out_cubic"] {
+      let easing = parse(symmetric);
+      assert!(near(&easing.time_reversed(), &easing), "{symmetric}");
+    }
+    assert!(near(
+      &EasingFunction::CubicBezier(0.2, -0.5, 0.6, 1.3).time_reversed(),
+      &EasingFunction::CubicBezier(0.4, -0.3, 0.8, 1.5)
+    ));
+
+    for easing in [
+      EasingFunction::EaseOutSpring,
+      EasingFunction::Spring(SpringParams::default()),
+    ] {
+      assert_eq!(easing.time_reversed(), easing);
+    }
+  }
+
+  /// Reversed twice, every curve is the one it started as.
+  #[test]
+  fn time_reversal_twice_gives_the_curve_back() {
+    for easing in [
+      EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
+      EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+      EasingFunction::CubicBezier(0.2, -0.5, 0.6, 1.3),
+      EasingFunction::EaseOutSpring,
+      EasingFunction::Spring(SpringParams::default()),
+    ] {
+      let twice = easing.time_reversed().time_reversed();
+      assert!(near(&twice, &easing), "{easing:?}");
+    }
   }
 }
 
