@@ -641,6 +641,85 @@ mod tests {
       .value
   }
 
+  /// The overview presets, by file name.
+  const OVERVIEW_PRESETS: [(&str, &str); 8] = [
+    (
+      "accent-frame.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/accent-frame.yaml"
+      ),
+    ),
+    (
+      "edge-to-edge.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/edge-to-edge.yaml"
+      ),
+    ),
+    (
+      "flat-and-fast.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/flat-and-fast.yaml"
+      ),
+    ),
+    (
+      "frosted.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/frosted.yaml"
+      ),
+    ),
+    (
+      "mission-control.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/mission-control.yaml"
+      ),
+    ),
+    (
+      "niri-column.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/niri-column.yaml"
+      ),
+    ),
+    (
+      "paper.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/paper.yaml"
+      ),
+    ),
+    (
+      "playful.yaml",
+      include_str!(
+        "../../../resources/assets/overview-presets/playful.yaml"
+      ),
+    ),
+  ];
+
+  /// Each overview preset parses in place of the sample's `overview.yaml`,
+  /// with no key the config doesn't know.
+  #[test]
+  fn overview_presets_parse_in_place_of_the_sample() {
+    for (name, preset) in OVERVIEW_PRESETS {
+      let files = SAMPLE_FILES
+        .iter()
+        .map(|(file, contents)| config_files::ConfigFile {
+          path: PathBuf::from(file),
+          contents: if *file == "overview.yaml" {
+            preset.to_string()
+          } else {
+            (*contents).to_string()
+          },
+        })
+        .collect::<Vec<_>>();
+
+      let loaded = config_files::combine(&files)
+        .unwrap_or_else(|err| panic!("{name} should parse: {err}"));
+      assert!(
+        loaded.unknown_keys.is_empty(),
+        "{name} has unknown keys: {:?}",
+        loaded.unknown_keys
+      );
+    }
+  }
+
   /// The main sample file includes exactly the other sample files.
   #[test]
   fn sample_config_includes_every_file() {

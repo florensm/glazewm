@@ -1,0 +1,30 @@
+# Playful: bouncy springs, confetti where a window lands, embers where one
+# closes, a breathing glow and a wobble on landing.
+overview:
+  layout: "expose"
+  backdrop_style: "framed"
+  backdrop_frame:
+    color: "#1a1020ff"
+    corner_radius: 22
+    padding: 32
+    shadow: true
+  accent_color: "#ff7ab6ff"
+  zoom_easing: "spring(0.6, 500, 0.0001)"
+  bounce: 0.6
+  switch_style: "miniature"
+  window_highlight:
+    style: "glow"
+    width: 12
+    gap: 0
+  effects:
+    glow: true
+    pulse: true
+    ripples: true
+    jelly: true
+    lean: 12
+    squash: 0.8
+    trail: 4
+    window_lift: 0.06
+    drop_particles: ["confetti", "glints"]
+    close_particles: "embers"
+    open_particles: "glints"

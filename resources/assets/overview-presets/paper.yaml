@@ -1,0 +1,19 @@
+# Paper: a light overview, pale cards and dark text on a pale frame, for
+# light-mode desktops.
+overview:
+  layout: "expose"
+  backdrop_style: "framed"
+  backdrop_frame:
+    color: "#e6e3ecff"
+    corner_radius: 14
+    padding: 28
+    shadow: true
+  card_color: "#faf8fceb"
+  surface_color: "#ffffffff"
+  caption_color: "#ece9f2d9"
+  text_color: "#1b1a21ff"
+  subtext_color: "#5d5a6bff"
+  search_color: "#4b5bd6ff"
+  accent_color: "#4b5bd6ff"
+  expose:
+    gap: 20

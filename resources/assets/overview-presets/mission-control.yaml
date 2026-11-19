@@ -1,0 +1,21 @@
+# Mission Control: windows spread out large on a rounded slab of sharp
+# wallpaper over near-black, like macOS.
+overview:
+  layout: "expose"
+  backdrop_style: "framed"
+  backdrop_frame:
+    color: "#1c1c1fff"
+    corner_radius: 18
+    padding: 36
+    shadow: true
+  accent_color: "#ffffffff"
+  window_highlight:
+    style: "ring"
+    width: 2
+    gap: 3
+  expose:
+    max_per_row: 0
+    gap: 24
+  effects:
+    glow: false
+    window_lift: 0.03

@@ -1,0 +1,13 @@
+# Niri column: every workspace stacked top to bottom over a dark, heavy
+# blur, fading in and out instead of zooming, without any bounce.
+overview:
+  layout: "stack"
+  backdrop_style: "blur"
+  backdrop_blur: 60
+  backdrop_tint: "#00000099"
+  zoom_style: "fade"
+  bounce: 0
+  switch_duration_ms: 220
+  effects:
+    lean: 0
+    jelly: false

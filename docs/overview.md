@@ -567,6 +567,11 @@ overview:
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
 values above are the defaults.
 
+Ready-made looks to start from are in
+[`resources/assets/overview-presets`](../resources/assets/overview-presets/README.md),
+each a whole `overview:` section to include instead of your
+`overview.yaml`.
+
 ```yaml
 keybindings:
   - commands: ["toggle-overview"]
