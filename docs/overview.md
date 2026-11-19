@@ -605,6 +605,11 @@ moves things around and never redraws pixels:
   otherwise only again when windows come, go or move: a window's title
   changing redraws its title, nothing else. The thumbnails shown stay up
   until their replacements are placed, so nothing blinks out in between.
+- Each monitor's overview window covers the whole monitor, the space
+  app bars or the taskbar reserve included, while its cards and its
+  large view show the working area, where the windows are. The zoom
+  sets off from the working area where it really is, and what the
+  backdrop shows around it (over the bars) fades in, so nothing jumps.
 - The backdrop is a composition visual of the wallpaper, baked as for the
   window backdrops: sharp at first, with a blurred copy and the tint
   fading in over it. A framed backdrop instead moves and scales a sharp

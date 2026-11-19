@@ -2370,7 +2370,8 @@ pub(crate) struct OverviewBackdrop {
 
   frame: FramedPanel,
 
-  /// What `rect` covers: the overview window's own bounds.
+  /// The monitor's working area, which the plain wallpaper and the
+  /// framed panel show.
   area: Rect,
 
   /// Bounds of the monitor whose wallpaper the brushes show.
@@ -2573,6 +2574,21 @@ fn cover_monitor(
   sprite.SetSize(rect_size(monitor))
 }
 
+/// Lays `sprite` over the working area `work`, on a window covering the
+/// monitor's `bounds`.
+fn cover_work(
+  sprite: &SpriteVisual,
+  bounds: &Rect,
+  work: &Rect,
+) -> windows::core::Result<()> {
+  sprite.SetOffset(Vector3 {
+    X: pixels_to_dips(work.x() - bounds.x()),
+    Y: pixels_to_dips(work.y() - bounds.y()),
+    Z: 0.0,
+  })?;
+  sprite.SetSize(rect_size(work))
+}
+
 /// Where `monitor` shows on a panel reaching `padding` past `inner`,
 /// where `area` (both screen rects) shows: relative to the panel, `area`
 /// stretched over `inner`, and the whole grown evenly about its middle
@@ -2606,16 +2622,18 @@ fn monitor_on_panel(
 }
 
 impl OverviewBackdrop {
-  /// Builds the background for the overview `hwnd`, which covers `rect`
-  /// and was created with `WS_EX_NOREDIRECTIONBITMAP`, styled by `style`.
-  /// Starts out showing the plain wallpaper.
+  /// Builds the background for the overview `hwnd`, which covers the
+  /// monitor's `bounds` and was created with `WS_EX_NOREDIRECTIONBITMAP`,
+  /// styled by `style`. Starts out showing the plain wallpaper over the
+  /// working area `work`, and nothing around it, e.g. over app bars.
   pub(crate) fn create(
     hwnd: HWND,
-    rect: &Rect,
+    bounds: &Rect,
+    work: &Rect,
     style: &crate::OverviewStyle,
   ) -> crate::Result<Self> {
     let hwnd_raw = hwnd.0;
-    let rect = rect.clone();
+    let (rect, work) = (bounds.clone(), work.clone());
     let blur = style.backdrop_blur;
     let tint = style.backdrop_tint;
     let framed = (style.backdrop_style
@@ -2634,7 +2652,7 @@ impl OverviewBackdrop {
         // Parallax 1: the image stays put against the desktop.
         let (sharp, monitor) = wallpaper_surface::crop_brush(
           &compositor,
-          &rect,
+          &work,
           overview_wallpaper_knobs(0.0),
           1.0,
         )?;
@@ -2650,6 +2668,7 @@ impl OverviewBackdrop {
 
         let sharp_sprite = compositor.CreateSpriteVisual()?;
         sharp_sprite.SetBrush(&sharp)?;
+        cover_work(&sharp_sprite, &rect, &work)?;
         let blurred_sprite = compositor.CreateSpriteVisual()?;
         blurred_sprite.SetBrush(&blurred)?;
         blurred_sprite.SetOpacity(0.0)?;
@@ -2659,9 +2678,7 @@ impl OverviewBackdrop {
         tint_sprite.SetOpacity(0.0)?;
         let root = compositor.CreateContainerVisual()?;
         root.SetRelativeSizeAdjustment(FILL_PARENT)?;
-        for sprite in [&sharp_sprite, &tint_sprite] {
-          sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
-        }
+        tint_sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
         for sprite in [
           &sharp_sprite,
           &blurred_sprite,
@@ -2685,7 +2702,7 @@ impl OverviewBackdrop {
           tint_brush,
           tint_sprite,
           frame,
-          area: rect,
+          area: work,
           monitor,
           generation: wallpaper_surface::generation(),
           blur,
@@ -2712,12 +2729,14 @@ impl OverviewBackdrop {
     Ok(())
   }
 
-  /// Fades the blurred, tinted copy in, or the framed panel's shadow,
-  /// from 0 (plain wallpaper) to 1.
+  /// Fades the blurred, tinted copy in, or the framed panel's shadow and
+  /// the color around it, from 0 (plain wallpaper over the working area,
+  /// and nothing around it) to 1.
   pub(crate) fn set_progress(&self, progress: f32) -> crate::Result<()> {
     let progress = progress.clamp(0.0, 1.0);
     self.blurred_sprite.SetOpacity(progress)?;
     self.tint_sprite.SetOpacity(progress)?;
+    self.frame.surround_sprite.SetOpacity(progress)?;
     self
       .frame
       .shadow
@@ -2758,12 +2777,14 @@ impl OverviewBackdrop {
     Ok(())
   }
 
-  /// Shows the wallpaper under `rect` styled by `style`, re-baking only
-  /// when the monitor, the wallpaper or the blur changed.
+  /// Shows the wallpaper of the monitor with `bounds`, whose working area
+  /// is `work`, styled by `style`, re-baking only when the monitor, the
+  /// wallpaper or the blur changed.
   #[allow(clippy::float_cmp)]
   pub(crate) fn update(
     &mut self,
-    rect: &Rect,
+    bounds: &Rect,
+    work: &Rect,
     style: &crate::OverviewStyle,
   ) -> crate::Result<()> {
     let blur = style.backdrop_blur;
@@ -2778,7 +2799,7 @@ impl OverviewBackdrop {
     wallpaper_surface::poll_for_changes();
 
     let current = wallpaper_surface::generation();
-    let monitor = wallpaper_surface::monitor_bounds(rect);
+    let monitor = wallpaper_surface::monitor_bounds(bounds);
 
     if current != self.generation
       || monitor != self.monitor
@@ -2826,9 +2847,10 @@ impl OverviewBackdrop {
       self.blur = blur;
     }
 
-    self.area = rect.clone();
-    wallpaper_surface::set_crop(&self.sharp, rect, &self.monitor, 1.0);
-    cover_monitor(&self.blurred_sprite, rect, &self.monitor)?;
+    self.area = work.clone();
+    wallpaper_surface::set_crop(&self.sharp, work, &self.monitor, 1.0);
+    cover_work(&self.sharp_sprite, bounds, work)?;
+    cover_monitor(&self.blurred_sprite, bounds, &self.monitor)?;
     Ok(())
   }
 }

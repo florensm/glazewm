@@ -27,8 +27,13 @@ pub struct OverviewScreen {
   /// The WM's ID of the monitor, which actions picked on it carry.
   pub id: u128,
 
-  /// Working area of the monitor.
+  /// Working area of the monitor: where its workspaces lay out their
+  /// windows, which the workspaces' cards show.
   pub rect: Rect,
+
+  /// Bounds of the monitor, all of which the overview covers, the space
+  /// reserved by app bars or the taskbar included.
+  pub bounds: Rect,
 
   pub scale_factor: f32,
 

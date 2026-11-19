@@ -593,8 +593,11 @@ struct ScreenFrame {
   /// Its monitor's ID.
   id: u128,
 
-  /// Working area of the monitor.
+  /// Working area of the monitor, which the cards show.
   rect: Rect,
+
+  /// Bounds of the monitor, which its overview window covers.
+  bounds: Rect,
 
   scale_factor: f32,
   workspaces: Vec<OverviewWorkspace>,
@@ -607,6 +610,7 @@ impl ScreenFrame {
     Self {
       id: screen.id,
       rect: screen.rect.clone(),
+      bounds: screen.bounds.clone(),
       scale_factor: screen.scale_factor,
       workspaces: screen.workspaces.clone(),
       focused_window: frame.focused_window,
@@ -640,8 +644,12 @@ struct Screen {
   /// it before.
   registration: u64,
 
-  /// Working area covered, in screen coordinates.
+  /// Bounds of the monitor its window covers, in screen coordinates.
   area: RectF,
+
+  /// Working area of the monitor, which the cards show, in screen
+  /// coordinates.
+  work: RectF,
 
   backdrop: Option<OverviewBackdrop>,
 

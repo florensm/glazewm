@@ -101,6 +101,7 @@ impl Screen {
       registered_for: None,
       registration: 0,
       area: RectF::default(),
+      work: RectF::default(),
       backdrop: None,
       cards: Vec::new(),
       scenes: Vec::new(),
@@ -159,6 +160,12 @@ impl Screen {
     RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1)
   }
 
+  /// The monitor's working area, in its client coordinates: where the
+  /// windows a card shows really are.
+  fn work_in_view(&self) -> RectF {
+    self.work.translate(-self.area.x, -self.area.y)
+  }
+
   /// Shows `frame` as `focus` has it, zooming out of the workspace it
   /// shows if `animate`.
   pub(super) fn open(
@@ -169,7 +176,8 @@ impl Screen {
   ) {
     self.close();
 
-    self.area = RectF::from_rect(&frame.rect);
+    self.area = RectF::from_rect(&frame.bounds);
+    self.work = RectF::from_rect(&frame.rect);
     self.drawn_for = focus.layout;
     self.metrics = CardMetrics::new(
       self.area.w,
@@ -255,8 +263,10 @@ impl Screen {
       return;
     };
 
-    if old.rect != frame.rect || old.scale_factor != frame.scale_factor {
-      self.area = RectF::from_rect(&frame.rect);
+    self.work = RectF::from_rect(&frame.rect);
+    if old.bounds != frame.bounds || old.scale_factor != frame.scale_factor
+    {
+      self.area = RectF::from_rect(&frame.bounds);
       self.metrics = CardMetrics::new(
         self.area.w,
         self.area.h,
@@ -358,14 +368,18 @@ impl Screen {
 
   fn sync_backdrop(&mut self, frame: &ScreenFrame, progress: f32) {
     let result = match &mut self.backdrop {
-      Some(backdrop) => backdrop.update(&frame.rect, &frame.style),
-      None => {
-        OverviewBackdrop::create(self.hwnd, &frame.rect, &frame.style).map(
-          |backdrop| {
-            self.backdrop = Some(backdrop);
-          },
-        )
+      Some(backdrop) => {
+        backdrop.update(&frame.bounds, &frame.rect, &frame.style)
       }
+      None => OverviewBackdrop::create(
+        self.hwnd,
+        &frame.bounds,
+        &frame.rect,
+        &frame.style,
+      )
+      .map(|backdrop| {
+        self.backdrop = Some(backdrop);
+      }),
     };
 
     if let Err(err) = result {
@@ -989,7 +1003,7 @@ impl Screen {
     match style.zoom_style {
       OverviewZoomStyle::Zoom => {
         self.zoom_rect(zoom.card).map_or(Camera::IDENTITY, |rect| {
-          Camera::zoom(&rect, &self.view(), self.openness())
+          Camera::zoom(&rect, &self.work_in_view(), self.openness())
         })
       }
       OverviewZoomStyle::Fade => {
@@ -999,22 +1013,22 @@ impl Screen {
     }
   }
 
-  /// Where workspace `index` shows what its monitor does, on its card or
-  /// in the activities' scene: a scrolling workspace's strip reaches
-  /// past it. Follows its card if that is still moving.
+  /// Where workspace `index` shows its monitor's working area, on its
+  /// card or in the activities' scene: a scrolling workspace's strip
+  /// reaches past it. Follows its card if that is still moving.
   fn zoom_rect(&self, index: usize) -> Option<RectF> {
     match self.focus.layout {
       OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
         let workspace = self.workspaces().get(index)?;
         let content = scene_content(workspace, self.frame.as_ref()?);
-        Some(CardView::fitted(&content, &self.scene_area).map(&self.area))
+        Some(CardView::fitted(&content, &self.scene_area).map(&self.work))
       }
       OverviewLayoutMode::Stack => {
         let card = self.cards.get(index)?;
         Some(
           card
             .placement()
-            .map(&card.metrics, &card.view.map(&self.area)),
+            .map(&card.metrics, &card.view.map(&self.work)),
         )
       }
     }

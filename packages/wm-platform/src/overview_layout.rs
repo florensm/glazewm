@@ -1852,6 +1852,32 @@ mod tests {
     }
   }
 
+  /// With the working area inside the monitor's bounds (under app bars),
+  /// the zoom out of the shown workspace starts with each window where it
+  /// really is on the overview's window, which covers the bounds: the
+  /// working area maps onto where it is in that window.
+  #[test]
+  fn zoom_starts_on_the_real_windows_of_a_shrunk_working_area() {
+    let bounds = RectF::new(1920.0, 0.0, 1920.0, 1080.0);
+    let work = RectF::new(1934.0, 42.0, 1892.0, 1024.0);
+    let scene = RectF::new(48.0, 48.0, 1824.0, 984.0);
+    let window = RectF::new(1944.0, 52.0, 900.0, 1004.0);
+
+    let view = CardView::fitted(&work, &scene);
+    let zoom_rect = view.map(&work);
+    let work_in_view = work.translate(-bounds.x, -bounds.y);
+
+    let camera = Camera::zoom(&zoom_rect, &work_in_view, 0.0);
+    assert_rect_close(
+      &camera.apply(&view.map(&window)),
+      &window.translate(-bounds.x, -bounds.y),
+    );
+
+    // Once open, it is the scene as laid out.
+    let open = Camera::zoom(&zoom_rect, &work_in_view, 1.0);
+    assert_rect_close(&open.apply(&zoom_rect), &zoom_rect);
+  }
+
   #[test]
   fn many_miniatures_shrink_to_fit_the_row() {
     let metrics = metrics_for(OverviewLayoutMode::Activities);

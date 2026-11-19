@@ -53,8 +53,8 @@ impl Screen {
 
     for (index, workspace) in frame.workspaces.iter().enumerate() {
       let content = RectF::from_rect(&workspace.content_rect);
-      let metrics = self.metrics.for_content(&self.area, &content);
-      let view = CardView::new(&metrics, &self.area, &content);
+      let metrics = self.metrics.for_content(&self.work, &content);
+      let view = CardView::new(&metrics, &self.work, &content);
 
       let mut old = cards
         .get_mut(index)
@@ -154,8 +154,8 @@ impl Screen {
 
     for (card, workspace) in self.cards.iter_mut().zip(&frame.workspaces) {
       let content = RectF::from_rect(&workspace.content_rect);
-      card.metrics = self.metrics.for_content(&self.area, &content);
-      card.view = CardView::new(&card.metrics, &self.area, &content);
+      card.metrics = self.metrics.for_content(&self.work, &content);
+      card.view = CardView::new(&card.metrics, &self.work, &content);
 
       for preview in &mut card.previews {
         if let Some(tile) = card.view.tile(&preview.screen_rect) {
@@ -181,7 +181,7 @@ impl Screen {
       .iter()
       .enumerate()
       .map(|(index, card)| {
-        let view = card.view.map(&self.area);
+        let view = card.view.map(&self.work);
         let keep = picked
           .filter(|_| index == self.focus.selected)
           .and_then(|hwnd| {
@@ -361,7 +361,7 @@ impl Screen {
 
     // A strip's card shows where its monitor is on it.
     let viewport = card.and_then(|card| {
-      let view = card.view.map(&self.area);
+      let view = card.view.map(&self.work);
       (view.w < card.metrics.tile_area().w - 1.0).then_some(view)
     });
 
