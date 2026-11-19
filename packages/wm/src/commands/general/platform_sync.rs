@@ -1288,8 +1288,7 @@ fn redraw_containers(
     .or_else(|| entering_way(state, &windows_to_update, config));
 
   // With `window_resize` enabled, in either style, the relayout's resizes
-  // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e), each tile's as
-  // `move_on_peek` takes it.
+  // go on peeks too, each tile's as `move_on_peek` takes it.
   let resizes = if cycle_has_resize && !suppress_animations {
     crate::animation::peek_view::resizes_on_peeks(config)
   } else {
@@ -1388,8 +1387,8 @@ fn redraw_containers(
     // minimize ended: natively minimized with a slot in the layout, or
     // restored by the OS with no overlays and where it used to be, until
     // something else redrew it. The restore ends the minimize instead.
-    // One playing on its peek is turned round below
-    // (`STAND_INS_PLAN.md` task 5), and ended there if it isn't.
+    // One playing on its peek is turned round below, and ended there if
+    // it isn't.
     if state.animation_manager.has_minimize_animation(&window.id()) {
       if !state.pending_sync.is_window_restore(&window.id()) {
         continue;
@@ -1577,8 +1576,7 @@ fn redraw_containers(
     // once. A restore cannot use that test -- the window kept the
     // target position it had before it was minimized -- so it is
     // flagged on `PendingSync` instead. A restore is also allowed for
-    // floating windows: one opens on a peek (`STAND_INS_PLAN.md` task
-    // 6b), or not at all.
+    // floating windows: one opens on a peek, or not at all.
     //
     // Paired with whether it is an open rather than a restore.
     let entry_transition = if is_visible
@@ -1626,9 +1624,8 @@ fn redraw_containers(
       })
       .flatten();
 
-    // An open or a restore enters on a peek instead
-    // (`STAND_INS_PLAN.md` tasks 3 and 5); a floating one as a floating
-    // open does, raised in its band by `floating_raise`.
+    // An open or a restore enters on a peek instead; a floating one as a
+    // floating open does, raised in its band by `floating_raise`.
     let enters_on_peek = match &entry_transition {
       Some((params, is_open))
         if !is_column
@@ -1682,7 +1679,7 @@ fn redraw_containers(
     }
 
     // A tile that only moves or resizes goes on a peek; also one crossing
-    // between floating and tiling (`STAND_INS_PLAN.md` 10f).
+    // between floating and tiling.
     let moves_as_tile = if is_state_change {
       crate::animation::peek_view::changes_state_on_peek(window)
     } else {
@@ -1755,9 +1752,8 @@ fn redraw_containers(
           )
         })
       {
-        // A tile that only moves does so on a pinned peek
-        // (`STAND_INS_PLAN.md` task 6), frozen behind it from now
-        // on as an entering one is.
+        // A tile that only moves does so on a pinned peek, frozen behind
+        // it from now on as an entering one is.
         peek_moves.push(window.id());
         if is_state_change {
           band_moves.push(window.id());
@@ -1780,9 +1776,8 @@ fn redraw_containers(
           )
         })
       {
-        // A tile toggled in or out of fullscreen does so on a pinned peek
-        // (`STAND_INS_PLAN.md` 10f), taken over from as a move on a peek
-        // is.
+        // A tile toggled in or out of fullscreen does so on a pinned peek,
+        // taken over from as a move on a peek is.
         peek_moves.push(window.id());
         if let Some(raise) = fullscreen_raise {
           peek_raises.push(((*window).clone(), raise));

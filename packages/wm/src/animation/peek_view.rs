@@ -907,8 +907,8 @@ fn take_left<E>(
 }
 
 /// The transit a window leaves by: an entering one's turned round where
-/// it is at `now` and started then, so it doesn't jump
-/// (`ANIMATION_REVIEW.md` 14), else `fresh`, from all the way in.
+/// it is at `now` and started then, so it doesn't jump, else `fresh`,
+/// from all the way in.
 fn leaving_transit(
   entering: Option<&Transit>,
   fresh: Transit,
@@ -1054,7 +1054,7 @@ pub fn floating_peek_raise(
 }
 
 /// Whether `window`, whose state changed this pass, moves on a pinned
-/// peek as a tile does (`STAND_INS_PLAN.md` 10f): between floating and
+/// peek as a tile does: between floating and
 /// tiling, not while the OS still drags it.
 pub fn changes_state_on_peek(window: &WindowContainer) -> bool {
   window.active_drag().is_none()
@@ -1210,7 +1210,7 @@ fn host_for(is_tile: bool, raise: Option<PeekRaise>) -> Option<Host> {
 /// Whether a tile a grab resize holds (see [`hold_on_peek`]) is drawn on
 /// its monitor's `PeekSurface`: only if that surface is not
 /// `topped`, as a held peek stays just under its window for the whole
-/// grab, never over floating windows above it (`STAND_INS_PLAN.md` 10a.5),
+/// grab, never over floating windows above it,
 /// and a topped surface is above them until its last tenant has gone.
 /// [`can_hold`] has left out what else keeps a tile on a peek of its own.
 fn hosts_hold(topped: bool) -> bool {
@@ -3656,10 +3656,9 @@ impl PeekView {
   /// it is.
   ///
   /// A new peek goes up directly below its real window and is never
-  /// raised: a closing window is drawn below its neighbours (owner's
-  /// decision, `STAND_INS_PLAN.md` task 4). Under a real window still
-  /// shown, it is warmed up until the window is cloaked by the first
-  /// tick, as it takes over.
+  /// raised: a closing window is drawn below its neighbours. Under a
+  /// real window still shown, it is warmed up until the window is cloaked
+  /// by the first tick, as it takes over.
   ///
   /// With `host`, it is drawn on the `PeekSurface` of `clip` instead,
   /// ranked over every tile there that moves (see [`Rank`]), which a
@@ -4791,8 +4790,7 @@ pub fn restore_on_peek(
 }
 
 /// Restores `window`, if it is still natively minimized, at `rect` behind
-/// a cloak, so that no frame shows it before its peek does
-/// (`ANIMATION_REVIEW.md` 10). One that can't be cloaked is left
+/// a cloak, so that no frame shows it before its peek does. One that can't be cloaked is left
 /// minimized, to be restored as it is handed back.
 pub(super) fn restore_cloaked(window: &NativeWindow, rect: &Rect) {
   if !window.is_minimized() {

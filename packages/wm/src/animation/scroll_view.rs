@@ -80,7 +80,7 @@ pub fn sync_scroll_view(
     .collect::<HashSet<_>>();
 
   // Windows coming back from minimized, which re-enter as new ones do, by
-  // `window_minimize` (`STAND_INS_PLAN.md` task 5).
+  // `window_minimize`.
   let restoring = column_restoring(config);
   let restored_ids = if restoring.is_some() {
     restored_columns(state, &windows, &new_ids)
@@ -89,7 +89,7 @@ pub fn sync_scroll_view(
   };
 
   // A column that only moves does so on its peek, as the strip does
-  // (`STAND_INS_PLAN.md` task 6), unless another stand-in draws it.
+  // unless another stand-in draws it.
   let pure_moves = column_pure_moves(config, animates);
   let other_stand_ins = match pure_moves {
     Some(_) => windows
@@ -101,8 +101,7 @@ pub fn sync_scroll_view(
   };
 
   // With `window_resize` enabled, in either style, a column resized on
-  // screen goes on its peek too (`STAND_INS_PLAN.md` tasks 8 and 10e),
-  // each one that can stretch.
+  // screen goes on its peek too, each one that can stretch.
   let resizes = resizes_on_peeks(config).filter(|_| pure_moves.is_some());
   let can_stretch = windows
     .iter()
@@ -122,7 +121,7 @@ pub fn sync_scroll_view(
 
   // Columns a resting peek draws that slide in with a workspace switch:
   // their peeks stand by under the switch's surrogates until it hands them
-  // over (`SWITCH_PEEKS_PLAN.md`).
+  // over.
   let switch_animates =
     config.value.animations.workspace_switch.enabled && animates;
   let slides_in = windows
@@ -143,7 +142,7 @@ pub fn sync_scroll_view(
   let view = &mut state.animation_manager.peeks;
 
   // Tells a focus change at rest that still has peeks to act on apart
-  // from one that has none (`ONE_SURFACE_PLAN.md` "Scroll focus flicker").
+  // from one that has none, which would flicker.
   if state.pending_sync.needs_focus_update() && !view.entries.is_empty() {
     let held = view
       .entries
@@ -364,7 +363,7 @@ fn waits_on_switch(is_at_rest: bool, slides_with_switch: bool) -> bool {
 }
 
 /// The transition a new column enters by as it widens on the scroll's
-/// timing: `window_open` (`STAND_INS_PLAN.md` task 3b).
+/// timing: `window_open`.
 fn column_opening(config: &UserConfig) -> Option<WindowTransitionParams> {
   let open_config = &config.value.animations.window_open;
   open_config
@@ -436,8 +435,7 @@ fn can_stretch(
 }
 
 /// The transition a column coming back from minimized enters by, as a new
-/// one does by `window_open`: `window_minimize` reversed
-/// (`STAND_INS_PLAN.md` task 5).
+/// one does by `window_open`: `window_minimize` reversed.
 fn column_restoring(
   config: &UserConfig,
 ) -> Option<WindowTransitionParams> {

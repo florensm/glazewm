@@ -1,5 +1,4 @@
-//! One window per monitor that moving tiles' peeks draw on together
-//! (`ONE_SURFACE_PLAN.md`).
+//! One window per monitor that moving tiles' peeks draw on together.
 
 use std::{cell::Cell, rc::Rc};
 

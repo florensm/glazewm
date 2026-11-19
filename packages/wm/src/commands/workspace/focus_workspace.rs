@@ -199,7 +199,7 @@ fn is_switch_animated(window: &WindowContainer) -> bool {
 
 /// Whether a window slides with the switch: one shown by its real window,
 /// unless minimized or an inactive stack tab, or one whose resting peek
-/// shows part of it (`SWITCH_PEEKS_PLAN.md`).
+/// shows part of it.
 #[allow(clippy::fn_params_excessive_bools)]
 fn slides_with_switch(
   is_minimized: bool,

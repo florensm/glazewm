@@ -111,6 +111,8 @@ Two kinds of build, by machine:
   from `tryout/<name>`, with everything listed below stripped in one commit. Never develop on a
   test branch: change the tryout branch, then cut the test branch again.
 
+`main` holds the stripped tree too; the benchmarks below live on `tryout/one-surface`.
+
 Always stripped from a test build:
 
 - `packages/wm-cli/examples/perf_bench/`, plus `wm-cli`'s `[dev-dependencies]` and
