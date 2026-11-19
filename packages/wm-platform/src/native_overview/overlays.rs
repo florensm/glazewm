@@ -20,7 +20,7 @@ use crate::{
   overview_overlays::{Highlight, Tag},
   overview_state::{Mode, Toward},
   overview_thumbnails::Picture,
-  OverviewLayoutMode, OverviewStyle,
+  OverviewLayoutMode, OverviewStyle, OverviewWindowHighlightStyle,
 };
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
@@ -30,6 +30,10 @@ const RING_GAP: f32 = 5.0;
 
 /// Corner radius a window's highlight is drawn with, in logical pixels.
 const WINDOW_RING_RADIUS: f32 = 10.0;
+
+/// Corner radius of a window shown in the overview, which the selected
+/// window's ring or glow stays concentric with, in logical pixels.
+const WINDOW_CORNER_RADIUS: f32 = 5.0;
 
 /// Corner radius of the ring around the screen with the keyboard, and its
 /// gap to the screen's edges, in logical pixels.
@@ -172,11 +176,25 @@ impl Overlays {
       px(2.0).max(1),
       with_alpha(accent, 0.45),
     ));
-    self.window_ring.slices.draw(SliceLook::ring(
-      px(WINDOW_RING_RADIUS),
-      px(3.0).max(1),
-      accent,
-    ));
+    let highlight = style.window_highlight;
+    let radius = px(WINDOW_CORNER_RADIUS + highlight.gap.max(0.0));
+    let width = px(highlight.width).max(1);
+    match highlight.style {
+      OverviewWindowHighlightStyle::Ring => {
+        self
+          .window_ring
+          .slices
+          .draw(SliceLook::ring(radius, width, accent));
+      }
+      OverviewWindowHighlightStyle::Glow => {
+        self.window_ring.slices.draw(SliceLook::glow(
+          radius,
+          width,
+          with_alpha(accent, 0.55),
+        ));
+      }
+      OverviewWindowHighlightStyle::None => {}
+    }
     self.drop_ring.slices.draw(SliceLook::ring(
       px(WINDOW_RING_RADIUS),
       px(3.0).max(1),
@@ -315,18 +333,31 @@ impl Screen {
       .collect()
   }
 
+  /// The window marked as picked, and its card: during a search, the
+  /// match its list is on, wherever the selection is; else the selected
+  /// window.
+  pub(super) fn picked_window(&self) -> Option<(usize, isize)> {
+    let focus = &self.focus;
+    if !focus.query.is_empty() {
+      return focus.search_current;
+    }
+    focus
+      .selected_window
+      .filter(|_| focus.mode == Mode::Windows)
+      .map(|hwnd| (focus.selected, hwnd))
+  }
+
   /// The tag under the picked window, where windows aren't captioned on
   /// cards.
   pub(super) fn tag_picture(&self) -> Option<TagPicture> {
-    let focus = &self.focus;
-    if !focus.layout.has_scene() || focus.mode != Mode::Windows {
+    if !self.focus.layout.has_scene() {
       return None;
     }
 
-    let hwnd = focus.selected_window?;
+    let (index, hwnd) = self.picked_window()?;
     let window = self
       .workspaces()
-      .get(focus.selected)?
+      .get(index)?
       .windows
       .iter()
       .find(|window| window.hwnd == hwnd)?;
@@ -382,15 +413,6 @@ impl Screen {
     let radius = card_radius(&card.metrics) * scale + gap;
 
     Some((rect.inset(-gap), radius / self.metrics.px(RING_RADIUS)))
-  }
-
-  /// Where window `hwnd` of the selected workspace shows now.
-  pub(super) fn window_rect(
-    &self,
-    hwnd: isize,
-    context: &PlaceContext,
-  ) -> Option<RectF> {
-    self.window_rect_in(self.focus.selected, hwnd, context)
   }
 
   /// Where window `hwnd` of workspace `index` shows now: in the scene for
@@ -469,14 +491,27 @@ impl Screen {
           .map(|(rect, scale)| (index, rect, scale))
       });
 
-    let picked = focus
-      .selected_window
-      .filter(|_| focus.mode == Mode::Windows);
-    let picked_rect = picked.and_then(|hwnd| {
-      self.window_rect(hwnd, context).map(|rect| (hwnd, rect))
+    let picked_rect = self.picked_window().and_then(|(index, hwnd)| {
+      self
+        .window_rect_in(index, hwnd, context)
+        .map(|rect| (hwnd, rect))
     });
-    let window_target = picked_rect
-      .map(|(hwnd, rect)| (hwnd, rect.inset(-px(RING_GAP)), 1.0));
+    let highlight = self.style().map(|style| style.window_highlight);
+    let window_target =
+      picked_rect
+        .zip(highlight)
+        .and_then(|((hwnd, rect), highlight)| {
+          let outset = match highlight.style {
+            OverviewWindowHighlightStyle::Ring => highlight.gap,
+            // The glow's picture starts its fade `width` out from the
+            // rect.
+            OverviewWindowHighlightStyle::Glow => {
+              highlight.gap + highlight.width
+            }
+            OverviewWindowHighlightStyle::None => return None,
+          };
+          Some((hwnd, rect.inset(-px(outset.max(0.0))), 1.0))
+        });
 
     // The half of the window a dragged window would land beside.
     let drop_target = focus.drop.zip(focus.drop_beside).and_then(

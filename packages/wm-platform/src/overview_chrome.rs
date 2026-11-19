@@ -951,9 +951,9 @@ pub(crate) struct SearchControls {
 }
 
 /// Draws the search line, centered, into `surface`: the search field (a
-/// search icon, the query or what to do, and which of its matches is
-/// picked, ringed in the accent during a search) and beside it the chip
-/// that opens the keyboard shortcuts, ringed while they are open.
+/// search icon and what to do) and beside it the chip that opens the
+/// keyboard shortcuts, ringed while they are open. During a search, which
+/// the search box shows, only the chip.
 pub(crate) fn draw_search(
   surface: &mut Surface,
   search: &SearchField,
@@ -973,24 +973,37 @@ pub(crate) fn draw_search(
     .find(|family| is_installed(family))
     .map(|family| Fonts::new(family).get(14.0 * scale_factor, false));
 
-  let is_searching = !search.query.is_empty();
-  let (text, text_color) = if is_searching {
-    (search.query.as_str(), style.text)
-  } else {
-    ("Type to search", with_alpha(style.subtext, 0.7))
-  };
-  let hits = search_hits(search);
+  let height = surface.height;
+  let chip_width = shortcuts_chip_width(&font, &key_font, scale_factor);
 
+  // During a search the search box shows it; only the chip stays here.
+  if !search.query.is_empty() {
+    let chip = Rect::from_xy(
+      (surface.width - chip_width) / 2,
+      0,
+      chip_width.min(surface.width),
+      height,
+    );
+    draw_search_pill(surface, &chip, shows_shortcuts, scale_factor, style);
+    draw_shortcuts_chip(
+      surface,
+      &chip,
+      [&font, &key_font],
+      scale_factor,
+      style,
+    );
+    return SearchControls {
+      field: Rect::from_xy(0, 0, 0, 0),
+      shortcuts: chip,
+    };
+  }
+
+  let text = "Type to search";
   let icon_width = icon
     .as_ref()
     .map_or(0, |icon| text_width(icon, SEARCH_GLYPH));
-  let typed_width = text_width(&font, text);
-  let end_width = text_width(&font, &hits);
-  let chip_width = shortcuts_chip_width(&font, &key_font, scale_factor);
-
-  let height = surface.height;
   let field_width =
-    (icon_width + typed_width + end_width + 3 * px(gap) + 2 * px(padding))
+    (icon_width + text_width(&font, text) + 2 * px(gap) + 2 * px(padding))
       .max(px(min_width));
   let total = (field_width + px(gap) + chip_width).min(surface.width);
   let field = Rect::from_xy(
@@ -1001,7 +1014,7 @@ pub(crate) fn draw_search(
   );
   let chip = Rect::from_xy(field.right + px(gap), 0, chip_width, height);
 
-  draw_search_pill(surface, &field, is_searching, scale_factor, style);
+  draw_search_pill(surface, &field, false, scale_factor, style);
   draw_search_pill(surface, &chip, shows_shortcuts, scale_factor, style);
 
   let mut left = field.left + px(padding);
@@ -1011,35 +1024,14 @@ pub(crate) fn draw_search(
     draw_text(surface, icon, SEARCH_GLYPH, &rect, color, Align::Left);
     left += icon_width + px(gap);
   }
-
-  let right = field.right - px(padding);
-  let end_left = right - end_width;
-  let text_rect = Rect::from_ltrb(left, 0, end_left - px(gap), height);
-  draw_text(surface, &font, text, &text_rect, text_color, Align::Left);
   draw_text(
     surface,
     &font,
-    &hits,
-    &Rect::from_ltrb(end_left, 0, right, height),
-    with_alpha(style.subtext, 0.85),
-    Align::Right,
+    text,
+    &Rect::from_ltrb(left, 0, field.right - px(padding), height),
+    with_alpha(style.subtext, 0.7),
+    Align::Left,
   );
-
-  // After the query.
-  if is_searching {
-    let caret_height = px(16.0);
-    let caret = Rect::from_xy(
-      (left + typed_width).min(text_rect.right),
-      (height - caret_height) / 2,
-      px(1.5).max(1),
-      caret_height,
-    );
-    surface.canvas().fill_rounded_rect(
-      &caret,
-      0,
-      with_alpha(style.accent, 0.9),
-    );
-  }
 
   draw_shortcuts_chip(
     surface,
@@ -1404,11 +1396,384 @@ fn to_f32(pixels: i32) -> f32 {
   pixels as f32
 }
 
+/// Width at most, shadow reach, field height, list padding, row height,
+/// footer height and corner radius of the search box, in logical pixels.
+const SPOTLIGHT: (f32, f32, f32, f32, f32, f32, f32) =
+  (560.0, 24.0, 56.0, 6.0, 48.0, 38.0, 16.0);
+
+/// Side padding of the search box's field, footer and rows, the size of a
+/// row's app icon, and the gap after it, in logical pixels.
+const SPOTLIGHT_INNER: (f32, f32, f32) = (18.0, 24.0, 12.0);
+
+/// The keys the search box's footer names, and what each does.
+const SPOTLIGHT_HINTS: [(&str, &str); 3] = [
+  ("\u{2191} \u{2193}", "step and show"),
+  ("Enter", "go"),
+  ("Esc", "clear"),
+];
+
+/// Pixel size of the search box for `search`, at most `max_width` wide,
+/// with room around it for its shadow.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn spotlight_size(
+  search: &SearchField,
+  scale_factor: f32,
+  max_width: f32,
+) -> (i32, i32) {
+  let px = |length: f32| length * scale_factor;
+  let (width, shadow, field, list_padding, row, footer, _) = SPOTLIGHT;
+  let rows = search.results.len().max(1) as f32;
+  let height =
+    field + 1.0 + 2.0 * list_padding + rows * row + 1.0 + footer;
+  let width = px(width).min(max_width - px(2.0 * 16.0)).max(px(240.0));
+
+  (
+    round(width + px(2.0 * shadow)),
+    round(px(height + 2.0 * shadow)),
+  )
+}
+
+/// How far the search box's picture reaches past the box on each side,
+/// for its shadow, in pixels.
+pub(crate) fn spotlight_margin(scale_factor: f32) -> f32 {
+  SPOTLIGHT.1 * scale_factor
+}
+
+/// Draws the search box into `surface`: the query and which match the
+/// list is on, a row per listed match (its app's icon, its title and
+/// process with what matched lit in the search color, and its
+/// workspace), and the keys that work on it. Returns each row's rect and
+/// window.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn draw_spotlight(
+  surface: &mut Surface,
+  search: &SearchField,
+  scale_factor: f32,
+  style: &OverviewStyle,
+  notify: (HWND, u32),
+) -> Vec<(Rect, isize)> {
+  let px = |length: f32| round(length * scale_factor);
+  let (_, shadow, field_height, list_padding, row_height, footer, radius) =
+    SPOTLIGHT;
+  let (padding, icon_size, icon_gap) = SPOTLIGHT_INNER;
+  surface.pixels().fill(0);
+
+  let card = Rect::from_ltrb(
+    px(shadow),
+    px(shadow),
+    surface.width - px(shadow),
+    surface.height - px(shadow),
+  );
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_shadow_around(
+      &card,
+      &card,
+      px(radius),
+      shadow * scale_factor,
+      Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 140,
+      },
+    );
+    canvas.fill_rounded_rect(
+      &card,
+      px(radius),
+      with_alpha(style.card, 0.97),
+    );
+    canvas.stroke_rounded_rect(
+      &card,
+      px(radius),
+      px(1.0).max(1),
+      with_alpha(style.text, 0.08),
+    );
+  }
+
+  let mut fonts = Fonts::new(&style.font_family);
+  let query_font = fonts.get(17.0 * scale_factor, false);
+  let small = fonts.get(12.0 * scale_factor, false);
+  let title_font = fonts.get(14.0 * scale_factor, false);
+  let title_bold = fonts.get(14.0 * scale_factor, true);
+  let detail_font = fonts.get(11.5 * scale_factor, false);
+  let detail_bold = fonts.get(11.5 * scale_factor, true);
+  let key_font = fonts.get(11.0 * scale_factor, true);
+  let icon = ICON_FAMILIES
+    .into_iter()
+    .find(|family| is_installed(family))
+    .map(|family| Fonts::new(family).get(16.0 * scale_factor, false));
+
+  // The field: the search icon, the query with its caret, the count.
+  let field =
+    Rect::from_xy(card.left, card.top, card.width(), px(field_height));
+  let mut left = field.left + px(padding);
+  if let Some(icon) = &icon {
+    let width = text_width(icon, SEARCH_GLYPH);
+    let rect = Rect::from_xy(left, field.top, width, field.height());
+    let color = with_alpha(style.subtext, 0.8);
+    draw_text(surface, icon, SEARCH_GLYPH, &rect, color, Align::Left);
+    left += width + px(icon_gap);
+  }
+  let hits = search_hits(search);
+  let hits_width = text_width(&small, &hits);
+  let right = field.right - px(padding);
+  let query_rect = Rect::from_ltrb(
+    left,
+    field.top,
+    right - hits_width - px(icon_gap),
+    field.bottom,
+  );
+  draw_text(
+    surface,
+    &query_font,
+    &search.query,
+    &query_rect,
+    style.text,
+    Align::Left,
+  );
+  draw_text(
+    surface,
+    &small,
+    &hits,
+    &Rect::from_ltrb(right - hits_width, field.top, right, field.bottom),
+    with_alpha(style.subtext, 0.85),
+    Align::Right,
+  );
+  let caret_height = px(20.0);
+  let caret = Rect::from_xy(
+    (left + text_width(&query_font, &search.query)).min(query_rect.right),
+    field.top + (field.height() - caret_height) / 2,
+    px(1.5).max(1),
+    caret_height,
+  );
+  surface.canvas().fill_rounded_rect(
+    &caret,
+    0,
+    with_alpha(style.accent, 0.9),
+  );
+
+  let rule = |surface: &mut Surface, top: i32| {
+    let line = Rect::from_xy(card.left, top, card.width(), px(1.0).max(1));
+    surface.canvas().fill_rounded_rect(
+      &line,
+      0,
+      with_alpha(style.text, 0.08),
+    );
+  };
+  rule(surface, field.bottom);
+
+  // The list, or what it would say.
+  let list_top = field.bottom + px(1.0).max(1) + px(list_padding);
+  let row_left = card.left + px(list_padding);
+  let row_right = card.right - px(list_padding);
+  let mut rows = Vec::new();
+
+  if search.results.is_empty() {
+    let rect = Rect::from_ltrb(
+      row_left,
+      list_top,
+      row_right,
+      list_top + px(row_height),
+    );
+    draw_text(
+      surface,
+      &title_font,
+      "No windows match",
+      &rect,
+      with_alpha(style.subtext, 0.8),
+      Align::Center,
+    );
+  }
+
+  for (offset, result) in search.results.iter().enumerate() {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let top = list_top + offset as i32 * px(row_height);
+    let row =
+      Rect::from_ltrb(row_left, top, row_right, top + px(row_height));
+    rows.push((row.clone(), result.hwnd));
+
+    if search.current == Some(search.first + offset) {
+      let mut canvas = surface.canvas();
+      canvas.fill_rounded_rect(&row, px(10.0), style.surface);
+      canvas.stroke_rounded_rect(
+        &row,
+        px(10.0),
+        px(1.0).max(1),
+        with_alpha(style.accent, 0.9),
+      );
+    }
+
+    let inner_left = row.left + px(padding - list_padding);
+    let icon_rect = Rect::from_xy(
+      inner_left,
+      row.top + (row.height() - px(icon_size)) / 2,
+      px(icon_size),
+      px(icon_size),
+    );
+    draw_window_icon(surface, result.hwnd, &icon_rect, 1.0, notify);
+
+    // The workspace it is on, as a chip at the end.
+    let chip_padding = px(8.0);
+    let chip_width =
+      text_width(&detail_font, &result.workspace) + 2 * chip_padding;
+    let chip_height = px(22.0);
+    let chip = Rect::from_xy(
+      row.right - px(padding - list_padding) - chip_width,
+      row.top + (row.height() - chip_height) / 2,
+      chip_width,
+      chip_height,
+    );
+    surface.canvas().fill_rounded_rect(
+      &chip,
+      px(6.0),
+      with_alpha(style.text, 0.07),
+    );
+    draw_text(
+      surface,
+      &detail_font,
+      &result.workspace,
+      &chip,
+      style.subtext,
+      Align::Center,
+    );
+
+    let text_left = icon_rect.right + px(icon_gap);
+    let text_right = chip.left - px(icon_gap);
+    let title = if result.title.is_empty() {
+      &result.process_name
+    } else {
+      &result.title
+    };
+    draw_marked(
+      surface,
+      [&title_font, &title_bold],
+      title,
+      &search.query,
+      &Rect::from_ltrb(
+        text_left,
+        row.top + px(5.0),
+        text_right,
+        row.top + px(26.0),
+      ),
+      [style.text, style.search],
+    );
+    draw_marked(
+      surface,
+      [&detail_font, &detail_bold],
+      &result.process_name,
+      &search.query,
+      &Rect::from_ltrb(
+        text_left,
+        row.top + px(26.0),
+        text_right,
+        row.bottom - px(5.0),
+      ),
+      [style.subtext, style.search],
+    );
+  }
+
+  // The keys that work on it.
+  let footer_top = card.bottom - px(footer);
+  rule(surface, footer_top - px(1.0).max(1));
+  let mut left = card.left + px(padding);
+  for (key, action) in SPOTLIGHT_HINTS {
+    let cap_width = key_cap_width(&key_font, key, scale_factor);
+    let cap = key_cap_rect(left, px(footer), cap_width, scale_factor);
+    let cap =
+      Rect::from_xy(left, footer_top + cap.top, cap_width, cap.height());
+    draw_key_cap(surface, &cap, key, &key_font, scale_factor, style);
+    left = cap.right + px(6.0);
+
+    let width = text_width(&detail_font, action);
+    draw_text(
+      surface,
+      &detail_font,
+      action,
+      &Rect::from_xy(left, footer_top, width, px(footer)),
+      with_alpha(style.subtext, 0.9),
+      Align::Left,
+    );
+    left += width + px(16.0);
+  }
+
+  rows
+}
+
+/// Draws `text` into `rect` in `fonts[0]` and `colors[0]`, with the first
+/// part matching `query` (ignoring case) in `fonts[1]` and `colors[1]`.
+fn draw_marked(
+  surface: &mut Surface,
+  fonts: [&Font; 2],
+  text: &str,
+  query: &str,
+  rect: &Rect,
+  colors: [Color; 2],
+) {
+  let Some((start, end)) = find_ignoring_case(text, query) else {
+    draw_text(surface, fonts[0], text, rect, colors[0], Align::Left);
+    return;
+  };
+
+  let mut left = rect.left;
+  for (part, index) in [
+    (&text[..start], 0),
+    (&text[start..end], 1),
+    (&text[end..], 0),
+  ] {
+    if part.is_empty() || left >= rect.right {
+      continue;
+    }
+    let font = fonts[index];
+    let part_rect =
+      Rect::from_ltrb(left, rect.top, rect.right, rect.bottom);
+    draw_text(surface, font, part, &part_rect, colors[index], Align::Left);
+    left += text_width(font, part);
+  }
+}
+
+/// Byte range of the first part of `text` equal to `query` ignoring case,
+/// on character boundaries of `text`.
+pub(crate) fn find_ignoring_case(
+  text: &str,
+  query: &str,
+) -> Option<(usize, usize)> {
+  if query.is_empty() {
+    return None;
+  }
+  let query = query
+    .chars()
+    .flat_map(char::to_lowercase)
+    .collect::<Vec<_>>();
+
+  text.char_indices().find_map(|(start, _)| {
+    let mut wanted = query.iter();
+    for (offset, char) in text[start..].char_indices() {
+      for lower in char.to_lowercase() {
+        if wanted.next() != Some(&lower) {
+          return None;
+        }
+      }
+      if wanted.len() == 0 {
+        return Some((start, start + offset + char.len_utf8()));
+      }
+    }
+    None
+  })
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{draw_search, search_hits};
+  use windows::Win32::Foundation::HWND;
+
+  use super::{
+    draw_search, draw_spotlight, find_ignoring_case, search_hits,
+    spotlight_size,
+  };
   use crate::{
-    overview_state::SearchField, surface::Surface, Color, OverviewStyle,
+    overview_state::{SearchField, SearchResult},
+    surface::Surface,
+    Color, OverviewStyle,
   };
 
   #[test]
@@ -1417,6 +1782,7 @@ mod tests {
       query: query.to_string(),
       hits,
       current,
+      ..SearchField::default()
     };
 
     assert_eq!(search_hits(&field("", 0, None)), "");
@@ -1459,18 +1825,56 @@ mod tests {
       highlight_duration_ms: 170,
       bounce: 0.25,
       effects: crate::OverviewEffects::default(),
+      window_highlight: crate::OverviewWindowHighlight::default(),
       particles: crate::ParticleLook::default(),
     };
     let searching = SearchField {
       query: "term".to_string(),
       hits: 3,
       current: Some(1),
+      results: vec![SearchResult {
+        hwnd: 1,
+        title: "Terminal".to_string(),
+        process_name: "WindowsTerminal.exe".to_string(),
+        workspace: "1".to_string(),
+      }],
+      first: 0,
+    };
+    let no_match = SearchField {
+      query: "zzz".to_string(),
+      ..SearchField::default()
     };
 
-    for search in [SearchField::default(), searching] {
+    for search in [SearchField::default(), searching.clone()] {
       let mut surface = Surface::new(1920, 36).expect("surface");
       draw_search(&mut surface, &search, false, 1.0, &style);
       assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
     }
+
+    for search in [searching, no_match] {
+      let (width, height) = spotlight_size(&search, 1.0, 1920.0);
+      let mut surface = Surface::new(width, height).expect("surface");
+      let rows = draw_spotlight(
+        &mut surface,
+        &search,
+        1.0,
+        &style,
+        (HWND::default(), 0),
+      );
+      assert_eq!(rows.len(), search.results.len());
+      assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
+    }
+  }
+
+  #[test]
+  fn finds_a_query_ignoring_case() {
+    assert_eq!(
+      find_ignoring_case("Visual Studio Code", "code"),
+      Some((14, 18))
+    );
+    assert_eq!(find_ignoring_case("code-review", "CODE"), Some((0, 4)));
+    assert_eq!(find_ignoring_case("Ärger", "är"), Some((0, 3)));
+    assert_eq!(find_ignoring_case("Terminal", "zz"), None);
+    assert_eq!(find_ignoring_case("Terminal", ""), None);
   }
 }

@@ -692,6 +692,15 @@ struct Screen {
   search_controls: Option<SearchControls>,
   search_y: Spring,
 
+  /// The search box shown during a search, what it was drawn as (with
+  /// the icons it had), where its rows are in it, where its top heads,
+  /// and how far it is faded in.
+  spotlight: Option<Picture>,
+  spotlight_drawn: Option<(SearchField, u64)>,
+  spotlight_rows: Vec<(Rect, isize)>,
+  spotlight_y: Spring,
+  spotlight_alpha: Spring,
+
   /// The sheet of keyboard shortcuts, what it lists while open, and how
   /// far it is faded in.
   sheet: Option<Picture>,

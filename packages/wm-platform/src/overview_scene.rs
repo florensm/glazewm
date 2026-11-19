@@ -14,6 +14,10 @@ pub(crate) struct SceneWindow {
   pub preview: Preview,
   rect: SpringRect,
   pub alpha: Spring,
+
+  /// How much larger than its rect it shows, as a fraction of its size,
+  /// e.g. while it matches a search.
+  pub lift: Spring,
 }
 
 impl SceneWindow {
@@ -33,6 +37,7 @@ impl SceneWindow {
       preview,
       rect,
       alpha: Spring::new(0.0, settle_ms, 0.002),
+      lift: Spring::new(0.0, settle_ms, 0.0005),
     }
   }
 
@@ -41,6 +46,7 @@ impl SceneWindow {
   fn retune(&mut self, settle_ms: f32, bounce: f32) {
     self.rect.retune(settle_ms, bounce);
     self.alpha.retune(settle_ms);
+    self.lift.retune(settle_ms);
   }
 
   /// Where it is now.
@@ -91,7 +97,7 @@ impl SceneWindow {
 
   /// Advances by `dt` seconds. Returns whether it is still moving.
   pub fn step(&mut self, dt: f32) -> bool {
-    self.rect.step(dt) | self.alpha.step(dt)
+    self.rect.step(dt) | self.alpha.step(dt) | self.lift.step(dt)
   }
 }
 

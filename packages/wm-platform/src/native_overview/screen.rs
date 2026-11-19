@@ -24,7 +24,8 @@ use super::{
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{
-    draw_card, draw_search, draw_sheet, picture_size, sheet_size,
+    draw_card, draw_search, draw_sheet, draw_spotlight, picture_size,
+    sheet_size, spotlight_margin, spotlight_size,
   },
   overview_effects::{lean_toward, Entrance},
   overview_layout::{
@@ -62,6 +63,13 @@ static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
 const HOVER_LIFT: f32 = 1.03;
 const PRESS_SINK: f32 = 0.96;
 const DROP_LIFT: f32 = 1.06;
+
+/// How strongly a card shows during a search none of its windows match.
+const SEARCH_EMPTY_CARD: f32 = 0.4;
+
+/// How much a window of the activities' scene grows during a search it
+/// matches.
+const SEARCH_LIFT: f32 = 0.02;
 
 /// How far what the keyboard is on bumps toward where it can't go, in
 /// logical pixels.
@@ -106,6 +114,11 @@ impl Screen {
       search_drawn: None,
       search_controls: None,
       search_y: Spring::new(0.0, 0.0, 0.25),
+      spotlight: None,
+      spotlight_drawn: None,
+      spotlight_rows: Vec::new(),
+      spotlight_y: Spring::new(0.0, 0.0, 0.25),
+      spotlight_alpha: Spring::new(0.0, 0.0, 0.002),
       sheet: None,
       sheet_drawn: None,
       sheet_alpha: Spring::new(0.0, 0.0, 0.002),
@@ -379,6 +392,8 @@ impl Screen {
     let bounce = style.bounce;
 
     self.search_y.retune(switch_ms);
+    self.spotlight_y.retune(switch_ms);
+    self.spotlight_alpha.retune(highlight_ms);
     self.sheet_alpha.retune(highlight_ms);
     if let Some(overlays) = &mut self.overlays {
       overlays.retune(switch_ms, highlight_ms, bounce);
@@ -476,8 +491,10 @@ impl Screen {
       overlays.register(host, layout);
     }
 
-    // Over everything else, the sheet over the search line.
-    for picture in [&mut self.search, &mut self.sheet] {
+    // Over everything else, the search box over the search line, and the
+    // sheet over both.
+    for picture in [&mut self.search, &mut self.spotlight, &mut self.sheet]
+    {
       if picture.is_none() {
         *picture = Picture::new();
       }
@@ -520,8 +537,9 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
     }
-    for picture in
-      [&mut self.search, &mut self.sheet].into_iter().flatten()
+    for picture in [&mut self.search, &mut self.spotlight, &mut self.sheet]
+      .into_iter()
+      .flatten()
     {
       picture.retire(&mut retired);
     }
@@ -556,6 +574,7 @@ impl Screen {
     self.retarget_cards(&targets.cards, snap);
 
     self.search_y.aim(targets.search_y, snap);
+    self.spotlight_y.aim(targets.spotlight_y, snap);
 
     if self.focus.layout.has_scene() {
       self.retarget_scenes(snap);
@@ -612,6 +631,9 @@ impl Screen {
         hovered != index && index != focus.selected && !focus.is_dragging
       })
     };
+    let misses = (0..self.cards.len())
+      .map(|index| self.misses_search(index))
+      .collect::<Vec<_>>();
 
     for (index, (card, target)) in
       self.cards.iter_mut().zip(&self.card_targets).enumerate()
@@ -625,11 +647,14 @@ impl Screen {
             (card.metrics.width * scale, card.metrics.height * scale);
           lean_toward((target.cx, target.cy), size, pointer, lean)
         });
-      let opacity = if dims(index) {
+      let mut opacity = if dims(index) {
         target.opacity * dim
       } else {
         target.opacity
       };
+      if misses[index] {
+        opacity *= SEARCH_EMPTY_CARD;
+      }
 
       for (spring, value) in [
         (&mut card.cx, target.cx + dx),
@@ -799,15 +824,24 @@ impl Screen {
 
     if layout.has_scene() {
       for index in 0..self.scenes.len() {
-        let opacities = self.scenes[index]
+        let looks = self.scenes[index]
           .windows
           .iter()
-          .map(|window| self.window_opacity(index, window.preview.hwnd))
+          .map(|window| {
+            let hwnd = window.preview.hwnd;
+            let lift = if self.matches_search(index, hwnd) {
+              SEARCH_LIFT
+            } else {
+              0.0
+            };
+            (self.window_opacity(index, hwnd), lift)
+          })
           .collect::<Vec<_>>();
-        for (window, opacity) in
-          self.scenes[index].windows.iter_mut().zip(opacities)
+        for (window, (opacity, lift)) in
+          self.scenes[index].windows.iter_mut().zip(looks)
         {
           window.preview.opacity = opacity;
+          window.lift.aim(lift, false);
         }
       }
     }
@@ -818,6 +852,7 @@ impl Screen {
     }
 
     self.refresh_search(&style, force);
+    self.refresh_spotlight(&style, force);
     self.refresh_sheet(&style, force);
     self.is_dirty = true;
   }
@@ -850,6 +885,31 @@ impl Screen {
       });
     }
     self.search_drawn = Some(drawn);
+  }
+
+  /// Redraws the search box if the search or the icons changed, or when
+  /// `force`, and fades it in or out as a search starts or ends.
+  fn refresh_spotlight(&mut self, style: &OverviewStyle, force: bool) {
+    let search = &self.focus.search;
+    let is_searching = !search.query.is_empty();
+    let drawn = (search.clone(), self.icons);
+    if !force && self.spotlight_drawn.as_ref() == Some(&drawn) {
+      return;
+    }
+
+    // Ending keeps what it showed, to fade out.
+    if let (true, Some(picture)) = (is_searching, &mut self.spotlight) {
+      let scale_factor = self.metrics.scale_factor;
+      let size =
+        spotlight_size(&drawn.0, scale_factor, self.metrics.view.0);
+      let notify = self.notify;
+      picture.draw(size, |surface| {
+        self.spotlight_rows =
+          draw_spotlight(surface, &drawn.0, scale_factor, style, notify);
+      });
+    }
+    self.spotlight_alpha.target = if is_searching { 1.0 } else { 0.0 };
+    self.spotlight_drawn = Some(drawn);
   }
 
   /// Redraws the shortcut sheet if what it lists changed, or when
@@ -1067,6 +1127,8 @@ impl Screen {
       }
     }
     is_moving |= self.sheet_alpha.step(dt);
+    is_moving |= self.spotlight_y.step(dt);
+    is_moving |= self.spotlight_alpha.step(dt);
 
     if let Some((zoom, started)) = self.zoom {
       is_moving = true;
@@ -1168,6 +1230,18 @@ impl Screen {
       }
     }
 
+    let spotlight_rect = self.spotlight_rect();
+    let spotlight_opacity =
+      chrome_opacity(fade) * self.spotlight_alpha.value;
+    if let Some(spotlight) = &mut self.spotlight {
+      match spotlight_rect {
+        Some(rect) if spotlight_opacity > 0.002 => {
+          spotlight.place(&rect, &view, spotlight_opacity);
+        }
+        _ => spotlight.hide(),
+      }
+    }
+
     let sheet_rect = self.sheet_rect();
     let sheet_opacity = chrome_opacity(fade) * self.sheet_alpha.value;
     if let Some(sheet) = &mut self.sheet {
@@ -1183,6 +1257,43 @@ impl Screen {
     self.retired.clear();
 
     is_gliding
+  }
+
+  /// Where the search box's picture shows, its shadow included.
+  #[allow(clippy::cast_precision_loss)]
+  fn spotlight_rect(&self) -> Option<RectF> {
+    let (width, height) = self.spotlight.as_ref()?.size();
+    let view = self.view();
+    let margin = spotlight_margin(self.metrics.scale_factor);
+    (width > 0).then(|| {
+      RectF::new(
+        ((view.w - width as f32) / 2.0).round(),
+        (self.spotlight_y.value - margin).round(),
+        width as f32,
+        height as f32,
+      )
+    })
+  }
+
+  /// The control of the search box under (`x`, `y`) while it shows: a
+  /// row's match, or else the box itself.
+  fn hit_spotlight(&self, x: f32, y: f32) -> Option<Control> {
+    if self.focus.query.is_empty() || self.zoom.is_some() {
+      return None;
+    }
+
+    let rect = self.spotlight_rect()?;
+    let margin = spotlight_margin(self.metrics.scale_factor);
+    if !rect.inset(margin).contains(x, y) {
+      return None;
+    }
+
+    let (x, y) = (x - rect.x, y - rect.y);
+    let row = self
+      .spotlight_rows
+      .iter()
+      .find(|(row, _)| RectF::from_rect(row).contains(x, y));
+    Some(row.map_or(Control::Search, |(_, hwnd)| Control::Result(*hwnd)))
   }
 
   /// Where the shortcut sheet shows, centered on the screen, once drawn.
@@ -1220,7 +1331,9 @@ impl Screen {
       return Hit::default();
     }
 
-    if let Some(control) = self.hit_control(x, y) {
+    if let Some(control) =
+      self.hit_spotlight(x, y).or_else(|| self.hit_control(x, y))
+    {
       return Hit {
         control: Some(control),
         ..Hit::default()
