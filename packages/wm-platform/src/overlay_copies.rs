@@ -16,9 +16,9 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   backdrop_source::{BackdropSource, FillSource, VignetteSource},
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
-  isolation, lerp_f32,
+  lerp_f32,
   native_surrogate::{fill_start, placed_rects},
-  BackdropOverlayParams, Color, Rect, StyleBlend,
+  BackdropOverlayParams, Color, Rect, StyleBlend, TabBarPlace,
 };
 
 /// Where a surrogate draws its window: at `frame`, cut at `clip`, into a
@@ -78,6 +78,59 @@ impl OverlayCopy {
       None => self.thumbnail.hide(),
     }
   }
+}
+
+/// A copy of a stack's tab bar beside its window, drawn 1:1 from the bar's
+/// window, which is painted at the bar's size wherever the window is (see
+/// `NativeStackTabBar::set_cloaked`), so its tabs are never stretched.
+struct BarCopy {
+  thumbnail: Thumbnail,
+  source: isize,
+  place: TabBarPlace,
+}
+
+impl BarCopy {
+  fn place(&mut self, placement: &Placement) {
+    let outer = self.place.rect(&placement.frame);
+    match bar_rects(&outer, &placement.clip, placement.origin) {
+      Some((source, dest)) => {
+        let _ = self.thumbnail.set(Look {
+          source: Some(source),
+          dest,
+          opacity: u8::MAX,
+          visible: true,
+        });
+      }
+      None => self.thumbnail.hide(),
+    }
+  }
+}
+
+/// `(rcSource, rcDestination)` drawing a tab bar at `outer`, cut at `clip`
+/// as its window is, into a surrogate whose top-left is at `origin`: the
+/// bar's window holds only the part inside `clip`, from its own top-left.
+/// `None` when none of it is inside.
+fn bar_rects(
+  outer: &Rect,
+  clip: &Rect,
+  origin: (i32, i32),
+) -> Option<(RECT, RECT)> {
+  let visible = outer.intersection(clip)?;
+
+  Some((
+    RECT {
+      left: 0,
+      top: 0,
+      right: visible.width(),
+      bottom: visible.height(),
+    },
+    RECT {
+      left: visible.left - origin.0,
+      top: visible.top - origin.1,
+      right: visible.right - origin.0,
+      bottom: visible.bottom - origin.1,
+    },
+  ))
 }
 
 /// One of the thumbnails a [`RingCopy`] is drawn with.
@@ -168,12 +221,14 @@ impl RingCopy {
   /// or, cut anew, drawn as `placement` places them, at the opacity they
   /// were drawn at. All go up before the old ones go, so no composition
   /// shows neither; if any fails, the old ones stay. Returns whether the
-  /// new ones went up.
+  /// new ones went up. `held` ones are kept hidden (see
+  /// `Thumbnail::set_held`).
   fn register_anew(
     &mut self,
     dest: HWND,
     corner_reach: Option<i32>,
     placement: Option<&Placement>,
+    held: bool,
   ) -> bool {
     let parts = if corner_reach == self.corner_reach {
       self
@@ -193,7 +248,8 @@ impl RingCopy {
       self.looks(corner_reach, placement.filter(|_| is_shown), opacity)
     };
 
-    let Some(parts) = register_all(dest, HWND(self.source), parts) else {
+    let Some(parts) = register_all(dest, HWND(self.source), parts, held)
+    else {
       return false;
     };
     self.parts = parts;
@@ -251,19 +307,45 @@ impl RingCopy {
       thumbnail.hide();
     }
   }
+
+  fn set_held(&mut self, held: bool) {
+    for (_, thumbnail) in &mut self.parts {
+      thumbnail.set_held(held);
+    }
+  }
+
+  fn part_kinds(&self) -> Vec<RingPart> {
+    self.parts.iter().map(|(part, _)| *part).collect()
+  }
+}
+
+/// Whether a ring copy of the overlay `kept_source`, drawn with
+/// `kept_parts`, can draw the ring of `source` cut by `corner_reach`: the
+/// same overlay window, cut into the same parts. Its rects and looks are
+/// set anew whatever its width or style, as a thumbnail draws its source
+/// as that is now.
+fn keeps_ring(
+  kept_source: isize,
+  source: isize,
+  kept_parts: &[RingPart],
+  corner_reach: Option<i32>,
+) -> bool {
+  kept_source == source && kept_parts == RingPart::all(corner_reach)
 }
 
 /// Registers a thumbnail of `source` on `dest` drawing each of `parts` as
-/// its look says from its first frame, or none if any fails.
+/// its look says from its first frame, or none if any fails. `held` ones
+/// are kept hidden (see `Thumbnail::set_held`).
 fn register_all(
   dest: HWND,
   source: HWND,
   parts: Vec<(RingPart, Look)>,
+  held: bool,
 ) -> Option<Vec<(RingPart, Thumbnail)>> {
   parts
     .into_iter()
     .map(|(part, look)| {
-      Thumbnail::register_with(dest, source, look)
+      Thumbnail::register_held(dest, source, look, held)
         .map(|thumbnail| (part, thumbnail))
     })
     .collect()
@@ -316,6 +398,27 @@ impl FillCopy {
     let _ = self.right.set_opacity(opacity);
     let _ = self.bottom.set_opacity(opacity);
   }
+
+  fn set_held(&mut self, held: bool) {
+    self.right.set_held(held);
+    self.bottom.set_held(held);
+  }
+
+  /// Draws nothing, as one just registered: hidden, not shown, at no
+  /// opacity.
+  fn reset(&mut self) {
+    self.is_shown = false;
+    self.opacity = 0;
+    self.apply_opacity();
+    self.right.hide();
+    self.bottom.hide();
+  }
+}
+
+/// Whether a fill copy in `kept` can cover a window whose edge color is
+/// now `color`: only in the same color, as its source is that color.
+fn keeps_fill(kept: Color, color: Color) -> bool {
+  kept == color
 }
 
 /// The part behind a window of a backdrop spanning its monitor, in one
@@ -462,10 +565,7 @@ impl BackdropCopy {
   /// thumbnails: those shown more first, so a change of style never
   /// leaves a frame with neither.
   fn apply_opacity(&mut self) {
-    let opacity = left_out(
-      if self.is_shown { self.opacity } else { 0 },
-      isolation::current().no_backdrop,
-    );
+    let opacity = if self.is_shown { self.opacity } else { 0 };
     let weights = self.crop_weights();
 
     let mut order = (0..self.crops.len()).collect::<Vec<_>>();
@@ -490,6 +590,67 @@ impl BackdropCopy {
         .set_opacity(scale_alpha(opacity, strength));
     }
   }
+
+  fn set_held(&mut self, held: bool) {
+    for crop in &mut self.crops {
+      crop.thumbnail.set_held(held);
+    }
+    if let Some(vignette) = &mut self.vignette {
+      vignette.copy.thumbnail.set_held(held);
+    }
+  }
+
+  /// Draws nothing, as one just carried: in no style, not shown, at no
+  /// opacity, never placed.
+  fn reset(&mut self) {
+    self.current = None;
+    self.from = None;
+    self.t = 1.0;
+    self.is_shown = false;
+    self.opacity = 0;
+    self.placement = None;
+    self.apply_opacity();
+    for thumbnail in self.thumbnails_mut() {
+      thumbnail.hide();
+    }
+  }
+
+  /// Its thumbnails in the order registered: the crops', then the
+  /// vignette's.
+  fn thumbnails_mut(&mut self) -> impl Iterator<Item = &mut Thumbnail> {
+    self.crops.iter_mut().map(|crop| &mut crop.thumbnail).chain(
+      self
+        .vignette
+        .as_mut()
+        .map(|vignette| &mut vignette.copy.thumbnail),
+    )
+  }
+
+  /// [`thumbnails_mut`](Self::thumbnails_mut), each with its source.
+  fn thumbnails(&self) -> impl Iterator<Item = (&Thumbnail, HWND)> {
+    self
+      .crops
+      .iter()
+      .map(|crop| (&crop.thumbnail, crop.source.hwnd()))
+      .chain(self.vignette.as_ref().map(|vignette| {
+        (&vignette.copy.thumbnail, vignette.source.hwnd())
+      }))
+  }
+}
+
+/// Whether a backdrop copy carried in `carried` styles, cut from sources
+/// spanning `source_monitors`, can draw a window's backdrop in `styles` on
+/// `monitor`: the same styles, on the same monitor. Its sources pick up a
+/// changed wallpaper as they are put to use again (see
+/// `BackdropSource::refresh`).
+fn keeps_backdrop<'a>(
+  carried: &[BackdropOverlayParams],
+  source_monitors: impl IntoIterator<Item = &'a Rect>,
+  styles: &[BackdropOverlayParams],
+  monitor: &Rect,
+) -> bool {
+  same_set(carried, styles)
+    && source_monitors.into_iter().all(|source| source == monitor)
 }
 
 /// The crops a fade from crop `from` to crop `to`, `t` of the way, draws,
@@ -538,16 +699,6 @@ fn crop_weights(
   weights
 }
 
-/// `opacity`, or none for a copy `GLAZEWM_ISOLATE` leaves out (see
-/// `isolation`).
-fn left_out(opacity: u8, is_left_out: bool) -> u8 {
-  if is_left_out {
-    0
-  } else {
-    opacity
-  }
-}
-
 /// Strength of the vignette `params` give, as the overlay composites it,
 /// under its own opacity.
 fn vignette_strength(params: &BackdropOverlayParams) -> f32 {
@@ -568,12 +719,112 @@ pub(crate) fn scale_alpha(alpha: u8, frac: f32) -> u8 {
 pub(crate) struct OverlayCopies {
   ring: Option<RingCopy>,
   backdrop: Option<BackdropCopy>,
+  /// Over the backdrop and under the window, as the bar's strip reaches
+  /// under the window's rounded corners.
+  bar: Option<BarCopy>,
   fill: Option<FillCopy>,
   /// Where they were last placed.
   placement: Option<Placement>,
+  /// Whether they are all kept hidden, those registered from now on too
+  /// (see [`set_held`](Self::set_held)).
+  held: bool,
+  /// The ring and fill of a ready peek, held and drawing nothing, kept
+  /// where they stack until carried again (see
+  /// [`set_aside`](Self::set_aside)).
+  spare_ring: Option<RingCopy>,
+  spare_fill: Option<FillCopy>,
 }
 
 impl OverlayCopies {
+  /// Copies kept hidden until [`set_held`](Self::set_held) lets them go.
+  pub(crate) fn held() -> Self {
+    Self {
+      held: true,
+      ..Self::default()
+    }
+  }
+
+  /// Keeps every copy hidden, whatever it is set to draw, or lets them
+  /// draw that again: for a surrogate hidden on a window it shares with
+  /// others, which can't hide the window (see `PeekSurface`).
+  pub(crate) fn set_held(&mut self, held: bool) {
+    if self.held == held {
+      return;
+    }
+
+    self.held = held;
+    if let Some(backdrop) = &mut self.backdrop {
+      backdrop.set_held(held);
+    }
+    if let Some(bar) = &mut self.bar {
+      bar.thumbnail.set_held(held);
+    }
+    if let Some(fill) = &mut self.fill {
+      fill.set_held(held);
+    }
+    if let Some(ring) = &mut self.ring {
+      ring.set_held(held);
+    }
+  }
+
+  /// Draws the tab bar `source` at `place` beside its window on `dest`
+  /// from now on, where the others were last placed if they were. Returns
+  /// whether it registered the copy anew: the caller then registers the
+  /// window's own thumbnail over it (see
+  /// `NativeSurrogate::raise_thumbnail`)
+  /// and [`raise_above_window`](Self::raise_above_window). Called again
+  /// with the same `source`, only updates its place.
+  pub(crate) fn carry_bar(
+    &mut self,
+    dest: HWND,
+    source: HWND,
+    place: TabBarPlace,
+  ) -> bool {
+    if let Some(bar) =
+      self.bar.as_mut().filter(|bar| bar.source == source.0)
+    {
+      bar.place = place;
+      if let Some(placement) = &self.placement {
+        bar.place(placement);
+      }
+      return false;
+    }
+
+    self.bar = None;
+    let Some(thumbnail) = self.register_hidden(dest, source) else {
+      return false;
+    };
+    let mut bar = BarCopy {
+      thumbnail,
+      source: source.0,
+      place,
+    };
+    if let Some(placement) = &self.placement {
+      bar.place(placement);
+    }
+    self.bar = Some(bar);
+    true
+  }
+
+  pub(crate) fn carries_bar(&self) -> bool {
+    self.bar.is_some()
+  }
+
+  /// Stops drawing the tab bar.
+  pub(crate) fn drop_bar(&mut self) {
+    self.bar = None;
+  }
+
+  /// Registers the fill, then the ring, anew over everything on `dest`,
+  /// once the window's own thumbnail went over them.
+  pub(crate) fn raise_above_window(&mut self, dest: HWND) {
+    if self.fill.is_some() {
+      self.raise_fill(dest);
+    } else {
+      self.raise_ring(dest);
+    }
+  }
+
   /// Draws the ring of `source`, an overlay window at `rest` around a
   /// window at `window_rest`, on `dest` from now on, where the others were
   /// last placed if they were: whole, or with `corner_reach` (see
@@ -595,8 +846,30 @@ impl OverlayCopies {
       ring.rest = rest.clone();
       ring.window_rest = window_rest.clone();
       if ring.corner_reach != corner_reach {
-        ring.register_anew(dest, corner_reach, self.placement.as_ref());
+        ring.register_anew(
+          dest,
+          corner_reach,
+          self.placement.as_ref(),
+          self.held,
+        );
       }
+      return true;
+    }
+
+    // A ready peek's ring, still registered where it stacks, is drawn as
+    // one registered now would be; one of another overlay or cut goes.
+    if let Some(mut ring) = self.spare_ring.take().filter(|ring| {
+      keeps_ring(ring.source, source.0, &ring.part_kinds(), corner_reach)
+    }) {
+      ring.rest = rest.clone();
+      ring.window_rest = window_rest.clone();
+      ring.corner_reach = corner_reach;
+      let looks = ring.looks(corner_reach, self.placement.as_ref(), 0);
+      for ((_, thumbnail), (_, look)) in ring.parts.iter_mut().zip(looks) {
+        let _ = thumbnail.set(look);
+      }
+      ring.set_held(self.held);
+      self.ring = Some(ring);
       return true;
     }
 
@@ -608,7 +881,7 @@ impl OverlayCopies {
       corner_reach,
     };
     let looks = ring.looks(corner_reach, self.placement.as_ref(), 0);
-    self.ring = register_all(dest, source, looks)
+    self.ring = register_all(dest, source, looks, self.held)
       .map(|parts| RingCopy { parts, ..ring });
     self.ring.is_some()
   }
@@ -625,7 +898,12 @@ impl OverlayCopies {
       .as_mut()
       .filter(|ring| ring.corner_reach != corner_reach)
     {
-      ring.register_anew(dest, corner_reach, self.placement.as_ref());
+      ring.register_anew(
+        dest,
+        corner_reach,
+        self.placement.as_ref(),
+        self.held,
+      );
     }
   }
 
@@ -644,7 +922,7 @@ impl OverlayCopies {
   pub(crate) fn raise_ring(&mut self, dest: HWND) {
     let _scope = crate::perf::scope(crate::perf::Stage::RingRaise);
     if let Some(ring) = &mut self.ring {
-      ring.register_anew(dest, ring.corner_reach, None);
+      ring.register_anew(dest, ring.corner_reach, None, self.held);
     }
   }
 
@@ -710,7 +988,7 @@ impl OverlayCopies {
           continue;
         }
       };
-      if let Some(thumbnail) = Thumbnail::register(dest, source.hwnd()) {
+      if let Some(thumbnail) = self.register_hidden(dest, source.hwnd()) {
         crops.push(CropCopy {
           thumbnail,
           source,
@@ -735,7 +1013,7 @@ impl OverlayCopies {
           .ok()
       })
       .and_then(|source| {
-        Thumbnail::register(dest, source.hwnd()).map(|thumbnail| {
+        self.register_hidden(dest, source.hwnd()).map(|thumbnail| {
           VignetteCopy {
             copy: OverlayCopy {
               thumbnail,
@@ -764,6 +1042,16 @@ impl OverlayCopies {
     self.backdrop = Some(backdrop);
     self.raise_fill(dest);
     true
+  }
+
+  /// Registers a hidden thumbnail of `source` on `dest`, held while these
+  /// copies are.
+  fn register_hidden(
+    &self,
+    dest: HWND,
+    source: HWND,
+  ) -> Option<Thumbnail> {
+    Thumbnail::register_held(dest, source, Look::default(), self.held)
   }
 
   pub(crate) fn carries_backdrop(&self) -> bool {
@@ -842,6 +1130,17 @@ impl OverlayCopies {
     if self.fill.as_ref().is_some_and(|fill| fill.color == color) {
       return true;
     }
+    // A ready peek's fill, still registered under its ring, is drawn as
+    // one registered now would be; one of another color goes.
+    if let Some(mut fill) = self
+      .spare_fill
+      .take()
+      .filter(|fill| keeps_fill(fill.color, color))
+    {
+      fill.set_held(self.held);
+      self.fill = Some(fill);
+      return true;
+    }
 
     let source = match FillSource::acquire(color) {
       Ok(source) => source,
@@ -862,8 +1161,8 @@ impl OverlayCopies {
       },
     );
     let (Some(right), Some(bottom)) = (
-      Thumbnail::register_with(dest, source.hwnd(), looks.0),
-      Thumbnail::register_with(dest, source.hwnd(), looks.1),
+      Thumbnail::register_held(dest, source.hwnd(), looks.0, self.held),
+      Thumbnail::register_held(dest, source.hwnd(), looks.1, self.held),
     ) else {
       return false;
     };
@@ -896,7 +1195,8 @@ impl OverlayCopies {
   }
 
   /// Draws the fill, while shown, at `opacity`: as faded as the window's
-  /// thumbnail, not at its alpha (see `fade_fraction`).
+  /// thumbnail, not at its alpha, as its color is sampled off the screen,
+  /// already blended with what is behind a see-through window.
   pub(crate) fn set_fill_opacity(&mut self, opacity: u8) {
     if let Some(fill) = &mut self.fill {
       fill.opacity = opacity;
@@ -921,8 +1221,18 @@ impl OverlayCopies {
 
     let source = fill.source.hwnd();
     if let (Some(right), Some(bottom)) = (
-      Thumbnail::register_with(dest, source, *fill.right.look()),
-      Thumbnail::register_with(dest, source, *fill.bottom.look()),
+      Thumbnail::register_held(
+        dest,
+        source,
+        *fill.right.look(),
+        self.held,
+      ),
+      Thumbnail::register_held(
+        dest,
+        source,
+        *fill.bottom.look(),
+        self.held,
+      ),
     ) {
       fill.right = right;
       fill.bottom = bottom;
@@ -951,6 +1261,9 @@ impl OverlayCopies {
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.place(&placement);
     }
+    if let Some(bar) = &mut self.bar {
+      bar.place(&placement);
+    }
     self.placement = Some(placement);
   }
 
@@ -975,6 +1288,9 @@ impl OverlayCopies {
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.place(&placement);
     }
+    if let Some(bar) = &mut self.bar {
+      bar.place(&placement);
+    }
     self.placement = Some(placement);
   }
 
@@ -996,14 +1312,14 @@ impl OverlayCopies {
   /// Draws the ring at `opacity`, independently of the backdrop.
   pub(crate) fn set_ring_opacity(&mut self, opacity: u8) {
     if let Some(ring) = &mut self.ring {
-      ring.set_opacity(left_out(opacity, isolation::current().no_ring));
+      ring.set_opacity(opacity);
     }
   }
 
   /// Brings the ring copy to full opacity.
   pub(crate) fn cover_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
-      ring.set_opacity(left_out(u8::MAX, isolation::current().no_ring));
+      ring.set_opacity(u8::MAX);
     }
   }
 
@@ -1017,8 +1333,239 @@ impl OverlayCopies {
   pub(crate) fn clear(&mut self) {
     self.ring = None;
     self.backdrop = None;
+    self.bar = None;
     self.fill = None;
     self.placement = None;
+    self.spare_ring = None;
+    self.spare_fill = None;
+  }
+
+  /// Keeps them registered, held and drawing nothing, as a fresh peek's
+  /// would be before its motion carries them: the backdrop as just
+  /// carried, the ring and fill set aside until carried again (see
+  /// [`carry_ring`](Self::carry_ring) and
+  /// [`carry_fill`](Self::carry_fill)). For a hidden hosted peek, kept
+  /// for its tile's next motion.
+  pub(crate) fn set_aside(&mut self) {
+    self.set_held(true);
+    // Carried anew by whatever draws the bar next.
+    self.bar = None;
+    if let Some(backdrop) = &mut self.backdrop {
+      backdrop.reset();
+    }
+    if let Some(mut fill) = self.fill.take() {
+      fill.reset();
+      self.spare_fill = Some(fill);
+    }
+    if let Some(ring) = self.ring.take() {
+      self.spare_ring = Some(ring);
+    }
+    self.placement = None;
+  }
+
+  /// Keeps the backdrop for a window at `window_rest`, its frame at
+  /// `frame`, to be drawn in `styles` on `monitor` (given with any
+  /// `styles`), if it can (see [`keeps_backdrop`]), as
+  /// [`carry_backdrop`](Self::carry_backdrop) would carry it there; else
+  /// drops it. Returns whether nothing is to be registered anew for it:
+  /// kept, or none carried nor wanted.
+  pub(crate) fn reclaim_backdrop(
+    &mut self,
+    styles: &[BackdropOverlayParams],
+    monitor: Option<&Rect>,
+    window_rest: &Rect,
+    frame: &Rect,
+  ) -> bool {
+    let Some(backdrop) = &self.backdrop else {
+      return styles.is_empty();
+    };
+
+    let keeps = monitor.is_some_and(|monitor| {
+      keeps_backdrop(
+        &backdrop.styles,
+        backdrop.crops.iter().map(|crop| crop.source.monitor()),
+        styles,
+        monitor,
+      )
+    });
+    if !keeps {
+      self.backdrop = None;
+      return styles.is_empty();
+    }
+
+    for crop in &backdrop.crops {
+      crop.source.refresh();
+    }
+    self.move_backdrop(window_rest, frame);
+    true
+  }
+
+  /// Drops the ring and fill set aside (see
+  /// [`set_aside`](Self::set_aside)), e.g. once something they must
+  /// stack above is registered anew.
+  pub(crate) fn drop_spares(&mut self) {
+    self.spare_ring = None;
+    self.spare_fill = None;
+  }
+
+  /// The registration orders (see `Thumbnail::order`) of every copy
+  /// registered, those set aside too: held, they still stack where they
+  /// were registered.
+  pub(crate) fn orders(&self) -> impl Iterator<Item = u64> + '_ {
+    let backdrop = self.backdrop.iter().flat_map(|backdrop| {
+      backdrop.thumbnails().map(|(thumbnail, _)| thumbnail)
+    });
+    let bar = self.bar.iter().map(|bar| &bar.thumbnail);
+    let fills = self
+      .fill
+      .iter()
+      .chain(&self.spare_fill)
+      .flat_map(|fill| [&fill.right, &fill.bottom]);
+    let rings =
+      self.ring.iter().chain(&self.spare_ring).flat_map(|ring| {
+        ring.parts.iter().map(|(_, thumbnail)| thumbnail)
+      });
+
+    backdrop
+      .chain(bar)
+      .chain(fills)
+      .chain(rings)
+      .map(Thumbnail::order)
+  }
+
+  /// Second thumbnails of the backdrop's, then of the tab bar's,
+  /// registered held on `dest` over everything there, for
+  /// [`put_backdrop_anew`](Self::put_backdrop_anew). `None` if any
+  /// registration failed.
+  pub(crate) fn backdrop_held_anew(&self, dest: HWND) -> Option<Anew> {
+    let backdrop = held_anew(
+      dest,
+      self
+        .backdrop
+        .iter()
+        .flat_map(BackdropCopy::thumbnails)
+        .collect(),
+    )?;
+    let bar = held_anew(
+      dest,
+      self
+        .bar
+        .iter()
+        .map(|bar| (&bar.thumbnail, HWND(bar.source)))
+        .collect(),
+    )?;
+
+    Some(Anew {
+      backdrop,
+      bar,
+      ..Anew::default()
+    })
+  }
+
+  /// Second thumbnails of the fill's, then of the ring's, registered held
+  /// on `dest` over everything there, into `anew`. `None` if any
+  /// registration failed.
+  pub(crate) fn above_window_held_anew(
+    &self,
+    dest: HWND,
+    anew: Anew,
+  ) -> Option<Anew> {
+    let fill = held_anew(
+      dest,
+      self
+        .fill
+        .iter()
+        .flat_map(|fill| {
+          let source = fill.source.hwnd();
+          [(&fill.right, source), (&fill.bottom, source)]
+        })
+        .collect(),
+    )?;
+    let ring = held_anew(
+      dest,
+      self
+        .ring
+        .iter()
+        .flat_map(|ring| {
+          let source = HWND(ring.source);
+          ring
+            .parts
+            .iter()
+            .map(move |(_, thumbnail)| (thumbnail, source))
+        })
+        .collect(),
+    )?;
+
+    Some(Anew { fill, ring, ..anew })
+  }
+
+  /// Draws the ring's, then the fill's, second thumbnails of `anew` in
+  /// place of theirs, each part's let go before its old ones go.
+  pub(crate) fn put_above_window_anew(&mut self, anew: &mut Anew) {
+    let held = self.held;
+    if let Some(ring) = &mut self.ring {
+      put_all(
+        ring.parts.iter_mut().map(|(_, thumbnail)| thumbnail),
+        std::mem::take(&mut anew.ring),
+        held,
+      );
+    }
+    if let Some(fill) = &mut self.fill {
+      put_all(
+        [&mut fill.right, &mut fill.bottom],
+        std::mem::take(&mut anew.fill),
+        held,
+      );
+    }
+  }
+
+  /// Draws the tab bar's, then the backdrop's, second thumbnails of `anew`
+  /// in place of their own, each let go before its own goes.
+  pub(crate) fn put_backdrop_anew(&mut self, anew: Anew) {
+    let held = self.held;
+    if let Some(bar) = &mut self.bar {
+      put_all([&mut bar.thumbnail], anew.bar, held);
+    }
+    if let Some(backdrop) = &mut self.backdrop {
+      put_all(backdrop.thumbnails_mut(), anew.backdrop, held);
+    }
+  }
+}
+
+/// Second thumbnails of copies, each part's in the order its own were
+/// registered (see `OverlayCopies::backdrop_held_anew`).
+#[derive(Default)]
+pub(crate) struct Anew {
+  backdrop: Vec<Thumbnail>,
+  bar: Vec<Thumbnail>,
+  fill: Vec<Thumbnail>,
+  ring: Vec<Thumbnail>,
+}
+
+/// A second thumbnail of each of `thumbnails`, of the source given with
+/// it, registered held on `dest` in order, or none if any fails.
+fn held_anew(
+  dest: HWND,
+  thumbnails: Vec<(&Thumbnail, HWND)>,
+) -> Option<Vec<Thumbnail>> {
+  thumbnails
+    .into_iter()
+    .map(|(thumbnail, source)| thumbnail.held_anew(dest, source))
+    .collect()
+}
+
+/// Lets each of `anew` go, `held` or not, then puts it in place of the
+/// thumbnail of `slots` it copies, which goes.
+fn put_all<'a>(
+  slots: impl IntoIterator<Item = &'a mut Thumbnail>,
+  mut anew: Vec<Thumbnail>,
+  held: bool,
+) {
+  for thumbnail in &mut anew {
+    thumbnail.set_held(held);
+  }
+  for (slot, thumbnail) in slots.into_iter().zip(anew) {
+    *slot = thumbnail;
   }
 }
 
@@ -1223,11 +1770,104 @@ fn shifted(rect: &Rect, origin: (i32, i32)) -> RECT {
 #[cfg(test)]
 mod tests {
   use super::{
-    copy_rects, crop_fade, crop_weights, fill_strips, map_rect,
-    ring_part_rects, same_set, scale_alpha, shifted, vignette_strength,
+    bar_rects, copy_rects, crop_fade, crop_weights, fill_strips,
+    keeps_backdrop, keeps_fill, keeps_ring, map_rect, ring_part_rects,
+    same_set, scale_alpha, shifted, vignette_strength,
     BackdropOverlayParams, Band, Rect, RingPart, RECT,
   };
   use crate::Color;
+
+  /// Uncut, a bar is drawn whole and 1:1; cut, from its window's top-left,
+  /// which holds only the part inside the clip.
+  #[test]
+  fn a_bar_copy_draws_its_window_one_to_one() {
+    let clip = Rect::from_ltrb(0, 0, 1920, 1080);
+    let bar = Rect::from_ltrb(100, 50, 500, 86);
+    let (source, dest) = bar_rects(&bar, &clip, (0, 0)).unwrap();
+    assert_eq!(ltrb(source), (0, 0, 400, 36));
+    assert_eq!(ltrb(dest), (100, 50, 500, 86));
+
+    let cut = Rect::from_ltrb(-100, 50, 300, 86);
+    let (source, dest) = bar_rects(&cut, &clip, (0, 0)).unwrap();
+    assert_eq!(ltrb(source), (0, 0, 300, 36));
+    assert_eq!(ltrb(dest), (0, 50, 300, 86));
+
+    let elsewhere = Rect::from_ltrb(1920, 0, 3840, 1080);
+    assert!(bar_rects(&bar, &elsewhere, (1920, 0)).is_none());
+  }
+
+  fn backdrop(blur_amount: f32) -> BackdropOverlayParams {
+    BackdropOverlayParams {
+      tint: Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0x30,
+      },
+      blur_amount,
+      corner_radius: 0.0,
+      opacity: 1.0,
+      saturation: 1.0,
+      exposure: 0.0,
+      contrast: 0.0,
+      highlights: 0.0,
+      shadows: 0.0,
+      vignette: 0.0,
+      grain: 0.0,
+      parallax: 1.0,
+    }
+  }
+
+  /// A kept ring copy draws the same overlay cut the same way; its width
+  /// and corners come from its rects, set anew.
+  #[test]
+  fn a_kept_ring_needs_the_same_overlay_and_cut() {
+    let cells = RingPart::all(Some(16));
+    let whole = RingPart::all(None);
+
+    assert!(keeps_ring(7, 7, &cells, Some(16)));
+    assert!(keeps_ring(7, 7, &cells, Some(24)));
+    assert!(keeps_ring(7, 7, &whole, None));
+    assert!(!keeps_ring(7, 8, &cells, Some(16)));
+    assert!(!keeps_ring(7, 7, &cells, None));
+    assert!(!keeps_ring(7, 7, &whole, Some(16)));
+  }
+
+  /// A kept backdrop copy draws the same styles, in any order, cut from
+  /// the same monitor.
+  #[test]
+  fn a_kept_backdrop_needs_the_same_styles_and_monitor() {
+    let (focused, unfocused) = (backdrop(30.0), backdrop(10.0));
+    let other = Rect::from_xy(1920, 0, 1920, 1080);
+
+    assert!(keeps_backdrop(
+      &[focused, unfocused],
+      [&MONITOR, &MONITOR],
+      &[unfocused, focused],
+      &MONITOR,
+    ));
+    assert!(!keeps_backdrop(
+      &[focused],
+      [&MONITOR],
+      &[unfocused],
+      &MONITOR
+    ));
+    assert!(!keeps_backdrop(&[focused], [&MONITOR], &[], &MONITOR));
+    assert!(!keeps_backdrop(&[focused], [&other], &[focused], &MONITOR));
+  }
+
+  #[test]
+  fn a_kept_fill_needs_the_same_color() {
+    let color = |r| Color {
+      r,
+      g: 0,
+      b: 0,
+      a: 255,
+    };
+
+    assert!(keeps_fill(color(10), color(10)));
+    assert!(!keeps_fill(color(10), color(11)));
+  }
 
   const MONITOR: Rect = Rect {
     left: 0,

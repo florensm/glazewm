@@ -725,35 +725,6 @@ impl WindowManager {
     result
   }
 
-  /// Draws the peeks' frame of an animation tick ahead of the rest, which
-  /// [`finish_animations`](Self::finish_animations) then runs (see
-  /// `AnimationManager::draw_peeks_first`).
-  pub fn draw_peeks_first(
-    &mut self,
-    config: &UserConfig,
-  ) -> Option<crate::animation::PeeksDrawn> {
-    crate::animation::AnimationManager::draw_peeks_first(
-      &mut self.state,
-      config,
-    )
-  }
-
-  /// Runs the rest of the animation tick whose peeks
-  /// [`draw_peeks_first`](Self::draw_peeks_first) drew, or all of it.
-  pub fn finish_animations(
-    &mut self,
-    config: &UserConfig,
-    drawn: Option<crate::animation::PeeksDrawn>,
-  ) -> anyhow::Result<()> {
-    let result = crate::animation::AnimationManager::finish_frame(
-      &mut self.state,
-      config,
-      drawn,
-    );
-    crate::animation::motion_clicks::sync_motion_guard(&mut self.state);
-    result
-  }
-
   pub fn process_commands(
     &mut self,
     commands: &Vec<InvokeCommand>,

@@ -223,8 +223,8 @@ pub enum Stage {
   WsStart,
   /// `redraw_containers`' per-window loop itself.
   RedrawLoop,
-  /// `AnimationManager::start_animation_if_needed`: this frame's
-  /// animation math plus queueing the surrogate update.
+  /// `redraw_containers`' choice of how a window moves this frame: on a
+  /// peek, frozen, or placed at once.
   AnimStep,
   /// `redraw_containers`' `Frozen` arm, past the first-frame cloak.
   RedrawFrozen,
@@ -252,20 +252,11 @@ pub enum Stage {
   BorderSync,
   /// `DwmFlush` -- blocks until the next DWM composition frame.
   DwmFlush,
-  /// `ResizeSession::begin`/`begin_reusing_surrogate`.
-  SessionBegin,
   /// Cloaking the real window and pre-positioning it at its target.
   Cloak,
-  /// `AnimationManager::queue_surrogate_updates` -- queueing only; the
-  /// commit it feeds is reported under `BatchCommit`.
-  SurrogateFlush,
   /// `SurrogateBatch::commit` -- the `DeferWindowPos` transaction that
   /// actually moves every surrogate and overlay window queued this frame.
   BatchCommit,
-  /// `platform_sync`'s loop tracking each live resize session's
-  /// backdrop/border overlay onto its surrogate, queued into the same
-  /// batch as the surrogates themselves.
-  SessionOverlays,
   /// `platform_sync` after `redraw_containers`: focus, overlay sync, tab
   /// bars, overview, guards and particles.
   SyncTail,
@@ -278,11 +269,8 @@ pub enum Stage {
   /// `sync_tail`'s stuck-window report, click and motion guards, and
   /// particles.
   Guards,
-  /// `update_internal`'s post-`platform_sync` session/workspace cleanup
-  /// and surrogate fade-out tail.
+  /// `update_internal`'s post-`platform_sync` workspace-switch cleanup.
   Cleanup,
-  /// `ResizeSession::pre_commit`.
-  PreCommit,
   /// `NativeWindow::frame` -- a `DwmGetWindowAttribute` round-trip.
   NativeFrame,
   /// The border overlay's `SetWindowRgn` hole, including building the two
@@ -307,7 +295,7 @@ pub enum Stage {
   /// `NativeSurrogate::create`'s window: `CreateWindowExW` and its
   /// corner style. Any surrogate's, peeks' among them.
   SurrogateWindow,
-  /// `NativeSurrogate::create`/`revive`'s companion lookup and thumbnail
+  /// `NativeSurrogate::create`/`reclaim`'s companion lookup and thumbnail
   /// registration (or update). Any surrogate's, peeks' among them.
   SurrogateThumb,
   /// `peek_view::track_overlays`' `carry_ring` of one window.
@@ -326,11 +314,17 @@ pub enum Stage {
   /// `PeekView::move_tile`'s first draw of the peek, at the motion's
   /// start.
   PeekPlace,
+  /// A `PeekSurface`'s window: its creation, shows and hides, and moves
+  /// in the z-order.
+  Surface,
+  /// `PeekView::restack_crossings`: tiles on a `PeekSurface` registered
+  /// anew over ones they may cross (`WindowPeek::register_anew`).
+  Restack,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 58] = [
+  const ALL: [Stage; 56] = [
     Stage::Command,
     Stage::PeekFrame,
     Stage::PeekDraw,
@@ -359,18 +353,14 @@ impl Stage {
     Stage::BackdropSync,
     Stage::BorderSync,
     Stage::DwmFlush,
-    Stage::SessionBegin,
     Stage::Cloak,
-    Stage::SurrogateFlush,
     Stage::BatchCommit,
-    Stage::SessionOverlays,
     Stage::SyncTail,
     Stage::SyncFocus,
     Stage::TabBars,
     Stage::Overview,
     Stage::Guards,
     Stage::Cleanup,
-    Stage::PreCommit,
     Stage::NativeFrame,
     Stage::OverlayRegion,
     Stage::OverlayVisual,
@@ -389,6 +379,8 @@ impl Stage {
     Stage::FillSource,
     Stage::RingRaise,
     Stage::PeekPlace,
+    Stage::Surface,
+    Stage::Restack,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -430,18 +422,14 @@ impl Stage {
       Stage::BackdropSync => "backdrop_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
-      Stage::SessionBegin => "session_begin",
       Stage::Cloak => "cloak",
-      Stage::SurrogateFlush => "surrogate_flush",
       Stage::BatchCommit => "batch_commit",
-      Stage::SessionOverlays => "session_overlays",
       Stage::SyncTail => "sync_tail",
       Stage::SyncFocus => "sync_focus",
       Stage::TabBars => "tab_bars",
       Stage::Overview => "overview",
       Stage::Guards => "guards",
       Stage::Cleanup => "cleanup",
-      Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
       Stage::OverlayRegion => "ovl_region",
       Stage::OverlayVisual => "ovl_visual",
@@ -460,6 +448,8 @@ impl Stage {
       Stage::FillSource => "fill_source",
       Stage::RingRaise => "ring_raise",
       Stage::PeekPlace => "peek_place",
+      Stage::Surface => "surface",
+      Stage::Restack => "restack",
     }
   }
 
@@ -484,8 +474,6 @@ impl Stage {
       | Stage::PeekCover
       | Stage::PeekHandover
       | Stage::PeekRaise
-      | Stage::SurrogateFlush
-      | Stage::SessionOverlays
       | Stage::SyncFocus
       | Stage::TabBars
       | Stage::Overview
@@ -510,17 +498,14 @@ impl Stage {
   ///
   /// These are reported separately: their time is already included in the
   /// tree above, but attributing them to any single parent would be wrong.
-  /// `SurrogateBatch::commit`, for instance, runs from the shared
-  /// surrogate/session-overlay batch, both overlay sync passes, the cloak
-  /// commit and the cleanup tail.
+  /// `SurrogateBatch::commit`, for instance, runs from the peeks' frame,
+  /// both overlay sync passes and the workspace switch's.
   const fn is_cross_cutting(self) -> bool {
     matches!(
       self,
       Stage::BatchCommit
         | Stage::DwmFlush
-        | Stage::SessionBegin
         | Stage::Cloak
-        | Stage::PreCommit
         | Stage::NativeFrame
         | Stage::OverlayRegion
         | Stage::OverlayVisual
@@ -541,6 +526,8 @@ impl Stage {
         | Stage::FillSource
         | Stage::RingRaise
         | Stage::PeekPlace
+        | Stage::Surface
+        | Stage::Restack
     )
   }
 }
@@ -585,8 +572,6 @@ struct Profiler {
   slow_frames: u32,
   /// Frame budget the session's slow frames were counted against.
   budget: Duration,
-  /// Highest simultaneously-animating window count seen this session.
-  peak_windows: usize,
   /// When the session's first frame began.
   started_at: Option<Instant>,
   /// Every frame's `Tick` time, for the distribution in the report.
@@ -641,7 +626,6 @@ impl Default for Profiler {
       frames: 0,
       slow_frames: 0,
       budget: Duration::ZERO,
-      peak_windows: 0,
       started_at: None,
       tick_samples: Vec::new(),
       apply_samples: Vec::new(),
@@ -1003,28 +987,6 @@ fn arm_input(profiler: &mut Profiler, received_at: Instant) {
   profiler.input_trace.clear();
 }
 
-/// Records the number of windows animating simultaneously this frame.
-///
-/// Reported as a peak, so a session's worst-case concurrency is visible
-/// alongside its worst-case frame times.
-pub fn note_window_count(count: usize) {
-  if is_enabled() {
-    record_window_count(count);
-  }
-}
-
-/// [`note_window_count`] without the `GLAZEWM_PERF` gate.
-///
-/// The gate resolves once per process, so the recording logic is factored
-/// out here to stay reachable from tests.
-fn record_window_count(count: usize) {
-  PROFILER.with(|profiler| {
-    if let Ok(mut profiler) = profiler.try_borrow_mut() {
-      profiler.peak_windows = profiler.peak_windows.max(count);
-    }
-  });
-}
-
 /// Records that an animation began, split by whether it resizes the
 /// window.
 ///
@@ -1229,13 +1191,11 @@ fn take_report(reason: &str) -> Option<String> {
   let mut lines = String::new();
   let _ = writeln!(
     lines,
-    "perf [{reason}]: {} frames in {:.1}ms, {} slow (>{:.1}ms), peak {} \
-     window(s) animating",
+    "perf [{reason}]: {} frames in {:.1}ms, {} slow (>{:.1}ms)",
     summary.frames,
     elapsed.as_secs_f64() * 1000.0,
     summary.slow_frames,
     summary.budget.as_secs_f64() * 1000.0,
-    summary.peak_windows,
   );
   let _ = writeln!(
     lines,
@@ -1716,6 +1676,8 @@ mod tests {
       Stage::FillSource,
       Stage::RingRaise,
       Stage::PeekPlace,
+      Stage::Surface,
+      Stage::Restack,
     ] {
       assert!(stage.is_cross_cutting(), "{}", stage.label());
     }
@@ -1768,7 +1730,6 @@ mod tests {
       || unreachable!("label built while disabled"),
       true,
     ));
-    note_window_count(4);
     mark_event_queued(EventKind::Window);
     record_event_dequeued(EventKind::Window);
     end_frame();
@@ -1791,12 +1752,10 @@ mod tests {
       drop(forced_scope(Stage::Tick));
       drop(forced_scope(Stage::DwmFlush));
       drop(forced_scope(Stage::DwmFlush));
-      record_window_count(3);
       assert!(!roll_up_frame());
 
       start_frame();
       drop(forced_scope(Stage::Tick));
-      record_window_count(2);
       assert!(!roll_up_frame());
 
       PROFILER.with(|profiler| {
@@ -1807,13 +1766,10 @@ mod tests {
         assert_eq!(profiler.calls[Stage::DwmFlush.index()], 2);
         assert_eq!(profiler.calls[Stage::Tick.index()], 2);
         assert_eq!(profiler.calls[Stage::Redraw.index()], 0);
-        // A peak, not a last-write.
-        assert_eq!(profiler.peak_windows, 3);
       });
 
       let report = take_report("unit test").expect("frames were recorded");
       assert!(report.starts_with("perf [unit test]: 2 frames in "));
-      assert!(report.contains("peak 3 window(s) animating"));
       assert!(report.contains("dwm_flush"));
       // Stages that never ran are omitted from the table.
       assert!(!report.contains("border_sync"));
@@ -1945,7 +1901,6 @@ mod tests {
   fn omits_the_gesture_split_when_no_animation_started() {
     std::thread::spawn(|| {
       start_frame();
-      record_window_count(1);
       assert!(!roll_up_frame());
 
       let report = take_report("unit test").expect("frames were recorded");

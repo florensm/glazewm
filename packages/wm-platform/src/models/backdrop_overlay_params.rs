@@ -2,7 +2,7 @@ use crate::Color;
 
 /// Tint, blur radius, corner radius, opacity, saturation and grading knobs
 /// for a `NativeBackdropOverlay`, bundled so the growing set of overlay
-/// knobs travels as one value through `SessionOptions`/`ResizeSession`/
+/// knobs travels as one value through
 /// `upsert_overlay` instead of a same-typed positional-argument list
 /// that's easy to mis-order at the many call sites (static sync,
 /// workspace-switch, and move/resize/open/close tracking) that all thread
@@ -66,12 +66,9 @@ impl BackdropOverlayParams {
   /// Whether a surrogate can draw this backdrop as copies of it (see
   /// `OverlayCopies::carry_backdrop`): only square, as its copy of the
   /// desktop behind the window is a rectangle, and pinned to the desktop,
-  /// as that copy is cut from a backdrop of the whole monitor. None with
-  /// `GLAZEWM_ISOLATE=live` (see `isolation`).
+  /// as that copy is cut from a backdrop of the whole monitor.
   #[must_use]
   pub fn is_copyable(&self) -> bool {
-    self.corner_radius <= 0.0
-      && (self.parallax - 1.0).abs() < 1e-3
-      && !crate::isolation::current().live
+    self.corner_radius <= 0.0 && (self.parallax - 1.0).abs() < 1e-3
   }
 }

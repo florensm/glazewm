@@ -18,7 +18,6 @@ mod external_color_source;
 mod frame_clock;
 mod grab_listener;
 mod hidden_alpha;
-pub mod isolation;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;
@@ -42,10 +41,10 @@ mod overview_tab_bars;
 mod overview_thumbnails;
 mod paint;
 mod particles;
+mod peek_surface;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
-mod resize_session;
 mod single_instance;
 mod size_to_content;
 mod surface;
@@ -58,6 +57,7 @@ mod text;
 mod thread_bound;
 mod ui_thread;
 mod window_class;
+mod window_edges;
 mod window_icons;
 mod window_listener;
 mod window_peek;
@@ -92,19 +92,20 @@ pub use particles::{
   ParticleBurst, ParticleEdges, ParticleEffects, ParticleLook,
   ParticleSource, ParticleStyle,
 };
+pub use peek_surface::PeekSurface;
 pub use platform_event::*;
-pub use resize_session::{
-  sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,
-};
 pub use single_instance::*;
 pub use system_accent_color::*;
 pub use tab_layout::TabAction;
 pub use thread_bound::*;
 pub use ui_thread::UiThread;
+pub use window_edges::{sample_edge_color_async, EdgeColorCache};
 pub use window_listener::*;
 pub use window_peek::WindowPeek;
 pub use window_placer::WindowPlacer;
-pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
+pub use workspace_surrogate::{
+  stacking_ranks, LiveFrame, WorkspaceSurrogate,
+};
 
 /// `tracing` target of the overview's trace of picks through to its
 /// closing zoom, which the WM writes to a file of its own.

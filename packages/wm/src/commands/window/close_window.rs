@@ -12,9 +12,9 @@ use crate::{
 
 /// Closes `window`, behind its close animation when that is enabled.
 ///
-/// The animated window is cloaked and taken out of the layout right away,
-/// so its siblings reflow while it plays; `AnimationManager` sends
-/// `WM_CLOSE` once it ends.
+/// The animated window is taken out of the layout right away, so its
+/// siblings reflow while it plays; its peek cloaks it on its first tick,
+/// and `peek_view::finish_leaving` sends `WM_CLOSE` once it ends.
 pub fn close_window(
   window: &WindowContainer,
   state: &mut WmState,
@@ -24,13 +24,6 @@ pub fn close_window(
     // Detached below, before the OS reports it gone.
     crate::particles::note_close(state, window);
 
-    // Cloaked only now that the surrogate covers it: the slow
-    // `IApplicationView` cloak could otherwise hide the window a frame
-    // before the surrogate is composited, exposing the desktop. A peek
-    // cloaks it itself, a tick later (see `leave_on_peek`).
-    if !state.animation_manager.peeks.is_leaving(&window.id()) {
-      let _ = window.native().set_cloaked(true);
-    }
     let close_config = &config.value.animations.window_close;
     let duration = std::time::Duration::from_millis(u64::from(
       close_config.easing.duration_ms(close_config.duration_ms),
@@ -46,12 +39,12 @@ pub fn close_window(
   Ok(())
 }
 
-/// Covers `window`, still on screen, with a surrogate playing its close or
-/// minimize animation.
+/// Covers `window`, still on screen, with a peek playing its close or
+/// minimize animation (see `peek_view::leave_on_peek`).
 ///
 /// Returns `false` when the animation is disabled, the window's rect can't
-/// be resolved or the surrogate fails to capture, leaving the window to
-/// go without it.
+/// be resolved or no peek takes it (see `Leave`), leaving the window to go
+/// at once, without one.
 pub(crate) fn animate_away(
   window: &WindowContainer,
   transition: AwayTransition,
@@ -86,36 +79,8 @@ pub(crate) fn animate_away(
     .focused_container()
     .is_some_and(|focused| focused.id() == window.id());
 
-  // Behind the switch, on a pinned peek, unless it would be live
-  // (`STAND_INS_PLAN.md` task 4).
-  if wm_platform::isolation::current().peeks {
-    match crate::animation::peek_view::leave_on_peek(
-      state, window, &rect, transition, &params, config, is_focused,
-    ) {
-      Leave::Leaving => return true,
-      Leave::Skipped => return false,
-      Leave::Unsupported => {}
-    }
-  }
-
-  let (effect_opacity, corner_style, overlays) =
-    crate::commands::general::surrogate_effects_for(
-      window.effect_set(is_focused),
-      config,
-    );
-
-  state.animation_manager.start_away_animation(
-    transition,
-    window.id(),
-    &rect,
-    effect_opacity,
-    corner_style,
-    overlays,
-    &params,
-    &window.native(),
-  );
-
-  state
-    .animation_manager
-    .has_away_animation(&window.id(), transition)
+  // On a peek, pinned or live (`STAND_INS_PLAN.md` task 4).
+  crate::animation::peek_view::leave_on_peek(
+    state, window, &rect, transition, &params, config, is_focused,
+  ) == Leave::Leaving
 }

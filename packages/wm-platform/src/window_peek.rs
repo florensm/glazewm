@@ -5,9 +5,10 @@ use crate::{
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
   platform_impl::wallpaper_surface,
-  resize_session::compute_border_inset,
+  window_edges::compute_border_inset,
   BackdropOverlayParams, Color, CornerStyle, NativeSurrogate,
-  NativeWindow, Rect, StyleBlend, SurrogateBatch,
+  NativeWindow, PeekSurface, Rect, StyleBlend, SurrogateBatch,
+  TabBarPlace,
 };
 
 /// Thumbnail opacity a peek is warmed up at under its still-shown real
@@ -46,6 +47,9 @@ enum Drawn {
 /// Shows the columns of a scrolling layout that are moving or partly
 /// visible: the real window stays cloaked, so nothing of it reaches past
 /// its monitor.
+///
+/// A hosted one (see [`hosted`](Self::hosted)) draws on a `PeekSurface`
+/// shared with other peeks, as a pinned one spanning the surface's clip.
 pub struct WindowPeek {
   /// Declared before `surrogate`, so they are unregistered before the
   /// window they are drawn on goes.
@@ -101,7 +105,6 @@ impl WindowPeek {
         border_inset,
         corner_style,
         hwnd,
-        false,
       )?;
       (surrogate, PeekMode::Live)
     } else {
@@ -115,7 +118,6 @@ impl WindowPeek {
         RECT::default(),
         &CornerStyle::Square,
         hwnd,
-        false,
       )?;
       let viewport = clip.clone();
       (surrogate, PeekMode::Pinned { viewport })
@@ -137,6 +139,179 @@ impl WindowPeek {
       visible_rect: None,
       stands_by: false,
     })
+  }
+
+  /// Creates a hidden peek of `window`, which is at `rect`, drawn on
+  /// `surface` as a pinned one spanning its clip is on a window of its
+  /// own. `surface` goes by `window`, which `is_shown` or is cloaked, as
+  /// `SurfaceWindow::admit` decides.
+  #[must_use]
+  pub fn hosted(
+    window: &NativeWindow,
+    rect: &Rect,
+    surface: &PeekSurface,
+    is_shown: bool,
+  ) -> Self {
+    let hwnd = window.hwnd();
+
+    Self {
+      copies: OverlayCopies::held(),
+      surrogate: NativeSurrogate::create_hosted(
+        surface,
+        hwnd,
+        rect,
+        u8::MAX,
+        is_shown,
+      ),
+      mode: PeekMode::Pinned {
+        viewport: surface.clip().clone(),
+      },
+      source: hwnd,
+      border_inset: compute_border_inset(hwnd),
+      rest: rect.clone(),
+      drawn: Drawn::Shown,
+      shows_backdrop: false,
+      opacity: u8::MAX,
+      frac: 1.0,
+      hidden_alpha: HiddenAlpha::default(),
+      frame_rect: None,
+      visible_rect: None,
+      stands_by: false,
+    }
+  }
+
+  /// Whether it draws on a `PeekSurface` (see [`hosted`](Self::hosted)).
+  #[must_use]
+  pub fn is_hosted(&self) -> bool {
+    self.surrogate.is_hosted()
+  }
+
+  /// Keeps a hosted peek's surface from going down from now on, its window
+  /// just cloaked under it with no raise to follow (see
+  /// `SurfaceWindow::hold_place`). None for one of its own.
+  pub fn hold_place(&self) {
+    self.surrogate.hold_place();
+  }
+
+  /// Keeps a hosted peek, with every registration it has, for its tile's
+  /// next motion (see [`reclaim`](Self::reclaim)): held, drawing nothing,
+  /// on its surface as a ready peek rather than a tenant. Gives its window
+  /// back the alpha a handover set aside, as dropping it would. None for
+  /// one of its own.
+  pub fn set_ready(&mut self) {
+    if !self.is_hosted() {
+      return;
+    }
+
+    self.hide();
+    self.hidden_alpha.restore();
+    self.copies.set_aside();
+    self.surrogate.retire();
+  }
+
+  /// Has a peek kept by [`set_ready`](Self::set_ready) draw `window`, at
+  /// `rect`, for a new motion as [`hosted`](Self::hosted) makes one anew,
+  /// before [`carry_styles`](Self::carry_styles) with `styles`: every
+  /// field as there, every registration kept while what it was made from
+  /// holds, and back on its surface, which goes just below `window` as
+  /// `SurfaceWindow::admit` decides.
+  ///
+  /// A tile's registrations stack backdrop, window, fill, ring. Those
+  /// kept keep their order; a window thumbnail or backdrop registered
+  /// anew goes on top, so the fill and ring set aside above it go, to be
+  /// registered on top of it in turn as they are carried.
+  pub fn reclaim(
+    &mut self,
+    window: &NativeWindow,
+    rect: &Rect,
+    styles: &[Option<BackdropOverlayParams>],
+  ) {
+    let PeekMode::Pinned { viewport } = &self.mode else {
+      return;
+    };
+    let hwnd = window.hwnd();
+    let border_inset = compute_border_inset(hwnd);
+    let frame = to_logical(rect, &border_inset);
+
+    let backdrops = copyable(styles);
+    let monitor = (!backdrops.is_empty())
+      .then(|| wallpaper_surface::monitor_bounds(viewport));
+    let keeps_backdrop = self.copies.reclaim_backdrop(
+      &backdrops,
+      monitor.as_ref(),
+      rect,
+      &frame,
+    );
+    let keeps_window = !self.surrogate.reclaim(hwnd, rect, u8::MAX);
+    if !keeps_backdrop || !keeps_window {
+      self.copies.drop_spares();
+    }
+
+    self.source = hwnd;
+    self.border_inset = border_inset;
+    self.rest = rect.clone();
+    self.drawn = Drawn::Shown;
+    self.shows_backdrop = false;
+    self.opacity = u8::MAX;
+    self.frac = 1.0;
+    self.hidden_alpha = HiddenAlpha::default();
+    self.frame_rect = None;
+    self.visible_rect = None;
+    self.stands_by = false;
+  }
+
+  /// The first and last registration orders of the thumbnails it has on
+  /// the window it draws on, those held included: it draws wholly over
+  /// another peek there whose last is below its first. `None` with none.
+  #[must_use]
+  pub fn stacking(&self) -> Option<(u64, u64)> {
+    self
+      .surrogate
+      .thumbnail_order()
+      .into_iter()
+      .chain(self.copies.orders())
+      .fold(None, |span, order| {
+        Some(span.map_or((order, order), |(first, last): (u64, u64)| {
+          (first.min(order), last.max(order))
+        }))
+      })
+  }
+
+  /// Registers every thumbnail of the peek anew, over everything on the
+  /// window it draws on, in the order its tile stacks them: backdrop,
+  /// window, fill, ring. All go up held, then each part is let go before
+  /// its old thumbnails go, the top one first, so no composition shows
+  /// the tile without one of them (a semi-transparent window may show
+  /// twice for one). Returns whether it did: nothing changes if any
+  /// registration fails.
+  pub fn register_anew(&mut self) -> bool {
+    let dest = self.surrogate.hwnd();
+    let Some(anew) = self.copies.backdrop_held_anew(dest) else {
+      return false;
+    };
+    let window = match self.surrogate.thumbnail_held_anew(self.source) {
+      None if self.surrogate.has_thumbnail() => return false,
+      window => window,
+    };
+    let Some(mut anew) = self.copies.above_window_held_anew(dest, anew)
+    else {
+      return false;
+    };
+
+    self.copies.put_above_window_anew(&mut anew);
+    if let Some(window) = window {
+      self.surrogate.put_thumbnail(window);
+    }
+    self.copies.put_backdrop_anew(anew);
+    // Left below the tile now, they would stack under it once carried.
+    self.copies.drop_spares();
+    true
+  }
+
+  /// The window the peek shows.
+  #[must_use]
+  pub fn source(&self) -> HWND {
+    self.source
   }
 
   /// Whether the peek draws its window at all: DWM refuses a thumbnail of
@@ -188,12 +363,7 @@ impl WindowPeek {
 
     let dest = self.surrogate.hwnd();
     let frame = to_logical(&self.rest, &self.border_inset);
-    let backdrops = styles
-      .iter()
-      .flatten()
-      .copied()
-      .filter(BackdropOverlayParams::is_copyable)
-      .collect::<Vec<_>>();
+    let backdrops = copyable(styles);
 
     if !backdrops.is_empty()
       && !self.copies.carries_backdrop_styles(&backdrops)
@@ -207,6 +377,8 @@ impl WindowPeek {
         .carry_backdrop(dest, &backdrops, &monitor, &self.rest, &frame)
       {
         self.surrogate.raise_thumbnail(self.source);
+        // Under the window now, they would stack below it once carried.
+        self.copies.drop_spares();
       }
     }
   }
@@ -293,12 +465,6 @@ impl WindowPeek {
     carries
   }
 
-  /// Whether the peek draws the window's border ring.
-  #[must_use]
-  pub fn carries_ring(&self) -> bool {
-    self.copies.carries_ring()
-  }
-
   /// Draws the ring copy whole, or with `corner_reach` in cells, from now
   /// on, where it was carried (see [`carry_ring`](Self::carry_ring)).
   pub fn cut_ring(&mut self, corner_reach: Option<i32>) {
@@ -309,6 +475,51 @@ impl WindowPeek {
   #[must_use]
   pub fn carried_ring_rect(&self) -> Option<&Rect> {
     self.copies.ring_rest()
+  }
+
+  /// Draws the window's stack's tab bar, the window `source`, at `place`
+  /// beside it from now on: over its backdrop, under the window, at full
+  /// whatever the window is drawn at, until
+  /// [`drop_tab_bar`](Self::drop_tab_bar) or the peek goes. Called again
+  /// with the same `source`, only updates its place. Returns whether the
+  /// peek does: only a hosted one, whose surface a bar of its own would be
+  /// under with every other tile there.
+  ///
+  /// A new copy goes under the window's own thumbnail, registered anew
+  /// over it, then the fill and ring over that, each new one up before
+  /// its old one goes.
+  pub fn carry_tab_bar(
+    &mut self,
+    source: HWND,
+    place: TabBarPlace,
+  ) -> bool {
+    if !self.is_hosted() {
+      return false;
+    }
+
+    let dest = self.surrogate.hwnd();
+    if self.copies.carry_bar(dest, source, place) {
+      if let Some(window) = self.surrogate.thumbnail_held_anew(self.source)
+      {
+        self.surrogate.put_thumbnail(window);
+      }
+      self.copies.raise_above_window(dest);
+      // Left below the window now, they would stack under it once carried.
+      self.copies.drop_spares();
+    }
+    self.copies.carries_bar()
+  }
+
+  /// Stops drawing the tab bar (see
+  /// [`carry_tab_bar`](Self::carry_tab_bar)).
+  pub fn drop_tab_bar(&mut self) {
+    self.copies.drop_bar();
+  }
+
+  /// Whether the peek draws its window's tab bar.
+  #[must_use]
+  pub fn carries_tab_bar(&self) -> bool {
+    self.copies.carries_bar()
   }
 
   /// Covers the part of the window's frame its content does not reach in
@@ -328,7 +539,8 @@ impl WindowPeek {
 
   /// Draws the window too faint to see until
   /// [`take_over`](Self::take_over), under its real window that still
-  /// shows, while DWM warms the thumbnail up.
+  /// shows, while DWM warms the thumbnail up; a hosted one's backdrop copy
+  /// too (see [`warms_backdrop`](Self::warms_backdrop)).
   pub fn warm_up(&mut self) {
     self.draw(Drawn::WarmingUp);
   }
@@ -406,6 +618,7 @@ impl WindowPeek {
 
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.raise_ring(self.surrogate.hwnd());
+    self.copies.drop_spares();
   }
 
   /// Gives the real window back the alpha a handover set aside, unless it
@@ -439,13 +652,36 @@ impl WindowPeek {
   /// two then shows the window twice, over the real one under the peek,
   /// rather than not at all, hidden by the opaque copy.
   fn draw(&mut self, drawn: Drawn) {
+    let warmed_backdrop = self.warms_backdrop();
     self.drawn = drawn;
     if drawn == Drawn::HandedBack {
       self.apply_backdrop();
       self.surrogate.set_window_opacity(self.window_opacity());
     } else {
       self.surrogate.set_window_opacity(self.window_opacity());
+      if warmed_backdrop && !self.warms_backdrop() {
+        self
+          .copies
+          .set_backdrop_opacity(scale_alpha(u8::MAX, self.frac));
+      }
       self.apply_backdrop();
+    }
+  }
+
+  /// Whether the backdrop copy is drawn too faint to see while the window
+  /// warms up: a hosted one's, whose surface may be above the real window
+  /// still shown, which the opaque copy would hide.
+  fn warms_backdrop(&self) -> bool {
+    self.drawn == Drawn::WarmingUp && self.is_hosted()
+  }
+
+  /// The opacity the backdrop copy is drawn at, `opacity` unless it warms
+  /// up (see [`warms_backdrop`](Self::warms_backdrop)).
+  fn backdrop_opacity(&self, opacity: u8) -> u8 {
+    if self.warms_backdrop() {
+      WARM_UP_OPACITY
+    } else {
+      opacity
     }
   }
 
@@ -498,8 +734,9 @@ impl WindowPeek {
   /// copies placed at `frame` and faded with it. The thumbnail samples the
   /// window at its size at rest.
   ///
-  /// Pinned peeks only: a live one is placed at `frame` unscaled and
-  /// unfaded (see [`place`](Self::place)).
+  /// A live peek, which carries no copies, is moved over the drawn frame's
+  /// visible part (see `live_origin`); its window's real overlays follow
+  /// it at [`opacity_fraction`](Self::opacity_fraction).
   pub fn place_scaled(
     &mut self,
     rest: &Rect,
@@ -509,14 +746,18 @@ impl WindowPeek {
     frac: f32,
     batch: &mut SurrogateBatch,
   ) {
-    let PeekMode::Pinned { viewport } = &mut self.mode else {
-      tracing::debug!("A live peek can't draw its window scaled.");
-      self.place(frame, clip, opacity, batch);
-      return;
+    let origin = match &mut self.mode {
+      PeekMode::Pinned { viewport } => {
+        repin(&mut self.surrogate, viewport, clip);
+        (viewport.left, viewport.top)
+      }
+      PeekMode::Live => live_origin(
+        &mut self.surrogate,
+        &scaled_frame(rest, frame, self.border_inset),
+        clip,
+        batch,
+      ),
     };
-
-    repin(&mut self.surrogate, viewport, clip);
-    let origin = (viewport.left, viewport.top);
     self.opacity = opacity;
     self.frac = frac.clamp(0.0, 1.0);
 
@@ -525,7 +766,7 @@ impl WindowPeek {
     self.frame_rect = Some(drawn);
 
     let Some((visible, (rc_src, rc_dst))) = shown else {
-      self.surrogate.set_visible(false);
+      self.set_shown(false);
       self.visible_rect = None;
       return;
     };
@@ -533,8 +774,12 @@ impl WindowPeek {
     self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.place(frame, clip, origin);
-    self.copies.set_opacity(scale_alpha(u8::MAX, self.frac));
-    self.surrogate.set_visible(true);
+    let opacity = scale_alpha(u8::MAX, self.frac);
+    self.copies.set_ring_opacity(opacity);
+    self
+      .copies
+      .set_backdrop_opacity(self.backdrop_opacity(opacity));
+    self.set_shown(true);
     self.visible_rect = Some(visible);
   }
 
@@ -578,7 +823,7 @@ impl WindowPeek {
     self.frame_rect = Some(drawn);
 
     let Some((visible, (rc_src, rc_dst))) = shown else {
-      self.surrogate.set_visible(false);
+      self.set_shown(false);
       self.visible_rect = None;
       return cover;
     };
@@ -587,8 +832,10 @@ impl WindowPeek {
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.place(rect, clip, origin);
     self.copies.cover_ring();
-    self.copies.set_backdrop_opacity(u8::MAX);
-    self.surrogate.set_visible(true);
+    self
+      .copies
+      .set_backdrop_opacity(self.backdrop_opacity(u8::MAX));
+    self.set_shown(true);
     self.visible_rect = Some(visible);
     cover
   }
@@ -623,7 +870,7 @@ impl WindowPeek {
     self.frame_rect = Some(drawn.clone());
 
     let Some(visible) = drawn.intersection(clip) else {
-      self.surrogate.set_visible(false);
+      self.set_shown(false);
       self.visible_rect = None;
       return;
     };
@@ -631,7 +878,9 @@ impl WindowPeek {
     // In this order, so a composition landing mid-run shows an edge a
     // frame late rather than a hole: backdrop, fill, content, ring.
     self.copies.place_backdrop(rect, Some(&drawn), clip, origin);
-    self.copies.set_backdrop_opacity(u8::MAX);
+    self
+      .copies
+      .set_backdrop_opacity(self.backdrop_opacity(u8::MAX));
     self.copies.place_fill(&drawn, Some(covered), clip, origin);
     self.copies.set_fill_opacity(u8::MAX);
     match content {
@@ -643,7 +892,7 @@ impl WindowPeek {
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.place_ring();
     self.copies.cover_ring();
-    self.surrogate.set_visible(true);
+    self.set_shown(true);
     self.visible_rect = Some(visible);
   }
 
@@ -662,16 +911,12 @@ impl WindowPeek {
         repin(&mut self.surrogate, viewport, clip);
         (viewport.left, viewport.top)
       }
-      PeekMode::Live => {
-        let frame = to_logical(rect, &self.border_inset);
-        match frame.intersection(clip) {
-          Some(visible) => {
-            self.surrogate.move_to(&visible, Some(batch));
-            (visible.left, visible.top)
-          }
-          None => (frame.left, frame.top),
-        }
-      }
+      PeekMode::Live => live_origin(
+        &mut self.surrogate,
+        &to_logical(rect, &self.border_inset),
+        clip,
+        batch,
+      ),
     }
   }
 
@@ -704,7 +949,7 @@ impl WindowPeek {
     });
 
     let Some((visible, (rc_src, rc_dst))) = placed else {
-      self.surrogate.set_visible(false);
+      self.set_shown(false);
       return None;
     };
 
@@ -715,9 +960,11 @@ impl WindowPeek {
       self.copies.set_opacity(WARM_UP_OPACITY);
     } else {
       self.copies.cover_ring();
-      self.copies.set_backdrop_opacity(u8::MAX);
+      self
+        .copies
+        .set_backdrop_opacity(self.backdrop_opacity(u8::MAX));
     }
-    self.surrogate.set_visible(true);
+    self.set_shown(true);
 
     Some(visible)
   }
@@ -725,8 +972,24 @@ impl WindowPeek {
   /// Hides the peek until it is placed again, e.g. while its window is
   /// drawn at no size.
   pub fn hide(&mut self) {
-    self.surrogate.set_visible(false);
+    self.set_shown(false);
     self.visible_rect = None;
+  }
+
+  /// Shows or hides the peek's window, or a hosted one's thumbnails, its
+  /// window's and every copy's: its surface, shared, stays as its other
+  /// peeks have it. Hidden, the backdrop copy goes first, and shown, it
+  /// comes last, as [`draw`](Self::draw) has them.
+  fn set_shown(&mut self, shown: bool) {
+    if !self.surrogate.is_hosted() {
+      self.surrogate.set_visible(shown);
+    } else if shown {
+      self.surrogate.set_visible(true);
+      self.copies.set_held(false);
+    } else {
+      self.copies.set_held(true);
+      self.surrogate.set_visible(false);
+    }
   }
 
   /// The window's visible frame where it was last placed, including any
@@ -736,8 +999,8 @@ impl WindowPeek {
     self.frame_rect.as_ref()
   }
 
-  /// Handle of the peek's own window, which overlays of the window it
-  /// shows sit behind.
+  /// Handle of the peek's own window, or a hosted one's surface's, which
+  /// overlays of the window it shows sit behind.
   #[must_use]
   pub fn hwnd(&self) -> HWND {
     self.surrogate.hwnd()
@@ -752,6 +1015,8 @@ impl WindowPeek {
   /// landing would have timed out and let a later one show the window
   /// before its companion. A companion shown since the peek last looked
   /// is picked up first, so the hand-back waits for it.
+  ///
+  /// A hosted one stays where its surface is, above every tile it draws.
   pub fn begin_hand_back(&mut self) {
     self.adopt_companion();
     self.surrogate.begin_hand_back();
@@ -761,9 +1026,18 @@ impl WindowPeek {
     }
   }
 
+  /// Puts a hosted peek's surface just above its window unless it is above
+  /// it already, as [`begin_hand_back`](Self::begin_hand_back) puts a peek
+  /// of its own, for a surface not raised over every tile it draws (a
+  /// scrolling layout's). None for one of its own.
+  pub fn stay_over_window(&self) {
+    self.surrogate.lift_surface_above(self.source);
+  }
+
   /// Puts the peek at the top of the non-topmost windows, over windows
   /// that came above its real window while that was minimized. Its ring
-  /// and backdrop copies are drawn in it, so they go with it.
+  /// and backdrop copies are drawn in it, so they go with it. A hosted one
+  /// raises its surface, with every peek on it.
   pub fn raise_to_top(&self) {
     if let Err(err) = self.surrogate.raise_to_top() {
       tracing::warn!("Failed to raise a peek to the top: {err}");
@@ -792,16 +1066,56 @@ impl WindowPeek {
   pub fn visible_rect(&self) -> Option<&Rect> {
     self.visible_rect.as_ref()
   }
+
+  /// Fraction of their opacity the window and its copies were last drawn
+  /// at: below 1 only while [`place_scaled`](Self::place_scaled) fades it.
+  #[must_use]
+  pub fn opacity_fraction(&self) -> f32 {
+    self.frac
+  }
+}
+
+/// Moves a live peek's `surrogate` over the visible part of `frame`, the
+/// window's frame as drawn, cut at `clip` (queued into `batch` once
+/// shown), and returns the top-left it draws from: that part's, or the
+/// frame's if none of it is visible, which leaves the peek where it is.
+fn live_origin(
+  surrogate: &mut NativeSurrogate,
+  frame: &Rect,
+  clip: &Rect,
+  batch: &mut SurrogateBatch,
+) -> (i32, i32) {
+  match frame.intersection(clip) {
+    Some(visible) => {
+      surrogate.move_to(&visible, Some(batch));
+      (visible.left, visible.top)
+    }
+    None => (frame.left, frame.top),
+  }
+}
+
+/// Those of `styles` a peek copies its window's backdrop in (see
+/// `BackdropOverlayParams::is_copyable`).
+fn copyable(
+  styles: &[Option<BackdropOverlayParams>],
+) -> Vec<BackdropOverlayParams> {
+  styles
+    .iter()
+    .flatten()
+    .copied()
+    .filter(BackdropOverlayParams::is_copyable)
+    .collect()
 }
 
 /// Moves a pinned peek's `surrogate`, spanning `viewport`, to span `clip`
-/// instead, if it doesn't.
+/// instead, if it doesn't. A hosted one stays on its surface, which spans
+/// its viewport, and is cut at `clip` as drawn.
 fn repin(
   surrogate: &mut NativeSurrogate,
   viewport: &mut Rect,
   clip: &Rect,
 ) {
-  if viewport != clip {
+  if viewport != clip && !surrogate.is_hosted() {
     match surrogate.reposition(clip) {
       Ok(()) => *viewport = clip.clone(),
       Err(err) => tracing::warn!("Failed to move a peek: {err}"),
@@ -832,7 +1146,7 @@ fn scaled_rects(
   origin: (i32, i32),
 ) -> ScaledRects {
   let rest_frame = to_logical(rest, &border_inset);
-  let drawn = map_rect(&rest_frame, rest, frame);
+  let drawn = scaled_frame(rest, frame, border_inset);
   let shown = drawn.intersection(clip).and_then(|visible| {
     let rects = placed_rects(
       &drawn,
@@ -845,6 +1159,13 @@ fn scaled_rects(
   });
 
   ScaledRects { drawn, shown }
+}
+
+/// The visible frame of a window resting at `rest`, drawn at `frame`: its
+/// frame at rest, past the invisible resize borders `border_inset`, scaled
+/// as `rest` is to `frame`.
+fn scaled_frame(rest: &Rect, frame: &Rect, border_inset: RECT) -> Rect {
+  map_rect(&to_logical(rest, &border_inset), rest, frame)
 }
 
 /// Where a window at `actual`, drawn covering its frame at `rect` on the
@@ -1180,6 +1501,44 @@ mod tests {
       panic!("not shown");
     };
     let (ScaledRects { shown: live, .. }, _) =
+      draw((visible.left, visible.top));
+    let Some((_, (live_src, live_dst))) = live else {
+      panic!("not shown");
+    };
+
+    assert_eq!(ltrb(live_src), ltrb(pinned_src));
+    assert_eq!(
+      ltrb(live_dst),
+      (
+        pinned_dst.left - visible.left,
+        pinned_dst.top - visible.top,
+        pinned_dst.right - visible.left,
+        pinned_dst.bottom - visible.top,
+      )
+    );
+    assert_eq!((live_dst.left, live_dst.top), (0, 0));
+  }
+
+  /// Zoomed half way in across the clip's right edge, a window drawn from
+  /// where a live peek goes (see `live_origin`) samples what a pinned peek
+  /// does, drawn at the same place on screen.
+  #[test]
+  fn a_live_origin_draws_a_scaled_window_as_a_pinned_one() {
+    let rest = Rect::from_ltrb(1513, 100, 2327, 707);
+    let frame = Rect::from_ltrb(1717, 252, 2124, 556);
+    let draw = |origin| scaled_rects(&rest, &frame, &CLIP, INSET, origin);
+
+    let ScaledRects {
+      drawn,
+      shown: pinned,
+    } = draw((0, 0));
+    let Some((visible, (pinned_src, pinned_dst))) = pinned else {
+      panic!("not shown");
+    };
+    assert_eq!(drawn, scaled_frame(&rest, &frame, INSET));
+    assert_eq!(drawn.intersection(&CLIP), Some(visible.clone()));
+
+    let ScaledRects { shown: live, .. } =
       draw((visible.left, visible.top));
     let Some((_, (live_src, live_dst))) = live else {
       panic!("not shown");

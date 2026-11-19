@@ -14,7 +14,6 @@ use windows::Win32::{
 };
 
 use crate::{
-  isolation,
   overlay_window::{OverlayKind, OverlayWindow},
   platform_impl::composition::{
     BackdropVisual, SurrogateFill, VignetteVisual,
@@ -25,12 +24,6 @@ use crate::{
 /// Sources no copy uses that are kept for their style coming back, e.g.
 /// as focus returns to a window.
 const MAX_IDLE_SOURCES: usize = 2;
-
-/// Fill sources no copy uses that are kept under
-/// `GLAZEWM_ISOLATE=keepfills`: one per edge color of a workspace's
-/// windows, whose peeks all let theirs go as a burst ends and take them
-/// again as the next one starts.
-const MAX_IDLE_FILL_SOURCES: usize = 8;
 
 /// Side of a [`FillSource`]'s window, in physical pixels.
 const FILL_SOURCE_SIZE: i32 = 8;
@@ -61,15 +54,6 @@ fn drop_idle<T>(sources: &mut Vec<Rc<T>>, max_idle: usize) {
     idle += 1;
     idle <= max_idle
   });
-}
-
-/// How many unused fill sources are kept (see `isolation`'s `keepfills`).
-fn max_idle_fill_sources(keep_fills: bool) -> usize {
-  if keep_fills {
-    MAX_IDLE_FILL_SOURCES
-  } else {
-    MAX_IDLE_SOURCES
-  }
 }
 
 /// A backdrop spanning a monitor, in a window hidden by its alpha, which
@@ -117,10 +101,7 @@ impl BackdropSource {
       source
     };
 
-    // A changed wallpaper is picked up as the source is put to use.
-    if let Err(err) = source.composition.borrow_mut().sync_backdrop() {
-      tracing::warn!("Backdrop source refresh failed: {err}.");
-    }
+    source.refresh();
 
     SOURCES.with(|sources| {
       drop_idle(&mut sources.borrow_mut(), MAX_IDLE_SOURCES);
@@ -149,6 +130,13 @@ impl BackdropSource {
       monitor: monitor.clone(),
       params,
     })
+  }
+
+  /// Picks up a changed wallpaper, as the source is put to use.
+  pub(crate) fn refresh(&self) {
+    if let Err(err) = self.composition.borrow_mut().sync_backdrop() {
+      tracing::warn!("Backdrop source refresh failed: {err}.");
+    }
   }
 
   pub(crate) fn hwnd(&self) -> windows::Win32::Foundation::HWND {
@@ -250,9 +238,8 @@ impl FillSource {
       source
     };
 
-    let max_idle = max_idle_fill_sources(isolation::current().keep_fills);
     FILL_SOURCES.with(|sources| {
-      drop_idle(&mut sources.borrow_mut(), max_idle);
+      drop_idle(&mut sources.borrow_mut(), MAX_IDLE_SOURCES);
     });
     Ok(source)
   }
@@ -300,7 +287,7 @@ impl FillSource {
 mod tests {
   use std::rc::Rc;
 
-  use super::{drop_idle, max_idle_fill_sources, MAX_IDLE_SOURCES};
+  use super::drop_idle;
 
   /// Sources in use stay; of the rest, only the first `max_idle` do.
   #[test]
@@ -313,11 +300,5 @@ mod tests {
 
     let kept = sources.iter().map(|source| **source).collect::<Vec<_>>();
     assert_eq!(kept, vec![1, 0]);
-  }
-
-  #[test]
-  fn fill_sources_are_kept_per_color_only_under_keepfills() {
-    assert_eq!(max_idle_fill_sources(false), MAX_IDLE_SOURCES);
-    assert!(max_idle_fill_sources(true) > MAX_IDLE_SOURCES);
   }
 }

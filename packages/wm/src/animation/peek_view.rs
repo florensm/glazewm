@@ -14,13 +14,14 @@ use wm_platform::{
   perf::{self, Stage},
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
-  Point, Rect, RectDelta, StyleBlend, SurrogateBatch, WindowPeek, HWND,
+  OverlayParams, PeekSurface, Point, Rect, RectDelta, StyleBlend,
+  SurrogateBatch, TabBarPlace, WindowPeek, HWND,
 };
 
 use super::{
   stand_in::{moved_along, StandIn},
   state::WindowAnimationState,
-  transit::{transit_frame, Direction, Transit},
+  transit::{transit_frame, transit_reach, Direction, Transit},
 };
 use crate::{
   animation::{
@@ -50,7 +51,7 @@ const HOLD_RELEASE_WAIT: Duration = Duration::from_millis(150);
 
 /// How long a window filled on its peek by a keyboard resize may take to
 /// report its size once its motion is done before the peek lands all the
-/// same, as `ResizeSession::pre_commit` waits (see [`Hold::Released`]).
+/// same (see [`Hold::Released`]).
 const FILL_LANDING_WAIT: Duration = Duration::from_millis(500);
 
 /// Whether an entry is kept from landing while its window resizes behind
@@ -97,8 +98,8 @@ pub enum PeekResize {
 /// Whether a window going from `from` to `target`, drawn filled, is sent
 /// its new size as its motion starts: only one growing on both axes,
 /// whose new content then arrives under the cut. One that shrinks on
-/// either axis keeps its size until it lands, cut at its tile, as
-/// `ResizeSession::needs_preposition` has it.
+/// either axis keeps its size until it lands, cut at its tile, so its
+/// content never falls short of the drawn frame.
 fn resizes_at_start(from: &Rect, target: &Rect) -> bool {
   target.width() >= from.width() && target.height() >= from.height()
 }
@@ -157,6 +158,9 @@ pub(super) struct Entry {
   pub(super) role: Role,
   ring: Handover,
   backdrop: Handover,
+  /// How far a hosted peek has taken over its stack's tab bar (see
+  /// [`bar_handover`]).
+  bar: Handover,
   /// Whether the peek has been composited since it went up over its
   /// still-shown real window, so that window can be cloaked without
   /// waiting for another composition (see [`PeekView::is_composited`]).
@@ -179,6 +183,182 @@ pub(super) struct Entry {
   /// Its peek on the monitor it moves from, for a tile moving onto
   /// another one.
   trail: Option<Trail>,
+  /// Where its peek draws on its `PeekSurface`, if it is hosted on one.
+  tenancy: Option<Tenancy>,
+}
+
+/// Where a tile's peek draws on the `PeekSurface` it is hosted on: its
+/// visible frame and its ring around it. A tile crossing
+/// monitors has one for both its peeks (see [`Trail`]).
+///
+/// Tenants of one surface stack in the order their thumbnails were
+/// registered, and a tenant registers some late (its ring copy as its
+/// overlays are tracked, its fill and companion on its first ticks), over
+/// the others' windows. So one drawn under a lower-ranked one its path may
+/// meet is stacked whole again (see `PeekView::restack_crossings`).
+struct Tenancy {
+  reach: Reach,
+  /// Its lane, while it moves with no transit (see [`Entry::lane`]).
+  lane: Lane,
+  /// The order its tile was put on top in, as a peek of its own is raised
+  /// in: by each command that moves it, not by one that retargets it.
+  rank: Rank,
+  /// Whether its motion raised nothing, as a grab's doesn't (see
+  /// [`hold_on_peek`]): its surface is wherever it went up for it, so it
+  /// goes above the window as that lands, as a column's does.
+  never_raised: bool,
+  /// Whether its pass raises it in its band after the tiles (see
+  /// [`Host::InBand`]): its surface may be under its window as that lands
+  /// (raised past it, or into its band), so it goes above it then, as its
+  /// own peek would.
+  in_band: bool,
+}
+
+impl Tenancy {
+  /// Whether its surface goes above its window as that lands (see
+  /// `WindowPeek::stay_over_window`).
+  fn lifts_at_landing(&self) -> bool {
+    self.never_raised || self.in_band
+  }
+}
+
+/// Which of its monitor's surfaces for tiles a hosted peek draws on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Layer {
+  /// The tiles' and columns' (`PeekView::surfaces`), raised to the top of
+  /// the other windows for a motion.
+  Tiles,
+  /// The always-on-top band's (`PeekView::band_surfaces`), for windows
+  /// shown there: raised only to the top of that band.
+  TopBand,
+}
+
+/// Where a hosted peek draws, and how it ranks among its surface's
+/// tenants (see [`host_for`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Host {
+  /// On the tiles' surface, ranked as its motion puts it on top.
+  Tiles,
+  /// Raised in its band once its pass's raises are done (`peek_raises` in
+  /// `platform_sync`), on that band's surface: over every tile its pass
+  /// raised, in the order such raises come.
+  InBand(Layer),
+}
+
+impl Host {
+  fn layer(self) -> Layer {
+    match self {
+      Self::Tiles => Layer::Tiles,
+      Self::InBand(layer) => layer,
+    }
+  }
+
+  /// How a tenant whose motion would put it on top by `own` is ranked.
+  fn stacking(self, own: Stacking) -> Stacking {
+    match self {
+      Self::Tiles => own,
+      Self::InBand(_) => Stacking::OverPass,
+    }
+  }
+}
+
+/// Where a tile stacks among the tenants of its surface: as its peek of
+/// its own would among theirs, by when each was last put on top.
+///
+/// A moving tile's peek is raised once its pass's windows are cloaked
+/// (`raise_moving` in `platform_sync`'s raise loop), above any put on top
+/// in that pass before: an entering one, which goes up just below its new
+/// window, and a restored one, raised as it is drawn. A leaving one goes
+/// up just below its real window, under every tile that moved before, and
+/// is never raised: a closing window stays below its neighbours (owner's
+/// decision, `STAND_INS_PLAN.md` task 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Rank {
+  /// The raise pass it was put on top in, from 1; 0 for a leaving one.
+  pass: u64,
+  /// Whether it was put on top by its pass's raises.
+  raised: bool,
+  /// The order ranks were given in.
+  order: u64,
+}
+
+/// How a tile is put on top of its surface's tenants (see [`Rank`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stacking {
+  /// By its pass's raises, as a moving tile is.
+  Raised,
+  /// In its pass, before its raises, as an entering or restored one is.
+  InPass,
+  /// Not at all: below every other, as one starting to leave is.
+  Below,
+  /// After its pass's raises, as one raised in its band then is (see
+  /// [`Host::InBand`]): as if put on top first in the next pass.
+  OverPass,
+}
+
+/// The rank of a tile put on top by `stacking` in raise pass `pass`
+/// (counted from 0), given `order`-th.
+fn rank(stacking: Stacking, pass: u64, order: u64) -> Rank {
+  Rank {
+    pass: match stacking {
+      Stacking::Below => 0,
+      Stacking::Raised | Stacking::InPass => pass + 1,
+      Stacking::OverPass => pass + 2,
+    },
+    raised: stacking == Stacking::Raised,
+    order,
+  }
+}
+
+/// What a tile's peek draws around its rect: its visible frame, inside the
+/// invisible `shadow_borders`, its stack's tab bar beside it at `bar`, and
+/// its ring, `ring` past both.
+#[derive(Clone, Debug)]
+struct Reach {
+  shadow_borders: RectDelta,
+  bar: Option<TabBarPlace>,
+  ring: i32,
+}
+
+impl Reach {
+  /// The lane of a tile drawn from `from` to `to`.
+  fn lane(&self, from: &Rect, to: &Rect) -> Lane {
+    let drawn = |rect: &Rect| {
+      let frame = visible_frame(rect, &self.shadow_borders);
+      self
+        .bar
+        .as_ref()
+        .map_or(frame.clone(), |bar| frame.union(&bar.rect(rect)))
+        .inset(-self.ring)
+    };
+    Lane {
+      from: drawn(from),
+      to: drawn(to),
+    }
+  }
+}
+
+/// The area a tile's peek draws over at the start and the end of its
+/// motion, which it goes between with its eased progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Lane {
+  from: Rect,
+  to: Rect,
+}
+
+impl Lane {
+  /// All it may reach on the way, unless its easing overshoots.
+  fn hull(&self) -> Rect {
+    self.from.union(&self.to)
+  }
+
+  /// The lane of a tile that has landed at its end.
+  fn landed(&self) -> Self {
+    Self {
+      from: self.to.clone(),
+      to: self.to.clone(),
+    }
+  }
 }
 
 /// A second pinned peek of a tile moving onto another monitor, cut at the
@@ -189,9 +369,21 @@ pub(super) struct Entry {
 /// backdrop of its own monitor, and nothing is drawn between them or on a
 /// third. It never takes over or hands back the real window, and goes as
 /// the motion lands, on the entry's own peek's monitor.
+///
+/// Hosted on its monitor's surface of the entry's layer whenever the
+/// entry's own peek is hosted (see [`PeekView::add_trail`]): a second
+/// tenancy of the tile, with its rank and lane, restacked among that
+/// surface's tenants.
 struct Trail {
   peek: WindowPeek,
   clip: Rect,
+}
+
+/// Which of an entry's peeks: its own, or its trail's (see [`Trail`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+  Own,
+  Trail,
 }
 
 /// A window drawn scaled as its size changes, its app resized behind its
@@ -203,8 +395,8 @@ struct Trail {
 /// arrives, times a cover of 1 or more (see
 /// `WindowPeek::place_stretched`): what it takes a window yet to grow to
 /// reach across the rect. Once it has grown, the cover eases back to 1
-/// over [`STRETCH_SETTLE`] rather than stepping, which was the old path's
-/// zoom.
+/// over [`STRETCH_SETTLE`] rather than stepping, which shows as a zoom at
+/// landing.
 #[derive(Clone, Debug)]
 struct Stretch {
   /// The real window's rect, as last read.
@@ -348,6 +540,95 @@ impl Entry {
     peeks_of(&mut self.peek, &self.clip, self.trail.as_mut())
   }
 
+  /// Its peeks on surfaces, with their surfaces' windows: its own while it
+  /// has a tenancy, and its trail's if that is hosted too.
+  fn hosted_parts(&self) -> impl Iterator<Item = (Part, HWND)> + '_ {
+    let own = self.tenancy.as_ref().map(|_| (Part::Own, self.peek.hwnd()));
+    let trail = self.hosted_trail().map(|peek| (Part::Trail, peek.hwnd()));
+    own.into_iter().chain(trail)
+  }
+
+  /// Its trail's peek, if that is a tenant of a surface.
+  fn hosted_trail(&self) -> Option<&WindowPeek> {
+    self
+      .trail
+      .as_ref()
+      .map(|trail| &trail.peek)
+      .filter(|peek| self.tenancy.is_some() && peek.is_hosted())
+  }
+
+  /// Whether any of its peeks is a tenant of the surface `surface`.
+  fn is_on(&self, surface: HWND) -> bool {
+    self.hosted_parts().any(|(_, hwnd)| hwnd == surface)
+  }
+
+  fn part(&self, part: Part) -> Option<&WindowPeek> {
+    match part {
+      Part::Own => Some(&self.peek),
+      Part::Trail => self.trail.as_ref().map(|trail| &trail.peek),
+    }
+  }
+
+  fn part_mut(&mut self, part: Part) -> Option<&mut WindowPeek> {
+    match part {
+      Part::Own => Some(&mut self.peek),
+      Part::Trail => self.trail.as_mut().map(|trail| &mut trail.peek),
+    }
+  }
+
+  /// Whether its tile and `other`'s, both on a surface, may overlap from
+  /// now on (see [`lanes_meet`]): one that landed only where it did.
+  ///
+  /// One sliding in or out is drawn off its motion's rect, by a track of
+  /// its own, so is never on one clock with another. A held motion (an
+  /// entering or leaving tile's) never overshoots, whatever its easing.
+  fn meets(&self, other: &Self) -> bool {
+    let is_moving =
+      |entry: &Self| matches!(entry.role, Role::Moving { .. });
+    let (Some(a), Some(b)) = (self.lane(), other.lane()) else {
+      return false;
+    };
+
+    let on_clock = |entry: &Self| {
+      is_moving(entry)
+        && entry
+          .transit
+          .as_ref()
+          .is_none_or(|transit| transit.style.is_stationary())
+    };
+    let same_clock = on_clock(self)
+      && on_clock(other)
+      && self.motion.shares_clock(&other.motion);
+    let overshoots = [self, other].into_iter().any(|entry| {
+      is_moving(entry)
+        && entry.motion.start_rect != entry.motion.target_rect
+        && entry.motion.easing.can_overshoot()
+    });
+    lanes_meet(&a, &b, same_clock, overshoots)
+  }
+
+  /// The lane its tile draws along from now on, on a surface: its
+  /// tenancy's while it moves, with what its transit reaches while it
+  /// enters or leaves (see [`transit_reach`]), and where it landed once it
+  /// has.
+  fn lane(&self) -> Option<Lane> {
+    let tenancy = self.tenancy.as_ref()?;
+
+    Some(match (self.role, &self.transit) {
+      (Role::Moving { .. } | Role::Leaving(_), Some(transit)) => {
+        let reach = |rect: &Rect| transit_reach(rect, &transit.style);
+        tenancy.reach.lane(
+          &reach(&self.motion.start_rect),
+          &reach(&self.motion.target_rect),
+        )
+      }
+      (Role::Moving { .. } | Role::Leaving(_), None) => {
+        tenancy.lane.clone()
+      }
+      _ => tenancy.lane.landed(),
+    })
+  }
+
   /// Draws its window's ring along with it on each of its peeks (see
   /// `WindowPeek::carry_ring`). Returns whether its own peek does.
   fn carry_ring(
@@ -487,14 +768,6 @@ impl Entry {
     }
     true
   }
-}
-
-/// Whether a peek, drawn `filled`, carries its fill as its motion starts
-/// under `earlyfill`: only before its ring copy is carried. Carried on its
-/// first tick instead, the fill is registered over the ring copy, which is
-/// then registered anew over it (see `OverlayCopies::carry_fill`).
-fn carries_fill_early(filled: bool, carries_ring: bool) -> bool {
-  filled && !carries_ring
 }
 
 /// The size of a window, drawn filled at `rect`, that is sure to be drawn
@@ -711,10 +984,18 @@ fn lands_on_trail(target: &Rect, clip: &Rect, trail_clip: &Rect) -> bool {
   !clip.contains_point(&center) && trail_clip.contains_point(&center)
 }
 
+/// Whether a tile's trail, `hosted` or not, draws on for a tick once the
+/// tile has landed (see [`PeekView::tick`]), so no frame shows neither it
+/// nor what takes over from it. One of its own goes at once, as it always
+/// has.
+fn keeps_trail_drawing(hosted: bool) -> bool {
+  hosted
+}
+
 /// How long a window drawn moving or entering by its peek takes to follow
 /// a new rect: `duration_ms`, unless it is floating and stays so, whose
-/// moves the old path doesn't animate. That one jumps there; an entry it
-/// plays plays on.
+/// moves are not animated (a command's move can't be told from an app's
+/// or a drag's). That one jumps there; an entry it plays plays on.
 pub fn follow_duration(
   is_floating: bool,
   is_state_change: bool,
@@ -755,11 +1036,10 @@ pub fn floating_peek_raise(
 }
 
 /// Whether `window`, whose state changed this pass, moves on a pinned
-/// peek as a tile does (`morepeeks`, `STAND_INS_PLAN.md` 10f): between
-/// floating and tiling, not while the OS still drags it.
+/// peek as a tile does (`STAND_INS_PLAN.md` 10f): between floating and
+/// tiling, not while the OS still drags it.
 pub fn changes_state_on_peek(window: &WindowContainer) -> bool {
-  wm_platform::isolation::current().more_peeks
-    && window.active_drag().is_none()
+  window.active_drag().is_none()
     && crosses_floating(&window.state(), window.prev_state().as_ref())
 }
 
@@ -779,7 +1059,7 @@ fn crosses_floating(
 }
 
 /// How a window crossing between floating and tiling on its peek draws a
-/// change of size: in `window_resize`'s style, as the old path does.
+/// change of size: in `window_resize`'s style, as a tile's resize is.
 pub fn state_change_resize(
   resize: &WindowResizeConfig,
 ) -> Option<PeekResize> {
@@ -806,8 +1086,7 @@ pub fn state_change_peek_raise(
 }
 
 /// Whether a window laid out at `target` after `from` only moves, and by
-/// more than `threshold_px` as `should_start_new_animation` measures it:
-/// below that, the old path doesn't animate it either.
+/// more than `threshold_px`: below that, it isn't animated.
 pub(super) fn is_pure_move(
   from: &Rect,
   target: &Rect,
@@ -823,8 +1102,7 @@ pub(super) fn is_pure_move(
 }
 
 /// Whether a window laid out at `target` after `from` changes size, by
-/// more than `threshold_px` as `should_start_new_animation` measures a
-/// resize: below that, the old path doesn't animate it either.
+/// more than `threshold_px`: below that, it isn't animated.
 pub(super) fn is_peek_resize(
   from: &Rect,
   target: &Rect,
@@ -840,17 +1118,10 @@ pub(super) fn is_peek_resize(
 }
 
 /// How `window_resize` draws resizes on peeks, if it does: in its style,
-/// enabled, with peeks on.
-pub(super) fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
+/// enabled.
+pub fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let resize = &config.value.animations.window_resize;
-  if !wm_platform::isolation::current().peeks || !resize.enabled {
-    return None;
-  }
-
-  Some(match resize.style {
-    ResizeStyle::Stretch => PeekResize::Stretch,
-    ResizeStyle::Fill => PeekResize::Fill,
-  })
+  resize.enabled.then(|| peek_resize(resize.style))
 }
 
 /// `motion` headed for `target` instead, at the speed it has at `now`
@@ -880,21 +1151,210 @@ pub(super) fn is_live(styles: &[Option<BackdropOverlayParams>]) -> bool {
     .any(|style| style.is_some_and(|params| !params.is_copyable()))
 }
 
-/// Whether a window whose peek would carry copies of `styles` can move and
-/// resize on it: on a pinned peek, or on a `Live` one under
-/// `GLAZEWM_ISOLATE=morepeeks` (`STAND_INS_PLAN.md` 10f).
-pub(super) fn can_move_on_peek(
-  styles: &[Option<BackdropOverlayParams>],
+/// Whether a window put on a peek may be drawn on one of its monitor's
+/// `PeekSurface`s, which [`host_for`] picks: a move or
+/// resize by command ([`move_on_peek`]), a crossing between floating and
+/// tiling, a fullscreen toggle ([`fullscreen_on_peek`]), an open, restore,
+/// close or minimize ([`enter_on_peek`], [`restore_on_peek`],
+/// [`leave_on_peek`]). A stack's window too, its tab bar drawn by a copy
+/// over the surface's other tiles as it moves (see [`carry_tab_bar`]).
+/// Not a live peek, which moves with its window, nor a scrolling layout's
+/// column, which the scroll view draws. One drawn on two monitors is, on
+/// each one's surface (see [`Trail`]).
+///
+/// Nor one entering or leaving `beside_own_peek`, a tile of its workspace
+/// moving on a peek of its own (a live one): that peek and
+/// the surface stack by when each was last raised in a pass, so it could
+/// end under the tile, which must stay under every neighbour moving in its
+/// pass. Moving tiles leave the two in that order (`ONE_SURFACE_PLAN.md`,
+/// step 3's known differences).
+// Independent conditions, each keeping a window on a peek of its own.
+fn hosts_on_surface(
+  live: bool,
+  is_column: bool,
+  beside_own_peek: bool,
 ) -> bool {
-  allows_motion(
-    is_live(styles),
-    wm_platform::isolation::current().more_peeks,
-  )
+  !live && !is_column && !beside_own_peek
 }
 
-/// [`can_move_on_peek`] for a peek that is `live` or not.
-fn allows_motion(live: bool, more_peeks: bool) -> bool {
-  !live || more_peeks
+/// Where a tile moving onto another monitor that [`host_for`] puts on
+/// `host` is drawn: there, both its parts (see [`Trail`]), unless a grab
+/// holds a tile on either monitor's tiles' surface (`held_on_either`),
+/// which the tile's raise would top over the floating windows held tiles
+/// stay under (see [`hosts_hold`]). Kept off surfaces, it plays on peeks
+/// of its own.
+fn crossing_host(
+  host: Option<Host>,
+  held_on_either: bool,
+) -> Option<Host> {
+  host.filter(|host| host.layer() != Layer::Tiles || !held_on_either)
+}
+
+/// The surface a peek that [`hosts_on_surface`] allows is drawn on, as its
+/// own peek would play: a tile's (`is_tile`, fullscreen toggles included)
+/// among the tiles, unless its pass also `raise`s it in a band (see
+/// [`PeekRaise`]); then on that band's surface, after the pass's tiles. A
+/// window other than a tile that no band raise takes (an unfocused
+/// floating one not shown on top, a leaving one) keeps a peek of its own:
+/// that stays just below its window, under the floating windows above it,
+/// where a surface raised for other tenants can't stay.
+fn host_for(is_tile: bool, raise: Option<PeekRaise>) -> Option<Host> {
+  match raise {
+    Some(PeekRaise::TopMost) => Some(Host::InBand(Layer::TopBand)),
+    Some(PeekRaise::Top) => Some(Host::InBand(Layer::Tiles)),
+    None => is_tile.then_some(Host::Tiles),
+  }
+}
+
+/// Whether a scrolling layout's column that the scroll view puts on a
+/// pinned peek may be drawn on the `PeekSurface` of its working area, its
+/// role aside (see [`keeps_rest_hosted`]), a grab
+/// holding it or not, a stack's included (see [`carry_tab_bar`]). Not a
+/// live peek, which moves with its window, nor any column of a workspace
+/// with a live column (`beside_own_peek`), which stacks against the
+/// surface by where each went last, as for tiles.
+pub(super) fn hosts_column(live: bool, beside_own_peek: bool) -> bool {
+  !live && !beside_own_peek
+}
+
+/// Whether a tile a grab resize holds (see [`hold_on_peek`]) is drawn on
+/// its monitor's `PeekSurface`: only if that surface is not
+/// `topped`, as a held peek stays just under its window for the whole
+/// grab, never over floating windows above it (`STAND_INS_PLAN.md` 10a.5),
+/// and a topped surface is above them until its last tenant has gone.
+/// [`can_hold`] has left out what else keeps a tile on a peek of its own.
+fn hosts_hold(topped: bool) -> bool {
+  !topped
+}
+
+/// Whether a column the surface may take (see [`hosts_column`]) is drawn
+/// there in its role: one that `rests` (at rest, or moving to rest hidden)
+/// only if no other tenant of that surface does (`rests_elsewhere`, one
+/// kept for a workspace switch's surrogate included), as the surface has
+/// one place at rest.
+fn keeps_rest_hosted(rests: bool, rests_elsewhere: bool) -> bool {
+  !rests || !rests_elsewhere
+}
+
+/// Whether an entry in `role` rests, or is to once it lands.
+fn rests(role: Role) -> bool {
+  matches!(role, Role::Peek | Role::Moving { ends_shown: false })
+}
+
+/// Of the tenants of a surface, by role and window, the window it goes
+/// just above at rest (see `PeekSurface::rest_above`): the one tenant's,
+/// once every tenant is at rest.
+fn rest_anchor(
+  tenants: impl IntoIterator<Item = (Role, HWND)>,
+) -> Option<HWND> {
+  let mut anchor = None;
+  for (role, window) in tenants {
+    if role != Role::Peek || anchor.is_some() {
+      return None;
+    }
+    anchor = Some(window);
+  }
+  anchor
+}
+
+/// Where `window`, entering or leaving, and raised in a band by its pass
+/// as `raise` says, is drawn (see [`hosts_on_surface`], [`host_for`]).
+///
+/// One `entering` the tiles' surface beside a tile a grab holds keeps a
+/// peek of its own: that surface would be raised to the top, putting the
+/// held tiles there over the floating windows they stay under (see
+/// [`hosts_hold`]). One leaving is never raised. A peek of its own beside
+/// matters only among the tiles: one raised in its band goes over every
+/// peek its pass raised, whatever their order.
+fn hosts_transit(
+  window: &WindowContainer,
+  entering: bool,
+  raise: Option<PeekRaise>,
+  peeks: &PeekView,
+  config: &UserConfig,
+) -> Option<Host> {
+  let host = host_for(window.state() == WindowState::Tiling, raise)?;
+  let beside_own_peek =
+    host == Host::Tiles && has_own_peek_neighbour(window, config);
+  let beside_held = entering
+    && host.layer() == Layer::Tiles
+    && has_held_neighbour(window, peeks);
+  hosts_on_surface(
+    is_live(&peek_styles(window, config)),
+    crate::layout::scrolling::column_of(&window.as_container()).is_some(),
+    beside_own_peek || beside_held,
+  )
+  .then_some(host)
+}
+
+/// Whether another tile of `window`'s workspace is on a peek a grab holds.
+fn has_held_neighbour(window: &WindowContainer, peeks: &PeekView) -> bool {
+  window.workspace().is_some_and(|workspace| {
+    workspace
+      .descendants()
+      .filter_map(|container| container.as_window_container().ok())
+      .any(|other| other.id() != window.id() && peeks.is_held(&other.id()))
+  })
+}
+
+/// Whether another tile of `window`'s workspace moves on a peek of its own
+/// when it does: one whose peek is live.
+fn has_own_peek_neighbour(
+  window: &WindowContainer,
+  config: &UserConfig,
+) -> bool {
+  window.workspace().is_some_and(|workspace| {
+    workspace
+      .descendants()
+      .filter_map(|container| container.as_window_container().ok())
+      .any(|other| {
+        other.id() != window.id()
+          && other.state() == WindowState::Tiling
+          && is_live(&peek_styles(&other, config))
+      })
+  })
+}
+
+/// Whether two tiles drawn along lanes `a` and `b` on one clock never
+/// overlap: apart along one axis, the same way round, at both ends.
+///
+/// Every edge moves linearly with the motions' shared eased progress (see
+/// `Rect::interpolate`), so a gap at both ends holds all the way, at least
+/// one pixel of it where it changes, as each edge is rounded on its own.
+/// An easing that `overshoots` past either end only keeps a gap that
+/// doesn't change.
+fn lanes_stay_apart(a: &Lane, b: &Lane, overshoots: bool) -> bool {
+  let holds = |(at_from, at_to): (i32, i32)| {
+    if at_from == at_to {
+      at_from >= 0
+    } else {
+      !overshoots && at_from >= 1 && at_to >= 1
+    }
+  };
+
+  [
+    (b.from.left - a.from.right, b.to.left - a.to.right),
+    (a.from.left - b.from.right, a.to.left - b.to.right),
+    (b.from.top - a.from.bottom, b.to.top - a.to.bottom),
+    (a.from.top - b.from.bottom, a.to.top - b.to.bottom),
+  ]
+  .into_iter()
+  .any(holds)
+}
+
+/// How far `window`'s ring reaches past its visible frame, focused or not.
+fn ring_reach(window: &WindowContainer, config: &UserConfig) -> i32 {
+  #[allow(clippy::cast_possible_truncation)]
+  [true, false]
+    .into_iter()
+    .filter_map(|is_focused| {
+      surrogate_effects_for(window.effect_set(is_focused), config)
+        .2
+        .border
+    })
+    .map(|border| border.outset().ceil() as i32)
+    .max()
+    .unwrap_or(0)
 }
 
 /// Columns whose move ended on a tick.
@@ -912,7 +1372,7 @@ pub struct Landed {
   /// Done leaving, whose peeks were dropped (see [`finish_leaving`]).
   pub left: Vec<Left>,
   /// Landed after a resize drawn filled, whose edge color is to be
-  /// sampled again, as after a `fill` session.
+  /// sampled again.
   pub filled: Vec<Uuid>,
 }
 
@@ -931,9 +1391,162 @@ pub enum Leave {
   /// Not at all, so it goes at once: a transition with nothing to show,
   /// or a window DWM can't draw (e.g. an elevated one).
   Skipped,
-  /// Not on a peek: a live one, or a peek already drawing the window in
-  /// a role that doesn't turn round (e.g. a partly visible column's).
+  /// Not on a peek, so it goes at once too: one already drawing the
+  /// window in a role that doesn't turn round (handing back, releasing, a
+  /// partly visible column's at rest), no monitor or frame, or one that
+  /// couldn't be made.
   Unsupported,
+}
+
+/// How long a landed tile's peek is kept ready for its next motion (see
+/// [`Ready`]): long enough for commands in a row. Checked lazily, as no
+/// tick runs while nothing moves.
+const READY_LIFETIME: Duration = Duration::from_secs(5);
+
+/// Most ready peeks kept at once; the oldest goes first.
+const MAX_READY: usize = 16;
+
+/// A landed tile's peek hosted on a `PeekSurface`, kept for the tile's
+/// next motion with every registration it has, held so it draws nothing
+/// (see `WindowPeek::set_ready`). Apart from
+/// `PeekView::entries`, so no query over those sees it.
+struct Ready {
+  peek: WindowPeek,
+  fit: ReadyFit,
+  kept_at: Instant,
+}
+
+/// What a [`Ready`] peek was made for, which a new motion must ask for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadyFit {
+  /// The real window it shows.
+  source: HWND,
+  /// Its surface's clip.
+  clip: Rect,
+}
+
+/// Whether a landed entry's peek is kept ready: a tile's or a column's,
+/// hosted on a surface, drawn on no other peek.
+fn keeps_ready(is_hosted: bool, has_trail: bool) -> bool {
+  is_hosted && !has_trail
+}
+
+/// Whether a peek kept ready at `kept_at` has outlived [`READY_LIFETIME`]
+/// at `now`.
+fn is_ready_expired(kept_at: Instant, now: Instant) -> bool {
+  now.saturating_duration_since(kept_at) >= READY_LIFETIME
+}
+
+/// Whether a ready peek made for `fit`, kept at `kept_at`, can draw a
+/// motion asking for `wanted` at `now`. Its surface must take the motion
+/// too (see [`PeekView::tenancy`]).
+fn takes_ready(
+  fit: &ReadyFit,
+  kept_at: Instant,
+  wanted: &ReadyFit,
+  now: Instant,
+) -> bool {
+  fit == wanted && !is_ready_expired(kept_at, now)
+}
+
+/// Of peeks kept at the instants given, those past the first `cap`,
+/// newest first.
+fn evicted<K: Copy>(
+  kept: impl IntoIterator<Item = (K, Instant)>,
+  cap: usize,
+) -> Vec<K> {
+  let mut kept = kept.into_iter().collect::<Vec<_>>();
+  kept.sort_by_key(|(_, kept_at)| std::cmp::Reverse(*kept_at));
+  kept.into_iter().skip(cap).map(|(key, _)| key).collect()
+}
+
+/// Whether a `PeekSurface` that `is_unused` (no tenant, no ready peek) at
+/// `clip` is dropped, as a new one is made or at a purge point: once its
+/// clip is none of `monitor_clips` (none at all for a reload, pause or
+/// exit). Never one in use, so its tenants always go before it.
+fn is_stale_surface(
+  is_unused: bool,
+  clip: &Rect,
+  monitor_clips: &[Rect],
+) -> bool {
+  is_unused && !monitor_clips.contains(clip)
+}
+
+/// Whether two tiles drawn along lanes `a` and `b` may overlap: on one
+/// clock, unless [`lanes_stay_apart`]; otherwise wherever their hulls
+/// meet, or anywhere if either easing `overshoots` past its ends.
+fn lanes_meet(
+  a: &Lane,
+  b: &Lane,
+  same_clock: bool,
+  overshoots: bool,
+) -> bool {
+  if same_clock {
+    !lanes_stay_apart(a, b, overshoots)
+  } else {
+    overshoots || a.hull().intersection(&b.hull()).is_some()
+  }
+}
+
+/// Of the tiles on one surface in rank order, by the first and last
+/// registration orders of their thumbnails there (see
+/// `WindowPeek::stacking`), those to register anew, in that order, so each
+/// draws wholly over every lower-ranked one that `meets` it (by their
+/// indices, lower first): each with a thumbnail under one of such a
+/// tile's, as that tile is then, re-registered ones included.
+pub(super) fn out_of_order(
+  spans: &[Option<(u64, u64)>],
+  meets: impl Fn(usize, usize) -> bool,
+) -> Vec<usize> {
+  let mut spans = spans.to_vec();
+  let mut next = spans
+    .iter()
+    .flatten()
+    .map(|(_, last)| last + 1)
+    .max()
+    .unwrap_or_default();
+  let mut restacked = Vec::new();
+
+  for upper in 0..spans.len() {
+    let Some(Some((first, _))) = spans.get(upper).copied() else {
+      continue;
+    };
+    let is_under =
+      spans.iter().take(upper).enumerate().any(|(lower, span)| {
+        span.is_some_and(|(_, last)| last > first) && meets(lower, upper)
+      });
+    if is_under {
+      if let Some(span) = spans.get_mut(upper) {
+        *span = Some((next, next));
+      }
+      next += 1;
+      restacked.push(upper);
+    }
+  }
+  restacked
+}
+
+/// The keys of surfaces' tenants, given with their surface's window and
+/// rank, grouped by surface, each group in rank order (see
+/// [`out_of_order`]).
+fn by_surface<K: Copy>(mut tenants: Vec<(isize, Rank, K)>) -> Vec<Vec<K>> {
+  tenants.sort_by_key(|(surface, rank, _)| (*surface, *rank));
+  tenants
+    .chunk_by(|a, b| a.0 == b.0)
+    .map(|group| group.iter().map(|(_, _, key)| *key).collect())
+    .collect()
+}
+
+/// The lowest of `items`, as `is_below(a, b)` says `a` is below `b`; of
+/// those level, the first.
+fn lowest<T: Copy>(
+  items: impl IntoIterator<Item = T>,
+  is_below: impl Fn(T, T) -> bool,
+) -> Option<T> {
+  items.into_iter().fold(None, |low, item| match low {
+    Some(low) if !is_below(item, low) => Some(low),
+    _ => Some(item),
+  })
 }
 
 /// Peeks of the columns of displayed scrolling layouts.
@@ -946,11 +1559,38 @@ pub struct PeekView {
   /// Windows already reported by `report_stuck_windows`.
   pub(super) reported_stuck: HashSet<Uuid>,
   /// Columns whose resting peeks stand by under a workspace switch's
-  /// surrogates, under `slidepeeks` (see `WindowPeek::stand_by`).
+  /// surrogates (see `WindowPeek::stand_by`).
   standing_by: HashSet<Uuid>,
   /// Resting peeks of columns sliding out with a workspace switch, kept
-  /// at rest until their surrogates take over, under `slidepeeks`.
+  /// at rest until their surrogates take over.
   switching_out: HashMap<Uuid, Entry>,
+  /// Peeks of columns that `upsert` replaced with a peek elsewhere (on
+  /// another surface or a window of their own), still drawing until the
+  /// scroll view's flush has composited what replaced them (see
+  /// [`drop_replaced`](Self::drop_replaced)).
+  replaced: Vec<WindowPeek>,
+  /// Peeks of landing tiles that `move_tile` replaced with one on another
+  /// surface, and hosted trails of tiles just landed (see
+  /// [`keeps_trail_drawing`]), still drawing until the next tick, by when
+  /// what replaced them has been composited.
+  replaced_tiles: Vec<WindowPeek>,
+  /// The next [`Rank::order`].
+  next_rank: u64,
+  /// Raise passes closed so far (see [`Rank::pass`]).
+  raise_passes: u64,
+  /// Landed tiles' peeks kept for their next motions, by window (see
+  /// [`Ready`]). Before `surfaces`, which they are on.
+  ready: HashMap<Uuid, Ready>,
+  /// One per clip that tiles were drawn on, kept
+  /// between motions. Last, so the peeks hosted on them go first.
+  surfaces: Vec<PeekSurface>,
+  /// One per monitor rect that windows shown in the always-on-top band
+  /// were drawn on (see [`Layer::TopBand`]), kept as `surfaces` are.
+  band_surfaces: Vec<PeekSurface>,
+  /// One per working area that workspace switches drew on (see
+  /// [`switch_surface`](Self::switch_surface)). Their tenants live in
+  /// the switch, and hold their windows.
+  switch_surfaces: Vec<PeekSurface>,
 }
 
 impl PeekView {
@@ -986,6 +1626,16 @@ impl PeekView {
       clip: Some(entry.clip.clone()),
       anchor: Some(entry.peek.hwnd()),
     })
+  }
+
+  /// Whether `window_id`'s peek draws its stack's tab bar in the bar's
+  /// place, composited, so the bar itself is cloaked meanwhile (see
+  /// `tab_bars::conceal_copied_bars`).
+  pub fn conceals_tab_bar(&self, window_id: &Uuid) -> bool {
+    self
+      .entries
+      .get(window_id)
+      .is_some_and(|entry| conceals_bar(entry.bar))
   }
 
   /// Where `window_id`'s peek is headed while its real window is cloaked.
@@ -1079,6 +1729,10 @@ impl PeekView {
     if let Some(stretch) = entry.stretch.as_mut().filter(|_| is_held) {
       stretch.deferred = false;
     }
+    // Never raised: its surface goes above its window as it lands.
+    if let Some(tenancy) = entry.tenancy.as_mut().filter(|_| is_held) {
+      tenancy.never_raised = true;
+    }
   }
 
   /// Whether `id`'s window, filled on its peek, is to be sent its new
@@ -1109,9 +1763,11 @@ impl PeekView {
       .is_some_and(|entry| entry.hold == Hold::Held)
   }
 
-  /// Whether anything still needs animation ticks.
+  /// Whether anything still needs animation ticks: a replaced tile's peek
+  /// too, which only a tick drops, even once its entry is gone.
   pub fn is_active(&self) -> bool {
-    self.entries.values().any(|entry| entry.role != Role::Peek)
+    !self.replaced_tiles.is_empty()
+      || self.entries.values().any(|entry| entry.role != Role::Peek)
   }
 
   /// Advances moving columns to `now`, returning the ones that landed.
@@ -1125,25 +1781,23 @@ impl PeekView {
     batch: &mut SurrogateBatch,
   ) -> Landed {
     let mut landed = Landed::default();
-    let late_alpha = wm_platform::isolation::current().late_alpha;
 
     // A later composition than the one copies were put over rings and
-    // backdrops in.
+    // backdrops in, and peeks put up in place of others.
     self.note_composited();
+    self.replaced_tiles.clear();
 
     for (id, entry) in &mut self.entries {
       match entry.role {
         Role::Moving { ends_shown } => {
           // Its real window was cloaked a tick ago at least, so needs its
           // alpha no more. One not taken over from, e.g. as it wasn't
-          // redrawn, is drawn all the same. Under `latealpha`, cloaked, it
-          // gets it back as it lands instead.
+          // redrawn, is drawn all the same.
           let draw_scope = perf::scope(Stage::PeekDraw);
           for (peek, _) in entry.peeks_mut() {
-            if !late_alpha {
-              let _scope = perf::scope(Stage::PeekDrawAlpha);
-              peek.restore_alpha();
-            }
+            let alpha_scope = perf::scope(Stage::PeekDrawAlpha);
+            peek.restore_alpha();
+            drop(alpha_scope);
             peek.show_window();
             peek.refresh_companion();
           }
@@ -1162,8 +1816,17 @@ impl PeekView {
 
           if entry.may_land(now) {
             // Landed on its own peek's monitor, it has nothing left on
-            // another.
-            entry.trail = None;
+            // another but what reaches past its tile, e.g. its ring at
+            // the edge. A hosted trail draws that on until the next tick,
+            // by when the real ring revealed under the copies has been
+            // composited. Its window's alpha goes back now, as a dropped
+            // one's would, before the hand-back sets it aside again.
+            if let Some(mut trail) = entry.trail.take() {
+              if keeps_trail_drawing(trail.peek.is_hosted()) {
+                trail.peek.restore_alpha();
+                self.replaced_tiles.push(trail.peek);
+              }
+            }
             if entry.stretch.as_ref().is_some_and(|stretch| stretch.filled)
             {
               landed.filled.push(*id);
@@ -1172,11 +1835,20 @@ impl PeekView {
               // Raised while its real window is still cloaked, so the
               // uncloak never shows the window over the peek.
               entry.peek.begin_hand_back();
+              // A column's surface is not raised over the tiles it draws,
+              // nor a held tile's, and one raised in a band may be under
+              // its window.
+              if entry.is_column
+                || entry
+                  .tenancy
+                  .as_ref()
+                  .is_some_and(Tenancy::lifts_at_landing)
+              {
+                entry.peek.stay_over_window();
+              }
               landed.shown.push(*id);
               Role::HandingBack
             } else {
-              // Kept from its window until now under `latealpha`.
-              entry.peek.restore_alpha();
               landed.hidden.push(*id);
               Role::Peek
             };
@@ -1203,6 +1875,8 @@ impl PeekView {
                 tracing::warn!("Failed to cloak leaving {id}: {err}");
               }
               departing.awaits_cloak = false;
+              // Drawn over its cloaked window from now on, never raised.
+              entry.peek.hold_place();
             }
             _ => {
               let _scope = perf::scope(Stage::PeekDrawAlpha);
@@ -1227,7 +1901,9 @@ impl PeekView {
     }
 
     for id in &landed.released {
-      self.entries.remove(id);
+      if let Some(entry) = self.entries.remove(id) {
+        self.keep_ready(*id, entry, now);
+      }
     }
 
     landed.left = take_left(&mut self.entries, |entry| {
@@ -1250,6 +1926,10 @@ impl PeekView {
     self.entries.retain(|_, entry| {
       entry.role != Role::Peek || entry.peek.visible_rect().is_some()
     });
+    // Its draws may have registered a tenant's fill or companion.
+    self.restack_crossings();
+    // The last moving tenant may have landed or gone.
+    self.settle_resting_surfaces();
 
     landed
   }
@@ -1259,7 +1939,9 @@ impl PeekView {
   pub(super) fn note_composited(&mut self) {
     for entry in self.entries.values_mut() {
       entry.composited = true;
-      for handover in [&mut entry.ring, &mut entry.backdrop] {
+      for handover in
+        [&mut entry.ring, &mut entry.backdrop, &mut entry.bar]
+      {
         if *handover == Handover::Covering {
           *handover = Handover::Covered;
         }
@@ -1332,22 +2014,30 @@ impl PeekView {
     &mut self,
     shown: impl Fn(&Uuid) -> Option<bool>,
   ) -> Vec<Uuid> {
-    self
+    let strays = self
       .entries
       .extract_if(|id, entry| {
         is_stray(entry.is_column, entry.role, shown(id))
       })
       .map(|(id, _)| id)
-      .collect()
+      .collect::<Vec<_>>();
+    // A resting column may be left alone on a surface they shared, with no
+    // tick to come to settle it.
+    if !strays.is_empty() {
+      self.settle_resting_surfaces();
+    }
+    strays
   }
 
-  /// Drops `window_id`'s peek, if it is entering a tiling layout, as its
-  /// window is unmanaged.
+  /// Drops `window_id`'s peek, if it is entering a tiling layout, and its
+  /// ready one, as its window is unmanaged.
   pub fn forget_entering(&mut self, window_id: &Uuid) {
+    self.ready.remove(window_id);
     if self.entries.get(window_id).is_some_and(|entry| {
       !entry.is_column && !matches!(entry.role, Role::Leaving(_))
     }) {
       self.entries.remove(window_id);
+      self.settle_resting_surfaces();
     }
   }
 
@@ -1385,6 +2075,7 @@ impl PeekView {
   pub fn forget_leaving(&mut self, window_id: &Uuid) {
     if self.is_leaving(window_id) {
       self.entries.remove(window_id);
+      self.settle_resting_surfaces();
     }
   }
 
@@ -1482,9 +2173,21 @@ impl PeekView {
   /// A peek it creates moving and pinned enters by `opening`, if given
   /// (see [`Transit`]); one already drawn keeps its own.
   ///
+  /// With `may_host` (see [`hosts_column`]), a new peek is drawn on the
+  /// `PeekSurface` of `clip` if its role keeps it there (see
+  /// [`keeps_rest_hosted`]), the column's ready peek there if it has one
+  /// and its window shows; a surface made for it drops those left unused
+  /// off `monitor_clips`. A hosted peek no longer drawn so (another clip,
+  /// a surface dropped, or not to be hosted any more) is replaced by a new
+  /// one, its motion, transit and stretch carried over; the old one draws
+  /// on until the flush that follows (see
+  /// [`drop_replaced`](Self::drop_replaced)), so no frame shows neither.
+  /// One of its own stays so.
+  ///
   /// Returns whether a new peek now covers a still-visible real window,
-  /// so it has to be composited before that window is cloaked.
-  #[allow(clippy::too_many_arguments)]
+  /// or replaces one, so it has to be composited before that window is
+  /// cloaked or the old one goes.
+  #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
   pub(super) fn upsert(
     &mut self,
     window: &WindowContainer,
@@ -1495,6 +2198,8 @@ impl PeekView {
     opening: Option<Transit>,
     resize: Option<PeekResize>,
     held: bool,
+    may_host: bool,
+    monitor_clips: &[Rect],
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
@@ -1551,7 +2256,12 @@ impl PeekView {
 
     let actual = || window.native().frame_with_shadows().ok();
 
-    if let Some(entry) = self.entries.get_mut(&window.id()) {
+    let id = window.id();
+    let host = may_host
+      && keeps_rest_hosted(rests(role), self.rests_on_surface(clip, &id));
+    let moves_on = self.moves_on_in_place(&id, clip, host);
+
+    if let Some(entry) = self.entries.get_mut(&id).filter(|_| moves_on) {
       let headed = std::mem::replace(&mut entry.motion, motion);
       entry.clip = clip.clone();
       entry.opacity = opacity;
@@ -1587,47 +2297,216 @@ impl PeekView {
       if self.standing_by.contains(&window.id()) {
         entry.peek.stand_by();
       }
+      if let Some(tenancy) = &mut entry.tenancy {
+        tenancy.lane = tenancy
+          .reach
+          .lane(&entry.motion.start_rect, &entry.motion.target_rect);
+      }
       let (rect, _) = entry.motion.current_state_at(now);
       entry.draw(&rect, now, batch);
       return covers_shown_window;
     }
 
-    let Some((mut entry, covers_shown_window)) = new_entry(
-      window,
-      motion,
-      clip,
-      opacity,
-      corner_style,
-      &styles,
-      role,
-    ) else {
+    // Drawn as a column, its window has no ready peek of a tile's left,
+    // and one on a surface only for a window still shown, which a ready
+    // peek rejoins its surface by.
+    let ready = if host {
+      self.take_ready(
+        &id,
+        &ReadyFit {
+          source: window.native().hwnd(),
+          clip: clip.clone(),
+        },
+        now,
+      )
+    } else {
+      self.ready.remove(&id);
+      None
+    };
+    // Put on top as its own peek would be: a focused or opening column's
+    // went up just below its window, above its neighbours'.
+    let stacking = if is_focused || opening.is_some() {
+      Stacking::Raised
+    } else {
+      Stacking::InPass
+    };
+    let tenancy = if host {
+      self.tenancy(
+        window,
+        &motion,
+        clip,
+        Host::Tiles,
+        stacking,
+        config,
+        monitor_clips,
+      )
+    } else {
+      None
+    };
+    let surface = tenancy
+      .as_ref()
+      .and_then(|(index, _)| self.surfaces.get(*index));
+    let ready = ready.filter(|peek| {
+      surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
+        && !window.native().is_cloaked().unwrap_or(true)
+    });
+    let made = match ready {
+      Some(peek) => Some(reuse_entry(
+        peek, window, motion, clip, opacity, &styles, role,
+      )),
+      None => new_entry(
+        window,
+        motion,
+        clip,
+        opacity,
+        corner_style,
+        &styles,
+        role,
+        surface,
+      ),
+    };
+    let Some((mut entry, covers_shown_window)) = made else {
       return false;
     };
 
-    // `place_scaled` draws pinned peeks only.
-    entry.transit = opening.filter(|_| is_moving && !entry.peek.is_live());
-    entry.stretch =
-      resizes.map(|resize| Stretch::at(actual(), resize, deferred));
+    let old = self.entries.remove(&id).map(|old| {
+      self.replaced.push(old.peek);
+      (old.transit, old.stretch, old.motion.target_rect)
+    });
+    let replaces = old.is_some();
+    if let Some((transit, stretch, headed)) = old {
+      // Carried on as it was drawn, as if moved on in place.
+      entry.transit = kept_transit(transit, is_moving);
+      let resizes = stretch
+        .as_ref()
+        .filter(|_| is_moving)
+        .map(Stretch::resize)
+        .or(resizes)
+        .filter(|_| entry.transit.is_none());
+      entry.stretch = restretched(
+        stretch,
+        resizes,
+        deferred,
+        actual,
+        &headed,
+        &entry.motion.target_rect,
+        now,
+      );
+    } else {
+      // A live column opens by its motion alone.
+      entry.transit =
+        opening.filter(|_| is_moving && !entry.peek.is_live());
+      entry.stretch =
+        resizes.map(|resize| Stretch::at(actual(), resize, deferred));
+    }
     if held {
       entry.hold = Hold::Held;
     }
     if self.standing_by.contains(&window.id()) {
       entry.peek.stand_by();
     }
-    let rect = entry.rect.clone();
+    entry.tenancy = tenancy.map(|(_, tenancy)| tenancy);
+    let rect = if replaces {
+      entry.motion.current_state_at(now).0
+    } else {
+      entry.rect.clone()
+    };
     entry.draw(&rect, now, batch);
-    self.entries.insert(window.id(), entry);
+    self.entries.insert(id, entry);
 
-    covers_shown_window
+    covers_shown_window || replaces
+  }
+
+  /// Whether `window_id`'s entry, if any, is moved on in place by
+  /// [`upsert`](Self::upsert) as a column cut at `clip`, to be hosted or
+  /// not (`host`): one of its own always, and a column's on a surface
+  /// still kept that spans `clip`, if it is to stay hosted. A tile's on a
+  /// surface takes no column's role (see [`Tenancy`]).
+  fn moves_on_in_place(
+    &self,
+    window_id: &Uuid,
+    clip: &Rect,
+    host: bool,
+  ) -> bool {
+    self.entries.get(window_id).is_some_and(|entry| {
+      !entry.peek.is_hosted()
+        || (host
+          && entry.is_column
+          && entry.clip == *clip
+          && self
+            .surfaces
+            .iter()
+            .any(|surface| surface.hwnd() == entry.peek.hwnd()))
+    })
+  }
+
+  /// Whether a column other than `window_id`'s rests, or is to, on the
+  /// surface of `clip` (see [`keeps_rest_hosted`]). One kept for a
+  /// switch's surrogate does until that takes over later in the sync: a
+  /// column joining meanwhile would move the surface it draws on at full
+  /// (see [`keep_switching_out`](Self::keep_switching_out)).
+  fn rests_on_surface(&self, clip: &Rect, window_id: &Uuid) -> bool {
+    let Some(surface) =
+      self.surfaces.iter().find(|surface| surface.clip() == clip)
+    else {
+      return false;
+    };
+
+    self
+      .entries
+      .iter()
+      .chain(&self.switching_out)
+      .any(|(id, entry)| {
+        id != window_id
+          && entry.tenancy.is_some()
+          && entry.peek.hwnd() == surface.hwnd()
+          && rests(entry.role)
+      })
+  }
+
+  /// Drops the peeks [`upsert`](Self::upsert) replaced, once what replaced
+  /// them has been composited.
+  pub(super) fn drop_replaced(&mut self) {
+    self.replaced.clear();
+  }
+
+  /// Puts each surface whose tenants all rest just above its resting
+  /// tenant's cloaked window (see [`rest_anchor`]), where that tenant's
+  /// own peek would be, once nothing moving on it needs it higher. One
+  /// kept for a workspace switch's surrogate is a tenant still.
+  pub(super) fn settle_resting_surfaces(&self) {
+    for surface in &self.surfaces {
+      if surface.is_empty() {
+        continue;
+      }
+      let tenants = self
+        .entries
+        .values()
+        .chain(self.switching_out.values())
+        .filter(|entry| entry.is_on(surface.hwnd()))
+        .map(|entry| (entry.role, entry.peek.source()));
+      if let Some(window) = rest_anchor(tenants) {
+        surface.rest_above(window);
+      }
+    }
   }
 
   /// Draws `window`, just opened or restored at `target`, entering on a
   /// pinned peek by `params`' style, opacity and timing, until it is
   /// handed back.
   ///
-  /// Returns `false`, creating nothing, for a window already drawn, one
-  /// whose peek would be `Live`, or a transition with nothing to show (see
-  /// [`Transit::opening`]).
+  /// With `host`, it is drawn on that `PeekSurface` of `clip`, ranked over
+  /// every tile put on top before its pass and under those its pass
+  /// raises, as its peek of its own would be (see [`Rank`]), or over them
+  /// for one raised in its band; a surface made for it drops those left
+  /// unused off `monitor_clips`.
+  ///
+  /// Without `host`, a window whose backdrop can't be copied (see
+  /// [`is_live`]) enters on a live peek of its own, its real overlays
+  /// following the drawn frame (see [`track_overlays`]).
+  ///
+  /// Returns `false`, creating nothing, for a window already drawn, or a
+  /// transition with nothing to show (see [`Transit::opening`]).
   #[allow(clippy::too_many_arguments)]
   pub(super) fn enter(
     &mut self,
@@ -1635,6 +2514,8 @@ impl PeekView {
     target: &Rect,
     clip: &Rect,
     params: &WindowTransitionParams,
+    host: Option<Host>,
+    monitor_clips: &[Rect],
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
@@ -1642,7 +2523,7 @@ impl PeekView {
   ) -> bool {
     let styles = peek_styles(window, config);
     let Some(transit) =
-      Transit::opening(params).filter(|_| self.can_enter(window, &styles))
+      Transit::opening(params).filter(|_| self.can_enter(window))
     else {
       return false;
     };
@@ -1657,6 +2538,19 @@ impl PeekView {
       params.easing.clone(),
     );
 
+    self.ready.remove(&window.id());
+    let tenancy = host.and_then(|host| {
+      self.tenancy(
+        window,
+        &motion,
+        clip,
+        host,
+        Stacking::InPass,
+        config,
+        monitor_clips,
+      )
+    });
+    let surface = self.hosting(host, tenancy.as_ref());
     let Some((mut entry, _)) = new_entry(
       window,
       motion,
@@ -1665,27 +2559,30 @@ impl PeekView {
       corner_style,
       &styles,
       Role::Moving { ends_shown: true },
+      surface,
     ) else {
       return false;
     };
 
     entry.transit = Some(transit);
     entry.is_column = false;
+    entry.tenancy = tenancy.map(|(_, tenancy)| tenancy);
+    let is_hosted = entry.tenancy.is_some();
     entry.draw(target, now, batch);
     self.entries.insert(window.id(), entry);
+    // Registered over the tiles its pass moved before it, which rank above
+    // it.
+    if is_hosted {
+      self.restack_crossings();
+    }
 
     true
   }
 
-  /// Whether [`enter`](Self::enter) can draw `window`, whose peek would
-  /// carry copies of `styles`: not one already drawn, nor one whose peek
-  /// would be `Live`.
-  fn can_enter(
-    &self,
-    window: &WindowContainer,
-    styles: &[Option<BackdropOverlayParams>],
-  ) -> bool {
-    !is_live(styles) && !self.draws_window(&window.id())
+  /// Whether [`enter`](Self::enter) can draw `window`: not one already
+  /// drawn.
+  fn can_enter(&self, window: &WindowContainer) -> bool {
+    !self.draws_window(&window.id())
   }
 
   /// Draws `window`, a tile moving from `from` to `target`, on a peek
@@ -1695,10 +2592,17 @@ impl PeekView {
   /// column. With `stretch`, a change of size scales the window (see
   /// [`Stretch`]); without, it keeps the same size.
   ///
+  /// With `host`, a new peek is drawn on that `PeekSurface` of `clip` if
+  /// that takes it (see [`tenancy`](Self::tenancy)), the tile's ready
+  /// peek there if it has one (see [`Ready`]); a surface made for it
+  /// drops those left unused off `monitor_clips`. One landing keeps where
+  /// it is drawn, unless it is on a surface that the motion isn't to be
+  /// drawn on: a new one replaces it then, the old one drawing until the
+  /// next tick, so no frame shows neither.
+  ///
   /// Returns `false`, creating nothing, for a window already drawn
-  /// otherwise (moving, leaving, or as a column), one whose peek can't
-  /// move it (see [`can_move_on_peek`]), or one DWM can't draw.
-  #[allow(clippy::too_many_arguments)]
+  /// otherwise (moving, leaving, or as a column), or one DWM can't draw.
+  #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
   pub(super) fn move_tile(
     &mut self,
     window: &WindowContainer,
@@ -1708,6 +2612,8 @@ impl PeekView {
     duration_ms: u32,
     easing: EasingFunction,
     resize: Option<PeekResize>,
+    host: Option<Host>,
+    monitor_clips: &[Rect],
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
@@ -1721,23 +2627,20 @@ impl PeekView {
       None => false,
       Some(entry)
         if !entry.is_column
-          && allows_motion(
-            entry.peek.is_live(),
-            wm_platform::isolation::current().more_peeks,
-          )
           && matches!(
             entry.role,
             Role::HandingBack | Role::Releasing { .. }
           ) =>
       {
-        true
+        !entry.peek.is_hosted()
+          || host.is_some_and(|host| {
+            self
+              .surface_at(host.layer(), clip)
+              .is_some_and(|surface| surface.hwnd() == entry.peek.hwnd())
+          })
       }
       Some(_) => return false,
     };
-    if !can_move_on_peek(&styles) {
-      return false;
-    }
-
     let (opacity, corner_style, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
     let motion = WindowAnimationState::new_movement(
@@ -1775,102 +2678,607 @@ impl PeekView {
       if covers_shown_window {
         entry.composited = false;
       }
-      let _scope = perf::scope(Stage::PeekPlace);
+      // Raised by this command, it goes on top as its own peek would.
+      let stacking = host
+        .map_or(Stacking::Raised, |host| host.stacking(Stacking::Raised));
+      let rank = rank(stacking, self.raise_passes, self.next_rank);
+      if let Some(tenancy) = &mut entry.tenancy {
+        tenancy.lane = tenancy.reach.lane(from, &entry.motion.target_rect);
+        tenancy.rank = rank;
+        tenancy.never_raised = false;
+        tenancy.in_band = matches!(host, Some(Host::InBand(_)));
+        self.next_rank += 1;
+      }
+      let place_scope = perf::scope(Stage::PeekPlace);
       entry.draw(from, now, batch);
+      drop(place_scope);
+      // Its registrations kept, it may be under tiles now ranked below it.
+      self.restack_crossings();
       return true;
     }
 
-    let Some((mut entry, _)) = new_entry(
-      window,
-      motion,
-      clip,
-      opacity,
-      corner_style,
-      &styles,
-      role,
-    ) else {
+    // Any ready peek goes unless this motion takes it.
+    let ready = self.take_ready(
+      &id,
+      &ReadyFit {
+        source: window.native().hwnd(),
+        clip: clip.clone(),
+      },
+      now,
+    );
+    let tenancy = host.and_then(|host| {
+      self.tenancy(
+        window,
+        &motion,
+        clip,
+        host,
+        Stacking::Raised,
+        config,
+        monitor_clips,
+      )
+    });
+    let surface = self.hosting(host, tenancy.as_ref());
+    let ready = ready.filter(|peek| {
+      surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
+    });
+    let made = match ready {
+      Some(peek) => Some(reuse_entry(
+        peek, window, motion, clip, opacity, &styles, role,
+      )),
+      None => new_entry(
+        window,
+        motion,
+        clip,
+        opacity,
+        corner_style,
+        &styles,
+        role,
+        surface,
+      ),
+    };
+    let Some((mut entry, _)) = made else {
       return false;
     };
-    // Nothing to draw it with: the old path snaps it into place.
+    // Nothing to draw it with (e.g. an elevated window): it snaps into
+    // place.
     if !entry.peek.has_thumbnail() {
       tracing::debug!("No peek of {window} to move on.");
       return false;
     }
 
     entry.is_column = false;
+    entry.tenancy = tenancy.map(|(_, tenancy)| tenancy);
     entry.stretch =
       resizes.map(|resize| Stretch::at(actual(), resize, deferred));
     let place_scope = perf::scope(Stage::PeekPlace);
     entry.draw(from, now, batch);
     drop(place_scope);
-    self.entries.insert(id, entry);
+    // A landing one it replaces, on another surface, draws until this one
+    // has been composited.
+    if let Some(replaced) = self.entries.insert(id, entry) {
+      self.replaced_tiles.push(replaced.peek);
+    }
+    // A ready peek's kept registrations may be under tiles ranked below
+    // it; a new one's are over every other.
+    self.restack_crossings();
 
     true
   }
 
-  /// Has `window_id`'s peeks, if drawn filled, carry their fill in its
-  /// edge color, `color`, as their motion starts (see `earlyfill` and
-  /// [`carries_fill_early`]).
-  fn carry_fill_early(&mut self, window_id: &Uuid, color: Color) {
-    let Some(entry) = self.entries.get_mut(window_id) else {
-      return;
+  /// The surface a new peek of `window`, a tile moving by `motion` cut at
+  /// `clip`, is drawn on, by its index in `host`'s layer's surfaces, made
+  /// if there is none, and where it draws there, ranked as `stacking` puts
+  /// it on top, or as `host` does (see [`Rank`], [`Host::stacking`]).
+  /// `None` only if no surface could be made. Making one drops the unused
+  /// surfaces of that layer whose clip is none of `monitor_clips` (see
+  /// [`is_stale_surface`]).
+  ///
+  /// It joins whatever its surface's tenants are doing: a surface raised
+  /// already stays above them (see `SurfaceWindow::admit`), and one
+  /// drawn under a lower-ranked tile it may meet is stacked over it (see
+  /// [`restack_crossings`](Self::restack_crossings)).
+  #[allow(clippy::too_many_arguments)]
+  fn tenancy(
+    &mut self,
+    window: &WindowContainer,
+    motion: &WindowAnimationState,
+    clip: &Rect,
+    host: Host,
+    stacking: Stacking,
+    config: &UserConfig,
+    monitor_clips: &[Rect],
+  ) -> Option<(usize, Tenancy)> {
+    let reach = Reach {
+      shadow_borders: window.native_properties().shadow_borders.clone(),
+      bar: crate::tab_bars::tab_bar_place(
+        window,
+        &motion.target_rect,
+        false,
+        config,
+      ),
+      ring: ring_reach(window, config),
     };
-    let Some(stretch) = entry.stretch.as_mut() else {
-      return;
-    };
+    let lane = reach.lane(&motion.start_rect, &motion.target_rect);
+    let index = self.surface_index(host.layer(), clip, monitor_clips)?;
 
-    let peeks =
-      peeks_of(&mut entry.peek, &entry.clip, entry.trail.as_mut());
-    for (peek, _) in peeks {
-      if carries_fill_early(stretch.filled, peek.carries_ring()) {
-        let _scope = perf::scope(Stage::PeekFill);
-        stretch.edge_color = Some(color);
-        peek.carry_fill(color);
+    let rank = self.take_rank(host.stacking(stacking));
+    Some((
+      index,
+      Tenancy {
+        reach,
+        lane,
+        rank,
+        never_raised: false,
+        in_band: matches!(host, Host::InBand(_)),
+      },
+    ))
+  }
+
+  /// The index of `layer`'s surface spanning `clip`, made if there is
+  /// none, which drops that layer's unused surfaces off `monitor_clips`
+  /// (see [`is_stale_surface`]). `None` only if none could be made.
+  fn surface_index(
+    &mut self,
+    layer: Layer,
+    clip: &Rect,
+    monitor_clips: &[Rect],
+  ) -> Option<usize> {
+    let surfaces = self.layer_surfaces_mut(layer);
+    if let Some(index) =
+      surfaces.iter().position(|surface| surface.clip() == clip)
+    {
+      return Some(index);
+    }
+
+    match PeekSurface::new(clip) {
+      Ok(surface) => {
+        surfaces.retain(|surface| {
+          !is_stale_surface(
+            surface.is_unused(),
+            surface.clip(),
+            monitor_clips,
+          )
+        });
+        surfaces.push(surface);
+        Some(surfaces.len() - 1)
+      }
+      Err(err) => {
+        tracing::warn!("Failed to create a peek surface: {err}");
+        None
       }
     }
+  }
+
+  /// Whether a grab holds a tile drawn on the tiles' surface spanning
+  /// `clip`, if any.
+  fn holds_on_surface(&self, clip: &Rect) -> bool {
+    self.surface_at(Layer::Tiles, clip).is_some_and(|surface| {
+      self.entries.values().any(|entry| {
+        entry.hold == Hold::Held && entry.is_on(surface.hwnd())
+      })
+    })
+  }
+
+  /// The surfaces of `layer`.
+  fn layer_surfaces(&self, layer: Layer) -> &[PeekSurface] {
+    match layer {
+      Layer::Tiles => &self.surfaces,
+      Layer::TopBand => &self.band_surfaces,
+    }
+  }
+
+  fn layer_surfaces_mut(&mut self, layer: Layer) -> &mut Vec<PeekSurface> {
+    match layer {
+      Layer::Tiles => &mut self.surfaces,
+      Layer::TopBand => &mut self.band_surfaces,
+    }
+  }
+
+  /// The surface of `layer` spanning `clip`, if any.
+  fn surface_at(&self, layer: Layer, clip: &Rect) -> Option<&PeekSurface> {
+    self
+      .layer_surfaces(layer)
+      .iter()
+      .find(|surface| surface.clip() == clip)
+  }
+
+  /// The surface `tenancy` found for a peek drawn as `host` says, if any
+  /// (see [`tenancy`](Self::tenancy)).
+  fn hosting(
+    &self,
+    host: Option<Host>,
+    tenancy: Option<&(usize, Tenancy)>,
+  ) -> Option<&PeekSurface> {
+    let (index, _) = tenancy?;
+    self.layer_surfaces(host?.layer()).get(*index)
+  }
+
+  /// The rank of a tile put on top by `stacking` now (see [`Rank`]).
+  fn take_rank(&mut self, stacking: Stacking) -> Rank {
+    let order = self.next_rank;
+    self.next_rank += 1;
+    rank(stacking, self.raise_passes, order)
+  }
+
+  /// Registers anew, in rank order, each tile on a surface drawn under a
+  /// lower-ranked one its path may meet (see [`out_of_order`]), so each
+  /// draws whole over those ranked below it, as peeks of their own raised
+  /// in that order would. Each part goes up before the one it replaces
+  /// goes (see `WindowPeek::register_anew`). Called wherever a tile may
+  /// have registered something or been set on a new path.
+  ///
+  /// Per surface: a tile crossing monitors is restacked on each of its
+  /// two by the same rank and lane (see [`Trail`]).
+  pub(super) fn restack_crossings(&mut self) {
+    let tenants = self
+      .entries
+      .iter()
+      .flat_map(|(id, entry)| {
+        let rank = entry.tenancy.as_ref().map(|tenancy| tenancy.rank);
+        rank.into_iter().flat_map(move |rank| {
+          entry
+            .hosted_parts()
+            .map(move |(part, surface)| (surface.0, rank, (*id, part)))
+        })
+      })
+      .collect::<Vec<_>>();
+    if tenants.len() < 2 {
+      return;
+    }
+
+    for group in by_surface(tenants) {
+      let members = group
+        .iter()
+        .filter_map(|(id, part)| Some((*id, *part, self.entries.get(id)?)))
+        .collect::<Vec<_>>();
+      let spans = members
+        .iter()
+        .map(|(_, part, entry)| entry.part(*part)?.stacking())
+        .collect::<Vec<_>>();
+      let restacked = out_of_order(&spans, |lower, upper| {
+        match (members.get(lower), members.get(upper)) {
+          (Some((_, _, lower)), Some((_, _, upper))) => lower.meets(upper),
+          _ => false,
+        }
+      })
+      .into_iter()
+      .filter_map(|index| {
+        members.get(index).map(|(id, part, _)| (*id, *part))
+      })
+      .collect::<Vec<_>>();
+      if restacked.is_empty() {
+        continue;
+      }
+
+      let _scope = perf::scope(Stage::Restack);
+      for (id, part) in restacked {
+        tracing::debug!("Stacking {id}'s peek over a tile it may cross.");
+        if let Some(peek) = self
+          .entries
+          .get_mut(&id)
+          .and_then(|entry| entry.part_mut(part))
+        {
+          if !peek.register_anew() {
+            tracing::warn!("Failed to stack {id}'s peek over another.");
+          }
+        }
+      }
+    }
+  }
+
+  /// The tiles joining surfaces whose windows, still shown, are above
+  /// their surface, with its window: every tile on one not raised since
+  /// it was last empty, which went below the lowest of their windows, and
+  /// on a raised one, those yet to be composited whose window it is below
+  /// (see `SurfaceWindow::admit`). Both layers' surfaces.
+  ///
+  /// A tile joining two (see [`Trail`]) is given the lower of them, so its
+  /// overlays go under both.
+  fn joining_tenants(&self) -> Vec<(Uuid, HWND)> {
+    let surface_of = |hwnd: HWND| {
+      self
+        .surfaces
+        .iter()
+        .chain(&self.band_surfaces)
+        .find(|surface| surface.hwnd() == hwnd)
+    };
+
+    self
+      .entries
+      .iter()
+      .filter_map(|(id, entry)| {
+        let joined = entry.hosted_parts().filter_map(|(_, hwnd)| {
+          surface_of(hwnd).filter(|surface| {
+            !surface.is_raised()
+              || (!entry.composited
+                && matches!(entry.role, Role::Moving { .. })
+                && surface.is_below(entry.peek.source()))
+          })
+        });
+        let anchor = lowest(joined, |a, b| a.is_below(b.hwnd()))?;
+        Some((*id, anchor.hwnd()))
+      })
+      .collect()
+  }
+
+  /// Whether the `PeekSurface` spanning `clip`, if any, is at the top of
+  /// its band (see `PeekSurface::is_topped`).
+  fn is_surface_topped(&self, clip: &Rect) -> bool {
+    self
+      .surfaces
+      .iter()
+      .find(|surface| surface.clip() == clip)
+      .is_some_and(PeekSurface::is_topped)
+  }
+
+  /// Whether a tiles' and columns' `PeekSurface` spans `clip`.
+  pub fn has_surface(&self, clip: &Rect) -> bool {
+    self.surface_at(Layer::Tiles, clip).is_some()
+  }
+
+  /// Drops the ready peeks cut at none of `clips`, every monitor's rect
+  /// and working area, then the tiles', columns' and top band's surfaces
+  /// left unused off them (see [`is_stale_surface`]), as the displays
+  /// change.
+  ///
+  /// One in use stays listed, so what draws on it is still raised,
+  /// restacked and settled with it, and no second surface is made at its
+  /// clip; it goes at a later purge, or as a surface is made, once unused.
+  pub fn retain_surfaces(&mut self, clips: &[Rect]) {
+    self
+      .ready
+      .retain(|_, ready| clips.contains(&ready.fit.clip));
+    for surfaces in [&mut self.surfaces, &mut self.band_surfaces] {
+      surfaces.retain(|surface| {
+        !is_stale_surface(surface.is_unused(), surface.clip(), clips)
+      });
+    }
+  }
+
+  /// Drops every ready peek, then every surface left unused, tiles',
+  /// columns', the top band's and switches', as the config reloads or the
+  /// WM pauses or exits. One in use stays, as for
+  /// [`retain_surfaces`](Self::retain_surfaces): a switch's tenants live
+  /// in the switch, which plays on to its end.
+  pub fn drop_unused_surfaces(&mut self) {
+    self.ready.clear();
+    for surfaces in [&mut self.surfaces, &mut self.band_surfaces] {
+      surfaces.retain(|surface| {
+        !is_stale_surface(surface.is_unused(), surface.clip(), &[])
+      });
+    }
+    self.switch_surfaces.retain(|surface| {
+      !is_stale_surface(surface.is_unused(), surface.clip(), &[])
+    });
+  }
+
+  /// The surface a workspace switch on the monitor whose working area is
+  /// `area` draws its windows on (see `WorkspaceSurrogate::hosted`), made
+  /// if there is none, which drops the unused ones spanning none of
+  /// `areas`, every monitor's working area. `None` if none could be made.
+  ///
+  /// Apart from the tiles' surfaces, for two reasons. Spanning a whole
+  /// monitor, as a tile's does, it would read to Explorer as a fullscreen
+  /// app for the whole switch, hiding app bars set to make way for one.
+  /// And it stays below the switch's windows to the end of its teardown,
+  /// its backdrop copies under their uncloaked windows, while a tile
+  /// moving meanwhile raises its surface over every window.
+  pub fn switch_surface(
+    &mut self,
+    area: &Rect,
+    areas: impl FnOnce() -> Vec<Rect>,
+  ) -> Option<&PeekSurface> {
+    if let Some(index) = self
+      .switch_surfaces
+      .iter()
+      .position(|surface| surface.clip() == area)
+    {
+      return self.switch_surfaces.get(index);
+    }
+
+    let surface = PeekSurface::new(area)
+      .inspect_err(|err| {
+        tracing::warn!("Failed to create a switch surface: {err}");
+      })
+      .ok()?;
+    let areas = areas();
+    self.switch_surfaces.retain(|old| {
+      !is_stale_surface(old.is_unused(), old.clip(), &areas)
+    });
+    self.switch_surfaces.push(surface);
+    self.switch_surfaces.last()
+  }
+
+  /// Drops the switch surfaces left unused off `areas`, every monitor's
+  /// working area, as [`retain_surfaces`](Self::retain_surfaces) does
+  /// tiles'. One a switch still draws on stays until that has torn down.
+  pub fn retain_switch_surfaces(&mut self, areas: &[Rect]) {
+    self.switch_surfaces.retain(|surface| {
+      !is_stale_surface(surface.is_unused(), surface.clip(), areas)
+    });
+  }
+
+  /// Opens or closes a pass of `raise_moving` calls, within which a
+  /// surface already raised over everything since is not raised again
+  /// (see `PeekSurface::set_raise_pass`). Tiles put on top after one
+  /// closes rank over those it raised (see [`Rank::pass`]).
+  pub fn set_raise_pass(&mut self, is_open: bool) {
+    for surface in &self.surfaces {
+      surface.set_raise_pass(is_open);
+    }
+    if !is_open {
+      self.raise_passes += 1;
+    }
+  }
+
+  /// Notes that every surface but the one `raised` is on may be under
+  /// something just raised (see `PeekSurface::note_covered`).
+  fn note_raised(&self, raised: Option<HWND>) {
+    for surface in &self.surfaces {
+      if Some(surface.hwnd()) != raised {
+        surface.note_covered();
+      }
+    }
+  }
+
+  /// Keeps `entry`'s peek, just released, ready for `id`'s next motion if
+  /// it is a tile's on a surface (see [`Ready`]); drops it otherwise.
+  /// Prunes those expired at `now` and the oldest past [`MAX_READY`].
+  fn keep_ready(&mut self, id: Uuid, entry: Entry, now: Instant) {
+    if !keeps_ready(entry.peek.is_hosted(), entry.trail.is_some()) {
+      return;
+    }
+
+    let mut peek = entry.peek;
+    let fit = ReadyFit {
+      source: peek.source(),
+      clip: entry.clip,
+    };
+    peek.set_ready();
+
+    self.prune_ready(now);
+    self.ready.insert(
+      id,
+      Ready {
+        peek,
+        fit,
+        kept_at: now,
+      },
+    );
+    for id in evicted(
+      self.ready.iter().map(|(id, ready)| (*id, ready.kept_at)),
+      MAX_READY,
+    ) {
+      self.ready.remove(&id);
+    }
+  }
+
+  /// Takes `id`'s ready peek if it was made for `wanted` and is not
+  /// expired at `now`. Any other goes.
+  fn take_ready(
+    &mut self,
+    id: &Uuid,
+    wanted: &ReadyFit,
+    now: Instant,
+  ) -> Option<WindowPeek> {
+    self.prune_ready(now);
+    self
+      .ready
+      .remove(id)
+      .filter(|ready| takes_ready(&ready.fit, ready.kept_at, wanted, now))
+      .map(|ready| ready.peek)
+  }
+
+  /// Takes `window`'s ready peek only if it was made for it cut at `clip`
+  /// and is not expired at `now`, leaving any other kept.
+  fn take_ready_at(
+    &mut self,
+    window: &WindowContainer,
+    clip: &Rect,
+    now: Instant,
+  ) -> Option<WindowPeek> {
+    let id = window.id();
+    let wanted = ReadyFit {
+      source: window.native().hwnd(),
+      clip: clip.clone(),
+    };
+    let fits = self.ready.get(&id).is_some_and(|ready| {
+      takes_ready(&ready.fit, ready.kept_at, &wanted, now)
+    });
+    fits
+      .then(|| self.ready.remove(&id))
+      .flatten()
+      .map(|ready| ready.peek)
+  }
+
+  /// Drops the ready peeks past [`READY_LIFETIME`] at `now`.
+  fn prune_ready(&mut self, now: Instant) {
+    self
+      .ready
+      .retain(|_, ready| !is_ready_expired(ready.kept_at, now));
   }
 
   /// Has `window`'s peek, just put up by [`move_tile`](Self::move_tile)
   /// on the monitor it moves onto, drawn on `clip`, the monitor it comes
   /// from, too (see [`Trail`]). Returns whether it is: if not, the peek
   /// is dropped, as it would cut the window at its monitor's edge.
+  ///
+  /// With `host`, and the own peek hosted, it is drawn on that layer's
+  /// surface of `clip`, on `ready`, the tile's ready peek, if that is on
+  /// it; a surface made for it drops those left unused off
+  /// `monitor_clips`. It shares the own peek's tenancy: one rank and lane
+  /// for both parts, each restacked among its own surface's tenants.
   #[allow(clippy::too_many_arguments)]
   pub(super) fn add_trail(
     &mut self,
     window: &WindowContainer,
     clip: &Rect,
+    host: Option<Host>,
+    ready: Option<WindowPeek>,
+    monitor_clips: &[Rect],
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
     batch: &mut SurrogateBatch,
   ) -> bool {
     let id = window.id();
-    let Some(entry) = self.entries.get_mut(&id) else {
+    let Some((motion, role, is_hosted)) =
+      self.entries.get(&id).map(|entry| {
+        (entry.motion.clone(), entry.role, entry.tenancy.is_some())
+      })
+    else {
       return false;
     };
+
+    // One that can't be made leaves the trail on a window of its own.
+    let layer = host.filter(|_| is_hosted).map(Host::layer);
+    let index = layer
+      .and_then(|layer| self.surface_index(layer, clip, monitor_clips));
+    let surface = layer
+      .zip(index)
+      .and_then(|(layer, index)| self.layer_surfaces(layer).get(index));
+    let ready = ready.filter(|peek| {
+      surface.is_some_and(|surface| surface.hwnd() == peek.hwnd())
+    });
 
     let styles = peek_styles(window, config);
     let (opacity, corner_style, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
-    let Some((trail, _)) = new_entry(
-      window,
-      entry.motion.clone(),
-      clip,
-      opacity,
-      corner_style,
-      &styles,
-      entry.role,
-    ) else {
+    let made = match ready {
+      Some(peek) => Some(reuse_entry(
+        peek, window, motion, clip, opacity, &styles, role,
+      )),
+      None => new_entry(
+        window,
+        motion,
+        clip,
+        opacity,
+        corner_style,
+        &styles,
+        role,
+        surface,
+      ),
+    };
+    let Some((trail, _)) = made else {
       self.entries.remove(&id);
       return false;
     };
+    let Some(entry) = self.entries.get_mut(&id) else {
+      return false;
+    };
 
+    let restacks = trail.peek.is_hosted();
     entry.trail = Some(Trail {
       peek: trail.peek,
       clip: clip.clone(),
     });
     let rect = entry.rect.clone();
     entry.draw(&rect, now, batch);
+    // A ready peek's kept registrations may be under tiles ranked below
+    // it; a new one's are over every other.
+    if restacks {
+      self.restack_crossings();
+    }
     true
   }
 
@@ -1888,6 +3296,9 @@ impl PeekView {
   /// where it is until retargeted, and is handed back as an entering one
   /// is. Its real window is read from the tree again. Returns whether it
   /// was leaving so.
+  ///
+  /// On a surface, it ranks as a restored tile, put on top as it comes
+  /// back (see [`Rank`]), so it is stacked over the tiles it may meet.
   pub(super) fn turn_round(
     &mut self,
     window_id: &Uuid,
@@ -1895,11 +3306,17 @@ impl PeekView {
     is_column: bool,
     now: Instant,
   ) -> bool {
-    let Some(entry) = self
-      .entries
-      .get_mut(window_id)
-      .filter(|entry| leaves_as(entry.role, AwayTransition::Minimize))
-    else {
+    let is_hosted = match self.entries.get(window_id) {
+      Some(entry)
+        if leaves_as(entry.role, AwayTransition::Minimize)
+          && entry.transit.is_some() =>
+      {
+        entry.tenancy.is_some()
+      }
+      _ => return false,
+    };
+    let rank = is_hosted.then(|| self.take_rank(Stacking::InPass));
+    let Some(entry) = self.entries.get_mut(window_id) else {
       return false;
     };
     let Some(leaving) = &entry.transit else {
@@ -1919,38 +3336,59 @@ impl PeekView {
     entry.is_column = is_column;
     entry.departing = None;
     entry.stretch = None;
+    if let Some((tenancy, rank)) = entry.tenancy.as_mut().zip(rank) {
+      tenancy.lane = tenancy.reach.lane(&current, &current);
+      tenancy.rank = rank;
+    }
+    if is_hosted {
+      self.restack_crossings();
+    }
 
     true
   }
 
-  /// Puts `window_id`'s moving peek on top, as the old path's stand-ins
-  /// of a move, open or restore are (`place_at_top`). A peek goes up just
-  /// below its real window: a restored one was at the bottom of the
-  /// z-order, under the windows it comes back over, and a moved one may be
-  /// under windows or stand-ins it passes. Not one leaving, which stays
-  /// below its neighbours (task 4).
+  /// Puts `window_id`'s moving peek on top, so no window it passes hides
+  /// it. A peek goes up just below its real window: a restored one was at
+  /// the bottom of the z-order, under the windows it comes back over, and
+  /// a moved one may be under windows or stand-ins it passes. Not one
+  /// leaving, which stays
+  /// below its neighbours (task 4). A hosted one's surface, raised in the
+  /// open pass with nothing raised since, stays (see
+  /// [`set_raise_pass`](Self::set_raise_pass)).
   pub fn raise_moving(&self, window_id: &Uuid) {
     if let Some(entry) = self
       .entries
       .get(window_id)
       .filter(|entry| matches!(entry.role, Role::Moving { .. }))
     {
-      entry.peek.raise_to_top();
-      if let Some(trail) = &entry.trail {
-        trail.peek.raise_to_top();
+      // A crossing's second surface, raised after the first, may be over
+      // it from then on: each raise notes the others covered.
+      for peek in std::iter::once(&entry.peek)
+        .chain(entry.trail.as_ref().map(|trail| &trail.peek))
+      {
+        peek.raise_to_top();
+        self.note_raised(peek.is_hosted().then(|| peek.hwnd()));
       }
     }
   }
 
   /// Puts `window_id`'s moving peek at the top of the band `raise` names
-  /// (see [`floating_peek_raise`]).
+  /// (see [`floating_peek_raise`]). A hosted one's surface is that band's
+  /// (see [`host_for`]), raised with every peek on it, and so is its
+  /// trail's, hosted, on the monitor it comes from. A trail of its own is
+  /// left where it went up.
   pub fn raise_in_band(&self, window_id: &Uuid, raise: PeekRaise) {
     if let Some(entry) = self
       .entries
       .get(window_id)
       .filter(|entry| matches!(entry.role, Role::Moving { .. }))
     {
-      entry.peek.raise_to_top_of_band(raise == PeekRaise::TopMost);
+      let topmost = raise == PeekRaise::TopMost;
+      entry.peek.raise_to_top_of_band(topmost);
+      if let Some(trail) = entry.hosted_trail() {
+        trail.raise_to_top_of_band(topmost);
+      }
+      self.note_raised(None);
     }
   }
 
@@ -2035,6 +3473,15 @@ impl PeekView {
       &entry.motion.target_rect,
       now,
     );
+    let is_hosted = entry.tenancy.as_mut().is_some_and(|tenancy| {
+      tenancy.lane = tenancy
+        .reach
+        .lane(&entry.motion.start_rect, &entry.motion.target_rect);
+      true
+    });
+    if is_hosted {
+      self.restack_crossings();
+    }
     true
   }
 
@@ -2048,6 +3495,13 @@ impl PeekView {
   /// decision, `STAND_INS_PLAN.md` task 4). Under a real window still
   /// shown, it is warmed up until the window is cloaked by the first
   /// tick, as it takes over.
+  ///
+  /// With `host`, a new peek is drawn on the `PeekSurface` of `clip`
+  /// instead, ranked below every tile there (see [`Rank`]), which a
+  /// surface made for it drops those left unused off `monitor_clips` for.
+  /// One already drawn stays where it is, its rank kept. Without, a window
+  /// whose backdrop can't be copied leaves on a live peek, as it enters
+  /// (see [`enter`](Self::enter)).
   #[allow(clippy::too_many_arguments)]
   pub(super) fn leave(
     &mut self,
@@ -2056,21 +3510,23 @@ impl PeekView {
     clip: &Rect,
     transition: AwayTransition,
     params: &WindowTransitionParams,
+    host: Option<Host>,
+    monitor_clips: &[Rect],
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
     batch: &mut SurrogateBatch,
   ) -> Leave {
     let id = window.id();
+    // Leaving, its window has no next motion to keep a peek for.
+    self.ready.remove(&id);
     let role = self.entries.get(&id).map(|entry| entry.role);
     if role.is_some_and(|role| matches!(role, Role::Leaving(_))) {
       return Leave::Leaving;
     }
 
     let styles = peek_styles(window, config);
-    if is_live(&styles)
-      || role.is_some_and(|role| !matches!(role, Role::Moving { .. }))
-    {
+    if role.is_some_and(|role| !matches!(role, Role::Moving { .. })) {
       return Leave::Unsupported;
     }
 
@@ -2088,17 +3544,32 @@ impl PeekView {
     if role.is_none() {
       let (opacity, corner_style, _) =
         surrogate_effects_for(effect_set, config);
-      let Some((entry, _)) = new_entry(
+      let motion = held_motion(rect.clone(), params);
+      let tenancy = host.and_then(|host| {
+        self.tenancy(
+          window,
+          &motion,
+          clip,
+          host,
+          Stacking::Below,
+          config,
+          monitor_clips,
+        )
+      });
+      let surface = self.hosting(host, tenancy.as_ref());
+      let Some((mut entry, _)) = new_entry(
         window,
-        held_motion(rect.clone(), params),
+        motion,
         clip,
         opacity,
         corner_style,
         &styles,
         Role::Leaving(transition),
+        surface,
       ) else {
         return Leave::Unsupported;
       };
+      entry.tenancy = tenancy.map(|(_, tenancy)| tenancy);
       // No thumbnail, nothing to play (`5f39127`): dropped here.
       if !entry.peek.has_thumbnail() {
         tracing::debug!("No peek of {window} to leave on.");
@@ -2152,6 +3623,8 @@ impl PeekView {
 
     peek.take_over(&departing.native);
     departing.awaits_cloak = false;
+    // Drawn where its window was from now on, never raised.
+    peek.hold_place();
     true
   }
 
@@ -2186,23 +3659,12 @@ fn held_motion(
 /// redraw, which hides or shows them for good, as `sync_scroll_view` does
 /// for departed columns. Free while no window enters.
 pub fn drop_strays(state: &mut WmState) {
+  drop_stray_ready(state);
   if !state.animation_manager.peeks.has_entering() {
     return;
   }
 
-  let shown = |id: &Uuid| {
-    let window = state.window_by_id(*id)?;
-    let manager = &state.animation_manager;
-    Some(
-      window
-        .workspace()
-        .is_some_and(|workspace| workspace.is_displayed())
-        && !is_hidden_in_layout(&window)
-        && window.state() != WindowState::Minimized
-        && !manager.has_close_animation(id)
-        && !manager.has_minimize_animation(id),
-    )
-  };
+  let shown = |id: &Uuid| is_shown_tile(state, id);
   let shown = state
     .animation_manager
     .peeks
@@ -2222,6 +3684,46 @@ pub fn drop_strays(state: &mut WmState) {
       state.pending_sync.queue_container_to_redraw(window);
     }
   }
+}
+
+/// Whether `id`'s window is on screen in its layout: `None` once it is
+/// unmanaged, `Some(false)` while it is closed, moved to a hidden
+/// workspace or switched away, minimized or a hidden tab.
+fn is_shown_tile(state: &WmState, id: &Uuid) -> Option<bool> {
+  let window = state.window_by_id(*id)?;
+  let manager = &state.animation_manager;
+  Some(
+    window
+      .workspace()
+      .is_some_and(|workspace| workspace.is_displayed())
+      && !is_hidden_in_layout(&window)
+      && window.state() != WindowState::Minimized
+      && !manager.has_close_animation(id)
+      && !manager.has_minimize_animation(id),
+  )
+}
+
+/// Drops the ready peeks of windows no longer shown (see
+/// [`is_shown_tile`]), and those expired. Free while none is kept.
+fn drop_stray_ready(state: &mut WmState) {
+  if state.animation_manager.peeks.ready.is_empty() {
+    return;
+  }
+
+  let strays = state
+    .animation_manager
+    .peeks
+    .ready
+    .keys()
+    .filter(|id| is_shown_tile(state, id) != Some(true))
+    .copied()
+    .collect::<Vec<_>>();
+  let now = state.animation_manager.frame_time();
+  let peeks = &mut state.animation_manager.peeks;
+  for id in strays {
+    peeks.ready.remove(&id);
+  }
+  peeks.prune_ready(now);
 }
 
 /// Has the peeks standing by for a workspace switch that no switch owes a
@@ -2258,11 +3760,13 @@ pub fn settle_switch_peeks(state: &mut WmState, config: &UserConfig) {
   }
 }
 
-/// Has `window`, just opened at `target`, enter on a pinned peek by
-/// `params` (see [`PeekView::enter`]), on ticks paced by its monitor's
+/// Has `window`, just opened at `target`, enter on a peek, pinned or live,
+/// by `params` (see [`PeekView::enter`]), on ticks paced by its monitor's
 /// vblanks as a scroll is. Returns whether it does.
 ///
-/// Clipped to the whole monitor, as the old path's slides are.
+/// Clipped to the whole monitor, not to its tile. Drawn on one of that
+/// monitor's `PeekSurface`s if [`hosts_transit`] says so, given how its
+/// pass `raise`s it in a band (see [`floating_peek_raise`]).
 pub fn enter_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -2270,6 +3774,7 @@ pub fn enter_on_peek(
   params: &WindowTransitionParams,
   config: &UserConfig,
   is_focused: bool,
+  raise: Option<PeekRaise>,
 ) -> bool {
   let Some((clip, handle)) = window.monitor().and_then(|monitor| {
     let clip = monitor.to_rect().ok()?;
@@ -2278,10 +3783,27 @@ pub fn enter_on_peek(
     return false;
   };
 
+  let host = hosts_transit(
+    window,
+    true,
+    raise,
+    &state.animation_manager.peeks,
+    config,
+  );
+  let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
   let entered = state.animation_manager.peeks.enter(
-    window, target, &clip, params, config, is_focused, now, &mut batch,
+    window,
+    target,
+    &clip,
+    params,
+    host,
+    &monitor_clips,
+    config,
+    is_focused,
+    now,
+    &mut batch,
   );
   batch.commit();
 
@@ -2295,11 +3817,11 @@ pub fn enter_on_peek(
 }
 
 /// Has `window`, a tile shown at `from` and laid out at `target`, move
-/// there on a peek if it only moves (see [`is_pure_move`]) or, if
-/// its relayout `stretches` (see [`stretches_relayout`]), resizes too (see
+/// there on a peek if it only moves (see [`is_pure_move`]) or, given
+/// `resizes` (see [`resizes_on_peeks`]), resizes too (see
 /// [`is_peek_resize`]), on `window_move`'s timing or, when it resizes or
-/// `cycle_has_resize`, `window_resize`'s, as the old path would
-/// (`movement_timing`). Returns whether it does.
+/// `cycle_has_resize`, `window_resize`'s (`movement_timing`). Returns
+/// whether it does.
 ///
 /// Its window is still shown: the redraw that freezes it queues the
 /// take-over into the pass's shared flush (`commit_pending_cloaks`), with
@@ -2308,7 +3830,13 @@ pub fn enter_on_peek(
 /// behind its cloak.
 ///
 /// Not a window another stand-in draws, which keeps it, nor one moving
-/// onto another monitor unless [`tile_clips`] draws it on two peeks.
+/// onto another monitor unless [`tile_clips`] draws it on two peeks:
+/// on each monitor's surface (see [`move_host`]). Each tile of a
+/// relayout is taken or refused on its own; a refused one snaps.
+///
+/// One crossing between floating and tiling (see
+/// [`changes_state_on_peek`]) is drawn on the surface of the band its pass
+/// `raise`s it in, if any (see [`state_change_peek_raise`], [`host_for`]).
 #[allow(clippy::too_many_arguments)]
 pub fn move_on_peek(
   state: &mut WmState,
@@ -2319,6 +3847,7 @@ pub fn move_on_peek(
   resizes: Option<PeekResize>,
   config: &UserConfig,
   is_focused: bool,
+  raise: Option<PeekRaise>,
 ) -> bool {
   let animations = &config.value.animations;
   let is_resize = !is_same_size(from, target);
@@ -2328,6 +3857,11 @@ pub fn move_on_peek(
         from,
         target,
         animations.window_resize.threshold_px,
+      )
+      && !is_resized_already(
+        state.animation_manager.peeks.is_moving(&window.id()),
+        || window.native().frame_with_shadows().ok(),
+        target,
       )
   } else {
     is_pure_move(from, target, animations.window_move.threshold_px)
@@ -2356,9 +3890,23 @@ pub fn move_on_peek(
   };
   let (duration_ms, easing) =
     movement_timing(motion, cycle_has_resize, config);
+  let host =
+    move_host(state, window, &clip, trail_clip.as_ref(), config, raise);
+  let mut monitor_clips = surface_monitor_clips(state, host, &clip);
+  if let Some(trail_clip) =
+    trail_clip.as_ref().filter(|_| monitor_clips.is_empty())
+  {
+    monitor_clips = surface_monitor_clips(state, host, trail_clip);
+  }
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
   let peeks = &mut state.animation_manager.peeks;
+  // Taken before `move_tile` drops it: a tile moving back onto the monitor
+  // it just landed on finds its ready peek there (see `Ready`).
+  let trail_ready = trail_clip
+    .as_ref()
+    .filter(|_| host.is_some())
+    .and_then(|trail_clip| peeks.take_ready_at(window, trail_clip, now));
   let moved = peeks.move_tile(
     window,
     from,
@@ -2367,31 +3915,28 @@ pub fn move_on_peek(
     duration_ms,
     easing,
     resizes,
+    host,
+    &monitor_clips,
     config,
     is_focused,
     now,
     &mut batch,
   ) && trail_clip.as_ref().is_none_or(|trail_clip| {
-    peeks
-      .add_trail(window, trail_clip, config, is_focused, now, &mut batch)
+    peeks.add_trail(
+      window,
+      trail_clip,
+      host,
+      trail_ready,
+      &monitor_clips,
+      config,
+      is_focused,
+      now,
+      &mut batch,
+    )
   });
   batch.commit();
 
   if moved {
-    if let Some(color) = wm_platform::isolation::current()
-      .early_fill
-      .then(|| {
-        state
-          .animation_manager
-          .cached_edge_color(window.native().hwnd().0)
-      })
-      .flatten()
-    {
-      state
-        .animation_manager
-        .peeks
-        .carry_fill_early(&window.id(), color);
-    }
     perf::note_animation_start(is_resize);
     state.animation_manager.ensure_waiter_for(handle);
     state.animation_manager.ensure_timer_running();
@@ -2400,14 +3945,83 @@ pub fn move_on_peek(
   moved
 }
 
-/// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, with
-/// peeks on, under `GLAZEWM_ISOLATE=morepeeks`, in `window_fullscreen`'s
-/// own style, as the old path draws it.
+/// Where [`move_on_peek`] draws `window`, cut at `clip` and, crossing
+/// monitors, at `trail_clip` too (see [`crossing_host`]), its pass
+/// raising it in a band as `raise` says.
+fn move_host(
+  state: &WmState,
+  window: &WindowContainer,
+  clip: &Rect,
+  trail_clip: Option<&Rect>,
+  config: &UserConfig,
+  raise: Option<PeekRaise>,
+) -> Option<Host> {
+  let peeks = &state.animation_manager.peeks;
+  let host =
+    hosts_on_surface(is_live(&peek_styles(window, config)), false, false)
+      .then(|| {
+        host_for(
+          !state.pending_sync.is_window_state_change(&window.id()),
+          raise,
+        )
+      })
+      .flatten()
+      // Its band raise would top the tiles' surface over held tiles, as an
+      // entering one's would (see `hosts_transit`).
+      .filter(|host| {
+        *host != Host::InBand(Layer::Tiles)
+          || !has_held_neighbour(window, peeks)
+      });
+
+  match trail_clip {
+    Some(trail_clip) => crossing_host(
+      host,
+      peeks.holds_on_surface(clip) || peeks.holds_on_surface(trail_clip),
+    ),
+    None => host,
+  }
+}
+
+/// The clips a tile, column or top band surface may span, read only for a
+/// surface to be made for `clip` if a tile is to `host` there (see
+/// `PeekView::tenancy`).
+fn surface_monitor_clips(
+  state: &WmState,
+  host: Option<Host>,
+  clip: &Rect,
+) -> Vec<Rect> {
+  let peeks = &state.animation_manager.peeks;
+  if host
+    .is_some_and(|host| peeks.surface_at(host.layer(), clip).is_none())
+  {
+    surface_clips(state)
+  } else {
+    Vec::new()
+  }
+}
+
+/// Every monitor's rect and working area: the clips tiles' and columns'
+/// surfaces span. Both kinds, so a surface made for a tile never drops an
+/// unused column surface as off the monitors, nor the other way round.
+pub(crate) fn surface_clips(state: &WmState) -> Vec<Rect> {
+  state
+    .monitors()
+    .iter()
+    .flat_map(|monitor| {
+      monitor
+        .to_rect()
+        .ok()
+        .into_iter()
+        .chain([monitor.native_properties().working_area])
+    })
+    .collect()
+}
+
+/// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, in
+/// `window_fullscreen`'s own style.
 fn fullscreen_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let fullscreen = &config.value.animations.window_fullscreen;
-  let isolation = wm_platform::isolation::current();
-  (isolation.peeks && isolation.more_peeks && fullscreen.enabled)
-    .then_some(peek_resize(fullscreen.style))
+  fullscreen.enabled.then_some(peek_resize(fullscreen.style))
 }
 
 /// How a window drawn in `style` is drawn on its peek.
@@ -2468,6 +4082,10 @@ pub fn fullscreen_peek_raise(
 /// Only a tile going fullscreen or back, from inside its monitor, and not
 /// one another stand-in draws. A window driving itself fullscreen never
 /// gets here: cloaking an exclusive-fullscreen game breaks it.
+///
+/// Drawn among the tiles as a resize is, or on the
+/// always-on-top band's surface if its pass `raise`s it there (see
+/// [`fullscreen_peek_raise`], [`host_for`]).
 pub fn fullscreen_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -2475,6 +4093,7 @@ pub fn fullscreen_on_peek(
   target: &Rect,
   config: &UserConfig,
   is_focused: bool,
+  raise: Option<PeekRaise>,
 ) -> bool {
   let Some(resize) = fullscreen_on_peeks(config) else {
     return false;
@@ -2501,6 +4120,11 @@ pub fn fullscreen_on_peek(
 
   let (duration_ms, easing) =
     movement_timing(Motion::Fullscreen, false, config);
+  let host =
+    hosts_on_surface(is_live(&peek_styles(window, config)), false, false)
+      .then(|| host_for(true, raise))
+      .flatten();
+  let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
   let moved = state.animation_manager.peeks.move_tile(
@@ -2511,6 +4135,8 @@ pub fn fullscreen_on_peek(
     duration_ms,
     easing,
     Some(resize),
+    host,
+    &monitor_clips,
     config,
     is_focused,
     now,
@@ -2528,17 +4154,16 @@ pub fn fullscreen_on_peek(
 }
 
 /// Whether `id`'s ring is left off its peek as its window is fullscreen,
-/// as `border_hidden_for_fullscreen` leaves it off the window, under
-/// `morepeeks` (see [`fullscreen_on_peek`]).
+/// as `border_hidden_for_fullscreen` leaves it off the window (see
+/// [`fullscreen_on_peek`]).
 fn hides_ring_for_fullscreen(
   state: &WmState,
   id: Uuid,
   config: &UserConfig,
 ) -> bool {
-  wm_platform::isolation::current().more_peeks
-    && state
-      .window_by_id(id)
-      .is_some_and(|window| border_hidden_for_fullscreen(&window, config))
+  state
+    .window_by_id(id)
+    .is_some_and(|window| border_hidden_for_fullscreen(&window, config))
 }
 
 /// Whether a grab resize can draw `window` on a peek it holds (see
@@ -2606,6 +4231,9 @@ pub fn hold_refusal(
 /// until the grab lets go of it (see [`Hold`]). Its real window is taken
 /// over from and cloaked by the redraw that called this, as for a move on
 /// a peek, and then resized behind it. Returns whether it is.
+///
+/// Drawn on its monitor's `PeekSurface` as [`hosts_hold`] says, which is
+/// then never raised for it: it stays where the tile's admission put it.
 pub fn hold_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -2622,6 +4250,10 @@ pub fn hold_on_peek(
   };
 
   let (_, easing) = movement_timing(Motion::Resize, true, config);
+  let host =
+    hosts_hold(state.animation_manager.peeks.is_surface_topped(&clip))
+      .then_some(Host::Tiles);
+  let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
   let peeks = &mut state.animation_manager.peeks;
@@ -2633,6 +4265,8 @@ pub fn hold_on_peek(
     0,
     easing,
     Some(PeekResize::Fill),
+    host,
+    &monitor_clips,
     config,
     is_focused,
     now,
@@ -2656,101 +4290,27 @@ pub fn hold_on_peek(
   moved
 }
 
-/// How a relayout redrawing `windows` draws its resizes on peeks (see
-/// [`resizes_on_peeks`]), if it does: only if every tile it moves or
-/// resizes can go on a peek as [`move_on_peek`] puts it there.
-///
-/// One that can't would resize on the old path, in another style beside
-/// the rest: the whole relayout keeps the old path's resizes then. So it
-/// does when a resized window is at its new size already, which an
-/// interactive resize leaves it at as its drag ends: that one stays
-/// exactly as it was.
-///
-/// Columns are left to `sync_scroll_view`, and windows that open, are not
-/// shown, or stay floating to the redraw itself. One crossing between
-/// floating and tiling goes on a peek only as [`changes_state_on_peek`]
-/// allows.
-pub fn resizes_relayout(
-  state: &WmState,
-  windows: &[WindowContainer],
-  config: &UserConfig,
-) -> Option<PeekResize> {
-  let resize = resizes_on_peeks(config)?;
-
-  let animations = &config.value.animations;
-  windows
-    .iter()
-    .all(|window| {
-      let id = window.id();
-      let (Some(from), Ok(target)) = (
-        state.window_target_positions.get(&id),
-        window.to_rect().and_then(|rect| {
-          Ok(rect.apply_delta(&window.total_border_delta()?, None))
-        }),
-      ) else {
-        return true;
-      };
-      let is_state_change = state.pending_sync.is_window_state_change(&id);
-      let is_shown = window
-        .workspace()
-        .is_some_and(|workspace| workspace.is_displayed())
-        && !is_hidden_in_layout(window)
-        && window.state() != WindowState::Minimized;
-      let is_resize = !is_same_size(from, &target);
-      let animates = if is_resize {
-        is_peek_resize(
-          from,
-          &target,
-          animations.window_resize.threshold_px,
-        )
-      } else {
-        animations.window_move.enabled
-          && is_pure_move(
-            from,
-            &target,
-            animations.window_move.threshold_px,
-          )
-      };
-
-      if !is_shown
-        || !animates
-        || crate::layout::scrolling::column_of(&window.as_container())
-          .is_some()
-        || (matches!(window.state(), WindowState::Floating(_))
-          && !is_state_change)
-      {
-        return true;
-      }
-
-      let fits_monitor = tile_clips(state, window, from, config).is_some();
-      let is_resized_already = is_resize
-        && !state.animation_manager.peeks.is_moving(&id)
-        && window
-          .native()
-          .frame_with_shadows()
-          .is_ok_and(|actual| is_same_size(&actual, &target));
-
-      let moves_as_tile = if is_state_change {
-        changes_state_on_peek(window)
-      } else {
-        window.state() == WindowState::Tiling
-      };
-
-      moves_as_tile
-        && window.display_state() == wm_common::DisplayState::Shown
-        && !has_other_stand_in(&state.animation_manager, &id)
-        && can_move_on_peek(&peek_styles(window, config))
-        && fits_monitor
-        && !is_resized_already
-    })
-    .then_some(resize)
+/// Whether a window laid out at `target`, its frame read by `actual`, is
+/// at that size already, as an interactive resize leaves it as its drag
+/// ends: drawn resizing on a peek, it would shrink back to its old size
+/// first, so it snaps. Not one `is_moving` on a peek, whose filled or
+/// stretched peek may have sent its window that size already: retargeted,
+/// it stays on its peek.
+fn is_resized_already(
+  is_moving: bool,
+  actual: impl FnOnce() -> Option<Rect>,
+  target: &Rect,
+) -> bool {
+  !is_moving
+    && actual().is_some_and(|actual| is_same_size(&actual, target))
 }
 
 /// The clips of the peeks [`move_on_peek`] draws `window`, a tile moving
-/// from `from`, on (see [`move_clips`]). With `morepeeks`, one moving onto
-/// another monitor is drawn on two, unless a peek draws it already (one
-/// handing it back is on its own monitor), it is in a stack, whose tab
-/// bar is cut at one monitor, or its peek is live.
+/// from `from`, on (see [`move_clips`]). One moving onto another monitor
+/// is drawn on two, unless a peek draws it already (one handing it back is
+/// on its own monitor), it is in a stack, whose tab bar's window is cut at
+/// one peek's monitor (a hosted copy of it draws only what that window
+/// holds), or its peek is live.
 fn tile_clips(
   state: &WmState,
   window: &WindowContainer,
@@ -2759,8 +4319,7 @@ fn tile_clips(
 ) -> Option<(Rect, Option<Rect>)> {
   let clip = window.monitor()?.to_rect().ok()?;
   // A live peek's real backdrop overlay can follow one peek, not two.
-  let crosses = wm_platform::isolation::current().more_peeks
-    && !state.animation_manager.peeks.draws_window(&window.id())
+  let crosses = !state.animation_manager.peeks.draws_window(&window.id())
     && window
       .parent()
       .is_none_or(|parent| parent.as_stack().is_none())
@@ -2774,16 +4333,13 @@ fn tile_clips(
 }
 
 /// Whether a stand-in other than a peek draws `window_id` or hands it
-/// back: its own animation, a move's surrogate until it has faded out, or
-/// a workspace switch's. A move then stays with it.
+/// back: a workspace switch's. A move then stays with it.
 pub(super) fn has_other_stand_in(
   manager: &AnimationManager,
   window_id: &Uuid,
 ) -> bool {
-  manager.get_animation(window_id).is_some()
-    || manager.owns_window_position(window_id)
-    || (manager.has_active_surrogate(window_id)
-      && !manager.peeks.draws_window(window_id))
+  manager.has_active_surrogate(window_id)
+    && !manager.peeks.draws_window(window_id)
 }
 
 /// Covers the rings and backdrops of windows whose peeks [`move_on_peek`]
@@ -2791,6 +4347,40 @@ pub(super) fn has_other_stand_in(
 /// composite, as `sync_scroll_view` does before its own flush.
 pub fn cover_moved_overlays(state: &mut WmState, config: &UserConfig) {
   track_overlays(state, config, SurrogateBatch::new());
+  restack_joining_overlays(state);
+}
+
+/// Puts the shown overlays of the tiles that joined a `PeekSurface` this
+/// pass, with their windows above it, directly behind it (see
+/// `PeekView::joining_tenants`). It went below the lowest of their windows
+/// (see `WindowPeek::hosted`), maybe under the overlays of higher ones,
+/// which would cover their copies there once their windows are cloaked,
+/// until it is raised.
+pub(super) fn restack_joining_overlays(state: &mut WmState) {
+  for (window_id, anchor) in
+    state.animation_manager.peeks.joining_tenants()
+  {
+    let Some(overlays) = state.window_overlays.get_mut(&window_id) else {
+      continue;
+    };
+
+    // Backdrop first, so the border ends up between it and the surface.
+    let backdrop = overlays
+      .backdrop
+      .as_mut()
+      .filter(|overlay| overlay.is_visible())
+      .map(|overlay| overlay.sync_z_order(anchor, false));
+    let border = overlays
+      .border
+      .as_mut()
+      .filter(|overlay| overlay.is_visible())
+      .map(|overlay| overlay.sync_z_order(anchor, false));
+    for result in [backdrop, border].into_iter().flatten() {
+      if let Err(err) = result {
+        tracing::warn!("Failed to restack {window_id}'s overlays: {err}");
+      }
+    }
+  }
 }
 
 /// Hides the rings and backdrops [`cover_moved_overlays`] covered, now
@@ -2802,13 +4392,17 @@ pub fn hand_over_moved_overlays(state: &mut WmState, config: &UserConfig) {
   track_overlays(state, config, SurrogateBatch::new());
 }
 
-/// Has `window`, coming back from minimized to `target`, enter on a
-/// pinned peek by `params`, as [`enter_on_peek`] has a new one. A minimize
-/// still playing on its peek turns round where it is instead. Returns
-/// whether it does either.
+/// Has `window`, coming back from minimized to `target`, enter on a peek
+/// by `params`, as [`enter_on_peek`] has a new one. A minimize
+/// still playing on its peek turns round where it is instead, on its
+/// surface or on its own window as it was drawn. Returns whether it does
+/// either.
 ///
 /// A window still natively minimized (`toggle-minimized`) is restored at
-/// `target` behind a cloak first (see [`restore_cloaked`]).
+/// `target` behind a cloak first (see [`restore_cloaked`]). A tile is
+/// raised as it comes back; a floating one enters as one opening does
+/// (see [`floating_peek_raise`]): raised in its band by its pass's
+/// `raise`, if any, else left just below its window.
 pub fn restore_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -2816,9 +4410,11 @@ pub fn restore_on_peek(
   params: &WindowTransitionParams,
   config: &UserConfig,
   is_focused: bool,
+  raise: Option<PeekRaise>,
 ) -> bool {
   let id = window.id();
   let now = state.animation_manager.frame_time();
+  let raises_as_tile = !matches!(window.state(), WindowState::Floating(_));
 
   if state
     .animation_manager
@@ -2826,25 +4422,31 @@ pub fn restore_on_peek(
     .turn_round(&id, params, false, now)
   {
     restore_cloaked(&window.native(), target);
-    state.animation_manager.peeks.raise_moving(&id);
+    if raises_as_tile {
+      state.animation_manager.peeks.raise_moving(&id);
+      restack_live_overlays(state, &id);
+    }
     perf::note_animation_start(false);
     state.animation_manager.ensure_timer_running();
     return true;
   }
 
   let enters = Transit::opening(params).is_some()
-    && state
-      .animation_manager
-      .peeks
-      .can_enter(window, &peek_styles(window, config));
+    && state.animation_manager.peeks.can_enter(window);
   if !enters {
     return false;
   }
 
   restore_cloaked(&window.native(), target);
-  let entered =
-    enter_on_peek(state, window, target, params, config, is_focused);
-  state.animation_manager.peeks.raise_moving(&id);
+  // A tile is raised as one, in no band of its own.
+  let raise = raise.filter(|_| !raises_as_tile);
+  let entered = enter_on_peek(
+    state, window, target, params, config, is_focused, raise,
+  );
+  if raises_as_tile {
+    state.animation_manager.peeks.raise_moving(&id);
+    restack_live_overlays(state, &id);
+  }
   entered
 }
 
@@ -2866,9 +4468,10 @@ pub(super) fn restore_cloaked(window: &NativeWindow, rect: &Rect) {
   }
 }
 
-/// Takes `window`, at `rect`, off the screen on a pinned peek by `params`
-/// (see [`PeekView::leave`]), on ticks paced by its monitor's vblanks.
-/// Clipped to the whole monitor, as an open on a peek is.
+/// Takes `window`, at `rect`, off the screen on a peek, pinned or live, by
+/// `params` (see [`PeekView::leave`]), on ticks paced by its monitor's
+/// vblanks. Clipped to the whole monitor, as an open on a peek is, and
+/// drawn on its `PeekSurface` if [`hosts_transit`] says so.
 ///
 /// A minimize's peek takes over before this returns: the caller then
 /// minimizes the window, which leaves no thumbnail to warm up from, so a
@@ -2893,10 +4496,28 @@ pub fn leave_on_peek(
     return Leave::Unsupported;
   };
 
+  // Never raised: only a tile goes on a surface.
+  let host = hosts_transit(
+    window,
+    false,
+    None,
+    &state.animation_manager.peeks,
+    config,
+  );
+  let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
   let leave = state.animation_manager.peeks.leave(
-    window, rect, &clip, transition, params, config, is_focused, now,
+    window,
+    rect,
+    &clip,
+    transition,
+    params,
+    host,
+    &monitor_clips,
+    config,
+    is_focused,
+    now,
     &mut batch,
   );
   if leave != Leave::Leaving {
@@ -2956,6 +4577,10 @@ pub fn finish_leaving(state: &mut WmState, left: Vec<Left>) {
 /// its backdrop `styles`, and whether it covers a still-shown real window,
 /// so it has to be composited before that window is cloaked. `None` when
 /// the peek can't be created.
+///
+/// Drawn on `surface` if given, which then takes it (see
+/// [`PeekView::tenancy`]), else on a window of its own.
+#[allow(clippy::too_many_arguments)]
 fn new_entry(
   window: &WindowContainer,
   motion: WindowAnimationState,
@@ -2964,24 +4589,69 @@ fn new_entry(
   corner_style: CornerStyle,
   styles: &[Option<BackdropOverlayParams>; 2],
   role: Role,
+  surface: Option<&PeekSurface>,
 ) -> Option<(Entry, bool)> {
   let _scope = perf::scope(Stage::PeekNew);
-  let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
 
   // Sized like the window itself, which a collapsed `from` (an opening
   // column) isn't. A window with a backdrop that can't be copied along has
   // a peek that moves with it.
-  let mut peek = WindowPeek::new(
-    &window.native(),
-    &motion.target_rect,
-    clip,
-    &corner_style,
-    is_live(styles),
-  )
-  .inspect_err(|err| {
-    tracing::warn!("Failed to create a peek of {window}: {err}");
-  })
-  .ok()?;
+  let peek = match surface {
+    // A window not known to be cloaked is taken to show, which keeps the
+    // surface under it.
+    Some(surface) => WindowPeek::hosted(
+      &window.native(),
+      &motion.target_rect,
+      surface,
+      !window.native().is_cloaked().unwrap_or(false),
+    ),
+    None => WindowPeek::new(
+      &window.native(),
+      &motion.target_rect,
+      clip,
+      &corner_style,
+      is_live(styles),
+    )
+    .inspect_err(|err| {
+      tracing::warn!("Failed to create a peek of {window}: {err}");
+    })
+    .ok()?,
+  };
+
+  Some(entry_on(peek, window, motion, clip, opacity, styles, role))
+}
+
+/// [`new_entry`] on `peek`, a ready peek of `window` (see [`Ready`]),
+/// drawn on the surface it is on, which takes it (see
+/// [`PeekView::tenancy`]).
+fn reuse_entry(
+  mut peek: WindowPeek,
+  window: &WindowContainer,
+  motion: WindowAnimationState,
+  clip: &Rect,
+  opacity: u8,
+  styles: &[Option<BackdropOverlayParams>; 2],
+  role: Role,
+) -> (Entry, bool) {
+  let _scope = perf::scope(Stage::PeekNew);
+  peek.reclaim(&window.native(), &motion.target_rect, styles);
+
+  entry_on(peek, window, motion, clip, opacity, styles, role)
+}
+
+/// The entry of `peek`, just made or reclaimed for `window`, for `motion`
+/// in `role`, carrying copies of its backdrop `styles`, and whether it
+/// covers a still-shown real window (see [`new_entry`]).
+fn entry_on(
+  mut peek: WindowPeek,
+  window: &WindowContainer,
+  motion: WindowAnimationState,
+  clip: &Rect,
+  opacity: u8,
+  styles: &[Option<BackdropOverlayParams>; 2],
+  role: Role,
+) -> (Entry, bool) {
+  let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
 
   // Before the ring, which goes on top. Shown in its style by
   // `track_overlays`, before anything is composited.
@@ -3009,6 +4679,7 @@ fn new_entry(
     role,
     ring: Handover::None,
     backdrop: Handover::None,
+    bar: Handover::None,
     composited: false,
     transit: None,
     is_column: true,
@@ -3016,9 +4687,10 @@ fn new_entry(
     stretch: None,
     hold: Hold::Free,
     trail: None,
+    tenancy: None,
   };
 
-  Some((entry, covers_shown_window))
+  (entry, covers_shown_window)
 }
 /// Keeps the border and backdrop overlays of the windows the scroll view
 /// draws on their peeks, cut at the monitor edge like the peeks are.
@@ -3062,14 +4734,9 @@ pub fn track_overlays(
     .collect::<Vec<_>>();
 
   for (id, frame, clip, is_moving, is_live, anchor, kept_set) in tracked {
-    // Blended across a focus fade, as steady state draws it.
     let set = kept_set
       .unwrap_or_else(|| state.effect_set(id, focused_id == Some(id)));
-    let backdrop =
-      focus_blend::<NativeBackdropOverlay>(state, id, set, config);
-    let border =
-      focus_blend::<NativeBorderOverlay>(state, id, set, config)
-        .filter(|_| !hides_ring_for_fullscreen(state, id, config));
+    let (backdrop, border) = tracked_blends(state, id, set, config);
 
     if is_live {
       note_live_size(state, id);
@@ -3099,6 +4766,8 @@ pub fn track_overlays(
         }
       }
     }
+
+    carry_tab_bar(state, id, focused_id == Some(id), config);
 
     if !is_live && carry_ring(state, id, border) {
       continue;
@@ -3144,6 +4813,78 @@ pub fn track_overlays(
   }
 
   batch.commit();
+  // Its ring copies may have been registered or cut anew.
+  state.animation_manager.peeks.restack_crossings();
+}
+
+/// The backdrop and ring `id`'s peek draws in `set`, blended across a
+/// focus fade as steady state draws them. A live peek's, real overlays,
+/// at the opacity its transit fades it to (a pinned peek fades its copies
+/// itself, see `WindowPeek::place_scaled`).
+fn tracked_blends(
+  state: &WmState,
+  id: Uuid,
+  set: EffectSet,
+  config: &UserConfig,
+) -> (
+  Option<StyleBlend<BackdropOverlayParams>>,
+  Option<StyleBlend<BorderOverlayParams>>,
+) {
+  let backdrop =
+    focus_blend::<NativeBackdropOverlay>(state, id, set, config);
+  let border = focus_blend::<NativeBorderOverlay>(state, id, set, config)
+    .filter(|_| !hides_ring_for_fullscreen(state, id, config));
+  let fade = state
+    .animation_manager
+    .peeks
+    .entries
+    .get(&id)
+    .filter(|entry| entry.peek.is_live())
+    .map(|entry| entry.peek.opacity_fraction())
+    .filter(|frac| *frac < 1.0);
+
+  match fade {
+    Some(frac) => faded_overlays(backdrop, border, frac),
+    None => (backdrop, border),
+  }
+}
+
+/// `backdrop` and `border` at `frac` of their opacity, both ends of each
+/// blend.
+fn faded_overlays(
+  backdrop: Option<StyleBlend<BackdropOverlayParams>>,
+  border: Option<StyleBlend<BorderOverlayParams>>,
+  frac: f32,
+) -> (
+  Option<StyleBlend<BackdropOverlayParams>>,
+  Option<StyleBlend<BorderOverlayParams>>,
+) {
+  let scaled = |backdrop, border| {
+    OverlayParams { backdrop, border }.with_opacity_scaled(frac)
+  };
+  let from = scaled(
+    backdrop.map(|blend| blend.from),
+    border.map(|blend| blend.from),
+  );
+  let to =
+    scaled(backdrop.map(|blend| blend.to), border.map(|blend| blend.to));
+
+  (
+    backdrop.zip(from.backdrop.zip(to.backdrop)).map(
+      |(blend, (from, to))| StyleBlend {
+        from,
+        to,
+        t: blend.t,
+      },
+    ),
+    border
+      .zip(from.border.zip(to.border))
+      .map(|(blend, (from, to))| StyleBlend {
+        from,
+        to,
+        t: blend.t,
+      }),
+  )
 }
 
 /// The window the overlays of `id`, drawn by `entry`, sit behind: its
@@ -3381,6 +5122,133 @@ fn carry_ring(
   };
 
   true
+}
+
+/// What a hosted peek does with the copy of its stack's tab bar this
+/// frame, given how far it had taken the bar over (`handover`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarStep {
+  /// Draws it, registered if it isn't, where the bar goes now.
+  Carry,
+  /// Leaves it as it is.
+  Keep,
+  /// Stops drawing it.
+  Drop,
+}
+
+/// How far a hosted peek's copy of its stack's tab bar takes over from the
+/// bar, handed over as its ring is (see [`Handover`]), and what it does
+/// with it this frame: the bar is cloaked while [`conceals_bar`], so the
+/// copy shows it alone, and uncloaked a composited frame before the copy
+/// goes.
+///
+/// `wanted`: the peek may draw the bar (see [`carry_tab_bar`]). Landing,
+/// the bar is shown again under the copy, which stays until the peek goes.
+/// No longer wanted otherwise (its window no longer the active tab, or the
+/// bar hidden), a copy never composited goes at once; one the bar was
+/// cloaked for is revealed first, and goes a tick later.
+fn bar_handover(
+  handover: Handover,
+  wanted: bool,
+  is_landing: bool,
+) -> (Handover, BarStep) {
+  let step = if wanted {
+    BarStep::Carry
+  } else {
+    BarStep::Keep
+  };
+
+  match handover {
+    Handover::None if is_landing || !wanted => {
+      (Handover::None, BarStep::Keep)
+    }
+    Handover::None => (Handover::Covering, BarStep::Carry),
+    Handover::Covering | Handover::Covered | Handover::Parked
+      if is_landing =>
+    {
+      (Handover::Revealed, step)
+    }
+    Handover::Revealed if is_landing => (Handover::Revealed, step),
+    Handover::Covering | Handover::Covered if !wanted => {
+      (Handover::None, BarStep::Drop)
+    }
+    Handover::Parked if !wanted => (Handover::Revealed, BarStep::Keep),
+    Handover::Revealed if !wanted => (Handover::None, BarStep::Drop),
+    Handover::Covering | Handover::Revealed => {
+      (Handover::Covering, BarStep::Carry)
+    }
+    Handover::Covered | Handover::Parked => {
+      (Handover::Parked, BarStep::Carry)
+    }
+  }
+}
+
+/// Whether a tab bar copied by a peek in `handover` is cloaked, shown by
+/// the copy alone.
+fn conceals_bar(handover: Handover) -> bool {
+  handover == Handover::Parked
+}
+
+/// Keeps `id`'s hosted peek drawing its stack's tab bar beside the window,
+/// over the other tiles on its surface as the window is, while the window
+/// is that stack's active tab and moves, lands or rests with no transit,
+/// and hands the bar over to the copy a step at a time (see
+/// [`bar_handover`]).
+///
+/// A peek of its own draws none: the bar goes behind it (see
+/// `tab_bars::shown_tab_frame`), as it always has. So does a window
+/// entering or leaving, which its bar doesn't go along with.
+fn carry_tab_bar(
+  state: &mut WmState,
+  id: Uuid,
+  is_focused: bool,
+  config: &UserConfig,
+) {
+  let Some(entry) = state.animation_manager.peeks.entries.get(&id) else {
+    return;
+  };
+  let is_landing =
+    matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
+  let may_draw = entry.peek.is_hosted()
+    && entry.transit.is_none()
+    && entry.departing.is_none()
+    && !matches!(entry.role, Role::Leaving(_));
+  let target = entry.motion.target_rect.clone();
+
+  let bar = may_draw.then(|| state.window_by_id(id)).flatten().and_then(
+    |window| {
+      let stack = window.parent()?.as_stack().cloned()?;
+      let bar = state
+        .tab_bars
+        .get(&stack.id())
+        .filter(|bar| bar.is_shown())?;
+      let place = crate::tab_bars::tab_bar_place(
+        &window, &target, is_focused, config,
+      )?;
+      Some((bar.hwnd(), place))
+    },
+  );
+
+  let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id)
+  else {
+    return;
+  };
+  let (handover, step) =
+    bar_handover(entry.bar, bar.is_some(), is_landing);
+  entry.bar = match (step, bar) {
+    (BarStep::Carry, Some((source, place))) => {
+      if entry.peek.carry_tab_bar(source, place) {
+        handover
+      } else {
+        Handover::None
+      }
+    }
+    (BarStep::Drop, _) => {
+      entry.peek.drop_tab_bar();
+      handover
+    }
+    _ => handover,
+  };
 }
 
 /// Where `id`'s ring and backdrop go back to as its peek lands, its real
@@ -3631,24 +5499,471 @@ mod tests {
     ResizeStyle, WindowResizeConfig, WindowState, WindowTransitionParams,
     WindowTransitionStyle,
   };
-  use wm_platform::{LengthValue, Rect, RectDelta};
+  use wm_platform::{LengthValue, Rect, RectDelta, HWND};
 
   use super::{
-    allows_motion, carries_fill_early, conceals_new_ring,
-    crosses_floating, floating_peek_raise, follow_duration, follows_tile,
-    fullscreen_peek_raise, has_landed, has_left, is_departed,
-    is_peek_resize, is_pure_move, is_stray, kept_transit, lands_on_trail,
-    leaves_as, leaving_transit, move_clips, peek_resize, resizes_at_start,
-    restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, state_change_peek_raise, state_change_resize, take_left,
-    toggles_tile_fullscreen, visible_frame, Hold, PeekRaise, PeekResize,
-    Role, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    by_surface, conceals_new_ring, crosses_floating, crossing_host,
+    evicted, floating_peek_raise, follow_duration, follows_tile,
+    fullscreen_peek_raise, has_landed, has_left, host_for, hosts_column,
+    hosts_hold, hosts_on_surface, is_departed, is_peek_resize,
+    is_pure_move, is_ready_expired, is_resized_already, is_stale_surface,
+    is_stray, keeps_ready, keeps_rest_hosted, keeps_trail_drawing,
+    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
+    resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
+    returning_transit, sampled_size, settling, state_change_peek_raise,
+    state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
+    visible_frame, Hold, Host, Lane, Layer, Part, PeekRaise, PeekResize,
+    Rank, ReadyFit, Role, Stacking, Stretch, FILL_LANDING_WAIT,
+    HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
     transit::{Direction, Transit},
     AwayTransition,
   };
+
+  #[test]
+  fn only_plain_tiles_go_on_a_surface() {
+    assert!(hosts_on_surface(false, false, false));
+    for kept_off in 0..3 {
+      let off: [bool; 3] = std::array::from_fn(|index| index == kept_off);
+      let [live, is_column, beside] = off;
+      assert!(!hosts_on_surface(live, is_column, beside), "{kept_off}");
+    }
+  }
+
+  /// Both parts go on surfaces, unless a grab holds a tile on either
+  /// monitor's tiles' surface, which a raise there would top.
+  #[test]
+  fn a_crossing_tile_is_hosted_unless_a_grab_holds_tiles_there() {
+    let band = Some(Host::InBand(Layer::TopBand));
+    for host in [Some(Host::Tiles), Some(Host::InBand(Layer::Tiles)), band]
+    {
+      assert_eq!(crossing_host(host, false), host);
+    }
+    assert_eq!(crossing_host(Some(Host::Tiles), true), None);
+    assert_eq!(
+      crossing_host(Some(Host::InBand(Layer::Tiles)), true),
+      None
+    );
+    assert_eq!(crossing_host(band, true), band);
+    assert_eq!(crossing_host(None, false), None);
+  }
+
+  /// A hosted trail draws a tick past the landing; one of its own goes at
+  /// once.
+  #[test]
+  fn only_a_hosted_trail_outlives_its_landing() {
+    assert!(keeps_trail_drawing(true));
+    assert!(!keeps_trail_drawing(false));
+  }
+
+  /// A tile on two surfaces is restacked on each, by its one rank.
+  #[test]
+  fn tenants_are_grouped_per_surface_in_rank_order() {
+    let rank = |pass, order| Rank {
+      pass,
+      raised: true,
+      order,
+    };
+    let groups = by_surface(vec![
+      (2, rank(1, 3), ('a', Part::Trail)),
+      (1, rank(1, 3), ('a', Part::Own)),
+      (1, rank(1, 1), ('b', Part::Own)),
+      (2, rank(0, 7), ('c', Part::Own)),
+    ]);
+    assert_eq!(
+      groups,
+      vec![
+        vec![('b', Part::Own), ('a', Part::Own)],
+        vec![('c', Part::Own), ('a', Part::Trail)],
+      ]
+    );
+  }
+
+  /// A crossing tile's overlays go under the lower of its two surfaces.
+  #[test]
+  fn the_lowest_surface_anchors_the_overlays() {
+    // Higher numbers are higher in the z-order.
+    let is_below = |a: u8, b: u8| a < b;
+    assert_eq!(lowest([3, 1], is_below), Some(1));
+    assert_eq!(lowest([1, 3], is_below), Some(1));
+    assert_eq!(lowest([2], is_below), Some(2));
+    assert_eq!(lowest(std::iter::empty::<u8>(), is_below), None);
+  }
+
+  /// Moving back onto the monitor it just landed on, a tile's ready peek
+  /// there fits its trail, not the part on the monitor it moves onto.
+  #[test]
+  fn a_ready_peek_fits_the_part_on_its_monitor() {
+    let now = Instant::now();
+    let left = Rect::from_xy(0, 0, 1920, 1080);
+    let right = Rect::from_xy(1920, 0, 1920, 1080);
+    let fit = |clip: &Rect| ReadyFit {
+      source: HWND(1),
+      clip: clip.clone(),
+    };
+    assert!(takes_ready(&fit(&right), now, &fit(&right), now));
+    assert!(!takes_ready(&fit(&right), now, &fit(&left), now));
+  }
+
+  /// As their own peeks play: in the band their pass raises them in, or
+  /// with the tiles; one left where it went up keeps a peek of its own.
+  #[test]
+  fn band_raises_pick_the_surface() {
+    for is_tile in [true, false] {
+      assert_eq!(
+        host_for(is_tile, Some(PeekRaise::TopMost)),
+        Some(Host::InBand(Layer::TopBand))
+      );
+      assert_eq!(
+        host_for(is_tile, Some(PeekRaise::Top)),
+        Some(Host::InBand(Layer::Tiles))
+      );
+    }
+    assert_eq!(host_for(true, None), Some(Host::Tiles));
+    assert_eq!(host_for(false, None), None);
+  }
+
+  /// Raised in its band after its pass's raises: over them, under the next
+  /// pass's, in the order such raises come.
+  #[test]
+  fn band_raises_rank_after_their_pass() {
+    let over = rank(Stacking::OverPass, 3, 10);
+    for under in [
+      rank(Stacking::Raised, 3, 11),
+      rank(Stacking::InPass, 3, 12),
+      rank(Stacking::Below, 3, 13),
+    ] {
+      assert!(under < over);
+    }
+    assert!(over < rank(Stacking::InPass, 4, 11));
+    assert!(over < rank(Stacking::Raised, 4, 11));
+    assert!(over < rank(Stacking::OverPass, 3, 11));
+    assert_eq!(
+      Host::InBand(Layer::TopBand).stacking(Stacking::Raised),
+      Stacking::OverPass
+    );
+    assert_eq!(Host::Tiles.stacking(Stacking::Below), Stacking::Below);
+  }
+
+  /// As their own peeks: a move raised after the pass's entering ones, a
+  /// later pass over an earlier one, a leaving one below them all.
+  #[test]
+  fn tiles_rank_by_when_their_peeks_go_on_top() {
+    let raised = rank(Stacking::Raised, 3, 10);
+    let entering = rank(Stacking::InPass, 3, 11);
+    assert!(entering < raised);
+    assert!(rank(Stacking::Raised, 2, 12) < entering);
+    assert!(raised < rank(Stacking::InPass, 4, 9));
+    assert!(raised < rank(Stacking::Raised, 3, 12));
+
+    let leaving = rank(Stacking::Below, 7, 20);
+    for other in [raised, entering, rank(Stacking::InPass, 0, 0)] {
+      assert!(leaving < other);
+    }
+    assert!(leaving < rank(Stacking::Below, 7, 21));
+  }
+
+  fn lane(from: (i32, i32, i32, i32), to: (i32, i32, i32, i32)) -> Lane {
+    Lane {
+      from: Rect::from_ltrb(from.0, from.1, from.2, from.3),
+      to: Rect::from_ltrb(to.0, to.1, to.2, to.3),
+    }
+  }
+
+  /// Neighbours resized across their shared edge keep their gap all the
+  /// way, an overshooting easing's too.
+  #[test]
+  fn resized_neighbours_stay_apart() {
+    let left = lane((0, 0, 500, 900), (0, 0, 700, 900));
+    let right = lane((510, 0, 1000, 900), (710, 0, 1000, 900));
+
+    assert!(lanes_stay_apart(&left, &right, false));
+    assert!(lanes_stay_apart(&right, &left, true));
+  }
+
+  /// Tiles that swap places cross on the way.
+  #[test]
+  fn swapped_tiles_do_not_stay_apart() {
+    let left = lane((0, 0, 500, 900), (510, 0, 1000, 900));
+    let right = lane((510, 0, 1000, 900), (0, 0, 500, 900));
+
+    assert!(!lanes_stay_apart(&left, &right, false));
+  }
+
+  /// Only a hosted peek, drawn on no other, is kept ready.
+  #[test]
+  fn only_hosted_peeks_are_kept_ready() {
+    assert!(keeps_ready(true, false));
+    assert!(!keeps_ready(false, false));
+    assert!(!keeps_ready(true, true));
+  }
+
+  /// A column goes on a surface, held or not, a stack's too, unless its
+  /// peek is live or a column of its workspace keeps a peek of its own.
+  #[test]
+  fn only_plain_columns_go_on_a_surface() {
+    assert!(hosts_column(false, false));
+    assert!(!hosts_column(true, false));
+    assert!(!hosts_column(false, true));
+  }
+
+  /// A hosted peek covers its stack's bar, cloaks it once composited, and
+  /// shows it again before the copy goes: as its window lands, or a
+  /// composited tick ahead once the window no longer has the bar.
+  #[test]
+  fn a_tab_bar_is_handed_over_as_a_ring_is() {
+    use super::{bar_handover, conceals_bar, BarStep, Handover};
+
+    let start = bar_handover(Handover::None, true, false);
+    assert_eq!(start, (Handover::Covering, BarStep::Carry));
+    assert!(!conceals_bar(start.0));
+    // `note_composited` turns `Covering` to `Covered`.
+    let parked = bar_handover(Handover::Covered, true, false);
+    assert_eq!(parked, (Handover::Parked, BarStep::Carry));
+    assert!(conceals_bar(parked.0));
+
+    let landed = bar_handover(Handover::Parked, true, true);
+    assert_eq!(landed, (Handover::Revealed, BarStep::Carry));
+    assert!(!conceals_bar(landed.0));
+    assert_eq!(
+      bar_handover(Handover::Revealed, false, true),
+      (Handover::Revealed, BarStep::Keep)
+    );
+    // Moved on in place after landing: covered again, the bar shown.
+    assert_eq!(
+      bar_handover(Handover::Revealed, true, false),
+      (Handover::Covering, BarStep::Carry)
+    );
+
+    let lost = bar_handover(Handover::Parked, false, false);
+    assert_eq!(lost, (Handover::Revealed, BarStep::Keep));
+    assert_eq!(
+      bar_handover(lost.0, false, false),
+      (Handover::None, BarStep::Drop)
+    );
+    assert_eq!(
+      bar_handover(Handover::Covering, false, false),
+      (Handover::None, BarStep::Drop)
+    );
+    assert_eq!(
+      bar_handover(Handover::None, true, true),
+      (Handover::None, BarStep::Keep)
+    );
+  }
+
+  /// A stacked tile's lane takes in its tab bar.
+  #[test]
+  fn a_stacked_tiles_lane_takes_in_its_bar() {
+    use wm_platform::TabBarPlace;
+
+    use super::Reach;
+
+    let window = Rect::from_ltrb(0, 28, 400, 400);
+    let bar =
+      TabBarPlace::between(&Rect::from_ltrb(0, 0, 400, 36), &window, true);
+    let reach = |bar: Option<TabBarPlace>| Reach {
+      shadow_borders: RectDelta::new(
+        LengthValue::from_px(0),
+        LengthValue::from_px(0),
+        LengthValue::from_px(0),
+        LengthValue::from_px(0),
+      ),
+      bar,
+      ring: 2,
+    };
+
+    let moved = Rect::from_ltrb(500, 28, 900, 400);
+    assert_eq!(
+      reach(Some(bar)).lane(&window, &moved),
+      Lane {
+        from: Rect::from_ltrb(-2, -2, 402, 402),
+        to: Rect::from_ltrb(498, -2, 902, 402),
+      }
+    );
+    assert_eq!(reach(None).lane(&window, &moved).from.top, 26);
+  }
+
+  /// A held tile goes on its surface unless that is at the top of its
+  /// band, over the floating windows a held peek stays under.
+  #[test]
+  fn a_held_tile_goes_on_a_surface_not_raised_to_the_top() {
+    assert!(hosts_hold(false));
+    assert!(!hosts_hold(true));
+  }
+
+  /// A surface has one place at rest: a second
+  /// resting column keeps a peek of its own; a moving one ending shown
+  /// always goes.
+  #[test]
+  fn one_resting_column_per_surface() {
+    assert!(keeps_rest_hosted(true, false));
+    assert!(!keeps_rest_hosted(true, true));
+    assert!(keeps_rest_hosted(false, false));
+    assert!(keeps_rest_hosted(false, true));
+    assert!(rests(Role::Peek));
+    assert!(rests(Role::Moving { ends_shown: false }));
+    assert!(!rests(Role::Moving { ends_shown: true }));
+    assert!(!rests(Role::HandingBack));
+  }
+
+  /// A surface goes to its resting tenant's window only once every tenant
+  /// rests, and it has one.
+  #[test]
+  fn a_surface_rests_by_its_one_resting_tenant() {
+    let window = HWND(7);
+    assert_eq!(rest_anchor([(Role::Peek, window)]), Some(window));
+    assert_eq!(rest_anchor([]), None);
+    assert_eq!(
+      rest_anchor([
+        (Role::Peek, window),
+        (Role::Moving { ends_shown: true }, HWND(8)),
+      ]),
+      None
+    );
+    assert_eq!(
+      rest_anchor([(Role::Releasing { settled: true }, HWND(8))]),
+      None
+    );
+    assert_eq!(
+      rest_anchor([(Role::Peek, window), (Role::Peek, HWND(8))]),
+      None
+    );
+  }
+
+  /// A ready peek draws only its own window's motion on the same surface,
+  /// within its lifetime.
+  #[test]
+  fn a_ready_peek_is_taken_for_its_window_and_clip_only() {
+    let kept_at = Instant::now();
+    let fit = ReadyFit {
+      source: HWND(7),
+      clip: Rect::from_ltrb(0, 0, 1920, 1040),
+    };
+    let other_window = ReadyFit {
+      source: HWND(8),
+      ..fit.clone()
+    };
+    let other_clip = ReadyFit {
+      clip: Rect::from_ltrb(1920, 0, 3840, 1040),
+      ..fit.clone()
+    };
+    let soon = kept_at + Duration::from_secs(1);
+
+    assert!(takes_ready(&fit, kept_at, &fit, soon));
+    assert!(!takes_ready(&fit, kept_at, &other_window, soon));
+    assert!(!takes_ready(&fit, kept_at, &other_clip, soon));
+    assert!(!takes_ready(&fit, kept_at, &fit, kept_at + READY_LIFETIME));
+    assert!(is_ready_expired(kept_at, kept_at + READY_LIFETIME));
+    assert!(!is_ready_expired(kept_at, soon));
+  }
+
+  /// Past the cap, the oldest go.
+  #[test]
+  fn the_oldest_ready_peeks_go_past_the_cap() {
+    let now = Instant::now();
+    let kept = [
+      (1, now),
+      (2, now + Duration::from_millis(20)),
+      (3, now + Duration::from_millis(10)),
+    ];
+
+    assert_eq!(evicted(kept, 2), vec![1]);
+    assert!(evicted(kept, 3).is_empty());
+  }
+
+  /// Only an unused surface off every kept clip goes.
+  #[test]
+  fn only_unused_surfaces_off_the_monitors_go() {
+    let monitor = Rect::from_ltrb(0, 0, 1920, 1080);
+    let gone = Rect::from_ltrb(1920, 0, 3840, 1080);
+    let monitors = [monitor.clone()];
+
+    assert!(is_stale_surface(true, &gone, &monitors));
+    assert!(!is_stale_surface(false, &gone, &monitors));
+    assert!(!is_stale_surface(true, &monitor, &monitors));
+    // A reload, pause or exit keeps no clip: only those in use stay.
+    assert!(is_stale_surface(true, &monitor, &[]));
+    assert!(!is_stale_surface(false, &monitor, &[]));
+  }
+
+  /// On one clock, only lanes that don't stay apart meet; otherwise any
+  /// whose hulls overlap, and any at all past an overshooting easing.
+  #[test]
+  fn lanes_meet_where_their_tiles_may_overlap() {
+    let left = lane((0, 0, 500, 900), (0, 0, 700, 900));
+    let right = lane((510, 0, 1000, 900), (710, 0, 1000, 900));
+    let below = lane((0, 1000, 500, 1400), (0, 1000, 500, 1400));
+
+    assert!(!lanes_meet(&left, &right, true, false));
+    assert!(lanes_meet(&left, &right, false, false));
+    assert!(!lanes_meet(&left, &below, false, false));
+    assert!(lanes_meet(&left, &below, false, true));
+    assert!(!lanes_meet(&left.landed(), &right.landed(), false, false));
+  }
+
+  /// A tile under part of a lower-ranked one it meets goes over it, and
+  /// then over it every higher one it meets; ones in order, or apart,
+  /// stay.
+  #[test]
+  fn tiles_under_lower_ranked_ones_they_meet_are_restacked() {
+    let all = |_: usize, _: usize| true;
+    let none = |_: usize, _: usize| false;
+
+    // Registered in rank order: nothing to do.
+    let in_order = [Some((0, 3)), Some((4, 6)), Some((7, 9))];
+    assert!(out_of_order(&in_order, all).is_empty());
+
+    // The lowest's ring registered over the others' windows.
+    let late_ring = [Some((0, 12)), Some((4, 6)), Some((7, 9))];
+    assert_eq!(out_of_order(&late_ring, all), vec![1, 2]);
+    assert!(out_of_order(&late_ring, none).is_empty());
+    // Only those meeting the lowest go.
+    assert_eq!(
+      out_of_order(&late_ring, |lower, _| lower == 0),
+      vec![1, 2]
+    );
+    assert_eq!(
+      out_of_order(&late_ring, |lower, upper| (lower, upper) == (0, 2)),
+      vec![2]
+    );
+
+    // A reused one ranked on top with registrations kept from before.
+    let reused = [Some((5, 9)), Some((0, 3))];
+    assert_eq!(out_of_order(&reused, all), vec![1]);
+
+    // One restacked goes over the ones above that meet it.
+    let chain = [Some((0, 5)), Some((3, 4)), Some((6, 8))];
+    assert_eq!(
+      out_of_order(&chain, |lower, upper| upper == lower + 1),
+      vec![1, 2]
+    );
+    assert!(out_of_order(&[None, Some((0, 1))], all).is_empty());
+  }
+
+  /// A gap that changes holds for a progress in 0..1 only, and by a pixel
+  /// at least, as each edge is rounded on its own.
+  #[test]
+  fn a_changing_gap_holds_only_without_overshoot() {
+    let still = lane((0, 0, 500, 400), (0, 0, 500, 400));
+    let leaving = lane((0, 420, 500, 800), (0, 600, 500, 800));
+    let touching = lane((0, 400, 500, 800), (0, 600, 500, 800));
+
+    assert!(lanes_stay_apart(&still, &leaving, false));
+    assert!(!lanes_stay_apart(&still, &leaving, true));
+    assert!(!lanes_stay_apart(&still, &touching, false));
+  }
+
+  /// Edges that only touch, at both ends alike, are apart.
+  #[test]
+  fn touching_tiles_stay_apart() {
+    let top = lane((0, 0, 500, 400), (100, 0, 600, 400));
+    let bottom = lane((0, 400, 500, 800), (100, 400, 600, 800));
+
+    assert!(lanes_stay_apart(&top, &bottom, true));
+  }
 
   #[test]
   fn floating_peeks_play_in_the_band_their_windows_land_in() {
@@ -3878,16 +6193,6 @@ mod tests {
     assert!((amount - 0.25).abs() < 1e-3, "{amount}");
   }
 
-  /// A pinned peek always moves its window; a live one only under
-  /// `morepeeks`.
-  #[test]
-  fn live_peeks_move_only_under_morepeeks() {
-    assert!(allows_motion(false, false));
-    assert!(allows_motion(false, true));
-    assert!(!allows_motion(true, false));
-    assert!(allows_motion(true, true));
-  }
-
   /// A column moved on mid-entry keeps entering where it was; one put at
   /// rest, or done entering, drops its transit.
   #[test]
@@ -3957,8 +6262,7 @@ mod tests {
   }
 
   /// Only a move that keeps the window's size, past the threshold, goes
-  /// on a peek alone; a resize, or a move the old path wouldn't animate,
-  /// doesn't.
+  /// on a peek alone; a resize, or a move that isn't animated, doesn't.
   #[test]
   fn a_tile_from_another_monitor_is_drawn_on_two_peeks() {
     let left = Rect::from_ltrb(0, 0, 1920, 1080);
@@ -4366,13 +6670,6 @@ mod tests {
     }));
   }
 
-  #[test]
-  fn only_a_filled_peek_yet_to_carry_its_ring_fills_early() {
-    assert!(carries_fill_early(true, false));
-    assert!(!carries_fill_early(false, false));
-    assert!(!carries_fill_early(true, true));
-  }
-
   /// Filled, a window growing on both axes is sent its size as it starts;
   /// one shrinking on either keeps its size until it lands.
   #[test]
@@ -4401,8 +6698,8 @@ mod tests {
     );
   }
 
-  /// Done moving, a filled window sent its size waits for it at most as
-  /// long as a `fill` session does.
+  /// Done moving, a filled window sent its size waits for it at most
+  /// `FILL_LANDING_WAIT`.
   #[test]
   fn a_filled_landing_waits_for_its_windows_size() {
     let now = Instant::now();
@@ -4428,5 +6725,17 @@ mod tests {
       sampled_size(&actual, &rect, [(950, 800), (990, 650)]),
       (950, 600)
     );
+  }
+
+  #[test]
+  fn only_a_tile_not_moving_is_resized_already() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+    let at_size = Rect::from_xy(40, 40, 800, 600);
+    let other_size = Rect::from_xy(0, 0, 640, 600);
+
+    assert!(is_resized_already(false, || Some(at_size.clone()), &target));
+    assert!(!is_resized_already(true, || Some(at_size.clone()), &target));
+    assert!(!is_resized_already(false, || Some(other_size), &target));
+    assert!(!is_resized_already(false, || None, &target));
   }
 }

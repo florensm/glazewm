@@ -5,7 +5,7 @@ use windows::Win32::{
 use crate::{
   companion::{self, Companion, COMPANION_OPACITY},
   native_surrogate::to_logical,
-  resize_session::compute_border_inset,
+  window_edges::compute_border_inset,
   CornerStyle, NativeSurrogate, NativeWindow, Rect,
 };
 
@@ -52,7 +52,6 @@ impl CompanionCover {
       border_inset,
       corner_style,
       hwnd,
-      false,
     )
     .inspect_err(|err| {
       tracing::warn!("Failed to create a companion cover: {err}");

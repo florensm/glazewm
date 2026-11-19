@@ -36,9 +36,9 @@ use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
   peek_view::{
-    can_move_on_peek, has_other_stand_in, is_peek_resize, is_pure_move,
-    peek_styles, resizes_on_peeks, restore_cloaked, track_overlays,
-    PeekView, Role,
+    has_other_stand_in, hosts_column, is_live, is_peek_resize,
+    is_pure_move, peek_styles, resizes_on_peeks, restack_joining_overlays,
+    restore_cloaked, surface_clips, track_overlays, PeekView, Role,
   },
   transit::Transit,
 };
@@ -82,7 +82,7 @@ pub fn sync_scroll_view(
     .collect::<HashSet<_>>();
 
   // Windows coming back from minimized, which re-enter as new ones do, by
-  // `window_minimize`, behind the switch (`STAND_INS_PLAN.md` task 5).
+  // `window_minimize` (`STAND_INS_PLAN.md` task 5).
   let restoring = column_restoring(config);
   let restored_ids = if restoring.is_some() {
     restored_columns(state, &windows, &new_ids)
@@ -90,9 +90,8 @@ pub fn sync_scroll_view(
     HashSet::new()
   };
 
-  // Behind the switch, a column that only moves does so on its peek, as
-  // the strip does (`STAND_INS_PLAN.md` task 6), unless another stand-in
-  // draws it.
+  // A column that only moves does so on its peek, as the strip does
+  // (`STAND_INS_PLAN.md` task 6), unless another stand-in draws it.
   let pure_moves = column_pure_moves(config, animates);
   let other_stand_ins = match pure_moves {
     Some(_) => windows
@@ -103,17 +102,14 @@ pub fn sync_scroll_view(
     None => HashSet::new(),
   };
 
-  // With `window_resize.style: "stretch"` (or `fill` under
-  // `GLAZEWM_ISOLATE=fillpeeks`), a column resized on screen goes on its
-  // peek too (`STAND_INS_PLAN.md` tasks 8 and 10e), where every resized
-  // column can.
+  // With `window_resize` enabled, in either style, a column resized on
+  // screen goes on its peek too (`STAND_INS_PLAN.md` tasks 8 and 10e),
+  // each one that can stretch.
   let resizes = resizes_on_peeks(config).filter(|_| pure_moves.is_some());
   let can_stretch = windows
     .iter()
     .filter(|_| resizes.is_some())
-    .filter(|(window, _)| {
-      can_stretch(state, window, &other_stand_ins, config)
-    })
+    .filter(|(window, _)| can_stretch(state, window, &other_stand_ins))
     .map(|(window, _)| window.id())
     .collect::<HashSet<_>>();
 
@@ -126,22 +122,24 @@ pub fn sync_scroll_view(
     .map(CommonGetters::id)
     .collect::<HashSet<_>>();
 
-  // Under `slidepeeks`, columns a resting peek draws that slide in with a
-  // workspace switch: their peeks stand by under the switch's surrogates
-  // until it hands them over (`SWITCH_PEEKS_PLAN.md`).
-  let slide_peeks = wm_platform::isolation::current().slide_peeks;
+  // Columns a resting peek draws that slide in with a workspace switch:
+  // their peeks stand by under the switch's surrogates until it hands them
+  // over (`SWITCH_PEEKS_PLAN.md`).
   let switch_animates =
     config.value.animations.workspace_switch.enabled && animates;
   let slides_in = windows
     .iter()
     .map(|(window, _)| window.id())
     .filter(|id| {
-      slide_peeks
-        && (state.animation_manager.awaits_peek_hand_back(id)
-          || switch_animates
-            && state.pending_sync.is_workspace_switch_incoming(id))
+      state.animation_manager.awaits_peek_hand_back(id)
+        || switch_animates
+          && state.pending_sync.is_workspace_switch_incoming(id)
     })
     .collect::<HashSet<_>>();
+
+  // Columns draw on the surface of their working area (see
+  // `PeekView::upsert`).
+  let monitor_clips = surface_monitor_clips(state, &workspaces);
 
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
@@ -152,24 +150,21 @@ pub fn sync_scroll_view(
   //
   // Their peeks stay up until any that take over are on screen, e.g. that
   // of a stack's newly active tab, so the column never goes blank.
-  let mut gone =
+  let gone =
     view.take_departed(|id| windows.iter().any(|(w, _)| w.id() == *id));
 
-  // Under `slidepeeks`, one sliding out is kept where it is until its
-  // surrogate takes over, rather than gone before that is shown.
-  if slide_peeks {
-    let (kept, left): (Vec<_>, Vec<_>) =
-      gone.into_iter().partition(|(id, entry)| {
-        waits_on_switch(
-          entry.role == Role::Peek,
-          switch_animates
-            && state.pending_sync.is_workspace_switch_outgoing(id),
-        )
-      });
-    for (id, entry) in kept {
-      view.keep_switching_out(id, entry);
-    }
-    gone = left;
+  // One sliding out is kept where it is until its surrogate takes over,
+  // rather than gone before that is shown.
+  let (kept, gone): (Vec<_>, Vec<_>) =
+    gone.into_iter().partition(|(id, entry)| {
+      waits_on_switch(
+        entry.role == Role::Peek,
+        switch_animates
+          && state.pending_sync.is_workspace_switch_outgoing(id),
+      )
+    });
+  for (id, entry) in kept {
+    view.keep_switching_out(id, entry);
   }
 
   let scroll_config = &config.value.animations.scroll;
@@ -195,20 +190,10 @@ pub fn sync_scroll_view(
 
   for (workspace, clip) in &workspaces {
     let moves = column_moves(view, workspace, &opening_ids);
-    let resizes = resizes.filter(|_| {
-      moves.iter().all(|(window, from, target)| {
-        opening_ids.contains(&window.id())
-          || from.width() == target.width()
-            && from.height() == target.height()
-          || can_stretch.contains(&window.id())
-      })
-    });
 
     // The strip moves as one when any column crosses the monitor edge,
-    // is already drawn by a peek, or opens; moves that stay on screen are
-    // left to the regular per-window animations. Behind the switch, only
-    // resizes are, so a peek drawing one column doesn't take a resized
-    // neighbour off its own (see `moves_on_peek`).
+    // is already drawn by a peek, or opens; other columns move or resize
+    // on their peeks one by one, or snap (see `moves_on_peek`).
     let crosses_edge = |rect: &Rect| !clip.contains_rect(rect);
     let strip_moves = scroll_config.enabled
       && animates
@@ -221,8 +206,23 @@ pub fn sync_scroll_view(
             || opening_ids.contains(&window.id()))
       });
 
+    // A column on a peek of its own is stacked by where that went, which a
+    // surface can't keep its neighbours in step with (see `hosts_column`).
+    let beside_own_peek = moves
+      .iter()
+      .any(|(window, _, _)| is_live(&peek_styles(window, config)));
+
     for (window, from, target) in moves {
       view.last_rects.insert(window.id(), target.clone());
+
+      // Resized on its peek only if it can stretch: one that can't snaps,
+      // as its neighbours resize on theirs.
+      let resizes = resizes.filter(|_| {
+        opening_ids.contains(&window.id())
+          || from.width() == target.width()
+            && from.height() == target.height()
+          || can_stretch.contains(&window.id())
+      });
 
       let ends_shown = !is_hidden_in_layout(&window);
       let is_on_screen = |rect: &Rect| rect.intersection_area(clip) > 0;
@@ -288,16 +288,18 @@ pub fn sync_scroll_view(
       if is_moving && is_restored {
         restore_cloaked(&window.native(), &target);
       }
-      if slide_peeks {
-        if waits_on_switch(
-          role == Role::Peek,
-          slides_in.contains(&window.id()),
-        ) {
-          view.stand_by(window.id());
-        } else {
-          view.end_stand_by(&window.id());
-        }
+      if waits_on_switch(
+        role == Role::Peek,
+        slides_in.contains(&window.id()),
+      ) {
+        view.stand_by(window.id());
+      } else {
+        view.end_stand_by(&window.id());
       }
+      let may_host = hosts_column(
+        is_live(&peek_styles(&window, config)),
+        beside_own_peek,
+      );
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -307,6 +309,8 @@ pub fn sync_scroll_view(
         transit.filter(|_| !is_held),
         resizes,
         is_held,
+        may_host,
+        &monitor_clips,
         config,
         focused_id == Some(window.id()),
         now,
@@ -328,6 +332,8 @@ pub fn sync_scroll_view(
       .any(|(_, entry)| entry.peek.visible_rect().is_some());
 
   flush_overlays(state, config, batch, needs_flush || replaces_peek);
+  // Composited by now, what replaced them draws.
+  state.animation_manager.peeks.drop_replaced();
 
   for (id, entry) in gone {
     if let Some(window) =
@@ -337,11 +343,15 @@ pub fn sync_scroll_view(
     }
   }
 
+  // Once departed and replaced tenants are gone: a resting one may be
+  // left alone on its surface.
+  state.animation_manager.peeks.settle_resting_surfaces();
+
   drive_moving(state, &started_moving);
 }
 
 /// Whether a column's peek waits on a workspace switch it slides in or
-/// out with, under `slidepeeks`: standing by under its surrogate, or kept
+/// out with: standing by under its surrogate, or kept
 /// until that takes over. Only a resting peek: a moving one is drawn as
 /// its neighbours' moving peeks are.
 fn waits_on_switch(is_at_rest: bool, slides_with_switch: bool) -> bool {
@@ -349,22 +359,19 @@ fn waits_on_switch(is_at_rest: bool, slides_with_switch: bool) -> bool {
 }
 
 /// The transition a new column enters by as it widens on the scroll's
-/// timing: `window_open`, behind the switch (`STAND_INS_PLAN.md` task 3b).
+/// timing: `window_open` (`STAND_INS_PLAN.md` task 3b).
 fn column_opening(config: &UserConfig) -> Option<WindowTransitionParams> {
   let open_config = &config.value.animations.window_open;
-  (wm_platform::isolation::current().peeks && open_config.enabled)
+  open_config
+    .enabled
     .then(|| WindowTransitionParams::from_open(open_config))
 }
 
-/// The threshold a column's move has to pass to go on its peek alone,
-/// behind the switch: the scroll's, as for its per-window animation (see
-/// [`moves_on_peek`]).
+/// The threshold a column's move has to pass to go on its peek alone:
+/// the scroll's, as for its per-window animation (see [`moves_on_peek`]).
 fn column_pure_moves(config: &UserConfig, animates: bool) -> Option<u32> {
   let scroll_config = &config.value.animations.scroll;
-  (wm_platform::isolation::current().peeks
-    && scroll_config.enabled
-    && animates)
-    .then_some(scroll_config.threshold_px)
+  (scroll_config.enabled && animates).then_some(scroll_config.threshold_px)
 }
 
 /// Whether a column moving from `from` to `target` is drawn moving by its
@@ -372,8 +379,8 @@ fn column_pure_moves(config: &UserConfig, animates: bool) -> Option<u32> {
 /// (see [`column_pure_moves`]), as a peek draws it already, or as it only
 /// moves (see [`is_pure_move`]) or, given `stretches`' threshold when the
 /// strip stretches, resizes (see [`is_peek_resize`]), with no other
-/// stand-in drawing it. Otherwise a column resized on screen keeps the
-/// per-window path.
+/// stand-in drawing it. Otherwise a column resized on screen snaps, placed
+/// by the redraw as at rest.
 fn moves_on_peek(
   from: &Rect,
   target: &Rect,
@@ -398,15 +405,12 @@ fn moves_on_peek(
 }
 
 /// Whether `window`, a column, can be drawn stretched as it resizes on
-/// its peek: not one another stand-in draws, nor one whose peek can't
-/// (see `can_move_on_peek`), nor one at its new size already, as an
-/// interactive resize leaves it, which keeps the per-window path as
-/// before.
+/// its peek: not one another stand-in draws, nor one at its new size
+/// already, as an interactive resize leaves it, which snaps.
 fn can_stretch(
   state: &WmState,
   window: &WindowContainer,
   other_stand_ins: &HashSet<Uuid>,
-  config: &UserConfig,
 ) -> bool {
   let is_moving = state.animation_manager.peeks.is_moving(&window.id());
   let is_resized_already =
@@ -423,19 +427,18 @@ fn can_stretch(
         })
       });
 
-  !other_stand_ins.contains(&window.id())
-    && can_move_on_peek(&peek_styles(window, config))
-    && !is_resized_already
+  !other_stand_ins.contains(&window.id()) && !is_resized_already
 }
 
 /// The transition a column coming back from minimized enters by, as a new
-/// one does by `window_open`: `window_minimize` reversed, behind the
-/// switch (`STAND_INS_PLAN.md` task 5).
+/// one does by `window_open`: `window_minimize` reversed
+/// (`STAND_INS_PLAN.md` task 5).
 fn column_restoring(
   config: &UserConfig,
 ) -> Option<WindowTransitionParams> {
   let minimize_config = &config.value.animations.window_minimize;
-  (wm_platform::isolation::current().peeks && minimize_config.enabled)
+  minimize_config
+    .enabled
     .then(|| WindowTransitionParams::from_restore(minimize_config))
 }
 
@@ -517,6 +520,8 @@ fn flush_overlays(
   flushes: bool,
 ) {
   track_overlays(state, config, batch);
+  // As `cover_moved_overlays` has it for tiles.
+  restack_joining_overlays(state);
 
   if flushes {
     wm_platform::dwm_flush();
@@ -629,6 +634,21 @@ fn opening_rect(
   Rect::from_xy(target.x() + scroll, target.y(), 0, target.height())
 }
 
+/// The clips a surface may span (see `surface_clips`), read only for a
+/// surface to be made for a column at the clip of one of `workspaces`
+/// (see `PeekView::tenancy`).
+fn surface_monitor_clips(
+  state: &WmState,
+  workspaces: &[(Workspace, Rect)],
+) -> Vec<Rect> {
+  let peeks = &state.animation_manager.peeks;
+  if workspaces.iter().all(|(_, clip)| peeks.has_surface(clip)) {
+    return Vec::new();
+  }
+
+  surface_clips(state)
+}
+
 /// Displayed scrolling workspaces, with the monitor area their peeks are
 /// clipped to.
 fn displayed_scrolling_workspaces(
@@ -686,10 +706,10 @@ mod tests {
     assert!(!waits_on_switch(true, false));
   }
 
-  /// Without the switch, a column moves on its peek only with the strip,
-  /// as before.
+  /// With no pure-move threshold, a column moves on its peek only with the
+  /// strip.
   #[test]
-  fn without_the_switch_only_the_strip_moves_columns() {
+  fn without_a_threshold_only_the_strip_moves_columns() {
     let moved = Rect::from_xy(900, 50, 800, 600);
     let resized = Rect::from_xy(100, 50, 400, 600);
     for to in [&moved, &resized] {
@@ -723,12 +743,11 @@ mod tests {
     ));
   }
 
-  /// Behind the switch, a column that only moves goes on its peek alone,
-  /// and one a peek draws stays on it; a resized one keeps the per-window
-  /// path, as does a move below the threshold or one another stand-in
-  /// draws.
+  /// A column that only moves goes on its peek alone, and one a peek draws
+  /// stays on it; a resized one keeps the per-window path, as does a
+  /// move below the threshold or one another stand-in draws.
   #[test]
-  fn behind_the_switch_pure_column_moves_go_on_peeks() {
+  fn pure_column_moves_go_on_peeks() {
     let threshold = Some(10);
     let moved = Rect::from_xy(900, 50, 800, 600);
     let nudged = Rect::from_xy(105, 50, 800, 600);

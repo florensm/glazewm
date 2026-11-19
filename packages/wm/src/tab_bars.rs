@@ -4,7 +4,8 @@ use regex::Regex;
 use wm_common::{StackConfig, TabBarPosition, TabCloseButton};
 use wm_platform::{
   BorderOverlayParams, Color, CornerRadii, Dispatcher, NativeStackTabBar,
-  Rect, TabBarStyle, TabCloseMode, TabFrame, TabInfo, UiThread,
+  Rect, TabBarPlace, TabBarStyle, TabCloseMode, TabFrame, TabInfo,
+  UiThread,
 };
 
 use crate::{
@@ -216,21 +217,6 @@ pub fn with_tab_bar_of(
   )
 }
 
-/// [`with_tab_bar_of`] for a window a surrogate draws at `frame` mid
-/// animation: the bar goes along with a move or resize, but not with a
-/// window opening into its stack.
-pub fn animated_with_tab_bar(
-  state: &WmState,
-  window_id: uuid::Uuid,
-  frame: &Rect,
-) -> Rect {
-  if state.animation_manager.is_entering(&window_id) {
-    frame.clone()
-  } else {
-    with_tab_bar_of(state, window_id, frame)
-  }
-}
-
 /// The tab bar of `stack`, or `None` when it has no tab bar, no tabs or
 /// isn't shown. The overview draws the same bar on its cards.
 pub fn tab_frame(
@@ -254,18 +240,14 @@ fn shown_tab_frame(
   let active = stack.active_child()?;
   let stack_rect = stack.to_rect().ok()?;
 
-  let stand_in =
-    match animation_manager.peeks.stand_in(&active.id(), &stack_rect) {
-      Some(peek) => Some(peek),
-      // A column kept off the monitor beside it shows only through a
-      // peek, which it has none of while out of view.
-      None if !scrolling::shows_real_window(&active) => return None,
-      None => {
-        animation_manager.animation_stand_in(&active.id(), &stack_rect)
-      }
-    };
-
-  let Some(stand_in) = stand_in else {
+  let Some(stand_in) =
+    animation_manager.peeks.stand_in(&active.id(), &stack_rect)
+  else {
+    // A column kept off the monitor beside it shows only through a peek,
+    // which it has none of while out of view.
+    if !scrolling::shows_real_window(&active) {
+      return None;
+    }
     return tab_frame_at(stack, &stack_rect, settings, config, focused_id);
   };
 
@@ -279,14 +261,43 @@ fn shown_tab_frame(
   })
 }
 
-/// The tab bar of `stack` placed at `stack_rect`.
-fn tab_frame_at(
+/// Where the tab bar of the stack `window` is the active tab of goes
+/// beside the window, as its peek draws a copy of it (see
+/// `WindowPeek::carry_tab_bar`): from the stack's rect and `target`, the
+/// window's rect, both as laid out now. `None` for a window that is no
+/// stack's active tab, or whose stack shows no bar.
+pub fn tab_bar_place(
+  window: &WindowContainer,
+  target: &Rect,
+  is_focused: bool,
+  config: &UserConfig,
+) -> Option<TabBarPlace> {
+  let stack = window.parent()?.as_stack().cloned()?;
+  if stack.active_child()?.id() != window.id() {
+    return None;
+  }
+
+  let stack_rect = stack.to_rect().ok()?;
+  let (_, outer) =
+    bar_rects(&stack, &stack_rect, window, is_focused, config)?;
+
+  Some(TabBarPlace::between(
+    &outer,
+    target,
+    stack.tab_bar_position() == TabBarPosition::Top,
+  ))
+}
+
+/// The tab bar of `stack`, whose active tab is `active`, at `stack_rect`:
+/// where its tabs are, and its window, which reaches under `active`'s
+/// rounded corners. `None` if it shows none.
+fn bar_rects(
   stack: &StackContainer,
   stack_rect: &Rect,
-  settings: &TabBarSettings,
+  active: &WindowContainer,
+  is_focused: bool,
   config: &UserConfig,
-  focused_id: Option<uuid::Uuid>,
-) -> Option<TabFrame> {
+) -> Option<(Rect, Rect)> {
   let height = stack.tab_bar_height_px();
   if height <= 0 || !stack.shows_tab_bar() {
     return None;
@@ -308,16 +319,40 @@ fn tab_frame_at(
     ),
   };
 
+  let window_effects = config
+    .value
+    .window_effects
+    .for_set(active.effect_set(is_focused));
+
+  // The strip reaches under the window's rounded corners, so they don't
+  // leave a notch next to the bar.
+  #[allow(clippy::cast_possible_truncation)]
+  let overlap = (window_effects.window_corner_radius_px().ceil() as i32)
+    .clamp(0, (stack_rect.height() - height).max(0));
+
+  Some((rect.clone(), reach_under_window(&rect, &position, overlap)))
+}
+
+/// The tab bar of `stack` placed at `stack_rect`.
+fn tab_frame_at(
+  stack: &StackContainer,
+  stack_rect: &Rect,
+  settings: &TabBarSettings,
+  config: &UserConfig,
+  focused_id: Option<uuid::Uuid>,
+) -> Option<TabFrame> {
   let windows = stack.windows();
 
   let active = stack.active_child()?;
   let active_index = windows.iter().position(|w| w.id() == active.id())?;
   let active_window = windows.get(active_index)?;
+  let is_focused = focused_id == Some(active_window.id());
+  let (rect, outer_rect) =
+    bar_rects(stack, stack_rect, active_window, is_focused, config)?;
+  let position = stack.tab_bar_position();
   let anchor = active_window.native().id().0;
-  let set =
-    active_window.effect_set(focused_id == Some(active_window.id()));
+  let set = active_window.effect_set(is_focused);
   let border = border_overlay_params_for(set, config);
-  let window_effects = config.value.window_effects.for_set(set);
 
   let tabs = windows
     .iter()
@@ -332,14 +367,8 @@ fn tab_frame_at(
     .monitor()
     .map_or(1.0, |monitor| monitor.native_properties().scale_factor);
 
-  // The strip reaches under the window's rounded corners, so they don't
-  // leave a notch next to the bar.
-  #[allow(clippy::cast_possible_truncation)]
-  let overlap = (window_effects.window_corner_radius_px().ceil() as i32)
-    .clamp(0, (stack_rect.height() - height).max(0));
-
   Some(TabFrame {
-    outer_rect: reach_under_window(&rect, &position, overlap),
+    outer_rect,
     rect,
     clip: None,
     tabs,
@@ -464,6 +493,30 @@ pub fn sync_tab_bars(
       }
       Err(err) => tracing::warn!("Failed to create tab bar: {err}"),
     }
+  }
+
+  conceal_copied_bars(state);
+}
+
+/// Cloaks the bars that a peek draws a copy of, composited (see
+/// `PeekView::conceals_tab_bar`), and uncloaks the others, e.g. once that
+/// peek's window lands or the peek goes.
+fn conceal_copied_bars(state: &mut WmState) {
+  let peeks = &state.animation_manager.peeks;
+  let concealed = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| {
+      stack
+        .active_child()
+        .is_some_and(|active| peeks.conceals_tab_bar(&active.id()))
+    })
+    .map(|stack| stack.id())
+    .collect::<std::collections::HashSet<_>>();
+
+  for (stack_id, bar) in &mut state.tab_bars {
+    bar.set_cloaked(concealed.contains(stack_id));
   }
 }
 

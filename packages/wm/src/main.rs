@@ -130,16 +130,6 @@ async fn start_wm(
   setup_logging(&verbosity)?;
   log_panics();
 
-  // Left on by mistake, it would make animations look broken or differ
-  // from the defaults.
-  let isolation = wm_platform::isolation::current();
-  if isolation != wm_platform::isolation::Isolation::default() {
-    tracing::warn!(
-      "GLAZEWM_ISOLATE changes how moving windows are drawn: \
-       {isolation:?}."
-    );
-  }
-
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
 
@@ -218,21 +208,14 @@ async fn start_wm(
     // ~577ms on an eight-window relayout, and IPC commands, tab clicks
     // and timers waited for the animation to end. The catch-up is bounded
     // per frame so a burst cannot starve the animation in turn.
-    //
-    // Behind `GLAZEWM_ISOLATE=peeksfirst`, a tick with peeks to draw runs
-    // the catch-up after drawing them instead (see the tick's branch).
-    let peeks_first = isolation.peeks_first
-      && wm.state.animation_manager.peeks.is_active();
-    if !peeks_first {
-      if let Err(err) = catch_up_before_frame(
-        &mut wm,
-        &mut config,
-        &mut listeners,
-        &mut ipc_server,
-        &mut tray,
-      ) {
-        error_notifier.report(&err);
-      }
+    if let Err(err) = catch_up_before_frame(
+      &mut wm,
+      &mut config,
+      &mut listeners,
+      &mut ipc_server,
+      &mut tray,
+    ) {
+      error_notifier.report(&err);
     }
 
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
@@ -262,24 +245,7 @@ async fn start_wm(
         // Drain any stale ticks that piled up while the previous frame was
         // processing, so each update_animations call covers the freshest state.
         while wm.animation_tick_rx.try_recv().is_ok() {}
-        if peeks_first {
-          // Thumbnail updates only, so they land early in the frame and
-          // close together, ahead of any composition the catch-up's work
-          // would let fall between them (`STAND_INS_PLAN.md` task 7).
-          let drawn = wm.draw_peeks_first(&config);
-          if let Err(err) = catch_up_before_frame(
-            &mut wm,
-            &mut config,
-            &mut listeners,
-            &mut ipc_server,
-            &mut tray,
-          ) {
-            error_notifier.report(&err);
-          }
-          wm.finish_animations(&config, drawn)
-        } else {
-          wm.update_animations(&config)
-        }
+        wm.update_animations(&config)
       },
       // Reached only when no tick is pending, i.e. the timer stopped
       // ticking while something is still animating.
@@ -500,9 +466,10 @@ const CATCH_UP_BUDGET: Duration = Duration::from_millis(4);
 /// Mouse, window and display handlers mutate layout state -- display
 /// states, workspace membership, floating placement, unmanagement -- and
 /// so do due auto-stack and closing-window timers, which manage windows.
-/// Resize and move animations are safe: `handle_window_moved_or_resized`
-/// bails out early for any window holding a `ResizeSession`, so those
-/// events cost a rect query and nothing more. A workspace-switch slide has
+/// Resize and move animations were judged safe while
+/// `handle_window_moved_or_resized` bailed out early for any window
+/// holding a `ResizeSession` (the engine, since removed); not checked yet
+/// for windows on peeks. A workspace-switch slide has
 /// no such guard on every path, and delivering these events mid-slide
 /// broke the animation and left workspaces reporting no windows.
 ///

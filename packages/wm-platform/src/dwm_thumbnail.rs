@@ -1,6 +1,8 @@
 //! DWM thumbnails: live copies of one window drawn on another, which every
 //! stand-in, ring copy and overview preview the WM shows is made of.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use windows::Win32::{
   Foundation::{HWND, RECT},
   Graphics::Dwm::{
@@ -24,6 +26,9 @@ pub(crate) struct Look {
   pub visible: bool,
 }
 
+/// The [`Thumbnail::order`] of the next registration.
+static NEXT_ORDER: AtomicU64 = AtomicU64::new(0);
+
 /// A DWM thumbnail, unregistered on drop, which must come before its
 /// destination window is destroyed.
 ///
@@ -31,7 +36,11 @@ pub(crate) struct Look {
 /// unchanged one costs nothing.
 pub(crate) struct Thumbnail {
   handle: isize,
+  order: u64,
   look: Look,
+  /// Whether it is kept hidden whatever `look` says, as the stand-in it
+  /// belongs to is hidden on a window it shares (see `PeekSurface`).
+  held: bool,
 }
 
 impl Thumbnail {
@@ -49,10 +58,27 @@ impl Thumbnail {
     source: HWND,
     look: Look,
   ) -> Option<Self> {
+    Self::register_held(dest, source, look, false)
+  }
+
+  /// [`register_with`](Self::register_with), kept hidden from its first
+  /// frame if `held` (see [`set_held`](Self::set_held)).
+  pub fn register_held(
+    dest: HWND,
+    source: HWND,
+    look: Look,
+    held: bool,
+  ) -> Option<Self> {
     // SAFETY: Registration fails for anything but two valid top-level
     // windows.
     let handle = unsafe { DwmRegisterThumbnail(dest, source) }.ok()?;
-    let thumbnail = Self { handle, look };
+    let order = NEXT_ORDER.fetch_add(1, Ordering::Relaxed);
+    let thumbnail = Self {
+      handle,
+      order,
+      look,
+      held,
+    };
 
     let mut flags = DWM_TNP_RECTDESTINATION
       | DWM_TNP_OPACITY
@@ -66,8 +92,34 @@ impl Thumbnail {
     Some(thumbnail)
   }
 
+  /// What it shows, or would if not held.
   pub fn look(&self) -> &Look {
     &self.look
+  }
+
+  /// When it was registered, against every other thumbnail: one of two on
+  /// a destination with the higher order is drawn over the other.
+  pub fn order(&self) -> u64 {
+    self.order
+  }
+
+  /// A second thumbnail of `source` on `dest` showing what this one does,
+  /// registered held and so stacked above this one (see
+  /// [`set_held`](Self::set_held)).
+  pub fn held_anew(&self, dest: HWND, source: HWND) -> Option<Self> {
+    Self::register_held(dest, source, self.look, true)
+  }
+
+  /// Keeps it hidden whatever its look says, or lets it show that again.
+  pub fn set_held(&mut self, held: bool) {
+    if self.held == held {
+      return;
+    }
+
+    self.held = held;
+    if self.look.visible {
+      let _ = self.apply(DWM_TNP_VISIBLE, &self.look);
+    }
   }
 
   /// Shows `look`, sending DWM only what differs from what it shows now.
@@ -82,15 +134,14 @@ impl Thumbnail {
     if look.opacity != self.look.opacity {
       flags |= DWM_TNP_OPACITY;
     }
-    if look.visible != self.look.visible {
+    if look.visible != self.look.visible && !self.held {
       flags |= DWM_TNP_VISIBLE;
     }
 
-    if flags == 0 {
-      return Ok(());
+    // Held, a change of visibility is only noted, for when it is let go.
+    if flags != 0 {
+      self.apply(flags, &look)?;
     }
-
-    self.apply(flags, &look)?;
     self.look = Look {
       source: look.source.or(self.look.source),
       ..look
@@ -150,7 +201,7 @@ impl Thumbnail {
       rcSource: look.source.unwrap_or_default(),
       rcDestination: look.dest,
       opacity: look.opacity,
-      fVisible: look.visible.into(),
+      fVisible: (look.visible && !self.held).into(),
       fSourceClientAreaOnly: false.into(),
     };
 
