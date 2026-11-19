@@ -109,3 +109,5 @@ overview:
     squash: 0.5
     # Fading outlines trailing a dragged window: 0 (none) to 8.
     trail: 0
+    # How much the picked window grows in the large view: 0 to 0.15.
+    window_lift: 0.03

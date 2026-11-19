@@ -620,7 +620,10 @@ impl Screen {
       .map(|(index, (card, label))| {
         // Off the top with a hidden row.
         if !layout.has_scene()
-          || self.row_placement() == RowPlacement::Hidden
+          || matches!(
+            self.row_placement(),
+            RowPlacement::Hidden | RowPlacement::Near
+          )
         {
           return None;
         }

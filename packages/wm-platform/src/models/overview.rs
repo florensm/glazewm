@@ -478,6 +478,10 @@ pub struct OverviewEffects {
   /// Fading copies of a dragged window's outline trailing it; `0` for
   /// none, at most `MAX_TRAIL`.
   pub trail: u32,
+
+  /// How much the picked window grows in the large view of the
+  /// activities and the exposé, as a fraction of its size.
+  pub window_lift: f32,
 }
 
 impl OverviewEffects {
@@ -499,6 +503,7 @@ impl OverviewEffects {
     dim: 0.0,
     squash: 0.0,
     trail: 0,
+    window_lift: 0.0,
   };
 }
 
@@ -518,6 +523,7 @@ impl Default for OverviewEffects {
       dim: 0.0,
       squash: 0.5,
       trail: 0,
+      window_lift: 0.03,
     }
   }
 }

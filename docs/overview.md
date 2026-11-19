@@ -65,6 +65,10 @@ top of the workspace, which stays where it is, while:
 It slides back up once the cursor leaves it, or the keyboard goes in
 among the windows.
 
+As the cursor nears the top, the sliver peeks further out and brightens.
+Coming down, the miniatures arrive as a wave from under the cursor (or
+the selected one, by keyboard), those further away a moment later.
+
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
 goes through them while it is open (unless a search is on, which it then
 steps through). Cards are drawn at the size each layout
@@ -546,6 +550,11 @@ overview:
 
     # Fading outlines trailing a dragged window; 0 for none, at most 8.
     trail: 0
+
+    # How much the picked window grows in the large view of the
+    # activities and the exposé, as a fraction of its size, from 0 to
+    # 0.15.
+    window_lift: 0.03
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the

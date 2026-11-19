@@ -71,7 +71,8 @@ use crate::{
   overview_chrome::{picture_rect, CardPicture, SearchControls},
   overview_effects::Entrance,
   overview_layout::{
-    Camera, CardMetrics, CardView, Placement, RectF, Spring, Zoom,
+    Camera, CardMetrics, CardView, Placement, RectF, RowPlacement, Spring,
+    Zoom,
   },
   overview_scene::Scene,
   overview_state::{
@@ -657,8 +658,12 @@ struct Screen {
   /// Where the activities show the selected workspace large.
   scene_area: RectF,
 
-  /// Whether a hiding row of miniatures is slid down.
-  is_row_revealed: bool,
+  /// Where a hiding row of miniatures is: hidden, near or revealed.
+  row: RowPlacement,
+
+  /// Where a row just revealed ripples down from, across: its cards
+  /// nearest it arrive first.
+  row_wave: Option<f32>,
 
   /// Whether the cursor, rather than the keyboard, decides that.
   row_follows_pointer: bool,

@@ -440,12 +440,22 @@ pub(crate) enum RowPlacement {
   /// Tucked up off the top but for a sliver, the scene taking its room.
   Hidden,
 
+  /// As `Hidden`, but peeking further out as the cursor nears it.
+  Near,
+
   /// Slid down over the top of a scene laid out as for `Hidden`.
   Revealed,
 }
 
-/// How much of a hidden row's miniatures still shows, in logical pixels.
+/// How much of a hidden row's miniatures still shows, and of one the
+/// cursor nears, in logical pixels.
 pub(crate) const ROW_PEEK: f32 = 10.0;
+const ROW_NEAR_PEEK: f32 = 26.0;
+
+/// How strongly a hidden row's miniatures show, and those of one the
+/// cursor nears.
+const ROW_HIDDEN_OPACITY: f32 = 0.55;
+const ROW_NEAR_OPACITY: f32 = 0.85;
 
 /// Every card in miniature in a row along the top, their names under
 /// them, and below them the scene: where the selected workspace shows
@@ -473,10 +483,16 @@ pub(crate) fn activities(
 
   let row_width = widths * scale + gaps;
   let card_height = metrics.height * scale;
-  let cy = match row {
-    RowPlacement::Hidden => metrics.px(ROW_PEEK) - card_height / 2.0,
+  let (cy, opacity) = match row {
+    RowPlacement::Hidden => {
+      (metrics.px(ROW_PEEK) - card_height / 2.0, ROW_HIDDEN_OPACITY)
+    }
+    RowPlacement::Near => (
+      metrics.px(ROW_NEAR_PEEK) - card_height / 2.0,
+      ROW_NEAR_OPACITY,
+    ),
     RowPlacement::Fixed | RowPlacement::Revealed => {
-      top + card_height / 2.0
+      (top + card_height / 2.0, 1.0)
     }
   };
   let mut x = (view_width - row_width) / 2.0;
@@ -484,7 +500,10 @@ pub(crate) fn activities(
     .iter()
     .map(|slot| {
       let width = slot.width * scale;
-      let placement = Placement::new(x + width / 2.0, cy, scale);
+      let placement = Placement {
+        opacity,
+        ..Placement::new(x + width / 2.0, cy, scale)
+      };
       x += width + gap;
       placement
     })
@@ -493,7 +512,7 @@ pub(crate) fn activities(
   let search_y = metrics.bottom_search_y();
   let scene_top = match row {
     RowPlacement::Fixed => top + card_height + label + metrics.px(22.0),
-    RowPlacement::Hidden | RowPlacement::Revealed => {
+    RowPlacement::Hidden | RowPlacement::Near | RowPlacement::Revealed => {
       metrics.px(ROW_PEEK) + top + metrics.px(22.0)
     }
   };
@@ -1271,8 +1290,8 @@ mod tests {
   use super::{
     activities, chrome_opacity, cover_crop, ease_out_back, ease_out_cubic,
     stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
-    Placement, RectF, RowPlacement, Spring, SpringRect, Tile, Zoom,
-    ROW_PEEK, STACK_MAX_WIDTHS,
+    Placement, RectF, RowPlacement, Spring, SpringRect, Targets, Tile,
+    Zoom, ROW_PEEK, STACK_MAX_WIDTHS,
   };
   use crate::{OverviewCurve, OverviewLayoutMode};
 
@@ -1831,9 +1850,18 @@ mod tests {
 
     let (_, fixed) = layout(RowPlacement::Fixed);
     let (hidden, scene) = layout(RowPlacement::Hidden);
+    let (near, near_scene) = layout(RowPlacement::Near);
     let (revealed, revealed_scene) = layout(RowPlacement::Revealed);
 
+    // The row peeks further, and shows stronger, the nearer it is wanted.
     assert_eq!(scene, revealed_scene);
+    assert_eq!(scene, near_scene);
+    let bottom =
+      |targets: &Targets| targets.cards[0].rect(&metrics).bottom();
+    assert!(bottom(&hidden) < bottom(&near));
+    assert!(bottom(&near) < bottom(&revealed));
+    assert!(hidden.cards[0].opacity < near.cards[0].opacity);
+    assert!(near.cards[0].opacity < revealed.cards[0].opacity);
     assert!(scene.y < fixed.y && scene.h > fixed.h);
     assert_close(hidden.cards[0].rect(&metrics).bottom(), ROW_PEEK);
     assert_close(
