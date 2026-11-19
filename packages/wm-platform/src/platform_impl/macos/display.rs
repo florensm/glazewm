@@ -4,15 +4,14 @@ use objc2::{rc::Retained, MainThreadMarker};
 use objc2_app_kit::NSScreen;
 use objc2_core_foundation::{CFRetained, CFUUID};
 use objc2_core_graphics::{
-  CGDirectDisplayID, CGDisplayBounds, CGDisplayCopyDisplayMode,
-  CGDisplayMirrorsDisplay, CGDisplayMode, CGDisplayRotation, CGError,
-  CGGetActiveDisplayList, CGGetOnlineDisplayList, CGMainDisplayID,
+  CGDirectDisplayID, CGDisplayBounds, CGDisplayMirrorsDisplay, CGError,
+  CGGetActiveDisplayList, CGMainDisplayID,
 };
 use objc2_foundation::{ns_string, NSNumber, NSRect};
 
 use crate::{
-  platform_impl::ffi, ConnectionState, Dispatcher, DisplayDeviceId,
-  DisplayId, MirroringState, Point, Rect, ThreadBound,
+  platform_impl::ffi, Dispatcher, DisplayDeviceId, DisplayId,
+  MirroringState, Point, Rect, ThreadBound,
 };
 
 /// Platform-specific implementation of [`Display`].
@@ -225,47 +224,6 @@ impl DisplayDevice {
     DisplayDeviceId(uuid_string)
   }
 
-  /// Implements [`DisplayDevice::rotation`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn rotation(&self) -> crate::Result<f32> {
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(CGDisplayRotation(self.cg_display_id) as f32)
-  }
-
-  /// Implements [`DisplayDevice::refresh_rate`].
-  pub(crate) fn refresh_rate(&self) -> crate::Result<f32> {
-    // NOTE: Calling `CGDisplayModeRelease` on cleanup is not needed, since
-    // it's equivalent to `CFRelease` in this case. Ref: https://developer.apple.com/documentation/coregraphics/cgdisplaymoderelease
-    let display_mode = CGDisplayCopyDisplayMode(self.cg_display_id)
-      .ok_or(crate::Error::DisplayModeNotFound)?;
-
-    let refresh_rate = CGDisplayMode::refresh_rate(Some(&display_mode));
-
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(refresh_rate as f32)
-  }
-
-  /// Implements [`DisplayDevice::is_builtin`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn is_builtin(&self) -> crate::Result<bool> {
-    // TODO: Implement this properly.
-    let main_display_id = CGMainDisplayID();
-    Ok(self.cg_display_id == main_display_id)
-  }
-
-  /// Implements [`DisplayDevice::connection_state`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn connection_state(&self) -> crate::Result<ConnectionState> {
-    let display_mode = CGDisplayCopyDisplayMode(self.cg_display_id);
-
-    // TODO: Implement this properly.
-    if display_mode.is_none() {
-      Ok(ConnectionState::Disconnected)
-    } else {
-      Ok(ConnectionState::Active)
-    }
-  }
-
   /// Implements [`DisplayDevice::mirroring_state`].
   #[allow(clippy::unnecessary_wraps)]
   pub(crate) fn mirroring_state(
@@ -309,11 +267,6 @@ impl DisplayDevice {
       Ok(Some(MirroringState::Target))
     }
   }
-
-  /// Implements [`DisplayDeviceExtMacOs::cg_display_id`].
-  pub(crate) fn cg_display_id(&self) -> CGDirectDisplayID {
-    self.cg_display_id
-  }
 }
 
 impl From<DisplayDevice> for crate::DisplayDevice {
@@ -355,39 +308,6 @@ pub(crate) fn all_displays(
 
     Ok(displays)
   })?
-}
-
-/// Implements [`Dispatcher::display_devices`].
-pub(crate) fn all_display_devices(
-  _: &Dispatcher,
-) -> crate::Result<Vec<crate::DisplayDevice>> {
-  let mut cg_display_ids: Vec<CGDirectDisplayID> = vec![0; 32]; // Max 32 displays
-  let mut display_count: u32 = 0;
-
-  #[allow(clippy::cast_possible_truncation)]
-  let result = unsafe {
-    CGGetOnlineDisplayList(
-      cg_display_ids.len() as u32,
-      cg_display_ids.as_mut_ptr(),
-      &raw mut display_count,
-    )
-  };
-
-  if result != CGError::Success {
-    return Err(crate::Error::DisplayEnumerationFailed);
-  }
-
-  cg_display_ids.truncate(display_count as usize);
-
-  cg_display_ids
-    .into_iter()
-    .map(|cg_display_id| {
-      Ok(
-        DisplayDevice::new(cg_display_id, cg_display_uuid(cg_display_id)?)
-          .into(),
-      )
-    })
-    .collect()
 }
 
 /// Implements [`Dispatcher::display_from_point`].

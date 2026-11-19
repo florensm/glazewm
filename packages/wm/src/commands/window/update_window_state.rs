@@ -6,6 +6,8 @@ use wm_common::WindowTransitionParams;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
+#[cfg(target_os = "windows")]
+use crate::traits::PositionGetters;
 use crate::{
   commands::{
     container::{
@@ -15,9 +17,7 @@ use crate::{
     window::update_stack_state,
   },
   models::{Container, InsertionTarget, StackContainer, WindowContainer},
-  traits::{
-    CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
-  },
+  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -88,7 +88,7 @@ pub fn update_window_state(
 
   match target_state {
     WindowState::Tiling => set_tiling(&window, state, config),
-    _ => set_non_tiling(window, target_state, state),
+    _ => set_non_tiling(window, &target_state, state),
   }
 }
 
@@ -152,9 +152,10 @@ fn start_minimize_animation(
     crate::commands::general::surrogate_effects_for(is_focused, config);
 
   let native_ref = window.native();
-  state.animation_manager.start_minimize_animation(
+  state.animation_manager.start_away_animation(
+    crate::animation::AwayTransition::Minimize,
     window.id(),
-    rect,
+    &rect,
     effect_opacity,
     corner_style,
     backdrop_overlay,
@@ -162,7 +163,7 @@ fn start_minimize_animation(
     &WindowTransitionParams::from_minimize(
       &config.value.animations.window_minimize,
     ),
-    &*native_ref,
+    &native_ref,
   );
 }
 
@@ -232,16 +233,10 @@ fn set_tiling(
     state,
   )?;
 
-  #[allow(clippy::cast_precision_loss)]
   if let Some(insertion_target) = &insertion_target {
-    let size_scale = (insertion_target.prev_sibling_count + 1) as f32
-      / (tiling_window.tiling_siblings().count() + 1) as f32;
-
-    // Scale the window's previous size based on the current number of
-    // siblings. E.g. if the window was 0.5 with 1 sibling, and now has 2
-    // siblings, scale to 0.5 * (2/3) to maintain proportional sizing.
-    let target_size = insertion_target.prev_tiling_size * size_scale;
-    resize_tiling_container(&tiling_window.clone().into(), target_size);
+    let tiling_window = tiling_window.clone().into();
+    let target_size = insertion_target.restored_size(&tiling_window);
+    resize_tiling_container(&tiling_window, target_size);
   }
 
   state
@@ -256,13 +251,13 @@ fn set_tiling(
 /// `WindowState::Fullscreen`, or `WindowState::Minimized`.
 fn set_non_tiling(
   window: WindowContainer,
-  target_state: WindowState,
+  target_state: &WindowState,
   state: &mut WmState,
 ) -> anyhow::Result<WindowContainer> {
   // A window can only be updated to a minimized state if it is
   // natively minimized.
   // TODO: Consider doing the same for maximized and fullscreen states.
-  if target_state == WindowState::Minimized
+  if *target_state == WindowState::Minimized
     && !window.native_properties().is_minimized
   {
     info!("No window state update. Minimizing window.");
@@ -285,7 +280,7 @@ fn set_non_tiling(
       // Update the window's previous state if the discriminant changes.
       // TODO: Move out handling of active drag. Can then simplify calls to
       // `set_active_drag` in `handle_window_moved_or_resized_end`.
-      if !current_state.is_same_state(&target_state)
+      if !current_state.is_same_state(target_state)
         && window.active_drag().is_none()
       {
         window.set_prev_state(current_state);
@@ -297,6 +292,7 @@ fn set_non_tiling(
 
       // Mark as fullscreen immediately to ensure browser APIs work during
       // animation.
+      #[cfg(target_os = "windows")]
       if matches!(target_state, WindowState::Fullscreen(_)) {
         if let Err(err) = window.native().mark_fullscreen(true) {
           warn!(
@@ -346,6 +342,7 @@ fn set_non_tiling(
 
       // Mark as fullscreen immediately to ensure browser APIs work during
       // animation.
+      #[cfg(target_os = "windows")]
       if matches!(target_state, WindowState::Fullscreen(_)) {
         if let Err(err) = non_tiling_window.native().mark_fullscreen(true)
         {

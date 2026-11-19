@@ -187,6 +187,12 @@ pub enum Key {
   Muhenkan,
   Henkan,
 
+  // Mouse wheel turns, usable as the last key of a keybinding.
+  WheelUp,
+  WheelDown,
+  WheelLeft,
+  WheelRight,
+
   // OEM keys
   OemSemicolon,
   OemQuestion,
@@ -408,6 +414,23 @@ impl_key_parsing! {
   // Language-specific keys
   Muhenkan => ["muhenkan"],
   Henkan => ["henkan"],
+
+  // Mouse wheel
+  WheelUp => ["wheel_up", "wheel_scroll_up"],
+  WheelDown => ["wheel_down", "wheel_scroll_down"],
+  WheelLeft => ["wheel_left", "wheel_scroll_left"],
+  WheelRight => ["wheel_right", "wheel_scroll_right"],
+}
+
+impl Key {
+  /// Whether this is a turn of the mouse wheel rather than a key.
+  #[must_use]
+  pub fn is_wheel(self) -> bool {
+    matches!(
+      self,
+      Key::WheelUp | Key::WheelDown | Key::WheelLeft | Key::WheelRight
+    )
+  }
 }
 
 #[cfg(test)]

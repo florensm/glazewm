@@ -1,3 +1,4 @@
+pub mod column;
 pub mod container;
 pub mod general;
 pub mod monitor;

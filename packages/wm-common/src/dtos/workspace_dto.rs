@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::ContainerDto;
-use crate::TilingDirection;
+use crate::{Layout, TilingDirection};
 
 /// User-friendly representation of a workspace.
 ///
@@ -18,9 +18,11 @@ pub struct WorkspaceDto {
   pub child_focus_order: Vec<Uuid>,
   pub has_focus: bool,
   pub is_displayed: bool,
+  pub is_special: bool,
   pub width: i32,
   pub height: i32,
   pub x: i32,
   pub y: i32,
   pub tiling_direction: TilingDirection,
+  pub layout: Layout,
 }

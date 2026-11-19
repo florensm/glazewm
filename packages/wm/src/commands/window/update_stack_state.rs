@@ -1,5 +1,7 @@
 use anyhow::Context;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 use wm_common::WindowState;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -71,6 +73,7 @@ pub fn update_stack_state(
     focus_within_workspace(stack);
   }
 
+  #[cfg(target_os = "windows")]
   if matches!(target_state, WindowState::Fullscreen(_)) {
     for window in stack.windows() {
       if let Err(err) = window.native().mark_fullscreen(true) {
@@ -193,16 +196,12 @@ fn tile_stack(
     Some(target_index),
   )?;
 
-  #[allow(clippy::cast_precision_loss)]
   if let (Some(target), Ok(tiling_stack)) =
     (&insertion_target, stack.as_tiling_container())
   {
-    let size_scale = (target.prev_sibling_count + 1) as f32
-      / (tiling_stack.tiling_siblings().count() + 1) as f32;
-
     resize_tiling_container(
       &tiling_stack,
-      target.prev_tiling_size * size_scale,
+      target.restored_size(&tiling_stack),
     );
   }
 
@@ -389,7 +388,11 @@ mod tests {
     assert_eq!(s.stack.index(), 1);
     assert!(approx_eq(s.stack.tiling_size(), 0.7));
     assert!(approx_eq(s.left.tiling_size(), 0.3));
-    assert!(s.stack.windows().iter().all(|w| w.is_tiling_window()));
+    assert!(s
+      .stack
+      .windows()
+      .iter()
+      .all(crate::models::WindowContainer::is_tiling_window));
   }
 
   #[test]
@@ -640,8 +643,12 @@ mod tests {
     s.config.value.stack.new_tab_position =
       wm_common::NewTabPosition::AfterActive;
     let left = s.left.clone();
-    let order =
-      s.stack.windows().iter().map(|w| w.id()).collect::<Vec<_>>();
+    let order = s
+      .stack
+      .windows()
+      .iter()
+      .map(CommonGetters::id)
+      .collect::<Vec<_>>();
 
     crate::commands::window::stack_absorb_neighbor(
       &left,
@@ -652,7 +659,11 @@ mod tests {
     .unwrap();
 
     let stack = left.parent().unwrap().as_stack().cloned().unwrap();
-    let ids = stack.windows().iter().map(|w| w.id()).collect::<Vec<_>>();
+    let ids = stack
+      .windows()
+      .iter()
+      .map(CommonGetters::id)
+      .collect::<Vec<_>>();
     assert_eq!(ids, vec![left.id(), order[0], order[1]]);
   }
 

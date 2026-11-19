@@ -6,11 +6,11 @@ use wm_platform::NativeWindowWindowsExt;
 
 #[cfg(target_os = "windows")]
 use crate::commands::window::unmanage_if_embedded;
+#[cfg(target_os = "windows")]
+use crate::traits::CommonGetters;
 use crate::{
-  commands::window::unmanage_window,
-  traits::{CommonGetters, WindowGetters},
-  user_config::UserConfig,
-  wm_state::WmState,
+  commands::window::unmanage_window, traits::WindowGetters,
+  user_config::UserConfig, wm_state::WmState,
 };
 
 pub fn handle_window_hidden(

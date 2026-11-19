@@ -10,6 +10,7 @@ mod native_window;
 mod single_instance;
 pub(crate) mod wallpaper;
 pub(crate) mod wallpaper_surface;
+mod wheel_hook;
 mod window_enabler;
 mod window_listener;
 
@@ -20,4 +21,5 @@ pub(crate) use keyboard_hook::*;
 pub(crate) use mouse_listener::*;
 pub(crate) use native_window::*;
 pub(crate) use single_instance::*;
+pub(crate) use wheel_hook::*;
 pub(crate) use window_listener::*;

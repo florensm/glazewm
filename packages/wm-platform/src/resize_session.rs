@@ -109,8 +109,6 @@ pub struct SessionOptions {
   /// many windows at once. Callers that cache the color per window (see
   /// `AnimationManager`) pass it here; `None` samples fresh.
   pub edge_color: Option<Color>,
-  /// Whether the surrogate is visible immediately after creation.
-  pub initially_visible: bool,
   /// Corner style to apply to the surrogate, matching the real window's
   /// configured style so the surrogate is visually consistent during the
   /// animation.
@@ -150,6 +148,7 @@ pub struct SessionOptions {
 /// # Platform-specific
 ///
 /// Only available on Windows.
+#[allow(clippy::struct_excessive_bools)]
 pub struct ResizeSession {
   /// Raw handle to the real app window. Stored as `isize` to avoid `Send`
   /// issues with windows-rs handle types. Set to `0` by `pre_commit` when
@@ -312,9 +311,15 @@ impl ResizeSession {
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
-    options: SessionOptions,
+    options: &SessionOptions,
   ) -> crate::Result<Self> {
-    Self::begin_impl(hwnd, source_rect, target_rect, options, None)
+    Ok(Self::begin_impl(
+      hwnd,
+      source_rect,
+      target_rect,
+      options,
+      None,
+    ))
   }
 
   /// Like [`begin`], but reconfigures `warm_surrogate` (see
@@ -329,16 +334,16 @@ impl ResizeSession {
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
-    options: SessionOptions,
+    options: &SessionOptions,
     warm_surrogate: NativeSurrogate,
   ) -> crate::Result<Self> {
-    Self::begin_impl(
+    Ok(Self::begin_impl(
       hwnd,
       source_rect,
       target_rect,
       options,
       Some(warm_surrogate),
-    )
+    ))
   }
 
   /// Shared setup for [`begin`]/[`begin_reusing_surrogate`].
@@ -360,9 +365,9 @@ impl ResizeSession {
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
-    options: SessionOptions,
+    options: &SessionOptions,
     warm_surrogate: Option<NativeSurrogate>,
-  ) -> crate::Result<Self> {
+  ) -> Self {
     let border_inset = compute_border_inset(hwnd);
 
     let is_growing = target_rect.width() >= source_rect.width()
@@ -398,7 +403,6 @@ impl ResizeSession {
           source_rect,
           source_rect,
           effect_opacity,
-          options.initially_visible,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -420,7 +424,6 @@ impl ResizeSession {
           source_rect,
           source_rect,
           effect_opacity,
-          options.initially_visible,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -462,7 +465,7 @@ impl ResizeSession {
       companion_wait_started_at: None,
     };
     session.sync_fill();
-    Ok(session)
+    session
   }
 
   /// Returns the tint/blur-amount/corner-radius/opacity/saturation for the
@@ -555,6 +558,7 @@ impl ResizeSession {
   ///
   /// Required for growing curtain-reveal sessions so DWM captures
   /// correctly-sized content before the surrogate begins expanding.
+  #[must_use]
   pub fn needs_preposition(&self) -> bool {
     self.is_growing
   }
@@ -620,6 +624,7 @@ impl ResizeSession {
   ///
   /// Used by `platform_sync` to skip the per-tick `DwmGetWindowAttribute`
   /// query on steady-state `Frozen` frames where the cloak state is known.
+  #[must_use]
   pub fn is_session_cloaked(&self) -> bool {
     self.session_cloaked
   }
@@ -640,8 +645,12 @@ impl ResizeSession {
   /// source windows). Callers use this to decide whether to freeze the
   /// real window behind the surrogate or fall back to direct
   /// repositioning.
+  #[must_use]
   pub fn has_surrogate(&self) -> bool {
-    self.surrogate.as_ref().map_or(false, |s| s.has_thumbnail())
+    self
+      .surrogate
+      .as_ref()
+      .is_some_and(NativeSurrogate::has_thumbnail)
   }
 
   /// Whether the fade-out tail should keep the surrogate fully opaque a
@@ -674,10 +683,8 @@ impl ResizeSession {
     self.surrogate.take()
   }
 
-  /// Makes the surrogate visible.
-  ///
-  /// Used after creating the surrogate with `initially_visible = false` to
-  /// reveal it once the real window has been cloaked.
+  /// Makes the surrogate, created hidden, visible once the real window
+  /// has been cloaked.
   pub fn show(&mut self) {
     if let Some(ref mut surrogate) = self.surrogate {
       surrogate.set_visible(true);
@@ -700,6 +707,7 @@ impl ResizeSession {
   /// full surrogate). Used for zoom-in (open) and zoom-out (close)
   /// effects. The surrogate window itself stays fixed; only the
   /// thumbnail rect animates.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
   pub fn update_zoom_fade(&mut self, progress: f32, opacity: u8) {
     self.zoom_progress = progress;
     self.sync_fill();
@@ -857,15 +865,7 @@ impl ResizeSession {
       return;
     }
 
-    let actual = to_logical(
-      &Rect::from_ltrb(
-        window.left,
-        window.top,
-        window.right,
-        window.bottom,
-      ),
-      &self.border_inset,
-    );
+    let actual = to_logical(&window.into(), &self.border_inset);
     if (actual.width(), actual.height()) == target_dims {
       // Use the fast single-call path: the thumbnail handle is still valid
       // so there is no need to unregister and re-register — only rcSource
@@ -939,10 +939,9 @@ impl ResizeSession {
   /// Updates the surrogate, clamping its visible area to `monitor_rect`.
   ///
   /// When `current_rect` extends outside `monitor_rect`, the surrogate is
-  /// constrained to the intersection and the DWM thumbnail `rcSource` and
-  /// `rcDestination` are adjusted to show only the visible slice —
-  /// matching the approach used by `WorkspaceSurrogate`. Hides the
-  /// surrogate when the rect is fully off-screen.
+  /// constrained to the intersection (see
+  /// `NativeSurrogate::show_clipped`). Hides the surrogate when the rect
+  /// is fully off-screen.
   pub fn update_clipped(
     &mut self,
     current_rect: &Rect,
@@ -955,54 +954,13 @@ impl ResizeSession {
     };
 
     let logical = to_logical(current_rect, &self.border_inset);
-
-    let vis_left = logical.x().max(monitor_rect.x());
-    let vis_top = logical.y().max(monitor_rect.y());
-    let vis_right = (logical.x() + logical.width())
-      .min(monitor_rect.x() + monitor_rect.width());
-    let vis_bottom = (logical.y() + logical.height())
-      .min(monitor_rect.y() + monitor_rect.height());
-
-    if vis_left >= vis_right || vis_top >= vis_bottom {
-      surrogate.set_visible(false);
-      self.current_rect = None;
-      return;
-    }
-
-    let src_left = vis_left - logical.x();
-    let src_top = vis_top - logical.y();
-    let constrained_w = vis_right - vis_left;
-    let constrained_h = vis_bottom - vis_top;
-
-    // `rcSource` samples from the real window's coordinate space, so it
-    // must carry the same `border_inset` offset as
-    // `register_thumbnail`/ `update_thumbnail_dims` (see
-    // `update_zoom_fade`'s comment) -- `src_left`/`src_top` above are
-    // the visible slice's offset within the *logical* rect, not yet
-    // shifted into the window's physical/source space.
-    surrogate.set_thumbnail_rects(
-      RECT {
-        left: self.border_inset.left + src_left,
-        top: self.border_inset.top + src_top,
-        right: self.border_inset.left + src_left + constrained_w,
-        bottom: self.border_inset.top + src_top + constrained_h,
-      },
-      RECT {
-        left: 0,
-        top: 0,
-        right: constrained_w,
-        bottom: constrained_h,
-      },
+    self.current_rect = surrogate.show_clipped(
+      &logical,
+      monitor_rect,
+      self.border_inset,
+      opacity,
+      None,
     );
-
-    let constrained =
-      Rect::from_xy(vis_left, vis_top, constrained_w, constrained_h);
-    if let Err(err) = surrogate.reposition(&constrained) {
-      tracing::warn!("Surrogate clipped update failed: {err}.");
-    }
-    surrogate.set_window_opacity(opacity);
-    surrogate.set_visible(true);
-    self.current_rect = Some(constrained);
   }
 
   /// Redirects the session to a new target rect while the surrogate is
@@ -1139,15 +1097,7 @@ impl ResizeSession {
         }
         .is_ok()
         {
-          to_logical(
-            &Rect::from_ltrb(
-              window.left,
-              window.top,
-              window.right,
-              window.bottom,
-            ),
-            &self.border_inset,
-          )
+          to_logical(&window.into(), &self.border_inset)
         } else {
           logical.clone()
         };
@@ -1225,12 +1175,7 @@ impl ResizeSession {
           std::ptr::from_mut(&mut current).cast(),
         )
         .is_ok()
-      } && Rect::from_ltrb(
-        current.left,
-        current.top,
-        current.right,
-        current.bottom,
-      ) == self.target_rect;
+      } && Rect::from(current) == self.target_rect;
 
       if at_target {
         self.finish_commit();
@@ -1284,12 +1229,7 @@ impl ResizeSession {
         std::ptr::from_mut(&mut current).cast(),
       )
       .is_ok()
-    } && Rect::from_ltrb(
-      current.left,
-      current.top,
-      current.right,
-      current.bottom,
-    ) == self.target_rect;
+    } && Rect::from(current) == self.target_rect;
 
     if at_target {
       self.finish_commit();
@@ -1372,7 +1312,8 @@ impl ResizeSession {
 
     // SAFETY: `HWND(self.hwnd)` is valid (verified above). With
     // `SWP_NOZORDER` set, `hWndInsertAfter` (`HWND(0)`) is ignored per
-    // the Win32 documentation.
+    // the Win32 documentation. Asynchronous, since this runs on shutdown,
+    // where a hung app must not keep the WM from exiting.
     unsafe {
       SetWindowPos(
         HWND(self.hwnd),
@@ -1381,7 +1322,10 @@ impl ResizeSession {
         self.target_rect.y(),
         self.target_rect.width(),
         self.target_rect.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+        SWP_NOACTIVATE
+          | SWP_NOSENDCHANGING
+          | SWP_NOZORDER
+          | SWP_ASYNCWINDOWPOS,
       )
     }?;
 
@@ -1462,14 +1406,12 @@ fn sampleable_rect(hwnd: HWND) -> Option<Rect> {
 
     let mut rect = RECT::default();
     GetWindowRect(hwnd, &raw mut rect).ok()?;
-    Some(Rect::from_ltrb(
-      rect.left,
-      rect.top,
-      rect.right,
-      rect.bottom,
-    ))
+    Some(rect.into())
   }
 }
+
+/// Pixels sampled along each edge strip by [`sample_edge_color`].
+const EDGE_SAMPLES: i32 = 32;
 
 /// Samples the dominant background color near the trailing content edge by
 /// `BitBlt`-ing two narrow strips from the already-composited screen.
@@ -1585,19 +1527,18 @@ fn sample_edge_color(
   // are independent allocations that outlive this scope.
   unsafe { ReleaseDC(HWND(0), hdc_screen) };
 
-  const N: i32 = 32;
   let mut counts: HashMap<u32, u32> = HashMap::with_capacity(64);
 
-  for i in 0..N {
-    let sy = (strip_h - 1) * i / (N - 1);
+  for i in 0..EDGE_SAMPLES {
+    let sy = (strip_h - 1) * i / (EDGE_SAMPLES - 1);
     // SAFETY: hdc_right is a valid DC with hbm_right selected.
     let c = unsafe { GetPixel(hdc_right, 0, sy) };
     if c.0 != 0xFFFF_FFFF {
       *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
     }
   }
-  for i in 0..N {
-    let sx = (strip_w - 1) * i / (N - 1);
+  for i in 0..EDGE_SAMPLES {
+    let sx = (strip_w - 1) * i / (EDGE_SAMPLES - 1);
     // SAFETY: hdc_bottom is a valid DC with hbm_bottom selected.
     let c = unsafe { GetPixel(hdc_bottom, sx, 0) };
     if c.0 != 0xFFFF_FFFF {

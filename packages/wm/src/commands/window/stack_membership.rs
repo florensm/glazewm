@@ -8,7 +8,7 @@ use super::{
 use crate::{
   commands::container::{
     attach_container, detach_container, move_container_within_tree,
-    set_focused_descendant, wrap_in_stack_container,
+    set_focused_descendant, wrap_in_container,
   },
   models::{
     other_stack_tabs, InsertionTarget, NonTilingWindow, StackContainer,
@@ -156,7 +156,7 @@ pub fn wrap_window_in_stack(
 
   match window {
     WindowContainer::TilingWindow(window) => {
-      wrap_in_stack_container(stack, &parent, &[window.clone().into()])?;
+      wrap_in_container(stack, &parent, &[window.clone().into()])?;
     }
     WindowContainer::NonTilingWindow(window) => {
       let index = window.index();

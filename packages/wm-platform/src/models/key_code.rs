@@ -245,6 +245,11 @@ impl_key_code_conversion! {
   // Language-specific keys
   Muhenkan => { windows: VK_NONCONVERT, },
   Henkan => { windows: VK_CONVERT, },
+  // The mouse wheel has no key codes.
+  WheelUp => {},
+  WheelDown => {},
+  WheelLeft => {},
+  WheelRight => {},
 }
 
 #[cfg(test)]

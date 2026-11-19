@@ -21,57 +21,23 @@ use crate::{
 /// The animation state is intentionally preserved here because
 /// `AnimationManager::update_internal` continues driving the surrogate and
 /// sends `WM_CLOSE` once the animation completes.
+///
+/// The window stays tracked in `WmState::closing_windows` until its app
+/// acts on the close, so that it can be put back if the app keeps it open.
 #[cfg(target_os = "windows")]
 pub fn detach_window_for_close(
-  window: WindowContainer,
+  window: &WindowContainer,
+  animation_duration: std::time::Duration,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
-  let focus_target = state.focus_target_after_removal(&window.clone());
-  let other_tabs = other_stack_tabs(&window);
-  let is_stacked = is_stacked(&window);
+  state.closing_windows.track(
+    window.id(),
+    window.native().hwnd().0,
+    animation_duration,
+    std::time::Instant::now(),
+  );
 
-  detach_container(window.clone().into())?;
-  state.pending_sync.queue_containers_to_redraw(other_tabs);
-
-  if is_stacked {
-    state.pending_sync.queue_tab_bar_update();
-  }
-
-  state.window_target_positions.remove(&window.id());
-  // NOTE: `state.animation_manager.remove_animation` is intentionally
-  // skipped — the close surrogate must keep running until
-  // `AnimationManager::update_internal` sends `WM_CLOSE` on completion.
-
-  for ancestor in ancestors.iter().rev() {
-    flatten_child_split_containers(ancestor)?;
-  }
-
-  state.emit_event(WmEvent::WindowUnmanaged {
-    unmanaged_id: window.id(),
-    #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
-    unmanaged_handle: window.native().id().0 as isize,
-  });
-
-  if let Some(focus_target) = focus_target {
-    set_focused_descendant(&focus_target, None);
-    state.pending_sync.queue_focus_change();
-    state.unmanaged_or_minimized_timestamp =
-      Some(std::time::Instant::now());
-  }
-
-  if window.state() == WindowState::Tiling {
-    let ancestor_to_redraw = ancestors
-      .into_iter()
-      .find(|ancestor| !ancestor.is_detached())
-      .context("No ancestor to redraw.")?;
-
-    state
-      .pending_sync
-      .queue_containers_to_redraw(ancestor_to_redraw.tiling_children());
-  }
-
-  Ok(())
+  detach_window(window, state)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -79,23 +45,6 @@ pub fn unmanage_window(
   window: WindowContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  // Create iterator of parent, grandparent, and great-grandparent.
-  let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
-
-  // Get container to switch focus to after the window has been removed.
-  let focus_target = state.focus_target_after_removal(&window.clone());
-  let other_tabs = other_stack_tabs(&window);
-  let is_stacked = is_stacked(&window);
-
-  detach_container(window.clone().into())?;
-  state.pending_sync.queue_containers_to_redraw(other_tabs);
-
-  if is_stacked {
-    state.pending_sync.queue_tab_bar_update();
-  }
-
-  // Clean up animation tracking data.
-  state.window_target_positions.remove(&window.id());
   state.animation_manager.remove_animation(&window.id());
 
   // Destroy any static backdrop/border overlay owned by this window
@@ -113,7 +62,38 @@ pub fn unmanage_window(
   {
     state.backdrop_overlays.remove(&window.id());
     state.border_overlays.remove(&window.id());
+
+    // A window closed mid-drag never ends its drag.
+    if window.active_drag().is_some() {
+      crate::drop_indicator::hide_drop_indicator(state);
+    }
   }
+
+  detach_window(&window, state)
+}
+
+/// Detaches `window` from the container tree, reflows its siblings and
+/// moves focus on from it.
+fn detach_window(
+  window: &WindowContainer,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  // Create iterator of parent, grandparent, and great-grandparent.
+  let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
+
+  // Get container to switch focus to after the window has been removed.
+  let focus_target = state.focus_target_after_removal(window);
+  let other_tabs = other_stack_tabs(window);
+  let is_stacked = is_stacked(window);
+
+  detach_container(window.clone().into())?;
+  state.pending_sync.queue_containers_to_redraw(other_tabs);
+
+  if is_stacked {
+    state.pending_sync.queue_tab_bar_update();
+  }
+
+  state.window_target_positions.remove(&window.id());
 
   // After detaching the container, flatten any redundant split containers.
   // For example, in the layout V[1 H[2]] where container 1 is detached to

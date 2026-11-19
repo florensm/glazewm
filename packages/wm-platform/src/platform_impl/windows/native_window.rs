@@ -1,4 +1,8 @@
-use std::time::Duration;
+use std::{
+  collections::HashSet,
+  sync::{LazyLock, Mutex},
+  time::Duration,
+};
 
 use tokio::task;
 use tracing::warn;
@@ -6,7 +10,8 @@ use windows::{
   core::PWSTR,
   Win32::{
     Foundation::{
-      CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, TYPE_E_ELEMENTNOTFOUND,
+      CloseHandle, BOOL, HWND, LPARAM, POINT, RECT,
+      TYPE_E_ELEMENTNOTFOUND, WPARAM,
     },
     Graphics::Dwm::{
       DwmGetColorizationColor, DwmGetWindowAttribute,
@@ -33,18 +38,19 @@ use windows::{
         GetDesktopWindow, GetForegroundWindow, GetLayeredWindowAttributes,
         GetShellWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
         GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-        IsWindowVisible, IsZoomed, SendNotifyMessageW,
-        SetForegroundWindow, SetLayeredWindowAttributes,
-        SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
-        ShowWindowAsync, WindowFromPoint, FLASHWINFO, FLASHW_STOP,
-        GA_PARENT, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, GW_OWNER,
-        HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
+        IsWindowVisible, IsZoomed, SendMessageTimeoutW,
+        SendNotifyMessageW, SetForegroundWindow,
+        SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
+        SetWindowPos, ShowWindowAsync, WindowFromPoint, FLASHWINFO,
+        FLASHW_STOP, GA_PARENT, GA_ROOT, GWL_EXSTYLE, GWL_STYLE,
+        GW_HWNDPREV, GW_OWNER, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
         LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, LWA_COLORKEY,
-        SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER,
-        SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-        SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA,
-        WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
+        MINMAXINFO, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING,
+        SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE,
+        SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, WINDOWPLACEMENT,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_GETMINMAXINFO,
         WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
         WS_EX_TOPMOST, WS_THICKFRAME,
       },
@@ -65,6 +71,11 @@ use crate::{
 /// Magic number used to identify programmatic mouse inputs from our own
 /// process.
 pub(crate) const FOREGROUND_INPUT_IDENTIFIER: u32 = 6379;
+
+/// How long an app gets to answer `WM_GETMINMAXINFO`. Short, as the WM
+/// waits on it: an app answers at once unless busy, and is asked again
+/// should it refuse the width it gets.
+const MIN_SIZE_TIMEOUT_MS: u32 = 20;
 
 /// Platform-specific implementation of [`NativeWindow`].
 #[derive(Clone, Debug)]
@@ -361,6 +372,30 @@ impl NativeWindow {
     ))
   }
 
+  /// Implements [`NativeWindowWindowsExt::min_window_size`].
+  pub(crate) fn min_window_size(&self) -> Option<(i32, i32)> {
+    let mut info = MINMAXINFO::default();
+    let mut result = 0usize;
+
+    // SAFETY: `info` outlives the call, and the system copies it to and
+    // from the window's process. A hung or slow app makes the call fail
+    // after `MIN_SIZE_TIMEOUT_MS` instead of blocking.
+    let answered = unsafe {
+      SendMessageTimeoutW(
+        self.hwnd(),
+        WM_GETMINMAXINFO,
+        WPARAM(0),
+        LPARAM(std::ptr::from_mut(&mut info) as isize),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        MIN_SIZE_TIMEOUT_MS,
+        Some(&raw mut result),
+      )
+    };
+
+    (answered.0 != 0)
+      .then_some((info.ptMinTrackSize.x, info.ptMinTrackSize.y))
+  }
+
   /// Implements [`NativeWindowWindowsExt::has_owner_window`].
   pub(crate) fn has_owner_window(&self) -> bool {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
@@ -455,6 +490,32 @@ impl NativeWindow {
       GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
     }
     process_id
+  }
+
+  /// Implements [`NativeWindowWindowsExt::has_modal_prompt`].
+  pub(crate) fn has_modal_prompt(&self) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GW_ENABLEDPOPUP;
+
+    if self.is_enabled() {
+      return false;
+    }
+
+    // `GW_ENABLEDPOPUP` yields the window itself when it owns no enabled
+    // popup. SAFETY: A stale handle just returns a null handle.
+    let popup = unsafe { GetWindow(self.hwnd(), GW_ENABLEDPOPUP) };
+
+    popup.0 != 0
+      && popup != self.hwnd()
+      && unsafe { IsWindowVisible(popup) }.as_bool()
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_hung`].
+  pub(crate) fn is_hung(&self) -> bool {
+    // SAFETY: A stale handle just returns false.
+    unsafe {
+      windows::Win32::UI::WindowsAndMessaging::IsHungAppWindow(self.hwnd())
+    }
+    .as_bool()
   }
 
   /// Implements [`NativeWindowWindowsExt::is_enabled`].
@@ -598,6 +659,7 @@ impl NativeWindow {
     if self.set_view_cloaked(cloaked)? {
       Ok(())
     } else {
+      self.report_viewless();
       Err(crate::Error::Platform(
         "Unable to get application view by window handle.".to_string(),
       ))
@@ -610,11 +672,37 @@ impl NativeWindow {
     hidden: bool,
   ) -> crate::Result<()> {
     if self.set_view_cloaked(hidden)? {
-      Ok(())
-    } else if hidden {
+      return Ok(());
+    }
+
+    self.report_viewless();
+    if hidden {
       self.hide()
     } else {
       self.show()
+    }
+  }
+
+  /// Logs, once per window, that it has no shell view to cloak it by. Its
+  /// fallbacks, hiding it outright or leaving it shown while something
+  /// else draws it, can show as flicker.
+  fn report_viewless(&self) {
+    static REPORTED: LazyLock<Mutex<HashSet<isize>>> =
+      LazyLock::new(Mutex::default);
+
+    let is_new = REPORTED
+      .lock()
+      .is_ok_and(|mut reported| reported.insert(self.hwnd().0));
+
+    if is_new {
+      warn!(
+        "Window {:#x} ({}, {}) can't be cloaked, as the shell has no view \
+         of it (e.g. another window owns it). It is hidden outright or \
+         left shown instead, which can flicker.",
+        self.hwnd().0,
+        self.process_name().unwrap_or_default(),
+        self.class_name().unwrap_or_default(),
+      );
     }
   }
 
@@ -972,10 +1060,10 @@ impl NativeWindow {
     self.set_transparency(&OpacityValue::from_alpha(target_alpha))
   }
 
-  /// Implements [`NativeWindowWindowsExt::reassert_transparency`].
-  pub(crate) fn reassert_transparency(&self) -> crate::Result<()> {
+  /// Implements [`NativeWindowWindowsExt::layered_alpha`].
+  pub(crate) fn layered_alpha(&self) -> crate::Result<Option<u8>> {
     if !self.has_window_style_ex(WS_EX_LAYERED) {
-      return Ok(());
+      return Ok(None);
     }
 
     let mut alpha = u8::MAX;
@@ -993,9 +1081,14 @@ impl NativeWindow {
       )?;
     }
 
-    if !flag.contains(LWA_ALPHA) {
+    Ok(flag.contains(LWA_ALPHA).then_some(alpha))
+  }
+
+  /// Implements [`NativeWindowWindowsExt::reassert_transparency`].
+  pub(crate) fn reassert_transparency(&self) -> crate::Result<()> {
+    let Some(alpha) = self.layered_alpha()? else {
       return Ok(());
-    }
+    };
 
     // SAFETY: `self.hwnd()` is a valid window handle.
     unsafe {

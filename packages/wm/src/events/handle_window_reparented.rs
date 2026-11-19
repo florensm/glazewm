@@ -11,7 +11,11 @@ use crate::{user_config::UserConfig, wm_state::WmState};
 // LINT: The event is only emitted on Windows.
 #[cfg_attr(
   not(target_os = "windows"),
-  allow(unused_variables, clippy::needless_pass_by_value)
+  allow(
+    unused_variables,
+    clippy::needless_pass_by_value,
+    clippy::unnecessary_wraps
+  )
 )]
 pub fn handle_window_reparented(
   native_window: NativeWindow,

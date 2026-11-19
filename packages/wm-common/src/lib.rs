@@ -1,4 +1,3 @@
-#![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::missing_errors_doc)]
 
 mod active_drag;
@@ -7,6 +6,7 @@ mod display_state;
 mod dtos;
 mod hide_corner;
 mod ipc;
+mod layout;
 mod parsed_config;
 mod tiling_direction;
 mod utils;
@@ -19,6 +19,7 @@ pub use display_state::*;
 pub use dtos::*;
 pub use hide_corner::*;
 pub use ipc::*;
+pub use layout::*;
 pub use parsed_config::*;
 pub use tiling_direction::*;
 pub use utils::*;

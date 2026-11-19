@@ -48,8 +48,8 @@ pub(crate) fn ensure_class_registered(
   });
 }
 
-/// Default window procedure: forwards every message to `DefWindowProcW`
-/// unchanged.
+/// Default window procedure: forwards every message to `DefWindowProcW`,
+/// except close requests, which are ignored.
 ///
 /// Shared by overlay window classes with no custom message handling --
 /// their visuals are painted entirely by DWM/`Windows.UI.Composition`, so
@@ -64,8 +64,27 @@ pub(crate) unsafe extern "system" fn default_wnd_proc(
   wparam: WPARAM,
   lparam: LPARAM,
 ) -> LRESULT {
+  if is_close_request(msg, wparam) {
+    return LRESULT(0);
+  }
+
   // SAFETY: All parameters are forwarded unchanged.
   unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Whether `msg` asks the window to close.
+///
+/// The WM's own windows are only ever destroyed by the WM. Left to
+/// `DefWindowProcW`, a close sent by another app (e.g. a "close all
+/// windows" tool) would destroy an overlay the WM still tracks.
+pub(crate) fn is_close_request(msg: u32, wparam: WPARAM) -> bool {
+  use windows::Win32::UI::WindowsAndMessaging::{
+    SC_CLOSE, WM_CLOSE, WM_SYSCOMMAND,
+  };
+
+  // The low four bits of an `SC_*` command are used by the system.
+  msg == WM_CLOSE
+    || (msg == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_CLOSE as usize)
 }
 
 /// `hwnd`'s window rect, which includes its invisible resize borders,
@@ -261,4 +280,28 @@ pub(crate) fn describe_z_order_around(hwnd: HWND, depth: usize) -> String {
     )
     .collect::<Vec<_>>()
     .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+  use windows::Win32::UI::WindowsAndMessaging::{
+    SC_CLOSE, SC_MINIMIZE, WM_CLOSE, WM_SETTINGCHANGE, WM_SYSCOMMAND,
+  };
+
+  use super::*;
+
+  #[test]
+  fn close_requests_are_recognized() {
+    assert!(is_close_request(WM_CLOSE, WPARAM(0)));
+    // The system may set the low four bits of an `SC_*` command.
+    assert!(is_close_request(
+      WM_SYSCOMMAND,
+      WPARAM(SC_CLOSE as usize | 2)
+    ));
+    assert!(!is_close_request(
+      WM_SYSCOMMAND,
+      WPARAM(SC_MINIMIZE as usize)
+    ));
+    assert!(!is_close_request(WM_SETTINGCHANGE, WPARAM(0)));
+  }
 }

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
+use wm_common::WorkspaceSwitchDirection;
 
 use crate::{
   models::{Container, Workspace},
@@ -13,12 +14,15 @@ use crate::{
 /// pixels) so `platform_sync` can snapshot the monitor and start the
 /// overlay before the real windows are switched underneath. Stored as
 /// primitives to avoid coupling `PendingSync` to platform types.
+// LINT: Only read by the Windows iris overlay.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub struct IrisSwitchRequest {
   pub monitor_x: i32,
   pub monitor_y: i32,
   pub monitor_width: i32,
   pub monitor_height: i32,
+  #[cfg(target_os = "windows")]
   pub monitor_handle: isize,
   pub origin_x: i32,
   pub origin_y: i32,
@@ -48,6 +52,11 @@ pub struct PendingSync {
   /// user config).
   needs_cursor_jump: bool,
 
+  /// Whether to move the cursor to the focused window, as asked for by
+  /// `move-cursor`. Done once the layout is settled, so it lands where
+  /// the window ends up (e.g. after a scrolling layout scrolls).
+  needs_cursor_move: bool,
+
   /// Whether stack tab bars need redrawing and restacking for a change
   /// that doesn't move any window (e.g. a tab's urgency, or the end of a
   /// drag that raised the stack's window).
@@ -66,6 +75,10 @@ pub struct PendingSync {
   /// means the opposite. `0` means no directional preference (fade in
   /// place).
   workspace_switch_direction: i32,
+
+  /// Slide axis for the current workspace switch: the configured one, or
+  /// vertical to and from the special workspace.
+  workspace_switch_axis: WorkspaceSwitchDirection,
 
   /// Window IDs that just underwent a tiling/floating state change this
   /// sync cycle. Used by `platform_sync` to allow `window_move`
@@ -122,6 +135,7 @@ impl PendingSync {
       || self.needs_focused_effect_update
       || self.needs_all_effects_update
       || self.needs_cursor_jump
+      || self.needs_cursor_move
       || self.needs_tab_bar_update
       || self.iris_switch.is_some()
   }
@@ -133,10 +147,12 @@ impl PendingSync {
     self.needs_focused_effect_update = false;
     self.needs_all_effects_update = false;
     self.needs_cursor_jump = false;
+    self.needs_cursor_move = false;
     self.needs_tab_bar_update = false;
     self.workspace_switch_incoming.clear();
     self.workspace_switch_outgoing.clear();
     self.workspace_switch_direction = 0;
+    self.workspace_switch_axis = WorkspaceSwitchDirection::default();
     self.window_state_changes.clear();
     self.wm_fullscreen_toggles.clear();
     self.window_restores.clear();
@@ -209,6 +225,11 @@ impl PendingSync {
     self
   }
 
+  pub fn queue_cursor_move(&mut self) -> &mut Self {
+    self.needs_cursor_move = true;
+    self
+  }
+
   pub fn queue_tab_bar_update(&mut self) -> &mut Self {
     self.needs_tab_bar_update = true;
     self
@@ -230,6 +251,12 @@ impl PendingSync {
     self.needs_cursor_jump
   }
 
+  pub fn needs_cursor_move(&self) -> bool {
+    self.needs_cursor_move
+  }
+
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn needs_tab_bar_update(&self) -> bool {
     self.needs_tab_bar_update
   }
@@ -275,6 +302,8 @@ impl PendingSync {
   }
 
   /// Returns `true` if this window came back from minimized this cycle.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn is_window_restore(&self, id: &Uuid) -> bool {
     self.window_restores.contains(id)
   }
@@ -298,6 +327,8 @@ impl PendingSync {
   }
 
   /// Returns `true` if the window is an incoming workspace-switch window.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn is_workspace_switch_incoming(&self, window_id: &Uuid) -> bool {
     self.workspace_switch_incoming.contains(window_id)
   }
@@ -307,18 +338,29 @@ impl PendingSync {
     self.workspace_switch_outgoing.contains(window_id)
   }
 
-  /// Sets the slide direction for the current workspace switch.
+  /// Sets the slide direction and axis for the current workspace switch.
   pub fn set_workspace_switch_direction(
     &mut self,
     direction: i32,
+    axis: WorkspaceSwitchDirection,
   ) -> &mut Self {
     self.workspace_switch_direction = direction;
+    self.workspace_switch_axis = axis;
     self
   }
 
   /// Returns the slide direction for the current workspace switch.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn workspace_switch_direction(&self) -> i32 {
     self.workspace_switch_direction
+  }
+
+  /// Returns the slide axis for the current workspace switch.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+  pub fn workspace_switch_axis(&self) -> &WorkspaceSwitchDirection {
+    &self.workspace_switch_axis
   }
 
   /// Requests an iris-wipe workspace switch for this sync cycle.
@@ -331,6 +373,8 @@ impl PendingSync {
   }
 
   /// Consumes and returns the pending iris-wipe request, if any.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn take_iris_switch(&mut self) -> Option<IrisSwitchRequest> {
     self.iris_switch.take()
   }

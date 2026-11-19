@@ -3,11 +3,10 @@ use windows::{
   Win32::{
     Foundation::{BOOL, LPARAM, POINT, RECT},
     Graphics::Gdi::{
-      EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW,
-      GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, DEVMODEW,
-      DISPLAY_DEVICEW, DISPLAY_DEVICE_ACTIVE, ENUM_CURRENT_SETTINGS, HDC,
-      HMONITOR, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
-      MONITOR_DEFAULTTOPRIMARY,
+      EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW,
+      MonitorFromPoint, MonitorFromWindow, DISPLAY_DEVICEW,
+      DISPLAY_DEVICE_ACTIVE, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+      MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
     },
     UI::{
       HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
@@ -17,10 +16,7 @@ use windows::{
 };
 
 use crate::{
-  display::{
-    ConnectionState, DisplayDeviceId, DisplayId, MirroringState,
-    OutputTechnology,
-  },
+  display::{DisplayDeviceId, DisplayId, MirroringState},
   Dispatcher, NativeWindow, Point, Rect,
 };
 
@@ -234,46 +230,6 @@ impl DisplayDevice {
     )
   }
 
-  /// Implements [`DisplayDevice::rotation`].
-  pub(crate) fn rotation(&self) -> crate::Result<f32> {
-    let orientation = unsafe {
-      self
-        .current_device_mode()?
-        .Anonymous1
-        .Anonymous2
-        .dmDisplayOrientation
-    };
-
-    Ok(match orientation.0 {
-      1 => 90.0,
-      2 => 180.0,
-      3 => 270.0,
-      _ => 0.0,
-    })
-  }
-
-  /// Implements [`DisplayDevice::refresh_rate`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn refresh_rate(&self) -> crate::Result<f32> {
-    #[allow(clippy::cast_precision_loss)]
-    Ok(self.current_device_mode()?.dmDisplayFrequency as f32)
-  }
-
-  /// Implements [`DisplayDevice::is_builtin`].
-  #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-  pub(crate) fn is_builtin(&self) -> crate::Result<bool> {
-    // TODO: Use `DisplayConfigGetDeviceInfo` to determine whether the
-    // output technology is internal.
-    Ok(false)
-  }
-
-  /// Implements [`DisplayDevice::connection_state`].
-  #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-  pub(crate) fn connection_state(&self) -> crate::Result<ConnectionState> {
-    // TODO: Detect disconnected state.
-    Ok(ConnectionState::Active)
-  }
-
   /// Implements [`DisplayDevice::mirroring_state`].
   #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
   pub(crate) fn mirroring_state(
@@ -292,41 +248,6 @@ impl DisplayDevice {
       .split('#')
       .nth(1)
       .map(ToString::to_string)
-  }
-
-  /// Implements [`DisplayDeviceExtWindows::output_technology`].
-  #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-  pub(crate) fn output_technology(
-    &self,
-  ) -> crate::Result<Option<OutputTechnology>> {
-    // TODO: Use `DisplayConfigGetDeviceInfo` to get the output technology.
-    Ok(Some(OutputTechnology::Unknown))
-  }
-
-  /// Gets the current device mode.
-  fn current_device_mode(&self) -> crate::Result<DEVMODEW> {
-    #[allow(clippy::cast_possible_truncation)]
-    let mut device_mode = DEVMODEW {
-      dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-      ..Default::default()
-    };
-
-    let wide_adapter_name = self
-      .adapter_name
-      .encode_utf16()
-      .chain(std::iter::once(0))
-      .collect::<Vec<_>>();
-
-    unsafe {
-      EnumDisplaySettingsW(
-        PCWSTR(wide_adapter_name.as_ptr()),
-        ENUM_CURRENT_SETTINGS,
-        &raw mut device_mode,
-      )
-    }
-    .ok()?;
-
-    Ok(device_mode)
   }
 }
 
@@ -374,17 +295,6 @@ pub(crate) fn all_displays(
       .map(|handle| Display::new(handle).into())
       .collect(),
   )
-}
-
-/// Implements [`Dispatcher::display_devices`].
-pub(crate) fn all_display_devices(
-  dispatcher: &Dispatcher,
-) -> crate::Result<Vec<crate::DisplayDevice>> {
-  all_displays(dispatcher)?
-    .into_iter()
-    .map(|display| display.devices())
-    .collect::<crate::Result<Vec<_>>>()
-    .map(|vecs| vecs.into_iter().flatten().collect())
 }
 
 /// Implements [`Dispatcher::display_from_point`].

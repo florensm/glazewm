@@ -248,9 +248,7 @@ fn monitor_device_path(
     let rect =
       unsafe { wallpaper.GetMonitorRECT(PCWSTR(owned.as_ptr())) }.ok()?;
 
-    (Rect::from_ltrb(rect.left, rect.top, rect.right, rect.bottom)
-      == *monitor)
-      .then_some(owned)
+    (Rect::from(rect) == *monitor).then_some(owned)
   })
 }
 

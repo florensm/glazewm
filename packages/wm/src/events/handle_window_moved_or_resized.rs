@@ -11,6 +11,8 @@ use wm_platform::{NativeWindow, Rect};
 
 #[cfg(target_os = "windows")]
 use crate::commands::general::follow_window_frame;
+#[cfg(target_os = "windows")]
+use crate::layout::scrolling::column_of;
 use crate::{
   commands::{
     container::{flatten_split_container, move_container_within_tree},
@@ -89,6 +91,12 @@ pub fn handle_window_moved_or_resized(
       }
 
       update_drag_state(&window, &frame_position, state, config)?;
+
+      // Looked up again, since floating it for the drag replaces it.
+      #[cfg(target_os = "windows")]
+      if let Some(window) = state.window_from_native(native_window) {
+        crate::drop_indicator::sync_drop_indicator(&window, state, config);
+      }
 
       #[cfg(target_os = "windows")]
       follow_drag_with_tab_bar(native_window, state, config);
@@ -398,12 +406,68 @@ pub fn handle_window_moved_or_resized(
       }
       _ => {
         #[cfg(target_os = "windows")]
-        follow_own_move(&window, &frame_position, state, config);
+        {
+          follow_own_move(&window, &frame_position, state, config);
+          make_room_for_min_width(&window, &frame_position, state);
+        }
       }
     }
   }
 
   Ok(())
+}
+
+/// Widens a scrolling layout's column for a window its app keeps wider
+/// than the column, once the app reports a larger minimum width than it
+/// did (e.g. after moving to a monitor of a higher DPI).
+#[cfg(target_os = "windows")]
+fn make_room_for_min_width(
+  window: &WindowContainer,
+  frame: &Rect,
+  state: &mut WmState,
+) {
+  let Some((_, workspace)) = column_of(&window.as_container()) else {
+    return;
+  };
+
+  // Mid-animation, the window is between the sizes it was given.
+  if state
+    .animation_manager
+    .get_animation(&window.id())
+    .is_some()
+  {
+    return;
+  }
+
+  let Some(target) = state.window_target_positions.get(&window.id())
+  else {
+    return;
+  };
+
+  // The frame is without the shadow borders the target includes.
+  let shadows = &window.native_properties().shadow_borders;
+  let width = frame.width()
+    + shadows.left.to_px(0, None)
+    + shadows.right.to_px(0, None);
+
+  if width <= target.width() + 1
+    || width <= window.native_properties().min_width
+  {
+    return;
+  }
+
+  let min_width = window
+    .native()
+    .min_window_size()
+    .map_or(0, |(min_width, _)| min_width);
+
+  if min_width > window.native_properties().min_width {
+    tracing::info!("Making room for minimum width {min_width}: {window}");
+    window.update_native_properties(|properties| {
+      properties.min_width = min_width;
+    });
+    state.pending_sync.queue_container_to_redraw(workspace);
+  }
 }
 
 /// Moves the tab bar along with a stacked window being dragged, since the
@@ -506,7 +570,7 @@ pub fn update_floating_window_position(
 /// This function determines whether a window is being moved or resized and
 /// updates its operation state accordingly. If the window is being moved,
 /// it's set to floating mode.
-fn update_drag_state(
+pub(super) fn update_drag_state(
   window: &WindowContainer,
   frame_position: &Rect,
   state: &mut WmState,
@@ -564,7 +628,15 @@ fn update_drag_state(
     );
 
     if move_distance >= 10.0 || is_maximized {
-      let parent = window.parent().context("No parent")?;
+      // A window of a stack floats with its whole stack, which leaves the
+      // stack's parent behind.
+      let parent = window
+        .parent()
+        .and_then(|parent| match parent.as_stack() {
+          Some(stack) => stack.parent(),
+          None => Some(parent),
+        })
+        .context("No parent")?;
 
       let is_fullscreen =
         matches!(window.state(), WindowState::Fullscreen(_))

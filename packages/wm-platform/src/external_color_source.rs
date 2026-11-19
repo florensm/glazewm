@@ -41,10 +41,10 @@ pub fn color_from_file(path: &Path, key: &str) -> crate::Result<Color> {
   let cache = COLOR_FILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
   let cache_key = (path.to_path_buf(), key.to_string());
 
-  // A poisoned lock means an earlier caller panicked while holding it,
-  // which never happens in this function's small, panic-free critical
-  // section, so `expect` here is effectively infallible.
-  let mut guard = cache.lock().expect("color-file cache mutex poisoned");
+  // The cache only holds plain values, so a poisoned lock is still valid.
+  let mut guard = cache
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
   if let Some((cached_mtime, color)) = guard.get(&cache_key) {
     if *cached_mtime == modified {

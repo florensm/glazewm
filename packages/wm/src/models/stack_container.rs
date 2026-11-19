@@ -14,13 +14,13 @@ use wm_platform::{LengthValue, Rect};
 
 use crate::{
   impl_common_getters, impl_container_debug, impl_tiling_size_getters,
+  layout::tiling_rect,
   models::{
     Container, DirectionContainer, InsertionTarget, TilingContainer,
     WindowContainer,
   },
   traits::{
-    tiling_rect, CommonGetters, PositionGetters, TilingSizeGetters,
-    WindowGetters,
+    CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
   },
 };
 
@@ -310,7 +310,7 @@ impl PositionGetters for StackContainer {
 mod tests {
   use crate::{
     commands::container::{
-      detach_container, set_focused_descendant, wrap_in_stack_container,
+      detach_container, set_focused_descendant, wrap_in_container,
     },
     models::{
       is_inactive_stack_child, StackContainer, TilingWindow, Workspace,
@@ -331,7 +331,7 @@ mod tests {
       .call();
 
     let stack = StackContainer::mock().call();
-    wrap_in_stack_container(
+    wrap_in_container(
       &stack,
       &workspace.clone().into(),
       &[second.clone().into()],

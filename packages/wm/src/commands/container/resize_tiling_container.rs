@@ -1,4 +1,5 @@
 use crate::{
+  layout::scrolling::{column_workspace, MIN_COLUMN_SIZE},
   models::TilingContainer,
   traits::{CommonGetters, TilingSizeGetters, MIN_TILING_SIZE},
 };
@@ -7,6 +8,13 @@ pub fn resize_tiling_container(
   container_to_resize: &TilingContainer,
   target_size: f32,
 ) {
+  // A column's width doesn't take from the other columns.
+  if column_workspace(container_to_resize).is_some() {
+    container_to_resize
+      .set_tiling_size(target_size.clamp(MIN_COLUMN_SIZE, 1.));
+    return;
+  }
+
   let tiling_siblings =
     container_to_resize.tiling_siblings().collect::<Vec<_>>();
 

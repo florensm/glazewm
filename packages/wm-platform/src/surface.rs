@@ -12,7 +12,7 @@ use windows::Win32::{
   UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA},
 };
 
-use crate::paint::Canvas;
+use crate::{paint::Canvas, Rect};
 
 /// A 32-bit top-down DIB section selected into its own memory DC.
 pub(crate) struct Surface {
@@ -104,6 +104,19 @@ impl Surface {
     window: HWND,
     position: POINT,
   ) -> windows::core::Result<()> {
+    let whole = Rect::from_xy(0, 0, self.width, self.height);
+    self.show_part_on(window, &whole, position)
+  }
+
+  /// Shows `part` of the surface, in its own coordinates, as the whole of
+  /// layered `window`, moving the window's top-left corner to `position`
+  /// on screen.
+  pub fn show_part_on(
+    &self,
+    window: HWND,
+    part: &Rect,
+    position: POINT,
+  ) -> windows::core::Result<()> {
     let blend = BLENDFUNCTION {
       BlendOp: u8::try_from(AC_SRC_OVER).unwrap_or_default(),
       BlendFlags: 0,
@@ -111,10 +124,13 @@ impl Surface {
       AlphaFormat: u8::try_from(AC_SRC_ALPHA).unwrap_or_default(),
     };
     let size = SIZE {
-      cx: self.width,
-      cy: self.height,
+      cx: part.width(),
+      cy: part.height(),
     };
-    let source = POINT::default();
+    let source = POINT {
+      x: part.x(),
+      y: part.y(),
+    };
 
     // SAFETY: The window and the surface's DC are valid, and every
     // pointer outlives the call.

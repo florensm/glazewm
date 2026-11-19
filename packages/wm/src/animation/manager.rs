@@ -1,7 +1,10 @@
+#[cfg(target_os = "windows")]
+use std::collections::HashSet;
 use std::{
-  collections::{HashMap, HashSet},
+  cell::Cell,
+  collections::HashMap,
   sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
   },
   time::{Duration, Instant},
@@ -32,7 +35,7 @@ const VSYNC_LEAD_FRACTION: f32 = 0.5;
 /// `IDXGIOutput::WaitForVBlank` returns. By the time `update_internal`
 /// runs and calls `DwmUpdateThumbnailProperties`, roughly this many
 /// microseconds have elapsed (Tokio scheduling + compute). Using
-/// vsync_time + `VSYNC_PIPELINE_OFFSET_US` as "now" shifts the computed
+/// `vsync_time` + `VSYNC_PIPELINE_OFFSET_US` as "now" shifts the computed
 /// position forward to where it will be when DWM actually composites,
 /// eliminating the systematic one-pipeline-delay lag on high-Hz monitors.
 /// Used by the iris-wipe driver, which has no per-switch vblank period to
@@ -194,8 +197,65 @@ fn prune_and_insert<K: std::hash::Hash + Eq, V>(
   map.insert(key, (value, Instant::now()));
 }
 
+/// A synchronous move slower than this demotes its window to asynchronous
+/// moves. Several frames' worth: the whole WM waits on it.
+#[cfg(target_os = "windows")]
+const SLOW_SYNC_DEMOTE_THRESHOLD: Duration = Duration::from_millis(50);
+
+/// How long a window demoted by [`SLOW_SYNC_DEMOTE_THRESHOLD`] is moved
+/// asynchronously.
+#[cfg(target_os = "windows")]
+const SYNC_DEMOTE_DURATION: Duration = Duration::from_secs(30);
+
+/// How long animations may go without a frame before the watchdog runs
+/// one itself and replaces the timer thread.
+const FRAME_STALL_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Replaced timer threads that may be left blocked at once. See
+/// [`AnimationManager::replace_stalled_timer`].
+const MAX_STALLED_TIMERS: usize = 3;
+
+/// The animation timer thread, with the flag that retires it.
+struct TimerThread {
+  handle: std::thread::JoinHandle<()>,
+
+  /// Makes the thread exit once its current wait returns. Set when the
+  /// watchdog replaces a thread stuck in a vsync wait.
+  retired: Arc<AtomicBool>,
+}
+
+/// Counts a retired timer thread out of `stalled_timers` once it exits.
+struct StalledTimerGuard {
+  retired: Arc<AtomicBool>,
+  stalled_timers: Arc<AtomicUsize>,
+}
+
+impl Drop for StalledTimerGuard {
+  fn drop(&mut self) {
+    if self.retired.load(Ordering::Relaxed) {
+      self.stalled_timers.fetch_sub(1, Ordering::Relaxed);
+    }
+  }
+}
+
+/// Stores `next` in `result` if it is the first error; later errors are
+/// only logged.
+fn keep_first_error(
+  result: &mut anyhow::Result<()>,
+  next: anyhow::Result<()>,
+) {
+  if let Err(err) = next {
+    if result.is_ok() {
+      *result = Err(err);
+    } else {
+      tracing::error!("{err:?}");
+    }
+  }
+}
+
 use tokio::sync::mpsc;
 use uuid::Uuid;
+#[cfg(target_os = "windows")]
 use wm_common::{
   EasingFunction, ResizeStyle, WindowTransitionParams,
   WindowTransitionStyle, WorkspaceSwitchDirection, WorkspaceSwitchStyle,
@@ -217,15 +277,18 @@ use wm_platform::{
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
   apply_focus_effects, overlay_z_anchor, resync_settling_overlays,
-  surrogate_effects_for, upsert_blended_overlay, upsert_overlay,
+  surrogate_effects_for, upsert_live_backdrop_overlay, upsert_overlay,
   upsert_pinned_border_overlay, SyncableOverlay,
+};
+#[cfg(target_os = "windows")]
+use crate::{
+  animation::stand_in::{moved_along, StandIn},
+  traits::WindowGetters,
 };
 use crate::{
   animation::state::WindowAnimationState,
-  commands::general::platform_sync,
-  traits::{CommonGetters, WindowGetters},
-  user_config::UserConfig,
-  wm_state::WmState,
+  commands::general::platform_sync, traits::CommonGetters,
+  user_config::UserConfig, wm_state::WmState,
 };
 
 /// A single entry in the surrogate update queue built each redraw pass.
@@ -236,6 +299,15 @@ struct PendingSurrogateUpdate {
   opacity: u8,
   /// `true` when `remaining_at` ≤ the proportional handoff lead.
   handoff: bool,
+}
+
+/// Why [`AnimationManager::start_away_animation`] takes a window off the
+/// screen.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AwayTransition {
+  Close,
+  Minimize,
 }
 
 /// Tracks a single window's participation in the current workspace-switch
@@ -368,6 +440,8 @@ pub enum AnimationPositionResult {
   Apply(Rect),
   /// The surrogate overlay is handling all visuals; skip repositioning
   /// the real window this frame.
+  // LINT: Surrogates only exist on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   Frozen,
 }
 
@@ -389,9 +463,19 @@ pub struct AnimationManager {
   /// lifetime, parking between animations rather than being re-spawned
   /// each time. This removes the per-animation cost of thread creation
   /// + priority/MMCSS setup from the input-to-first-frame latency path.
-  timer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+  timer_thread: Mutex<Option<TimerThread>>,
   /// Signals the persistent timer thread to exit. Set on drop.
   timer_shutdown: Arc<AtomicBool>,
+  /// When the last frame ran, or ticking last started. Read by the
+  /// watchdog; see [`watchdog_deadline`].
+  ///
+  /// [`watchdog_deadline`]: AnimationManager::watchdog_deadline
+  last_frame_at: Cell<Instant>,
+  /// Timer threads replaced by the watchdog that are still blocked in
+  /// their wait. See [`replace_stalled_timer`].
+  ///
+  /// [`replace_stalled_timer`]: AnimationManager::replace_stalled_timer
+  stalled_timers: Arc<AtomicUsize>,
   /// The timestamp every window is evaluated at in the current redraw
   /// pass; see [`frame_now`]. Cleared by [`begin_redraw_pass`].
   ///
@@ -489,10 +573,27 @@ pub struct AnimationManager {
   /// Active workspace-switch slide animation, or `None` when idle.
   #[cfg(target_os = "windows")]
   workspace_switch: Option<WorkspaceSwitchState>,
+  /// Peeks drawing scrolling layouts' columns.
+  #[cfg(target_os = "windows")]
+  pub scroll_view: super::scroll_view::ScrollView,
   /// Workspace-switch state that just completed; kept alive until the
   /// final `platform_sync` call unclocks the incoming real windows.
   #[cfg(target_os = "windows")]
   pending_ws_cleanup: Option<WorkspaceSwitchState>,
+  /// Windows of a slide cut short by a newer one, to be redrawn on the
+  /// next frame so they are uncloaked at their final rect. See
+  /// [`start_workspace_switch`].
+  ///
+  /// [`start_workspace_switch`]: AnimationManager::start_workspace_switch
+  #[cfg(target_os = "windows")]
+  interrupted_ws_windows: Vec<Uuid>,
+  /// Windows moved asynchronously until the stored time, keyed by
+  /// `HWND`, because a synchronous move of them was slow. See
+  /// [`allows_sync_reposition`].
+  ///
+  /// [`allows_sync_reposition`]: AnimationManager::allows_sync_reposition
+  #[cfg(target_os = "windows")]
+  sync_demoted_until: HashMap<isize, Instant>,
   /// Windows with an active close animation, keyed by window ID.
   ///
   /// The stored value is the raw `HWND` (as `isize`) so `WM_CLOSE` can be
@@ -524,13 +625,13 @@ impl Drop for AnimationManager {
   fn drop(&mut self) {
     self.timer_shutdown.store(true, Ordering::Relaxed);
     self.animation_timer_running.store(false, Ordering::Relaxed);
-    if let Some(handle) = self
+    if let Some(timer) = self
       .timer_thread
       .lock()
       .expect("animation mutex poisoned")
       .take()
     {
-      handle.thread().unpark();
+      timer.handle.thread().unpark();
     }
   }
 }
@@ -544,6 +645,8 @@ impl AnimationManager {
       animation_timer_running: Arc::new(AtomicBool::new(false)),
       timer_thread: Mutex::new(None),
       timer_shutdown: Arc::new(AtomicBool::new(false)),
+      last_frame_at: Cell::new(Instant::now()),
+      stalled_timers: Arc::new(AtomicUsize::new(0)),
       pass_now: None,
       #[cfg(target_os = "windows")]
       overlay_z_settle: HashMap::new(),
@@ -570,9 +673,16 @@ impl AnimationManager {
       #[cfg(target_os = "windows")]
       workspace_switch: None,
       #[cfg(target_os = "windows")]
+      scroll_view: super::scroll_view::ScrollView::default(),
+      #[cfg(target_os = "windows")]
       pending_ws_cleanup: None,
       #[cfg(target_os = "windows")]
+      interrupted_ws_windows: Vec::new(),
+      #[cfg(target_os = "windows")]
+      sync_demoted_until: HashMap::new(),
+      #[cfg(target_os = "windows")]
       pending_close_windows: HashMap::new(),
+      #[cfg(target_os = "windows")]
       pending_minimize_windows: HashSet::new(),
       #[cfg(target_os = "windows")]
       iris_switch: None,
@@ -623,16 +733,15 @@ impl AnimationManager {
   #[cfg(target_os = "windows")]
   pub fn has_active_surrogate(&self, window_id: &Uuid) -> bool {
     self.resize_sessions.contains_key(window_id)
+      || self.scroll_view.owns_window(window_id)
       || self
         .workspace_switch
         .as_ref()
-        .map(|ws| ws.windows.contains_key(window_id))
-        .unwrap_or(false)
+        .is_some_and(|ws| ws.windows.contains_key(window_id))
       || self
         .pending_ws_cleanup
         .as_ref()
-        .map(|ws| ws.windows.contains_key(window_id))
-        .unwrap_or(false)
+        .is_some_and(|ws| ws.windows.contains_key(window_id))
       || self.pending_close_windows.contains_key(window_id)
       || self.pending_minimize_windows.contains(window_id)
   }
@@ -743,7 +852,7 @@ impl AnimationManager {
         let ready = self
           .resize_sessions
           .get_mut(id)
-          .map_or(true, ResizeSession::pre_commit);
+          .is_none_or(ResizeSession::pre_commit);
 
         if !ready {
           continue;
@@ -774,6 +883,10 @@ impl AnimationManager {
     }
     #[cfg(target_os = "windows")]
     if self.iris_switch.is_some() {
+      return true;
+    }
+    #[cfg(target_os = "windows")]
+    if self.scroll_view.is_active() {
       return true;
     }
     // Completed sessions fading out still need ticks to advance the fade.
@@ -934,18 +1047,77 @@ impl AnimationManager {
       return;
     }
 
+    self.last_frame_at.set(Instant::now());
+
     let mut guard =
       self.timer_thread.lock().expect("animation mutex poisoned");
     match guard.as_ref() {
       // Wake the parked thread to begin a new ticking phase.
-      Some(handle) => handle.thread().unpark(),
+      Some(timer) => timer.handle.thread().unpark(),
       // First animation: spawn the persistent thread.
       None => {
-        if let Some(handle) = self.spawn_timer_thread() {
-          *guard = Some(handle);
+        if let Some(timer) = self.spawn_timer_thread() {
+          *guard = Some(timer);
         }
       }
     }
+  }
+
+  /// When the watchdog should step in if no frame has run by then, or
+  /// `None` while nothing is animating.
+  pub fn watchdog_deadline(&self) -> Option<Instant> {
+    self
+      .has_active_animations()
+      .then(|| self.last_frame_at.get() + FRAME_STALL_TIMEOUT)
+  }
+
+  /// Replaces a timer thread that stopped ticking with a new one.
+  ///
+  /// The old thread is most likely blocked in `WaitForVBlank` on an output
+  /// that went stale, which can block indefinitely. It is left to exit
+  /// whenever that wait returns, and the vsync waiter is dropped so the
+  /// new thread paces itself with `DwmFlush` instead.
+  ///
+  /// At most [`MAX_STALLED_TIMERS`] replaced threads are left blocked at
+  /// once: past that, replacements are stalling too (e.g. `DwmFlush` with
+  /// the displays off), and more threads would only pile up behind them.
+  /// The watchdog keeps running frames itself until one recovers.
+  pub fn replace_stalled_timer(&self) {
+    if self.stalled_timers.load(Ordering::Relaxed) >= MAX_STALLED_TIMERS {
+      tracing::debug!("Animation timer still stalled; not replacing it.");
+      return;
+    }
+
+    tracing::warn!(
+      "Animation timer stalled for over {FRAME_STALL_TIMEOUT:?}; \
+       replacing it."
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+      *self
+        .animation_timer_vsync
+        .lock()
+        .expect("animation mutex poisoned") = None;
+      *self
+        .animation_vsync_time
+        .lock()
+        .expect("animation mutex poisoned") = None;
+    }
+
+    if let Some(timer) = self
+      .timer_thread
+      .lock()
+      .expect("animation mutex poisoned")
+      .take()
+    {
+      self.stalled_timers.fetch_add(1, Ordering::Relaxed);
+      timer.retired.store(true, Ordering::Relaxed);
+      timer.handle.thread().unpark();
+    }
+
+    self.animation_timer_running.store(false, Ordering::Relaxed);
+    self.ensure_timer_running();
   }
 
   /// Spawns the persistent animation timer thread.
@@ -955,10 +1127,16 @@ impl AnimationManager {
   /// [`ensure_timer_running`] call retries the spawn.
   ///
   /// [`ensure_timer_running`]: AnimationManager::ensure_timer_running
-  fn spawn_timer_thread(&self) -> Option<std::thread::JoinHandle<()>> {
+  fn spawn_timer_thread(&self) -> Option<TimerThread> {
     let tx = self.animation_tick_tx.clone();
     let running = self.animation_timer_running.clone();
     let shutdown = self.timer_shutdown.clone();
+    let retired = Arc::new(AtomicBool::new(false));
+    let thread_retired = retired.clone();
+    let stalled_guard = StalledTimerGuard {
+      retired: retired.clone(),
+      stalled_timers: self.stalled_timers.clone(),
+    };
     #[cfg(target_os = "windows")]
     let vsync_waiter = self.animation_timer_vsync.clone();
     #[cfg(target_os = "windows")]
@@ -969,6 +1147,8 @@ impl AnimationManager {
     let result = std::thread::Builder::new()
       .name("glazewm-anim-tick".into())
       .spawn(move || {
+        let _stalled_guard = stalled_guard;
+
         // Elevate scheduling priority once for the thread's whole
         // lifetime. MMCSS "DisplayPostProcessing" gives
         // near-real-time guarantees beyond
@@ -982,18 +1162,23 @@ impl AnimationManager {
         #[cfg(target_os = "windows")]
         let _mmcss = wm_platform::try_set_thread_mmcss();
 
+        let should_exit = || {
+          shutdown.load(Ordering::Relaxed)
+            || thread_retired.load(Ordering::Relaxed)
+        };
+
         loop {
           // Idle: park until a ticking phase begins (or shutdown). A
           // `while` loop re-checks the gate to absorb spurious
           // wake-ups and any buffered unpark token from a
           // just-ended phase.
           while !running.load(Ordering::Relaxed) {
-            if shutdown.load(Ordering::Relaxed) {
+            if should_exit() {
               return;
             }
             std::thread::park();
           }
-          if shutdown.load(Ordering::Relaxed) {
+          if should_exit() {
             return;
           }
 
@@ -1021,12 +1206,12 @@ impl AnimationManager {
                 .lock()
                 .expect("animation mutex poisoned")
                 .clone();
-              let waited = waiter.map(|w| w.wait()).unwrap_or(false);
-              if waited {
+              let did_wait = waiter.is_some_and(|w| w.wait());
+              if did_wait {
                 *vsync_time.lock().expect("animation mutex poisoned") =
                   Some(Instant::now());
               }
-              waited
+              did_wait
             };
             #[cfg(not(target_os = "windows"))]
             let dxgi_waited = false;
@@ -1040,7 +1225,9 @@ impl AnimationManager {
               std::thread::sleep(std::time::Duration::from_micros(16_667));
             }
 
-            if tx.send(()).is_err() {
+            // A retired thread's wait can return long after it was
+            // replaced; its tick would only duplicate the new thread's.
+            if should_exit() || tx.send(()).is_err() {
               return;
             }
           }
@@ -1050,7 +1237,7 @@ impl AnimationManager {
       });
 
     match result {
-      Ok(handle) => Some(handle),
+      Ok(handle) => Some(TimerThread { handle, retired }),
       Err(err) => {
         tracing::warn!("Failed to spawn animation tick thread: {err}.");
         // Reset the gate so a later call retries the spawn.
@@ -1061,6 +1248,7 @@ impl AnimationManager {
   }
 
   /// Internal update, accessed through `WmState` to avoid double-borrow.
+  #[allow(clippy::too_many_lines)]
   pub(crate) fn update_internal(
     state: &mut WmState,
     config: &UserConfig,
@@ -1069,8 +1257,28 @@ impl AnimationManager {
       return Ok(());
     }
 
+    state.animation_manager.last_frame_at.set(Instant::now());
+
     perf::begin_frame();
     let tick_scope = perf::scope(Stage::Tick);
+
+    // A failed sync must not end the frame early: the teardown after it is
+    // what removes finished surrogates and reveals the real windows. The
+    // first error is returned once the frame is done.
+    let mut frame_result = Ok(());
+
+    // Finish what a newer slide cut short, the same way a completed slide
+    // is finished: its surrogates already wait in `pending_ws_cleanup`.
+    #[cfg(target_os = "windows")]
+    for id in
+      std::mem::take(&mut state.animation_manager.interrupted_ws_windows)
+    {
+      if let Some(container) = state.container_by_id(id) {
+        if let Ok(window) = container.as_window_container() {
+          state.pending_sync.queue_container_to_redraw(window);
+        }
+      }
+    }
 
     // Start the clock of every animation created since the last tick (see
     // `WindowAnimationState::start_clock`), one frame period before this
@@ -1085,6 +1293,34 @@ impl AnimationManager {
       animation.start_clock(clock_origin);
     }
 
+    // Moved columns that end shown get their real window back in the
+    // redraw below, and focus deferred while they moved lands then. Ones
+    // that end hidden have their real window put where it stays cloaked,
+    // and their overlays settled.
+    #[cfg(target_os = "windows")]
+    let mut scroll_batch = SurrogateBatch::new();
+    #[cfg(target_os = "windows")]
+    let landed = state.animation_manager.scroll_view.tick(
+      frame_now,
+      clock_origin,
+      &mut scroll_batch,
+    );
+    #[cfg(target_os = "windows")]
+    if !landed.shown.is_empty() {
+      state.pending_sync.queue_focus_change();
+    }
+    #[cfg(target_os = "windows")]
+    for window_id in landed.shown.into_iter().chain(landed.hidden) {
+      if let Some(window) = state
+        .container_by_id(window_id)
+        .and_then(|container| container.as_window_container().ok())
+      {
+        state.pending_sync.queue_container_to_redraw(window);
+      }
+    }
+    #[cfg(target_os = "windows")]
+    super::scroll_view::track_overlays(state, config, scroll_batch);
+
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state
       .animation_manager
@@ -1094,8 +1330,7 @@ impl AnimationManager {
         state
           .animation_manager
           .get_animation(id)
-          .map(|anim| !anim.is_complete())
-          .unwrap_or(false)
+          .is_some_and(|anim| !anim.is_complete())
       })
       .collect();
 
@@ -1144,7 +1379,7 @@ impl AnimationManager {
             .animation_manager
             .animations
             .get(id)
-            .map_or(false, |a| !a.is_complete())
+            .is_some_and(|a| !a.is_complete())
         })
         .copied()
         .collect();
@@ -1161,8 +1396,7 @@ impl AnimationManager {
           .animation_manager
           .resize_sessions
           .get(id)
-          .map(|s| s.zoom)
-          .unwrap_or(false);
+          .is_some_and(|s| s.zoom);
 
         // Extract values before taking a mutable borrow on
         // resize_sessions.
@@ -1176,7 +1410,7 @@ impl AnimationManager {
         let Some((current_rect, opacity, progress)) = anim_data else {
           continue;
         };
-        let opacity_u8 = opacity.map(|o| o.to_alpha()).unwrap_or(u8::MAX);
+        let opacity_u8 = opacity.map_or(u8::MAX, |o| o.to_alpha());
 
         if is_zoom {
           if let Some(session) =
@@ -1263,7 +1497,7 @@ impl AnimationManager {
           state
             .animation_manager
             .get_animation(id)
-            .map_or(false, |a| a.is_complete())
+            .is_some_and(super::state::WindowAnimationState::is_complete)
         })
         .copied()
         .collect();
@@ -1302,6 +1536,7 @@ impl AnimationManager {
               "Failed to send WM_CLOSE for window {id}: {err}."
             );
           }
+          state.closing_windows.mark_close_sent(id, Instant::now());
         }
       }
     }
@@ -1325,7 +1560,7 @@ impl AnimationManager {
           state
             .animation_manager
             .get_animation(id)
-            .map_or(false, |a| a.is_complete())
+            .is_some_and(super::state::WindowAnimationState::is_complete)
         })
         .copied()
         .collect();
@@ -1469,8 +1704,15 @@ impl AnimationManager {
         // case.
         let mut ws_batch = SurrogateBatch::new();
 
-        for (&window_id, entry) in ws.windows.iter_mut() {
+        for (&window_id, entry) in &mut ws.windows {
           if let Some(ref mut s) = entry.surrogate {
+            // An outgoing window was hidden by its alpha as it was
+            // cloaked, a tick ago at least, so the cloak is on
+            // screen by now.
+            if !entry.is_incoming {
+              s.restore_alpha();
+            }
+
             // At completion, hide outgoing surrogates immediately. They
             // have already slid fully off-screen, but hiding
             // the thumbnail outright guarantees nothing
@@ -1597,19 +1839,19 @@ impl AnimationManager {
             // instead of a fixed-intensity look that
             // jumps to the tuned value only once the animation ends.
             if s.is_live() {
-              match s.current_rect() {
-                Some(rect) => {
+              match s.live_frame() {
+                Some(live) => {
                   if let Some(blend) = StyleBlend::between(
                     from_backdrop,
                     to_backdrop,
                     eased_final,
                     NativeBackdropOverlay::transparent,
                   ) {
-                    upsert_blended_overlay(
+                    upsert_live_backdrop_overlay(
                       &mut state.backdrop_overlays,
                       window_id,
                       blend,
-                      rect,
+                      live,
                       s.hwnd(),
                       &mut ws_batch,
                     );
@@ -1644,8 +1886,8 @@ impl AnimationManager {
               eased_final,
               NativeBorderOverlay::transparent,
             ) {
-              match s.unclipped_rect() {
-                Some(rect) => {
+              match (s.unclipped_rect(), s.panel()) {
+                (Some(rect), Some(panel)) => {
                   // Fade the ring in step with the window it outlines, so
                   // a configured `opacity_incoming`/`opacity_outgoing`
                   // does not leave a full-strength border floating over a
@@ -1661,10 +1903,11 @@ impl AnimationManager {
                     blend,
                     rect,
                     &ws.border_viewport,
+                    panel,
                     s.hwnd(),
                   );
                 }
-                None => {
+                _ => {
                   if let Some(overlay) =
                     state.border_overlays.get_mut(&window_id)
                   {
@@ -1692,8 +1935,9 @@ impl AnimationManager {
     // windows.
     #[cfg(target_os = "windows")]
     if let Some(ids) = ws_complete_ids {
-      state.animation_manager.pending_ws_cleanup =
-        state.animation_manager.workspace_switch.take();
+      if let Some(ws) = state.animation_manager.workspace_switch.take() {
+        state.animation_manager.stash_for_ws_cleanup(ws);
+      }
 
       for id in ids {
         if let Some(container) = state.container_by_id(id) {
@@ -1753,6 +1997,10 @@ impl AnimationManager {
         // Grow the hole from 0 to `max_radius` (which reaches the farthest
         // corner at `eased == 1.0`); the overlay is dropped on the same
         // final frame, so the corners never linger.
+        #[allow(
+          clippy::cast_possible_truncation,
+          clippy::cast_precision_loss
+        )]
         let radius = (eased * iris.max_radius as f32).round() as i32;
         iris.overlay.set_hole(iris.origin_x, iris.origin_y, radius);
         raw_progress >= 1.0
@@ -1768,7 +2016,18 @@ impl AnimationManager {
     }
 
     if state.pending_sync.has_changes() {
-      platform_sync(state, config)?;
+      keep_first_error(&mut frame_result, platform_sync(state, config));
+    } else {
+      // `platform_sync` syncs tab bars, which go with the peeks of moving
+      // columns even when nothing else moved.
+      #[cfg(target_os = "windows")]
+      if state.animation_manager.scroll_view.is_active() {
+        crate::tab_bars::sync_tab_bars(
+          state,
+          config,
+          crate::tab_bars::Restack::None,
+        );
+      }
     }
 
     #[cfg(target_os = "windows")]
@@ -1778,6 +2037,8 @@ impl AnimationManager {
     // early: leaving it open there made `Cleanup` enclose a second
     // `PlatformSync`, double-counting that time so the two stages summed
     // to more than the enclosing `Tick`.
+    // LINT: Only taken early by the Windows teardown below.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut cleanup_scope = Some(perf::scope(Stage::Cleanup));
 
     // Fade out pending sessions now that `platform_sync` has moved the
@@ -1841,6 +2102,9 @@ impl AnimationManager {
         let anchor =
           session.window_hwnd().or_else(|| session.surrogate_hwnd());
         let rect = session.current_rect();
+        let border_rect = rect
+          .as_ref()
+          .map(|rect| crate::tab_bars::with_tab_bar_of(state, *id, rect));
 
         if let Some(params) = session.backdrop_overlay_params() {
           match (anchor, rect.clone()) {
@@ -1861,7 +2125,7 @@ impl AnimationManager {
         }
 
         if let Some(params) = session.border_overlay_params() {
-          match (anchor, rect) {
+          match (anchor, border_rect) {
             (Some(anchor), Some(rect)) => upsert_overlay(
               &mut state.border_overlays,
               *id,
@@ -2087,7 +2351,7 @@ impl AnimationManager {
         .animation_manager
         .pending_ws_cleanup
         .as_ref()
-        .map(|ws| {
+        .map_or_default(|ws| {
           ws.windows
             .iter()
             .filter(|(_, entry)| entry.is_incoming)
@@ -2101,8 +2365,7 @@ impl AnimationManager {
               Some((*id, rect, surrogate.hwnd()))
             })
             .collect()
-        })
-        .unwrap_or_default();
+        });
 
       let focused_id = state.focused_container().map(|c| c.id());
       let mut pre_shown = false;
@@ -2243,7 +2506,7 @@ impl AnimationManager {
            redraw, running follow-up platform_sync."
         );
         drop(cleanup_scope.take());
-        platform_sync(state, config)?;
+        keep_first_error(&mut frame_result, platform_sync(state, config));
       }
     }
 
@@ -2302,7 +2565,7 @@ impl AnimationManager {
       }
     }
 
-    Ok(())
+    frame_result
   }
 
   /// Returns the predicted vsync instant: last wake + frame period ×
@@ -2330,13 +2593,16 @@ impl AnimationManager {
 
   /// The pacing monitor's frame period, or zero before a vsync waiter is
   /// installed.
+  // LINT: The vsync waiter only exists on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(clippy::unused_self))]
   fn frame_period(&self) -> Duration {
     #[cfg(target_os = "windows")]
-    if let Some(period_us) = self
-      .animation_timer_vsync
-      .lock()
-      .ok()
-      .and_then(|waiter| waiter.as_ref().map(|w| w.frame_period_us()))
+    if let Some(period_us) =
+      self.animation_timer_vsync.lock().ok().and_then(|waiter| {
+        waiter
+          .as_ref()
+          .map(wm_platform::DxgiVsyncWaiter::frame_period_us)
+      })
     {
       return Duration::from_micros(period_us);
     }
@@ -2396,7 +2662,7 @@ impl AnimationManager {
       let guard = self
         .animation_timer_vsync
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
       if guard
         .as_ref()
         .is_some_and(|w| w.monitor_handle() == monitor_handle)
@@ -2417,7 +2683,7 @@ impl AnimationManager {
         let mut guard = self
           .animation_timer_vsync
           .lock()
-          .unwrap_or_else(|e| e.into_inner());
+          .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Slow frames are counted against the frame period of whichever
         // monitor is actually pacing the animation, so the profiler stays
         // meaningful across a 60 Hz panel and a 175 Hz one alike.
@@ -2442,20 +2708,24 @@ impl AnimationManager {
     &self,
     window_id: &Uuid,
     is_resize: bool,
+    is_column: bool,
     target_rect: &Rect,
     previous_target: Option<&Rect>,
     config: &UserConfig,
   ) -> bool {
     let existing_animation = self.get_animation(window_id);
 
-    let (enabled, threshold_px) = if is_resize {
+    let (enabled, threshold_px) = if is_column {
+      let c = &config.value.animations.scroll;
+      (c.enabled, c.threshold_px)
+    } else if is_resize {
       let c = &config.value.animations.window_resize;
       (c.enabled, c.threshold_px)
     } else {
       let c = &config.value.animations.window_move;
       (c.enabled, c.threshold_px)
     };
-    let threshold = threshold_px as i32;
+    let threshold = i32::try_from(threshold_px).unwrap_or(i32::MAX);
 
     if enabled {
       if let Some(anim) = existing_animation {
@@ -2502,14 +2772,19 @@ impl AnimationManager {
   /// a moved window would otherwise arrive early and detach from its
   /// still-resizing neighbors.
   ///
+  /// A column of a scrolling layout (`is_column`) moves and resizes as
+  /// `animations.scroll` says instead.
+  ///
   /// Returns [`AnimationPositionResult::Frozen`] while a surrogate overlay
   /// is active so the caller does not reposition the real window on
   /// intermediate frames.
+  #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
   pub fn start_animation_if_needed(
     &mut self,
     window_id: Uuid,
     is_resize: bool,
     cycle_has_resize: bool,
+    is_column: bool,
     target_rect: Rect,
     previous_target: Option<Rect>,
     // Only used on Windows to capture the window for the surrogate.
@@ -2540,6 +2815,7 @@ impl AnimationManager {
     let should_start = self.should_start_new_animation(
       &window_id,
       is_resize,
+      is_column,
       &target_rect,
       previous_target.as_ref(),
       config,
@@ -2552,10 +2828,11 @@ impl AnimationManager {
         // Start from the current animated position on cancel-and-replace
         // so the animation does not jump back to the original
         // start.
-        let start_rect = existing_animation
-          .as_ref()
-          .map(|a| a.current_rect())
-          .unwrap_or_else(|| prev_target.clone());
+        let now = Instant::now();
+        let start_rect = existing_animation.as_ref().map_or_else(
+          || prev_target.clone(),
+          |a| a.current_state_at(now).0,
+        );
 
         // Share the resize timing across the whole cycle when any window
         // in it resizes, keeping all edges in lock-step (see doc
@@ -2564,7 +2841,10 @@ impl AnimationManager {
           || (cycle_has_resize
             && config.value.animations.window_resize.enabled);
 
-        let (duration_ms, easing) = if use_resize_timing {
+        let (duration_ms, easing) = if is_column {
+          let c = &config.value.animations.scroll;
+          (c.duration_ms, c.easing.clone())
+        } else if use_resize_timing {
           let c = &config.value.animations.window_resize;
           (c.duration_ms, c.easing.clone())
         } else {
@@ -2572,12 +2852,24 @@ impl AnimationManager {
           (c.duration_ms, c.easing.clone())
         };
 
-        let animation = WindowAnimationState::new_movement(
-          start_rect.clone(),
-          target_rect.clone(),
-          duration_ms,
-          easing,
-        );
+        // A column already moving carries on at its speed toward the new
+        // target, as the strip's columns do, rather than restarting.
+        let animation = match &existing_animation {
+          Some(existing) if is_column && !existing.is_complete() => {
+            existing.retargeted(
+              target_rect.clone(),
+              duration_ms,
+              easing,
+              now,
+            )
+          }
+          _ => WindowAnimationState::new_movement(
+            start_rect.clone(),
+            target_rect.clone(),
+            duration_ms,
+            easing,
+          ),
+        };
         self.start_animation(window_id, animation);
 
         // Redirect an in-flight surrogate session to the new target, or
@@ -2613,7 +2905,7 @@ impl AnimationManager {
                 hwnd,
                 &start_rect,
                 &target_rect,
-                SessionOptions {
+                &SessionOptions {
                   effect_opacity,
                   // `false`: the backdrop overlay is positioned behind the
                   // surrogate (in `platform_sync`'s `Frozen` handling)
@@ -2623,7 +2915,6 @@ impl AnimationManager {
                   // correctly in place behind it -- closing the race at
                   // the source instead of chasing it
                   // with a fast follow-up.
-                  initially_visible: false,
                   corner_style,
                   place_at_top: true,
                   edge_color: cached_edge_color,
@@ -2638,9 +2929,8 @@ impl AnimationManager {
               hwnd,
               &start_rect,
               &target_rect,
-              SessionOptions {
+              &SessionOptions {
                 effect_opacity,
-                initially_visible: false,
                 corner_style,
                 place_at_top: true,
                 edge_color: cached_edge_color,
@@ -2725,16 +3015,14 @@ impl AnimationManager {
             .expect("resize session must exist after status check");
           let opacity_u8 = opacity
             .as_ref()
-            .map(|o| o.to_alpha())
-            .unwrap_or(effect_opacity);
+            .map_or(effect_opacity, wm_platform::OpacityValue::to_alpha);
           if zoom {
             // Extract progress with a separate borrow before mutably using
             // session.
-            let progress = self
-              .animations
-              .get(&window_id)
-              .map(|a| a.eased_progress())
-              .unwrap_or(1.0);
+            let progress = self.animations.get(&window_id).map_or(
+              1.0,
+              super::state::WindowAnimationState::eased_progress,
+            );
             let is_close =
               self.pending_close_windows.contains_key(&window_id);
             let forward_progress =
@@ -2760,7 +3048,7 @@ impl AnimationManager {
             // reached, so the real window gets its final size right away
             // (Hyprland-style) instead of late in the animation.
             let handoff = session.is_stretch()
-              || self.animations.get(&window_id).map_or(false, |a| {
+              || self.animations.get(&window_id).is_some_and(|a| {
                 // Scale the lead with the animation duration so the
                 // handoff stays near the end of the visual
                 // travel regardless of easing speed. For
@@ -2768,7 +3056,8 @@ impl AnimationManager {
                 // visual progress.
                 #[allow(
                   clippy::cast_possible_truncation,
-                  clippy::cast_sign_loss
+                  clippy::cast_sign_loss,
+                  clippy::cast_precision_loss
                 )]
                 let lead_ms = (a.duration.as_millis() as f32 * 0.35)
                   .clamp(50.0, HANDOFF_LEAD_MAX_MS as f32)
@@ -2826,21 +3115,6 @@ impl AnimationManager {
     })
   }
 
-  /// Returns the last sampled surrogate backdrop color for `hwnd`,
-  /// however old it is.
-  ///
-  /// Age is not consulted: the color only ever stands in for window
-  /// content in a strip the thumbnail has not reached yet, and an app's
-  /// background changes about as often as its theme -- so the previous
-  /// sample beats none, which leaves that strip showing the backdrop raw
-  /// and undimmed. Callers re-sample on every session (see
-  /// [`sample_edge_color_async`]), so this entry is never more than one
-  /// animation behind the window.
-  ///
-  /// `sample_edge_color_async`'s background thread populates this same map
-  /// directly (see `edge_color_cache`'s doc comment), so a lock failure
-  /// here is treated the same as a miss rather than propagated.
-  #[cfg(target_os = "windows")]
   /// Re-samples the edge color of every window that animated since the
   /// last idle point.
   ///
@@ -2858,9 +3132,24 @@ impl AnimationManager {
     }
   }
 
+  /// Returns the last sampled surrogate backdrop color for `hwnd`,
+  /// however old it is.
+  ///
+  /// Age is not consulted: the color only ever stands in for window
+  /// content in a strip the thumbnail has not reached yet, and an app's
+  /// background changes about as often as its theme -- so the previous
+  /// sample beats none, which leaves that strip showing the backdrop raw
+  /// and undimmed. Callers re-sample on every session (see
+  /// [`sample_edge_color_async`]), so this entry is never more than one
+  /// animation behind the window.
+  ///
+  /// `sample_edge_color_async`'s background thread populates this same map
+  /// directly (see `edge_color_cache`'s doc comment), so a lock failure
+  /// here is treated the same as a miss rather than propagated.
+  #[cfg(target_os = "windows")]
   fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
     let map = self.edge_color_cache.lock().ok()?;
-    map.get(&hwnd).map(|(color, _)| color.clone())
+    map.get(&hwnd).map(|(color, _)| *color)
   }
 
   /// Reclaims a surrogate for `window_id` to reuse instead of building one
@@ -2987,15 +3276,6 @@ impl AnimationManager {
     }
   }
 
-  /// Returns `true` while a workspace-switch slide animation is in
-  /// progress or its surrogates are still live during post-animation
-  /// cleanup.
-  ///
-  /// Includes `pending_ws_cleanup` so that callers (e.g. tab-bar
-  /// visibility, focus deferral) stay in their animation-active state
-  /// until surrogates are fully dropped, preventing a one-frame flash
-  /// between animation completion and surrogate teardown.
-  #[cfg(target_os = "windows")]
   /// Whether any surrogate exists right now, of either kind.
   ///
   /// Surrogates are created at `HWND_TOP`, which displaces *other*
@@ -3004,12 +3284,127 @@ impl AnimationManager {
   /// assume it has not been moved. Losing that check is what stopped
   /// borders and backdrops tracking their windows through a workspace
   /// switch.
+  #[cfg(target_os = "windows")]
   pub fn has_any_surrogate(&self) -> bool {
     !self.resize_sessions.is_empty() || self.is_workspace_switch_active()
   }
 
+  /// Returns `true` while a workspace-switch slide animation is in
+  /// progress or its surrogates are still live during post-animation
+  /// cleanup.
+  ///
+  /// Includes `pending_ws_cleanup` so that callers (e.g. focus deferral)
+  /// stay in their animation-active state until surrogates are fully
+  /// dropped, preventing a one-frame flash between animation completion
+  /// and surrogate teardown.
+  #[cfg(target_os = "windows")]
   pub fn is_workspace_switch_active(&self) -> bool {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
+  }
+
+  /// Whether `window_id` takes part in a workspace-switch slide, playing
+  /// or waiting on its surrogates' teardown.
+  #[cfg(target_os = "windows")]
+  pub fn is_in_workspace_switch(&self, window_id: &Uuid) -> bool {
+    [&self.workspace_switch, &self.pending_ws_cleanup]
+      .into_iter()
+      .flatten()
+      .any(|ws| ws.windows.contains_key(window_id))
+  }
+
+  /// Whether `window_id` slides or zooms in as it opens: on its own, e.g.
+  /// as a new tab of a stack that stays put.
+  #[cfg(target_os = "windows")]
+  pub fn is_entering(&self, window_id: &Uuid) -> bool {
+    self.slide_in_monitor_rects.contains_key(window_id)
+      || self
+        .resize_sessions
+        .get(window_id)
+        .is_some_and(|session| session.zoom)
+  }
+
+  /// Where `window_id` is drawn mid move or resize animation, with
+  /// `rect`, a rect of the layout that moves with the window (e.g. its
+  /// stack's), moved along.
+  #[cfg(target_os = "windows")]
+  pub fn animation_stand_in(
+    &self,
+    window_id: &Uuid,
+    rect: &Rect,
+  ) -> Option<StandIn> {
+    if self.is_entering(window_id) {
+      return None;
+    }
+
+    let animation = self.animations.get(window_id)?;
+    let session = self.resize_sessions.get(window_id);
+
+    // Evaluated at the instant this pass drew the window at.
+    let drawn_at = self.pass_now.unwrap_or_else(Instant::now);
+    let (current, _) = animation.current_state_at(drawn_at);
+
+    Some(StandIn {
+      rect: moved_along(rect, &animation.target_rect, &current),
+      clip: None,
+      anchor: session.and_then(ResizeSession::surrogate_hwnd),
+    })
+  }
+
+  /// Whether `native` may be moved synchronously, to stay in step with its
+  /// surrogate.
+  ///
+  /// A synchronous `SetWindowPos` waits on the window's app, so it is
+  /// skipped for an app the OS reports as hung, and for one whose last
+  /// synchronous move was slow (see [`note_sync_reposition`]).
+  ///
+  /// [`note_sync_reposition`]: AnimationManager::note_sync_reposition
+  #[cfg(target_os = "windows")]
+  pub fn allows_sync_reposition(&mut self, native: &NativeWindow) -> bool {
+    let handle = native.hwnd().0;
+
+    if let Some(until) = self.sync_demoted_until.get(&handle) {
+      if Instant::now() < *until {
+        return false;
+      }
+      self.sync_demoted_until.remove(&handle);
+    }
+
+    !native.is_hung()
+  }
+
+  /// Records how long a synchronous move of the window `handle` took, and
+  /// moves it asynchronously for a while if that was slow.
+  #[cfg(target_os = "windows")]
+  pub fn note_sync_reposition(
+    &mut self,
+    handle: isize,
+    elapsed: Duration,
+  ) {
+    if elapsed < SLOW_SYNC_DEMOTE_THRESHOLD {
+      return;
+    }
+
+    tracing::warn!(
+      "Synchronous move of window {handle:#x} took {elapsed:?}; moving it \
+       asynchronously for {SYNC_DEMOTE_DURATION:?}."
+    );
+
+    let now = Instant::now();
+    self.sync_demoted_until.retain(|_, until| *until > now);
+    self
+      .sync_demoted_until
+      .insert(handle, now + SYNC_DEMOTE_DURATION);
+  }
+
+  /// Hands a finished or interrupted slide's surrogates to
+  /// `pending_ws_cleanup`, merging with any still waiting there so that
+  /// none are destroyed before their real window is uncloaked.
+  #[cfg(target_os = "windows")]
+  fn stash_for_ws_cleanup(&mut self, ws: WorkspaceSwitchState) {
+    match &mut self.pending_ws_cleanup {
+      Some(pending) => pending.windows.extend(ws.windows),
+      None => self.pending_ws_cleanup = Some(ws),
+    }
   }
 
   /// Returns `true` while `window_id` is an incoming participant in the
@@ -3025,8 +3420,7 @@ impl AnimationManager {
       .workspace_switch
       .as_ref()
       .and_then(|ws| ws.windows.get(window_id))
-      .map(|e| e.is_incoming)
-      .unwrap_or(false)
+      .is_some_and(|e| e.is_incoming)
   }
 
   /// Returns `true` when `window_id` is an incoming participant held in
@@ -3040,8 +3434,7 @@ impl AnimationManager {
       .pending_ws_cleanup
       .as_ref()
       .and_then(|ws| ws.windows.get(window_id))
-      .map(|e| e.is_incoming)
-      .unwrap_or(false)
+      .is_some_and(|e| e.is_incoming)
   }
 
   /// Installs a workspace-switch animation for the provided windows.
@@ -3049,16 +3442,18 @@ impl AnimationManager {
   /// Accepts pre-created [`WorkspaceSurrogate`] instances together with
   /// their incoming/outgoing flags. A shared driver advances all
   /// surrogates in lock-step so the entire workspace moves as one panel.
-  /// Any previous workspace-switch state is dropped.
+  /// A previous switch still playing is finished, not dropped.
   ///
   /// `monitor_handle` is the `HMONITOR` of the animation monitor, used to
   /// look up the `IDXGIOutput` for per-monitor vsync waiting.
   /// on secondary monitors whose refresh rate differs from the primary.
   #[cfg(target_os = "windows")]
+  #[allow(clippy::too_many_arguments)]
   pub fn start_workspace_switch(
     &mut self,
     windows: Vec<(Uuid, WorkspaceSwitchEntry)>,
     order_direction: i32,
+    slide_direction: WorkspaceSwitchDirection,
     monitor_x: i32,
     monitor_width: i32,
     monitor_y: i32,
@@ -3067,11 +3462,21 @@ impl AnimationManager {
     monitor_work_area: &Rect,
     config: &UserConfig,
   ) {
-    self.workspace_switch = None;
+    // A slide still playing (typically on another monitor) is finished
+    // rather than dropped: its incoming windows are only uncloaked when it
+    // completes, so dropping it left them invisible until something else
+    // redrew them. Windows taking part in the new slide are left to it.
+    if let Some(mut previous) = self.workspace_switch.take() {
+      previous
+        .windows
+        .retain(|id, _| !windows.iter().any(|(new_id, _)| new_id == id));
+      self.interrupted_ws_windows.extend(previous.windows.keys());
+      self.stash_for_ws_cleanup(previous);
+    }
 
     let ws_config = &config.value.animations.workspace_switch;
 
-    let duration_ms = ws_config.duration_ms;
+    let duration_ms = ws_config.easing.duration_ms(ws_config.duration_ms);
 
     // Slide each workspace the full monitor dimension. The outgoing
     // workspace exits the screen completely (no residual sliver at the
@@ -3085,14 +3490,16 @@ impl AnimationManager {
     let ws_windows: HashMap<Uuid, WorkspaceSwitchEntry> =
       windows.into_iter().collect();
 
-    if !ws_windows.is_empty() {
+    if ws_windows.is_empty() {
+      tracing::warn!("Workspace-switch skipped: no windows to animate.");
+    } else {
       tracing::info!(
         "Starting workspace-switch animation: style={:?}, direction={:?}, \
          order={}, monitor=({monitor_x},{monitor_y},{monitor_width}x{monitor_height}), \
          slide_distance=({slide_distance_h}x{slide_distance_v}), \
          windows={}",
         ws_config.style,
-        ws_config.direction,
+        slide_direction,
         order_direction,
         ws_windows.len(),
       );
@@ -3119,7 +3526,7 @@ impl AnimationManager {
         duration: Duration::from_millis(u64::from(duration_ms)),
         easing: ws_config.easing.clone(),
         style: ws_config.style.clone(),
-        slide_direction: ws_config.direction.clone(),
+        slide_direction,
         order_direction,
         monitor_x,
         monitor_width,
@@ -3131,8 +3538,6 @@ impl AnimationManager {
         zoom_factor: ws_config.zoom_factor.clamp(0.0, 1.0),
         vsync_anchored: false,
       });
-    } else {
-      tracing::warn!("Workspace-switch skipped: no windows to animate.");
     }
   }
 
@@ -3145,6 +3550,7 @@ impl AnimationManager {
   /// incoming workspace beneath. Installs the per-monitor vsync waiter
   /// so the wipe is frame-aligned, mirroring the slide driver.
   #[cfg(target_os = "windows")]
+  #[allow(clippy::too_many_arguments)]
   pub fn start_iris_switch(
     &mut self,
     overlay: NativeIrisOverlay,
@@ -3179,7 +3585,9 @@ impl AnimationManager {
       origin_y,
       max_radius: max_radius.max(1),
       start_time: None,
-      duration: Duration::from_millis(u64::from(duration_ms)),
+      duration: Duration::from_millis(u64::from(
+        easing.duration_ms(duration_ms),
+      )),
       easing,
     });
     self.ensure_timer_running();
@@ -3207,10 +3615,11 @@ impl AnimationManager {
   /// No-ops when `style` is `None` and `opacity_from` is `1.0` (nothing
   /// would visually change for the duration).
   #[cfg(target_os = "windows")]
+  #[allow(clippy::too_many_arguments)]
   pub fn start_open_animation(
     &mut self,
     window_id: Uuid,
-    target_rect: Rect,
+    target_rect: &Rect,
     monitor_rect: Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
@@ -3238,7 +3647,7 @@ impl AnimationManager {
     let start_rect = if is_stationary {
       target_rect.clone()
     } else {
-      Self::compute_transition_start_rect(&target_rect, &params.style)
+      Self::compute_transition_start_rect(target_rect, &params.style)
     };
 
     let mut anim = WindowAnimationState::new_movement(
@@ -3271,7 +3680,7 @@ impl AnimationManager {
     let effective_opacity_from = params.away_opacity;
 
     if effective_opacity_from < 1.0 {
-      let effect_frac = effect_opacity as f32 / 255.0;
+      let effect_frac = f32::from(effect_opacity) / 255.0;
       let start_frac =
         effective_opacity_from.clamp(0.0, 1.0) * effect_frac;
       anim.start_opacity = Some(OpacityValue(start_frac));
@@ -3289,10 +3698,9 @@ impl AnimationManager {
     match ResizeSession::begin(
       native_window.hwnd(),
       &start_rect,
-      &target_rect,
-      SessionOptions {
+      target_rect,
+      &SessionOptions {
         effect_opacity,
-        initially_visible: false,
         corner_style,
         place_at_top: true,
         // No cache for open animations: the window is new, so no prior
@@ -3305,9 +3713,10 @@ impl AnimationManager {
     ) {
       Ok(mut session) => {
         session.zoom = is_zoom;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let initial_opacity_u8 = (effective_opacity_from.clamp(0.0, 1.0)
-          * effect_opacity as f32)
-          .round() as u8;
+          * f32::from(effect_opacity))
+        .round() as u8;
         if effective_opacity_from < 1.0 {
           session.update(&start_rect, initial_opacity_u8);
         }
@@ -3338,25 +3747,28 @@ impl AnimationManager {
     }
   }
 
-  /// Starts a close animation for a window.
+  /// Starts a close or minimize animation for a window still on screen,
+  /// unless one is already running.
   ///
-  /// The surrogate is created and shown immediately as a pixel-identical
-  /// overlay of the (still-visible) window; the caller cloaks the real
-  /// window only after this returns, so the surrogate is already
-  /// covering it and no gap exposes the desktop. The surrogate style is
-  /// determined by `window_close.style`:
-  /// - `None`/`Zoom`: surrogate stays at `current_rect`, fades/zooms out.
-  /// - Slide styles: surrogate slides off the corresponding screen edge
-  ///   while fading. The real window is never repositioned during a close
-  ///   animation.
+  /// The surrogate is created and shown at once as a pixel-identical
+  /// overlay of the window; the caller cloaks or minimizes the real window
+  /// only after this returns, so the surrogate already covers it and no
+  /// gap exposes the desktop. A minimize has to start here, before the
+  /// real one, since a minimized window has no thumbnail left to capture.
+  /// The surrogate stays put and fades or zooms out, or slides off the
+  /// screen edge `params.style` names; the real window never moves.
   ///
-  /// When the animation completes, `update_internal` sends `WM_CLOSE` and
-  /// unmanages the window. No-ops if a close animation is already active.
+  /// On completion, `update_internal` sends a closing window `WM_CLOSE`
+  /// and unmanages it, and just drops a minimized window's surrogate. A
+  /// window minimized from its own title bar is already gone by the time
+  /// the WM hears about it, and keeps the OS animation.
   #[cfg(target_os = "windows")]
-  pub fn start_close_animation(
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn start_away_animation(
     &mut self,
+    transition: AwayTransition,
     window_id: Uuid,
-    current_rect: Rect,
+    current_rect: &Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
     backdrop_overlay: Option<BackdropOverlayParams>,
@@ -3364,7 +3776,15 @@ impl AnimationManager {
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
   ) {
-    if self.pending_close_windows.contains_key(&window_id) {
+    let is_running = match transition {
+      AwayTransition::Close => {
+        self.pending_close_windows.contains_key(&window_id)
+      }
+      AwayTransition::Minimize => {
+        self.pending_minimize_windows.contains(&window_id)
+      }
+    };
+    if is_running {
       return;
     }
 
@@ -3377,18 +3797,17 @@ impl AnimationManager {
       return;
     }
 
-    // Pace the close animation on the window's own monitor.
+    // Pace the animation on the window's own monitor.
     self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
       native_window.hwnd(),
     ));
 
     // For slide-out, the surrogate travels from current_rect to an
-    // off-screen target. The real window stays at current_rect
-    // throughout.
+    // off-screen target.
     let target_rect = if is_stationary {
       current_rect.clone()
     } else {
-      Self::compute_transition_start_rect(&current_rect, &params.style)
+      Self::compute_transition_start_rect(current_rect, &params.style)
     };
 
     let mut anim = WindowAnimationState::new_movement(
@@ -3399,7 +3818,7 @@ impl AnimationManager {
     );
 
     if params.away_opacity < 1.0 {
-      let effect_frac = effect_opacity as f32 / 255.0;
+      let effect_frac = f32::from(effect_opacity) / 255.0;
       let target_frac = params.away_opacity.clamp(0.0, 1.0) * effect_frac;
       anim.start_opacity = Some(OpacityValue(effect_frac));
       anim.target_opacity = Some(OpacityValue(target_frac));
@@ -3407,15 +3826,14 @@ impl AnimationManager {
 
     match ResizeSession::begin(
       native_window.hwnd(),
-      &current_rect,
+      current_rect,
       &target_rect,
-      SessionOptions {
+      &SessionOptions {
         effect_opacity,
-        initially_visible: false,
         corner_style,
         place_at_top: false,
-        // Reuse a cached color when the closing window was recently
-        // animated; otherwise sample — the window is still on screen.
+        // Reuse a cached color when the window was recently animated;
+        // otherwise sample — the window is still on screen.
         edge_color: self.cached_edge_color(native_window.hwnd().0),
         backdrop_overlay,
         border_overlay,
@@ -3423,118 +3841,26 @@ impl AnimationManager {
       },
     ) {
       Ok(mut session) => {
-        // Show the surrogate immediately so it covers the window before
-        // the caller cloaks it (a seamless, pixel-identical
-        // handoff).
+        // Cover the window before the caller cloaks or minimizes it.
         session.show();
         session.zoom = is_zoom;
         self.animations.insert(window_id, anim);
         self.resize_sessions.insert(window_id, session);
-        self
-          .pending_close_windows
-          .insert(window_id, native_window.hwnd().0);
+        match transition {
+          AwayTransition::Close => {
+            self
+              .pending_close_windows
+              .insert(window_id, native_window.hwnd().0);
+          }
+          AwayTransition::Minimize => {
+            self.pending_minimize_windows.insert(window_id);
+          }
+        }
       }
       Err(err) => {
         tracing::warn!(
-          "Failed to begin close animation for {window_id}: {err}."
+          "Failed to begin {transition:?} animation for {window_id}: {err}."
         );
-      }
-    }
-  }
-
-  /// Starts a minimize animation for a window, returning whether one
-  /// began.
-  ///
-  /// Must be called while the window is still restored and on screen: the
-  /// surrogate captures it via a DWM thumbnail, and a minimized window has
-  /// no thumbnail left to capture. The caller minimizes the real window
-  /// only after this returns `true`, by which point the surrogate is
-  /// already covering it, so the handoff is invisible.
-  ///
-  /// The real window is therefore minimized for the whole animation and
-  /// nothing needs to be done to it on completion -- `update_internal`
-  /// just drops the surrogate. That also means this only covers a
-  /// WM-initiated minimize; a window minimized from its own title bar is
-  /// already gone by the time the WM hears about it, and keeps the OS
-  /// animation.
-  #[cfg(target_os = "windows")]
-  pub fn start_minimize_animation(
-    &mut self,
-    window_id: Uuid,
-    current_rect: Rect,
-    effect_opacity: u8,
-    corner_style: CornerStyle,
-    backdrop_overlay: Option<BackdropOverlayParams>,
-    border_overlay: Option<BorderOverlayParams>,
-    params: &WindowTransitionParams,
-    native_window: &NativeWindow,
-  ) -> bool {
-    if self.pending_minimize_windows.contains(&window_id) {
-      return false;
-    }
-
-    let is_zoom = params.style == WindowTransitionStyle::Zoom;
-    let is_stationary = params.style.is_stationary();
-
-    // Nothing would visually change for the duration.
-    if is_stationary && !is_zoom && params.away_opacity >= 1.0 {
-      return false;
-    }
-
-    self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
-      native_window.hwnd(),
-    ));
-
-    let target_rect = if is_stationary {
-      current_rect.clone()
-    } else {
-      Self::compute_transition_start_rect(&current_rect, &params.style)
-    };
-
-    let mut anim = WindowAnimationState::new_movement(
-      current_rect.clone(),
-      target_rect.clone(),
-      params.duration_ms,
-      params.easing.clone(),
-    );
-
-    if params.away_opacity < 1.0 {
-      let effect_frac = effect_opacity as f32 / 255.0;
-      let target_frac = params.away_opacity.clamp(0.0, 1.0) * effect_frac;
-      anim.start_opacity = Some(OpacityValue(effect_frac));
-      anim.target_opacity = Some(OpacityValue(target_frac));
-    }
-
-    match ResizeSession::begin(
-      native_window.hwnd(),
-      &current_rect,
-      &target_rect,
-      SessionOptions {
-        effect_opacity,
-        initially_visible: false,
-        corner_style,
-        place_at_top: false,
-        edge_color: self.cached_edge_color(native_window.hwnd().0),
-        backdrop_overlay,
-        border_overlay,
-        stretch: false,
-      },
-    ) {
-      Ok(mut session) => {
-        // Cover the still-visible window before the caller minimizes it.
-        session.show();
-        session.zoom = is_zoom;
-        self.animations.insert(window_id, anim);
-        self.resize_sessions.insert(window_id, session);
-        self.pending_minimize_windows.insert(window_id);
-        tracing::debug!("Started minimize animation for {window_id}.");
-        true
-      }
-      Err(err) => {
-        tracing::warn!(
-          "Failed to begin minimize animation for {window_id}: {err}."
-        );
-        false
       }
     }
   }
@@ -3591,13 +3917,92 @@ impl AnimationManager {
     }
   }
 
-  /// Applies the configured effect opacity to all outgoing
-  /// workspace-switch surrogates.
+  /// Hands outgoing `window` over to its workspace-switch surrogate, just
+  /// before the window is cloaked (see `WorkspaceSurrogate::take_over`).
+  #[cfg(target_os = "windows")]
+  pub fn take_over_outgoing(
+    &mut self,
+    window_id: Uuid,
+    window: &NativeWindow,
+  ) {
+    let surrogate = self
+      .workspace_switch
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| !entry.is_incoming)
+      .and_then(|entry| entry.surrogate.as_mut());
+
+    if let Some(surrogate) = surrogate {
+      surrogate.take_over(window);
+    }
+  }
+
+  /// Hands the windows of `windows`, a slide about to cut short the one
+  /// still playing, over from their surrogates in that one, returning
+  /// the ids of those handed over, each with whether it slides in.
   ///
-  /// Called after the outgoing real windows have been cloaked so the
-  /// thumbnail opacity transitions from the fully-opaque `show_initial`
-  /// state to the configured effect opacity without causing a
-  /// double-blend frame.
+  /// Such a window has no real window on screen to take it over from
+  /// (see `WorkspaceSurrogate::take_over`), and its old surrogate goes as
+  /// the new slide starts. So, once the new surrogates have been
+  /// composited at least once, an outgoing one is brought up and the old
+  /// one's thumbnail hidden back to back, and no frame shows neither. One
+  /// sliding in starts off-screen and is only shown on the new slide's
+  /// first frame, so its old surrogate is just hidden.
+  #[cfg(target_os = "windows")]
+  pub fn hand_over_cut_short_slide(
+    &mut self,
+    windows: &mut [(Uuid, WorkspaceSwitchEntry)],
+  ) -> Vec<(Uuid, bool)> {
+    let Some(previous) = self.workspace_switch.as_mut() else {
+      return Vec::new();
+    };
+
+    let mut handed_over = Vec::new();
+    for (id, entry) in windows {
+      let (Some(old), Some(new)) = (
+        previous
+          .windows
+          .get_mut(id)
+          .and_then(|previous| previous.surrogate.as_mut()),
+        entry.surrogate.as_mut(),
+      ) else {
+        continue;
+      };
+
+      if !entry.is_incoming {
+        new.apply_effect_opacity();
+      }
+      old.hide_thumbnail();
+      handed_over.push((*id, entry.is_incoming));
+    }
+
+    handed_over
+  }
+
+  /// Readies handing incoming `window` back from its finished
+  /// workspace-switch surrogate, just before the window is uncloaked (see
+  /// `WorkspaceSurrogate::prepare_hand_back`).
+  #[cfg(target_os = "windows")]
+  pub fn prepare_ws_hand_back(
+    &mut self,
+    window_id: Uuid,
+    window: &NativeWindow,
+  ) {
+    let surrogate = self
+      .pending_ws_cleanup
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| entry.is_incoming)
+      .and_then(|entry| entry.surrogate.as_mut());
+
+    if let Some(surrogate) = surrogate {
+      surrogate.prepare_hand_back(window);
+    }
+  }
+
+  /// Applies the configured effect opacity to all outgoing
+  /// workspace-switch surrogates, for any whose window wasn't handed over
+  /// as it was cloaked (see `take_over_outgoing`).
   #[cfg(target_os = "windows")]
   pub fn apply_outgoing_surrogate_opacities(&mut self) {
     let Some(ref mut ws) = self.workspace_switch else {
@@ -3610,5 +4015,126 @@ impl AnimationManager {
         }
       }
     }
+  }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+  use wm_common::ParsedConfig;
+
+  use super::*;
+
+  fn start_slide(
+    manager: &mut AnimationManager,
+    ids: &[Uuid],
+    config: &UserConfig,
+  ) {
+    let windows = ids
+      .iter()
+      .map(|id| {
+        let entry = WorkspaceSwitchEntry {
+          surrogate: None,
+          is_incoming: true,
+          was_focused: false,
+        };
+        (*id, entry)
+      })
+      .collect();
+
+    manager.start_workspace_switch(
+      windows,
+      1,
+      WorkspaceSwitchDirection::default(),
+      0,
+      1920,
+      0,
+      1080,
+      0,
+      &Rect::from_xy(0, 0, 1920, 1080),
+      config,
+    );
+  }
+
+  #[test]
+  fn new_slide_finishes_interrupted_one() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+
+    start_slide(&mut manager, &[a, b], &config);
+    start_slide(&mut manager, &[b, c], &config);
+
+    // `a` only took part in the first slide, so it is finished; `b` moved
+    // on to the new one.
+    assert_eq!(manager.interrupted_ws_windows, vec![a]);
+
+    let cleanup = manager
+      .pending_ws_cleanup
+      .as_ref()
+      .expect("interrupted slide should await cleanup");
+    assert!(cleanup.windows.contains_key(&a));
+    assert!(!cleanup.windows.contains_key(&b));
+
+    let active = manager
+      .workspace_switch
+      .as_ref()
+      .expect("new slide should be active");
+    assert_eq!(active.windows.len(), 2);
+    assert!(active.windows.contains_key(&b));
+    assert!(active.windows.contains_key(&c));
+  }
+
+  #[test]
+  fn stalled_guard_counts_only_retired_threads() {
+    let stalled_timers = Arc::new(AtomicUsize::new(1));
+
+    for (is_retired, expected) in [(false, 1), (true, 0)] {
+      drop(StalledTimerGuard {
+        retired: Arc::new(AtomicBool::new(is_retired)),
+        stalled_timers: stalled_timers.clone(),
+      });
+      assert_eq!(stalled_timers.load(Ordering::Relaxed), expected);
+    }
+  }
+
+  #[test]
+  fn no_replacement_while_a_replaced_timer_is_stalled() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let manager = AnimationManager::new(tick_tx);
+    manager
+      .stalled_timers
+      .store(MAX_STALLED_TIMERS, Ordering::Relaxed);
+    manager
+      .animation_timer_running
+      .store(true, Ordering::Relaxed);
+
+    manager.replace_stalled_timer();
+
+    // The running gate is left as it was, so no new thread was started.
+    assert!(manager.animation_timer_running.load(Ordering::Relaxed));
+    assert_eq!(
+      manager.stalled_timers.load(Ordering::Relaxed),
+      MAX_STALLED_TIMERS
+    );
+  }
+
+  #[test]
+  fn interrupted_slides_merge_into_cleanup() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+
+    start_slide(&mut manager, &[a], &config);
+    start_slide(&mut manager, &[b], &config);
+    start_slide(&mut manager, &[c], &config);
+
+    let cleanup = manager
+      .pending_ws_cleanup
+      .as_ref()
+      .expect("interrupted slides should await cleanup");
+    assert!(cleanup.windows.contains_key(&a));
+    assert!(cleanup.windows.contains_key(&b));
   }
 }

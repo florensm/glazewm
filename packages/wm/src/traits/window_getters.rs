@@ -263,8 +263,15 @@ macro_rules! impl_window_getters {
         &self,
         has_pending_dpi_adjustment: bool,
       ) {
-        self.0.borrow_mut().has_pending_dpi_adjustment =
-          has_pending_dpi_adjustment;
+        let mut inner = self.0.borrow_mut();
+        inner.has_pending_dpi_adjustment = has_pending_dpi_adjustment;
+
+        // Its app's minimum width was measured at the old DPI. Once it is
+        // laid out at the new one, an app refusing that width has it
+        // measured again.
+        if has_pending_dpi_adjustment {
+          inner.native_properties.min_width = 0;
+        }
       }
 
       fn floating_placement(&self) -> Rect {

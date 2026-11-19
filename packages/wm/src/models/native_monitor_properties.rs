@@ -17,7 +17,6 @@ pub struct NativeMonitorProperties {
   pub bounds: Rect,
   pub dpi: u32,
   pub scale_factor: f32,
-  pub refresh_rate: u32,
 }
 
 impl NativeMonitorProperties {
@@ -38,10 +37,6 @@ impl NativeMonitorProperties {
       bounds: native_display.bounds()?,
       dpi: native_display.dpi()?,
       scale_factor: native_display.scale_factor()?,
-      refresh_rate: native_display
-        .main_device()?
-        .refresh_rate()
-        .unwrap_or(60.0) as u32,
     })
   }
 }

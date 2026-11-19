@@ -4,9 +4,12 @@ use uuid::Uuid;
 use crate::{
   dtos::ContainerDto,
   parsed_config::{BindingModeConfig, ParsedConfig},
-  TilingDirection,
+  Layout, TilingDirection,
 };
 
+// Short-lived and serialized for subscribers, so boxing the large
+// variants would only add allocations.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
   tag = "eventType",
@@ -37,6 +40,10 @@ pub enum WmEvent {
   TilingDirectionChanged {
     direction_container: ContainerDto,
     new_tiling_direction: TilingDirection,
+  },
+  LayoutChanged {
+    workspace: ContainerDto,
+    new_layout: Layout,
   },
   UserConfigChanged {
     config_path: String,

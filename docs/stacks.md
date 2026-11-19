@@ -79,7 +79,7 @@ its whole stack along.
 ## Tab bar
 
 Each stack has a tab bar, a rounded strip with one tab per window; the
-active tab is highlighted, and the highlight slides when it changes.
+active tab is highlighted.
 
 - Click a tab to show it; scroll the mouse wheel over the bar to switch to
   the next or previous tab.
@@ -100,6 +100,11 @@ active tab is highlighted, and the highlight slides when it changes.
 
 The bar sits directly behind the stack's active window in z-order, so
 windows that cover the stack cover its tab bar too.
+
+The bar moves along with its stack's move and resize animations. In the
+scrolling layout it slides with its column and is cut off at the monitor
+edge like the column, and a workspace switch hides it only on the monitor
+that switches.
 
 The bar is drawn as part of its window: it is opaque, square where it
 meets the window, and reaches a few pixels under the window to fill in

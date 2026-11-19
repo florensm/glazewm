@@ -24,12 +24,7 @@ impl WindowListener {
   /// This will block until a window event is available.
   pub async fn next_event(&mut self) -> Option<WindowEvent> {
     let event = self.event_rx.recv().await;
-
-    #[cfg(target_os = "windows")]
-    if event.is_some() {
-      crate::perf::record_event_dequeued(crate::perf::EventKind::Window);
-    }
-
+    Self::on_dequeued(event.as_ref());
     event
   }
 
@@ -41,13 +36,21 @@ impl WindowListener {
   /// [`next_event`]: WindowListener::next_event
   pub fn try_next_event(&mut self) -> Option<WindowEvent> {
     let event = self.event_rx.try_recv().ok();
-
-    #[cfg(target_os = "windows")]
-    if event.is_some() {
-      crate::perf::record_event_dequeued(crate::perf::EventKind::Window);
-    }
-
+    Self::on_dequeued(event.as_ref());
     event
+  }
+
+  // LINT: Only does anything on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+  fn on_dequeued(event: Option<&WindowEvent>) {
+    #[cfg(target_os = "windows")]
+    if let Some(event) = event {
+      crate::perf::record_event_dequeued(crate::perf::EventKind::Window);
+
+      if matches!(event, WindowEvent::ZOrderChanged { .. }) {
+        platform_impl::z_order_change_dequeued();
+      }
+    }
   }
 
   /// Terminates the window listener.

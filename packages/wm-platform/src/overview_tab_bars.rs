@@ -8,7 +8,7 @@
 use windows::Win32::Foundation::HWND;
 
 use crate::{
-  overview_layout::{to_card, CardMetrics, RectF},
+  overview_layout::{CardView, RectF},
   overview_thumbnails::Picture,
   tab_bar_paint::{paint_tab_bar, TabBarView},
   tab_layout::{TabHit, TabLayout},
@@ -30,17 +30,11 @@ pub(crate) struct CardTabBar {
 }
 
 impl CardTabBar {
-  /// The bar `frame` on the card of a workspace covering `area`, drawn
-  /// into `picture`.
-  pub fn new(
-    frame: TabFrame,
-    metrics: &CardMetrics,
-    area: &RectF,
-    picture: Picture,
-  ) -> Self {
+  /// The bar `frame` on a card showing `view`, drawn into `picture`.
+  pub fn new(frame: TabFrame, view: &CardView, picture: Picture) -> Self {
     Self {
       layout: TabLayout::for_frame(&frame),
-      rect: to_card(metrics, area, &RectF::from_rect(&frame.outer_rect)),
+      rect: view.map(&RectF::from_rect(&frame.outer_rect)),
       frame,
       picture,
       drawn: None,
@@ -49,17 +43,11 @@ impl CardTabBar {
 
   /// Takes on `frame`, keeping the picture drawn so far if it still shows
   /// it.
-  pub fn update(
-    &mut self,
-    frame: TabFrame,
-    metrics: &CardMetrics,
-    area: &RectF,
-  ) {
+  pub fn update(&mut self, frame: TabFrame, view: &CardView) {
     if frame != self.frame {
       self.layout = TabLayout::for_frame(&frame);
     }
-    self.rect =
-      to_card(metrics, area, &RectF::from_rect(&frame.outer_rect));
+    self.rect = view.map(&RectF::from_rect(&frame.outer_rect));
     self.frame = frame;
   }
 

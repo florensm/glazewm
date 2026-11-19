@@ -1,15 +1,18 @@
 use anyhow::Context;
 #[cfg(target_os = "macos")]
 use wm_common::try_warn;
+#[cfg(target_os = "windows")]
+use wm_platform::Point;
 use wm_platform::{MouseButton, MouseEvent};
 
-use crate::{
-  commands::container::set_focused_descendant, traits::CommonGetters,
-  user_config::UserConfig, wm_state::WmState,
-};
 #[cfg(target_os = "macos")]
+use crate::events::handle_window_moved_or_resized_end;
 use crate::{
-  events::handle_window_moved_or_resized_end, traits::WindowGetters,
+  commands::container::set_focused_descendant,
+  layout::scrolling::is_focusable_by_hover,
+  traits::{CommonGetters, WindowGetters},
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 
 pub fn handle_mouse_move(
@@ -55,6 +58,21 @@ pub fn handle_mouse_move(
     return Ok(());
   }
 
+  #[cfg(target_os = "windows")]
+  if let MouseEvent::ButtonUp {
+    button: MouseButton::Left,
+    position,
+    ..
+  } = event
+  {
+    // A click on the overview is its own: a peek behind it focused here
+    // would fight its pick, e.g. scrolling or switching back mid-zoom.
+    if !state.overview.is_shown() {
+      focus_clicked_peek(position, state);
+    }
+    return Ok(());
+  }
+
   if let MouseEvent::Move {
     pressed_buttons,
     // LINT: `window_below_cursor` is only used on macOS.
@@ -76,9 +94,10 @@ pub fn handle_mouse_move(
       return Ok(());
     }
 
-    // The cursor is over the overview while it is open.
+    // The cursor is over the overview while it is on screen, zooming
+    // into its pick included.
     #[cfg(target_os = "windows")]
-    if state.overview.is_open() {
+    if state.overview.is_shown() {
       return Ok(());
     }
 
@@ -108,7 +127,9 @@ pub fn handle_mouse_move(
       let focused_container =
         state.focused_container().context("No focused container.")?;
 
-      if focused_container.id() != window.id() {
+      if focused_container.id() != window.id()
+        && is_focusable_by_hover(&window)?
+      {
         set_focused_descendant(&window.as_container(), None);
         state.pending_sync.queue_focus_change();
       }
@@ -133,4 +154,26 @@ pub fn handle_mouse_move(
   }
 
   Ok(())
+}
+
+/// Focuses the scrolling layout's column whose peek was clicked at
+/// `position`, which scrolls it into view. Peeks are click-through, so
+/// the click itself lands on whatever is below.
+#[cfg(target_os = "windows")]
+fn focus_clicked_peek(position: &Point, state: &mut WmState) {
+  let is_dragging = state
+    .windows()
+    .iter()
+    .any(|window| window.active_drag().is_some());
+
+  if let Some(window) = state
+    .animation_manager
+    .scroll_view
+    .window_at(position)
+    .filter(|_| !is_dragging)
+    .and_then(|id| state.container_by_id(id))
+  {
+    set_focused_descendant(&window, None);
+    state.pending_sync.queue_focus_change();
+  }
 }

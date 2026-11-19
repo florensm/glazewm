@@ -3,7 +3,6 @@
 // through a console. The following prevents this additional console window
 // in release mode.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![warn(clippy::all, clippy::pedantic)]
 
 use anyhow::Context;
 use wm_common::{ClientResponseData, ContainerDto, WindowDto, WmEvent};

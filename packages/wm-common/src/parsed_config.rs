@@ -1,10 +1,12 @@
-use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
-  Keybinding, LengthValue, OpacityValue, RectDelta,
+  Keybinding, LengthUnit, LengthValue, OpacityValue, RectDelta,
 };
 
-use crate::app_command::InvokeCommand;
+use crate::{app_command::InvokeCommand, Layout};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -14,7 +16,9 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub layouts: LayoutsConfig,
   pub overview: OverviewConfig,
+  pub special_workspace: SpecialWorkspaceConfig,
   pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
@@ -277,6 +281,187 @@ pub struct BindingModeConfig {
   pub keybindings: Vec<KeybindingConfig>,
 }
 
+/// Settings of the individual layouts.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct LayoutsConfig {
+  pub scrolling: ScrollingLayoutConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct ScrollingLayoutConfig {
+  /// Width of a new column.
+  pub default_column_width: ColumnWidth,
+
+  /// Widths `cycle-column-width` steps through, as percentages of the
+  /// workspace or in pixels.
+  pub preset_column_widths: Vec<LengthValue>,
+
+  /// Heights `cycle-window-height` steps through, as percentages of the
+  /// workspace or in pixels.
+  pub preset_window_heights: Vec<LengthValue>,
+
+  /// When focusing a column puts it in the middle of the workspace.
+  pub center_focused_column: CenterFocusedColumn,
+
+  /// Whether the only column of a workspace is kept in its middle.
+  pub always_center_single_column: bool,
+
+  /// How a column that windows are added to shows them.
+  pub default_column_display: ColumnDisplay,
+
+  /// With `general.focus_follows_cursor`, how far the view may scroll to
+  /// focus the window under the cursor, as a percentage of the workspace
+  /// width. Windows that would scroll it further aren't focused by
+  /// hovering. Unset for no limit.
+  pub focus_follows_cursor_max_scroll: Option<LengthValue>,
+
+  /// Room kept free at the workspace's sides: columns are fitted between
+  /// the struts, so the columns beside them always peek out there.
+  pub struts: StrutsConfig,
+}
+
+/// Room a scrolling layout keeps free at the sides of its workspace, each
+/// a percentage of the workspace width or pixels. Pixels scale with the
+/// monitor's DPI as the gaps do.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct StrutsConfig {
+  pub left: LengthValue,
+  pub right: LengthValue,
+}
+
+impl Default for StrutsConfig {
+  fn default() -> Self {
+    Self {
+      left: LengthValue::from_px(0),
+      right: LengthValue::from_px(0),
+    }
+  }
+}
+
+/// Width of a new column in a scrolling layout.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColumnWidth {
+  /// The width its windows have as they join the strip, e.g. the size an
+  /// app opened its window at. Written as `"window"`.
+  Window,
+
+  /// A percentage of the workspace, or pixels.
+  Length(LengthValue),
+}
+
+/// Deserializes `"window"`, or a `LengthValue` as a string or a struct.
+impl<'de> Deserialize<'de> for ColumnWidth {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ColumnWidthDe {
+      String(String),
+      Length(LengthValue),
+    }
+
+    match ColumnWidthDe::deserialize(deserializer)? {
+      ColumnWidthDe::String(str) if str == "window" => Ok(Self::Window),
+      ColumnWidthDe::String(str) => LengthValue::from_str(&str)
+        .map(Self::Length)
+        .map_err(serde::de::Error::custom),
+      ColumnWidthDe::Length(length) => Ok(Self::Length(length)),
+    }
+  }
+}
+
+impl Serialize for ColumnWidth {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    match self {
+      Self::Window => serializer.serialize_str("window"),
+      Self::Length(length) => length.serialize(serializer),
+    }
+  }
+}
+
+/// When focusing a column of a scrolling layout centers it.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CenterFocusedColumn {
+  /// Never: the view scrolls just far enough to show the column whole.
+  #[default]
+  Never,
+  /// The focused column is always in the middle.
+  Always,
+  /// Only a column that doesn't fit on screen together with the
+  /// previously focused one is centered.
+  OnOverflow,
+}
+
+/// How a column of a scrolling layout shows its windows.
+#[derive(
+  Clone,
+  Copy,
+  Debug,
+  Default,
+  Deserialize,
+  PartialEq,
+  Eq,
+  Serialize,
+  clap::ValueEnum,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnDisplay {
+  /// Stacked one above the other.
+  #[default]
+  Normal,
+  /// As the tabs of a stack, one shown at a time.
+  Tabbed,
+}
+
+impl ScrollingLayoutConfig {
+  /// Whether the view keeps the active column of a strip of `columns` in
+  /// its middle, rather than only scrolling to show it.
+  #[must_use]
+  pub fn keeps_centered(&self, columns: usize) -> bool {
+    self.center_focused_column == CenterFocusedColumn::Always
+      || (self.always_center_single_column && columns <= 1)
+  }
+}
+
+impl Default for ScrollingLayoutConfig {
+  fn default() -> Self {
+    let thirds = || {
+      [1. / 3., 0.5, 2. / 3.]
+        .into_iter()
+        .map(|amount| LengthValue {
+          amount,
+          unit: LengthUnit::Percentage,
+        })
+        .collect()
+    };
+
+    Self {
+      default_column_width: ColumnWidth::Length(LengthValue {
+        amount: 0.5,
+        unit: LengthUnit::Percentage,
+      }),
+      preset_column_widths: thirds(),
+      preset_window_heights: thirds(),
+      center_focused_column: CenterFocusedColumn::default(),
+      always_center_single_column: false,
+      default_column_display: ColumnDisplay::default(),
+      focus_follows_cursor_max_scroll: None,
+      struts: StrutsConfig::default(),
+    }
+  }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct GapsConfig {
@@ -338,6 +523,9 @@ pub struct GeneralConfig {
   /// and are destroyed once they become empty.
   pub dynamic_workspaces: bool,
 
+  /// Layout of workspaces that don't set their own `layout`.
+  pub default_layout: Layout,
+
   /// Commands to run when the WM has started (e.g. to run a script or
   /// launch another application).
   pub startup_commands: Vec<InvokeCommand>,
@@ -363,6 +551,7 @@ impl Default for GeneralConfig {
       focus_follows_cursor: false,
       toggle_workspace_on_refocus: true,
       dynamic_workspaces: false,
+      default_layout: Layout::Split,
       ignore_focus_steal: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
@@ -421,6 +610,11 @@ pub struct KeybindingConfig {
 
   /// WM commands to run when the keybinding is triggered.
   pub commands: Vec<InvokeCommand>,
+
+  /// How long after it triggers it can't trigger again, e.g. to step once
+  /// per flick of a mouse wheel.
+  #[serde(default)]
+  pub cooldown_ms: Option<u32>,
 }
 
 /// Look of the window overview opened by `toggle-overview`.
@@ -453,16 +647,20 @@ pub struct OverviewConfig {
 
   pub text_color: Color,
 
-  /// Secondary text, e.g. the key hints under the cards.
+  /// Secondary text, e.g. the search's hit count.
   pub subtext_color: Color,
 
   /// Border of windows matching a search.
   pub search_color: Color,
 
+  /// Font of the overview's text; Segoe UI when it isn't installed.
   pub font_family: String,
 
   /// Columns of the grid of every workspace.
   pub grid_columns: usize,
+
+  /// Layout `toggle-overview` opens on, unless it names one.
+  pub layout: OverviewLayout,
 
   /// Length of the zoom out when the overview opens; `0` opens it
   /// instantly.
@@ -471,6 +669,44 @@ pub struct OverviewConfig {
   /// Length of the zoom into the picked workspace when the overview
   /// closes; `0` closes it instantly.
   pub close_duration_ms: u32,
+
+  /// About how long cards and windows take to move to a new selection or
+  /// layout, e.g. the shown workspace sliding over to the next; `0` moves
+  /// them at once.
+  pub switch_duration_ms: u32,
+
+  /// How long the selection and hover highlights take to glide to what
+  /// they mark next and to fade in or out, as the shortcut sheet does;
+  /// `0` snaps them.
+  pub highlight_duration_ms: u32,
+}
+
+/// How the overview lays out the workspaces.
+#[derive(
+  Clone,
+  Copy,
+  Debug,
+  Default,
+  Deserialize,
+  PartialEq,
+  Eq,
+  Serialize,
+  clap::ValueEnum,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewLayout {
+  /// The shown workspace large and as laid out, under a row of every
+  /// workspace in miniature.
+  #[default]
+  Activities,
+  /// The shown workspace large and as laid out, the others in a column
+  /// at the side.
+  Stage,
+  /// One row, the selected workspace in the middle and larger than the
+  /// rest.
+  Carousel,
+  /// Every workspace at once.
+  Grid,
 }
 
 impl Default for OverviewConfig {
@@ -491,10 +727,13 @@ impl Default for OverviewConfig {
       text_color: color(0xe8e0_e8ff),
       subtext_color: color(0xcdc3_ceff),
       search_color: color(0x89b4_faff),
-      font_family: "Segoe UI".to_string(),
+      font_family: "Segoe UI Variable Text".to_string(),
       grid_columns: 5,
+      layout: OverviewLayout::default(),
       open_duration_ms: 250,
       close_duration_ms: 200,
+      switch_duration_ms: 300,
+      highlight_duration_ms: 170,
     }
   }
 }
@@ -517,6 +756,9 @@ pub struct WindowBehaviorConfig {
   /// newly spawned window opens hidden behind it. Matches Hyprland, which
   /// drops fullscreen as soon as another window joins the workspace.
   pub exit_fullscreen_on_new_window: bool,
+
+  /// Highlight of where a dragged window will land.
+  pub drop_indicator: DropIndicatorConfig,
 }
 
 impl Default for WindowBehaviorConfig {
@@ -525,6 +767,32 @@ impl Default for WindowBehaviorConfig {
       initial_state: InitialWindowState::default(),
       state_defaults: WindowStateDefaultsConfig::default(),
       exit_fullscreen_on_new_window: true,
+      drop_indicator: DropIndicatorConfig::default(),
+    }
+  }
+}
+
+/// Highlight shown while dragging a window, over where it will land if
+/// dropped: the half of the window it goes beside, or the stack it joins.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct DropIndicatorConfig {
+  pub enabled: bool,
+
+  /// Given like a border's color (see [`BorderColorSource`]). The focused
+  /// window's border color when `None`.
+  pub color: Option<BorderColorSource>,
+}
+
+impl Default for DropIndicatorConfig {
+  fn default() -> Self {
+    DropIndicatorConfig {
+      enabled: true,
+      color: None,
     }
   }
 }
@@ -672,7 +940,7 @@ impl WindowEffectConfig {
           CornerStyle::Rounded
         }
       }
-      None if self.corner_style.enabled => self.corner_style.style.clone(),
+      None if self.corner_style.enabled => self.corner_style.style,
       None => CornerStyle::Default,
     }
   }
@@ -1125,6 +1393,33 @@ pub struct WorkspaceConfig {
 
   #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
+
+  /// Overrides `general.default_layout` for this workspace.
+  #[serde(default)]
+  pub layout: Option<Layout>,
+}
+
+/// The special workspace: a scratch workspace outside the `workspaces`
+/// list, summoned onto the focused monitor.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct SpecialWorkspaceConfig {
+  /// Name to address it by. Must not be numeric or a `workspaces` name.
+  pub name: String,
+
+  pub display_name: Option<String>,
+
+  pub layout: Layout,
+}
+
+impl Default for SpecialWorkspaceConfig {
+  fn default() -> Self {
+    Self {
+      name: "special".to_string(),
+      display_name: None,
+      layout: Layout::Scrolling,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1133,6 +1428,9 @@ pub struct AnimationsConfig {
   /// Animation settings for pure window translations (position changes
   /// only).
   pub window_move: AnimationTypeConfig,
+  /// Animation settings for how a scrolling layout's columns move and
+  /// resize, the strip scrolling included.
+  pub scroll: AnimationTypeConfig,
   /// Animation settings for operations that change window size.
   pub window_resize: WindowResizeConfig,
   /// Animation settings for when a new window appears.
@@ -1196,6 +1494,11 @@ impl Default for AnimationsConfig {
   fn default() -> Self {
     AnimationsConfig {
       window_move: AnimationTypeConfig::default(),
+      scroll: AnimationTypeConfig {
+        duration_ms: 220,
+        easing: EasingFunction::Spring(SpringParams::default()),
+        ..AnimationTypeConfig::default()
+      },
       window_resize: WindowResizeConfig::default(),
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
@@ -1242,6 +1545,7 @@ impl WindowTransitionStyle {
   ///
   /// Stationary styles keep the surrogate at the window's final position
   /// for the full animation; the surrogate window itself never moves.
+  #[must_use]
   pub fn is_stationary(&self) -> bool {
     matches!(self, Self::None | Self::Zoom)
   }
@@ -1437,12 +1741,14 @@ pub enum WorkspaceSwitchStyle {
 
 impl WorkspaceSwitchStyle {
   /// Returns `true` when the transition has no positional slide component.
+  #[must_use]
   pub fn is_no_slide(&self) -> bool {
     matches!(self, Self::Fade | Self::Zoom)
   }
 
   /// Returns `true` for the iris-wipe style, which is driven by a single
   /// snapshot overlay rather than per-window surrogates.
+  #[must_use]
   pub fn is_iris(&self) -> bool {
     matches!(self, Self::Iris)
   }
@@ -1609,7 +1915,8 @@ pub enum ResizeStyle {
 /// interchangeably with `cubic_bezier(x1, y1, x2, y2)` notation:
 /// `linear`, `ease_in`, `ease_out`, `ease_in_out`,
 /// `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`,
-/// `ease_out_spring`.
+/// `ease_out_spring`. A physical spring is written
+/// `spring(damping_ratio, stiffness, epsilon)`, or just `spring`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EasingFunction {
   /// CSS cubic bezier curve: `cubic_bezier(x1, y1, x2, y2)`.
@@ -1623,6 +1930,126 @@ pub enum EasingFunction {
   /// before settling. Runs to full wall-clock duration to preserve the
   /// bounce.
   EaseOutSpring,
+  /// A damped spring pulled to the target. Lasts as long as it takes to
+  /// settle, whatever the configured duration.
+  Spring(SpringParams),
+}
+
+/// A damped spring from 0 to 1, of unit mass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpringParams {
+  /// 1 settles as fast as possible without overshooting; less bounces,
+  /// more creeps in.
+  pub damping_ratio: f32,
+
+  pub stiffness: f32,
+
+  /// How close to the target, as a fraction of the way, counts as there.
+  pub epsilon: f32,
+
+  /// Speed at the start, in progress per second: nonzero for a movement
+  /// that takes over from one still under way.
+  pub initial_velocity: f32,
+}
+
+impl Default for SpringParams {
+  fn default() -> Self {
+    Self {
+      damping_ratio: 1.,
+      stiffness: 800.,
+      epsilon: 0.0001,
+      initial_velocity: 0.,
+    }
+  }
+}
+
+/// Longest a spring is let run, for ones that never settle.
+const MAX_SPRING_SECS: f64 = 10.;
+
+impl SpringParams {
+  /// Decay rate and natural frequency.
+  fn rates(&self) -> (f64, f64) {
+    let stiffness = f64::from(self.stiffness.max(0.));
+    let omega = stiffness.sqrt();
+    (f64::from(self.damping_ratio.max(0.)) * omega, omega)
+  }
+
+  /// Progress `secs` in, from 0 toward 1.
+  #[must_use]
+  #[allow(clippy::cast_possible_truncation)]
+  pub fn value_at(&self, secs: f32) -> f32 {
+    let t = f64::from(secs.max(0.));
+    let (beta, omega) = self.rates();
+    let (x0, v0) = (-1., f64::from(self.initial_velocity));
+    let envelope = (-beta * t).exp();
+
+    let offset = if (beta - omega).abs() <= 1e-6 * omega.max(1.) {
+      envelope * (x0 + (beta * x0 + v0) * t)
+    } else if beta < omega {
+      let omega1 = (omega * omega - beta * beta).sqrt();
+      envelope
+        * (x0 * (omega1 * t).cos()
+          + (beta * x0 + v0) / omega1 * (omega1 * t).sin())
+    } else {
+      // As two decaying exponentials, which unlike the hyperbolic form
+      // can't overflow.
+      let omega2 = (beta * beta - omega * omega).sqrt();
+      let (slow, fast) = (omega2 - beta, -omega2 - beta);
+      let c1 = (v0 - fast * x0) / (slow - fast);
+      c1 * (slow * t).exp() + (x0 - c1) * (fast * t).exp()
+    };
+
+    (1. + offset) as f32
+  }
+
+  /// How long it takes to come within `epsilon` of 1 for good.
+  #[must_use]
+  pub fn duration(&self) -> std::time::Duration {
+    let (beta, omega) = self.rates();
+    let (x0, v0) = (-1_f64, f64::from(self.initial_velocity));
+    let epsilon = f64::from(self.epsilon.max(1e-9));
+
+    let secs = if beta <= 0. {
+      MAX_SPRING_SECS
+    } else if beta <= omega {
+      // The offset is at most the decaying envelope times
+      // `|x0| + |beta * x0 + v0| * min(t, 1 / omega1)`, whose root is
+      // found in a few steps since it grows only logarithmically.
+      let drift = (beta * x0 + v0).abs();
+      let reach = if beta < omega {
+        1. / (omega * omega - beta * beta).sqrt()
+      } else {
+        f64::INFINITY
+      };
+
+      (0..8).fold((1. / epsilon).ln() / beta, |secs, _| {
+        ((x0.abs() + drift * secs.clamp(0., reach)) / epsilon).ln() / beta
+      })
+    } else {
+      let omega2 = (beta * beta - omega * omega).sqrt();
+      let (slow, fast) = (omega2 - beta, -omega2 - beta);
+      let c1 = (v0 - fast * x0) / (slow - fast);
+      let amplitude = (c1.abs() + (x0 - c1).abs()).max(1.);
+      (amplitude / epsilon).ln() / -slow
+    };
+
+    // `Duration` panics on NaN, which a spring's odd parameters could
+    // still give.
+    std::time::Duration::try_from_secs_f64(secs.clamp(0., MAX_SPRING_SECS))
+      .unwrap_or(std::time::Duration::from_secs_f64(MAX_SPRING_SECS))
+  }
+
+  /// Whether it goes past 1 before settling.
+  #[must_use]
+  pub fn can_overshoot(&self) -> bool {
+    let (beta, omega) = self.rates();
+    let v0 = f64::from(self.initial_velocity);
+
+    // Overdamped and critically damped springs cross over only when they
+    // start out faster than their quickest decay.
+    beta < omega * (1. - 1e-6)
+      || v0 > beta + (beta * beta - omega * omega).max(0.).sqrt()
+  }
 }
 
 impl Default for EasingFunction {
@@ -1640,12 +2067,27 @@ impl EasingFunction {
   /// Non-overshooting functions are cut off at 99% eased progress to avoid
   /// the "stuck at destination" look. Overshooting ones run to full
   /// wall-clock duration to preserve their bounce.
+  #[must_use]
   pub fn can_overshoot(&self) -> bool {
     match self {
       EasingFunction::EaseOutSpring => true,
       EasingFunction::CubicBezier(_, y1, _, y2) => {
         *y1 < 0.0 || *y1 > 1.0 || *y2 < 0.0 || *y2 > 1.0
       }
+      EasingFunction::Spring(spring) => spring.can_overshoot(),
+    }
+  }
+
+  /// How long an animation with this easing lasts, given the configured
+  /// `duration_ms`: a spring takes as long as it needs to settle, unless
+  /// that is 0, which makes any animation instant.
+  #[must_use]
+  pub fn duration_ms(&self, duration_ms: u32) -> u32 {
+    match self {
+      EasingFunction::Spring(spring) if duration_ms > 0 => {
+        u32::try_from(spring.duration().as_millis()).unwrap_or(u32::MAX)
+      }
+      _ => duration_ms,
     }
   }
 }
@@ -1673,6 +2115,10 @@ impl<'de> Deserialize<'de> for EasingFunction {
         Ok(EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0))
       }
       "ease_out_spring" => Ok(EasingFunction::EaseOutSpring),
+      "spring" => Ok(EasingFunction::Spring(SpringParams::default())),
+      s if s.starts_with("spring(") => parse_spring(s)
+        .map(EasingFunction::Spring)
+        .map_err(serde::de::Error::custom),
       s => {
         if let Some(inner) = s
           .strip_prefix("cubic_bezier(")
@@ -1707,7 +2153,8 @@ impl<'de> Deserialize<'de> for EasingFunction {
             "unknown easing function '{s}'; valid values: linear, \
              ease_in, ease_out, ease_in_out, ease_in_cubic, \
              ease_out_cubic, ease_in_out_cubic, ease_out_spring, \
-             cubic_bezier(x1, y1, x2, y2)"
+             cubic_bezier(x1, y1, x2, y2), spring, \
+             spring(damping_ratio, stiffness, epsilon)"
           )))
         }
       }
@@ -1716,12 +2163,19 @@ impl<'de> Deserialize<'de> for EasingFunction {
 }
 
 impl Serialize for EasingFunction {
+  // Exact comparisons on purpose: only control points that are exactly a
+  // named alias's are written back as that alias.
+  #[allow(clippy::float_cmp)]
   fn serialize<S: serde::Serializer>(
     &self,
     s: S,
   ) -> Result<S::Ok, S::Error> {
     match self {
       EasingFunction::EaseOutSpring => s.serialize_str("ease_out_spring"),
+      EasingFunction::Spring(spring) => s.serialize_str(&format!(
+        "spring({}, {}, {})",
+        spring.damping_ratio, spring.stiffness, spring.epsilon
+      )),
       EasingFunction::CubicBezier(x1, y1, x2, y2) => {
         // Serialize back to a named alias when the control points match
         // exactly, so round-tripped configs stay human-readable.
@@ -1747,6 +2201,59 @@ impl Serialize for EasingFunction {
       }
     }
   }
+}
+
+/// Parses `spring(damping_ratio, stiffness, epsilon)`, whose arguments may
+/// also be named (e.g. `spring(stiffness=600)`), the rest defaulting.
+fn parse_spring(value: &str) -> Result<SpringParams, String> {
+  let inner = value
+    .strip_prefix("spring(")
+    .and_then(|rest| rest.strip_suffix(')'))
+    .ok_or_else(|| format!("invalid spring '{value}'"))?;
+
+  let mut spring = SpringParams::default();
+  let names = ["damping_ratio", "stiffness", "epsilon"];
+
+  for (index, argument) in inner
+    .split(',')
+    .map(str::trim)
+    .filter(|argument| !argument.is_empty())
+    .enumerate()
+  {
+    let (name, number) = match argument.split_once('=') {
+      Some((name, number)) => (name.trim(), number.trim()),
+      None => (
+        *names
+          .get(index)
+          .ok_or_else(|| "spring takes at most 3 arguments".to_string())?,
+        argument,
+      ),
+    };
+
+    let number = number
+      .parse::<f32>()
+      .ok()
+      .filter(|number| number.is_finite() && *number >= 0.)
+      .ok_or_else(|| {
+        format!("spring argument '{name}' is not a valid number")
+      })?;
+
+    match name {
+      "damping_ratio" => spring.damping_ratio = number,
+      "stiffness" if number > 0. => spring.stiffness = number,
+      "stiffness" => {
+        return Err("spring stiffness must be above 0".into())
+      }
+      // A fraction of the way, not pixels.
+      "epsilon" if number > 0. && number < 1. => spring.epsilon = number,
+      "epsilon" => {
+        return Err("spring epsilon must be between 0 and 1".into());
+      }
+      _ => return Err(format!("unknown spring argument '{name}'")),
+    }
+  }
+
+  Ok(spring)
 }
 
 /// Helper function for setting a default value for a boolean field.
@@ -1837,7 +2344,154 @@ where
 
 #[cfg(test)]
 mod tests {
-  use super::{BackdropEffectConfig, Color};
+  use super::{
+    BackdropEffectConfig, Color, EasingFunction, OverviewConfig,
+    OverviewLayout, ScrollingLayoutConfig, SpringParams,
+  };
+
+  fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+  }
+
+  #[test]
+  fn springs_parse_by_position_name_or_default() {
+    let EasingFunction::Spring(spring) =
+      easing("spring(0.8, 600, 0.001)").unwrap()
+    else {
+      panic!("not a spring");
+    };
+    assert_eq!(
+      (spring.damping_ratio, spring.stiffness, spring.epsilon),
+      (0.8, 600., 0.001)
+    );
+
+    let EasingFunction::Spring(spring) =
+      easing("spring(stiffness=500)").unwrap()
+    else {
+      panic!("not a spring");
+    };
+    assert_eq!(spring.stiffness, 500.);
+    assert_eq!(spring.damping_ratio, 1.);
+
+    assert_eq!(
+      easing("spring").unwrap(),
+      EasingFunction::Spring(SpringParams::default())
+    );
+    assert!(easing("spring(1, 0)").is_err());
+    assert!(easing("spring(1, 2, 3, 4)").is_err());
+    assert!(easing("spring(bounce=1)").is_err());
+    assert!(easing("spring(1, 800, 1.06)").is_err());
+    assert!(easing("spring(epsilon=0)").is_err());
+  }
+
+  #[test]
+  fn a_spring_with_an_odd_epsilon_still_has_a_duration() {
+    for (damping_ratio, epsilon, initial_velocity) in [
+      (1., 1.06, 0.),
+      (0.8, 1.5, -10.),
+      (0.8, 2., 8.),
+      (0.8, 2., 35.),
+    ] {
+      let spring = SpringParams {
+        damping_ratio,
+        epsilon,
+        initial_velocity,
+        ..SpringParams::default()
+      };
+      assert!(spring.duration().as_secs_f64() <= 10.);
+    }
+  }
+
+  #[test]
+  fn a_spring_runs_from_zero_to_one_and_settles() {
+    let spring = SpringParams::default();
+    let duration = spring.duration().as_secs_f32();
+
+    assert!(spring.value_at(0.).abs() < 1e-6);
+    assert!((spring.value_at(duration) - 1.).abs() < 1e-3);
+    assert!(!spring.can_overshoot());
+
+    // Critically damped from rest, it never goes past the target.
+    let mut previous = 0.;
+    for step in 1..=100 {
+      #[allow(clippy::cast_precision_loss)]
+      let value = spring.value_at(duration * step as f32 / 100.);
+      assert!(value >= previous && value <= 1.);
+      previous = value;
+    }
+  }
+
+  #[test]
+  fn bouncy_and_fast_starting_springs_overshoot() {
+    let bouncy = SpringParams {
+      damping_ratio: 0.5,
+      ..SpringParams::default()
+    };
+    assert!(bouncy.can_overshoot());
+    let peak = (1..200)
+      .map(|ms| {
+        #[allow(clippy::cast_precision_loss)]
+        bouncy.value_at(ms as f32 / 1000.)
+      })
+      .fold(0_f32, f32::max);
+    assert!(peak > 1.);
+
+    let fast = SpringParams {
+      initial_velocity: 100.,
+      ..SpringParams::default()
+    };
+    assert!(fast.can_overshoot());
+
+    let overdamped = SpringParams {
+      damping_ratio: 3.,
+      ..SpringParams::default()
+    };
+    assert!(!overdamped.can_overshoot());
+    let duration = overdamped.duration().as_secs_f32();
+    assert!((overdamped.value_at(duration) - 1.).abs() < 1e-3);
+  }
+
+  #[test]
+  fn springs_last_until_settled_whatever_the_duration() {
+    let spring = EasingFunction::Spring(SpringParams::default());
+    let duration = spring.duration_ms(150);
+    assert!((300..500).contains(&duration), "{duration}");
+    assert_eq!(spring.duration_ms(0), 0, "still instant");
+
+    let bezier = EasingFunction::CubicBezier(0.4, 0., 0.2, 1.);
+    assert_eq!(bezier.duration_ms(150), 150);
+  }
+
+  #[test]
+  fn scrolling_struts_take_either_side_alone() {
+    let config: ScrollingLayoutConfig = serde_json::from_value(
+      serde_json::json!({ "struts": { "right": "5%" } }),
+    )
+    .unwrap();
+
+    assert_eq!(config.struts.left.to_px(1000, None), 0);
+    assert_eq!(config.struts.right.to_px(1000, None), 50);
+    assert_eq!(ScrollingLayoutConfig::default().struts.right.amount, 0.);
+  }
+
+  #[test]
+  fn overview_layouts_read_their_names() {
+    let layout = |name: &str| {
+      serde_json::from_value::<OverviewConfig>(
+        serde_json::json!({ "layout": name }),
+      )
+      .map(|config| config.layout)
+      .ok()
+    };
+
+    assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
+    assert_eq!(layout("stage"), Some(OverviewLayout::Stage));
+    assert_eq!(layout("nope"), None);
+    assert_eq!(
+      OverviewConfig::default().layout,
+      OverviewLayout::Activities
+    );
+  }
 
   /// `to_overlay_params` must map every field through to the resulting
   /// `BackdropOverlayParams` unchanged (plus the two parameters passed in

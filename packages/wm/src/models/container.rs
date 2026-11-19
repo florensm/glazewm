@@ -4,6 +4,7 @@ use std::{
 };
 
 use ambassador::Delegate;
+use subenum::subenum;
 use uuid::Uuid;
 use wm_common::{
   ActiveDrag, ContainerDto, DisplayState, GapsConfig, TilingDirection,
@@ -25,9 +26,10 @@ use crate::{
 ///
 /// Uses:
 ///
-///  * [`wm_macros::SubEnum`] to define subtypes of containers.
-///  * [`wm_macros::EnumFromInner`] to define conversions between the enum
-///    and wrapped types.
+///  * [`subenum`] to define subtypes of containers. They take on the
+///    enum's `#[delegate]` attributes but not its derives.
+///  * [`derive_more`] to define conversions between the enum and wrapped
+///    types.
 ///  * [`ambassador::Delegate`] to delegate common getters to the contained
 ///    types. E.g. implements [`CommonGetters`] for [Container] by
 ///    forwarding the call to the item contained in the enum variant.
@@ -49,46 +51,50 @@ use crate::{
 ///   let tiling: TilingContainer = container.try_into().unwrap(); // Will be a `TilingContainer::Split`
 ///   tiling.tiling_size(); // Can use methods from the `TilingSizeGetters` trait.
 ///
-///   // Try to convert a one sub container type into another. ([TilingContainer] to [DirectionContainer] in this case).
-///   let direction: DirectionContainer = tiling.try_into().unwrap(); // Will be a `DirectionContainer::Split`
-///   direction.tiling_direction(); // Can use methods from the `TilingDirectionGetters` trait.
-///
 ///   // Convert a sub container back into a [Container]
-///   let container: Container = direction.into(); // Will be a `Container::Split`
+///   let container: Container = tiling.into(); // Will be a `Container::Split`
 /// }
 /// ```
 #[derive(
-  Clone, Debug, wm_macros::EnumFromInner, Delegate, wm_macros::SubEnum,
+  Clone, Debug, Delegate, derive_more::From, derive_more::TryInto,
 )]
 #[delegate(CommonGetters)]
 #[delegate(PositionGetters)]
-#[subenum(defaults, {
-  /// Subenum of [Container]
-  #[derive(Clone, Debug, Delegate, wm_macros::EnumFromInner)]
-  #[delegate(CommonGetters)]
-  #[delegate(PositionGetters)]
-})]
-#[subenum(TilingContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `TilingSizeGetters`
-  #[delegate(TilingSizeGetters)]
-})]
-#[subenum(WindowContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `WindowGetters`
-  #[delegate(WindowGetters)]
-})]
-#[subenum(DirectionContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `DirectionGetters`
-  #[delegate(TilingDirectionGetters)]
-})]
+#[subenum(
+  TilingContainer(
+    doc = "Containers that also implement `TilingSizeGetters`.",
+    derive(
+      Clone,
+      Debug,
+      Delegate,
+      derive_more::From,
+      derive_more::TryInto
+    ),
+    delegate(TilingSizeGetters)
+  ),
+  WindowContainer(
+    doc = "Containers that also implement `WindowGetters`.",
+    derive(
+      Clone,
+      Debug,
+      Delegate,
+      derive_more::From,
+      derive_more::TryInto
+    ),
+    delegate(WindowGetters)
+  ),
+  DirectionContainer(
+    doc = "Containers that also implement `TilingDirectionGetters`.",
+    derive(
+      Clone,
+      Debug,
+      Delegate,
+      derive_more::From,
+      derive_more::TryInto
+    ),
+    delegate(TilingDirectionGetters)
+  )
+)]
 pub enum Container {
   Root(RootContainer),
   Monitor(Monitor),
@@ -176,16 +182,6 @@ impl Container {
       _ => None,
     }
   }
-
-  /// Returns the inner `NonTilingWindow` if this is a
-  /// `Container::NonTilingWindow`.
-  #[must_use]
-  pub fn as_non_tiling_window(&self) -> Option<&NonTilingWindow> {
-    match self {
-      Self::NonTilingWindow(window) => Some(window),
-      _ => None,
-    }
-  }
 }
 
 impl PartialEq for TilingContainer {
@@ -230,19 +226,10 @@ impl WindowContainer {
   }
 }
 
+/// Leaves out the title, which can hold private text (document names,
+/// messages), since this is what logs print for a window.
 impl std::fmt::Display for WindowContainer {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    // Truncate title if longer than 20 chars. Need to use `chars()`
-    // instead of byte slices to handle invalid byte indices.
-    let title = {
-      let title = self.native_properties().title;
-      if title.len() > 20 {
-        format!("{}...", title.chars().take(17).collect::<String>())
-      } else {
-        title
-      }
-    };
-
     let class = {
       #[cfg(target_os = "windows")]
       {
@@ -258,11 +245,10 @@ impl std::fmt::Display for WindowContainer {
 
     write!(
       f,
-      "Window(id={:?}, process={}, class={}, title={})",
+      "Window(id={:?}, process={}, class={})",
       self.native().id(),
       process,
       class,
-      title,
     )?;
 
     Ok(())
@@ -300,4 +286,31 @@ macro_rules! impl_container_debug {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::ContainerDto;
+
+  use super::WindowContainer;
+  use crate::{models::NonTilingWindow, traits::WindowGetters};
+
+  #[test]
+  fn logs_leave_out_window_titles() {
+    let window =
+      NonTilingWindow::mock().title("secret".to_string()).call();
+    let Ok(ContainerDto::Window(dto)) = window.to_dto() else {
+      panic!("Expected a window DTO.");
+    };
+
+    assert!(!WindowContainer::from(window.clone())
+      .to_string()
+      .contains("secret"));
+    assert!(
+      !format!("{:?}", window.native_properties()).contains("secret")
+    );
+    assert!(!format!("{dto:?}").contains("secret"));
+    // IPC clients still get it.
+    assert_eq!(dto.title, "secret");
+  }
 }

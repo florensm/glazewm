@@ -1,3 +1,8 @@
+use std::{
+  collections::HashMap,
+  time::{Duration, Instant},
+};
+
 use anyhow::{bail, Context};
 use tokio::sync::mpsc::{self};
 use tracing::warn;
@@ -13,24 +18,33 @@ use wm_common::{InvokeFocusCommand, InvokeMoveCommand};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
-  Dispatcher, LengthValue, OverviewAction, PlatformEvent, RectDelta,
-  WindowEvent,
+  Dispatcher, Keybinding, LengthValue, OverviewAction, PlatformEvent,
+  RectDelta, WindowEvent,
 };
 
 #[cfg(target_os = "windows")]
 use crate::commands::window::close_duplicate_tabs;
 #[cfg(target_os = "windows")]
 use crate::commands::window::detach_window_for_close;
+#[cfg(target_os = "windows")]
+use crate::traits::PositionGetters;
 use crate::{
   commands::{
+    column::{
+      center_column, center_visible_columns, consume_or_expel_window,
+      consume_window_into_column, cycle_column_width, cycle_window_height,
+      expand_column_to_available_width, expel_window_from_column,
+      focus_column, focus_window_in_column, maximize_column, move_column,
+      reset_window_height, set_column_display, swap_window, ColumnTarget,
+      RowTarget,
+    },
     container::{
       focus_container_by_id, focus_in_direction, set_tiling_direction,
       toggle_tiling_direction,
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
-      move_cursor_to_active_window, platform_sync, reload_config,
-      shell_exec, toggle_pause,
+      platform_sync, reload_config, shell_exec, toggle_pause,
     },
     monitor::focus_monitor,
     window::{
@@ -43,8 +57,9 @@ use crate::{
       WindowPositionTarget,
     },
     workspace::{
-      focus_workspace, move_workspace_in_direction,
-      update_workspace_config,
+      focus_special_workspace, focus_workspace,
+      move_window_to_special_workspace, move_workspace_in_direction,
+      set_layout, update_workspace_config,
     },
   },
   events::{
@@ -57,8 +72,8 @@ use crate::{
     handle_z_order_changed,
   },
   ipc_server::IpcServer,
-  models::{Container, WorkspaceTarget},
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  models::{workspace_target, Container},
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -116,6 +131,11 @@ impl WindowManager {
 
   /// Carries out an action taken in the overview, unless it comes from an
   /// earlier session than the open one.
+  // LINT: The overview only exists on Windows.
+  #[cfg_attr(
+    not(target_os = "windows"),
+    allow(clippy::unused_self, clippy::unnecessary_wraps)
+  )]
   pub fn process_overview_action(
     &mut self,
     session: u64,
@@ -131,6 +151,16 @@ impl WindowManager {
     #[cfg(target_os = "windows")]
     {
       let state = &mut self.state;
+
+      // What the WM held off while it was on screen resumes.
+      if action == OverviewAction::Hidden {
+        return if state.overview.mark_hidden(session) {
+          platform_sync(state, config)
+        } else {
+          Ok(())
+        };
+      }
+
       if state.overview.open_session() != Some(session) {
         return Ok(());
       }
@@ -142,7 +172,7 @@ impl WindowManager {
       let window = window_by_handle(state, &action);
 
       let (commands, subject) = match action {
-        OverviewAction::FocusWindow(_) => {
+        OverviewAction::FocusWindow { monitor, .. } => {
           state.overview.close();
           let Some(window) = window else {
             state.pending_sync.queue_focus_change();
@@ -157,6 +187,9 @@ impl WindowManager {
           if let Some(name) = workspace
             .filter(|name| Some(name) != focused_workspace.as_ref())
           {
+            crate::overview::prepare_target(
+              state, config, &name, monitor, true,
+            )?;
             commands.push(focus_workspace_command(name));
           }
 
@@ -170,7 +203,7 @@ impl WindowManager {
           state.pending_sync.suppress_animations();
           (commands, None)
         }
-        OverviewAction::FocusWorkspace(name) => {
+        OverviewAction::FocusWorkspace { name, monitor } => {
           state.overview.close();
 
           // Focusing the focused workspace would toggle back to the
@@ -180,19 +213,26 @@ impl WindowManager {
             return platform_sync(state, config);
           }
 
+          crate::overview::prepare_target(
+            state, config, &name, monitor, true,
+          )?;
           state.pending_sync.suppress_animations();
           (vec![focus_workspace_command(name)], None)
         }
-        OverviewAction::MoveWindow { workspace, .. } => {
+        OverviewAction::MoveWindow {
+          workspace, monitor, ..
+        } => {
           let Some(window) = window else {
             return Ok(());
           };
 
-          let command = InvokeCommand::Move(InvokeMoveCommand {
-            workspace: Some(workspace),
-            ..Default::default()
-          });
-          (vec![command], Some(window.id()))
+          crate::overview::prepare_target(
+            state, config, &workspace, monitor, false,
+          )?;
+          (
+            vec![move_to_workspace_command(workspace)],
+            Some(window.id()),
+          )
         }
         OverviewAction::CloseWindow(_) => {
           let Some(window) = window else {
@@ -210,6 +250,7 @@ impl WindowManager {
           state.overview.close();
           return platform_sync(state, config);
         }
+        OverviewAction::Hidden => return Ok(()),
       };
 
       self
@@ -321,6 +362,117 @@ impl WindowManager {
     Ok(())
   }
 
+  /// When [`process_closing_windows`](Self::process_closing_windows) is
+  /// next due.
+  // LINT: Close animations only exist on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(clippy::unused_self))]
+  pub fn next_closing_check(&self) -> Option<std::time::Instant> {
+    #[cfg(target_os = "windows")]
+    return self.state.closing_windows.next_check();
+    #[cfg(not(target_os = "windows"))]
+    None
+  }
+
+  /// Follows up on windows closed behind a close animation: forgets the
+  /// closed ones, and puts back the ones whose app kept them open.
+  #[cfg(not(target_os = "windows"))]
+  #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+  pub fn process_closing_windows(
+    &mut self,
+    _config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  /// Follows up on windows closed behind a close animation: forgets the
+  /// closed ones, and puts back the ones whose app kept them open.
+  #[cfg(target_os = "windows")]
+  pub fn process_closing_windows(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    use wm_platform::NativeWindow;
+
+    use crate::{
+      closing_windows::{CloseOutcome, ClosingAction, WindowProbe},
+      commands::window::manage_window,
+    };
+
+    let state = &mut self.state;
+
+    let actions =
+      state
+        .closing_windows
+        .poll(std::time::Instant::now(), |handle| {
+          let native = NativeWindow::from_handle(handle);
+          WindowProbe {
+            is_alive: native.is_valid(),
+            is_shown: native.has_window_style(wm_platform::WS_VISIBLE),
+            has_modal_prompt: native.has_modal_prompt(),
+          }
+        });
+
+    for action in actions {
+      match action {
+        ClosingAction::SendClose { id, handle } => {
+          tracing::warn!(
+            "Close animation of {id} did not finish; closing it now."
+          );
+
+          // Dropped so that a late finish can't close the window again
+          // after it has been put back.
+          state.animation_manager.remove_animation(&id);
+          state.backdrop_overlays.remove(&id);
+          state.border_overlays.remove(&id);
+
+          if let Err(err) = NativeWindow::from_handle(handle).close() {
+            warn!("Failed to close window: {:?}", err);
+          }
+        }
+        ClosingAction::Resolved {
+          id,
+          handle,
+          outcome,
+        } => {
+          let native = NativeWindow::from_handle(handle);
+
+          // Managed again in the meantime, so its cloak is the WM's to
+          // decide as for any other window.
+          if outcome == CloseOutcome::Closed
+            || state.window_from_native(&native).is_some()
+          {
+            continue;
+          }
+
+          // Uncloaked even when hidden by the app (e.g. to its tray
+          // icon), so it doesn't come back invisible when shown again.
+          let _ = native.set_cloaked(false);
+
+          if outcome == CloseOutcome::Refused {
+            tracing::info!(
+              "Window {id} stayed open after being closed; managing it \
+               again."
+            );
+
+            // Logged rather than returned, so the remaining windows are
+            // still handled.
+            if let Err(err) = manage_window(native, None, state, config) {
+              warn!("Failed to manage window {id} again: {err:?}");
+            }
+          }
+        }
+      }
+    }
+
+    if !state.is_paused && state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    self.state.animation_manager.ensure_timer_running();
+
+    Ok(())
+  }
+
   pub fn process_event(
     &mut self,
     event: PlatformEvent,
@@ -340,7 +492,15 @@ impl WindowManager {
             self.state.is_paused,
           )
           .find(|kb_config| {
-            kb_config.bindings.contains(&keybinding_event.0)
+            kb_config.bindings.contains(&keybinding_event.keybinding)
+          })
+          .filter(|kb_config| {
+            is_off_cooldown(
+              &mut self.state.keybinding_cooldowns,
+              &keybinding_event.keybinding,
+              kb_config.cooldown_ms,
+              keybinding_event.time,
+            )
           })
           .map(|kb_config| kb_config.commands.clone());
 
@@ -356,25 +516,23 @@ impl WindowManager {
       }
       PlatformEvent::Window(window_event) => match window_event {
         WindowEvent::Focused { window, .. } => {
-          handle_window_focused(&window, state, config).and_then(|()| {
-            #[cfg(target_os = "windows")]
-            crate::stay_interactive::keep_stacked_windows_interactive(
-              &window, state, config,
-            )?;
-            Ok(())
-          })
+          handle_window_focused(&window, state, config)?;
+          #[cfg(target_os = "windows")]
+          crate::stay_interactive::keep_stacked_windows_interactive(
+            &window, state, config,
+          )?;
+          Ok(())
         }
         WindowEvent::Shown { window, .. } => {
           #[cfg(target_os = "windows")]
           let shown = window.clone();
 
-          handle_window_shown(window, state, config).and_then(|()| {
-            #[cfg(target_os = "windows")]
-            crate::stay_interactive::keep_stacked_windows_interactive(
-              &shown, state, config,
-            )?;
-            Ok(())
-          })
+          handle_window_shown(window, state, config)?;
+          #[cfg(target_os = "windows")]
+          crate::stay_interactive::keep_stacked_windows_interactive(
+            &shown, state, config,
+          )?;
+          Ok(())
         }
         WindowEvent::Hidden { window, .. } => {
           handle_window_hidden(&window, state, config)
@@ -423,6 +581,16 @@ impl WindowManager {
     self.state.animation_manager.ensure_timer_running();
 
     Ok(())
+  }
+
+  /// Runs an animation frame in place of a timer thread that stopped
+  /// ticking, and replaces that thread.
+  pub fn recover_stalled_animations(
+    &mut self,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    self.state.animation_manager.replace_stalled_timer();
+    self.update_animations(config)
   }
 
   /// Updates all active animations and redraws windows that are animating.
@@ -549,10 +717,7 @@ impl WindowManager {
               use wm_platform::NativeWindowWindowsExt;
 
               let is_focused = window.id()
-                == state
-                  .focused_container()
-                  .map(|c| c.id())
-                  .unwrap_or_default();
+                == state.focused_container().map_or_default(|c| c.id());
 
               let (
                 effect_opacity,
@@ -576,9 +741,10 @@ impl WindowManager {
                 // overlay, so this is invisible to the user.
                 {
                   let native_ref = window.native();
-                  state.animation_manager.start_close_animation(
+                  state.animation_manager.start_away_animation(
+                    crate::animation::AwayTransition::Close,
                     window_id,
-                    rect,
+                    &rect,
                     effect_opacity,
                     corner_style,
                     backdrop_overlay,
@@ -586,7 +752,7 @@ impl WindowManager {
                     &wm_common::WindowTransitionParams::from_close(
                       &config.value.animations.window_close,
                     ),
-                    &*native_ref,
+                    &native_ref,
                   );
                 }
 
@@ -605,7 +771,16 @@ impl WindowManager {
                 if state.animation_manager.has_close_animation(&window_id)
                 {
                   let _ = window.native().set_cloaked(true);
-                  detach_window_for_close(window, state)?;
+                  let close_config = &config.value.animations.window_close;
+                  detach_window_for_close(
+                    &window,
+                    std::time::Duration::from_millis(u64::from(
+                      close_config
+                        .easing
+                        .duration_ms(close_config.duration_ms),
+                    )),
+                    state,
+                  )?;
                   return Ok(());
                 }
               }
@@ -627,72 +802,52 @@ impl WindowManager {
           focus_in_direction(&subject_container, direction, state)?;
         }
 
-        if let Some(direction) = &args.workspace_in_direction {
-          focus_workspace(
-            WorkspaceTarget::Direction(direction.clone()),
-            state,
-            config,
-          )?;
+        if let Some(target) = workspace_target!(&args) {
+          focus_workspace(target, state, config)?;
         }
 
         if let Some(container_id) = &args.container_id {
           focus_container_by_id(container_id, state)?;
         }
 
-        if let Some(name) = &args.workspace {
-          focus_workspace(
-            WorkspaceTarget::Name(name.clone()),
-            state,
-            config,
-          )?;
-        }
-
         if let Some(monitor_index) = &args.monitor {
           focus_monitor(*monitor_index, state, config)?;
-        }
-
-        if args.next_active_workspace {
-          focus_workspace(WorkspaceTarget::NextActive, state, config)?;
-        }
-
-        if args.prev_active_workspace {
-          focus_workspace(WorkspaceTarget::PreviousActive, state, config)?;
-        }
-
-        if args.next_workspace {
-          focus_workspace(WorkspaceTarget::Next, state, config)?;
-        }
-
-        if args.prev_workspace {
-          focus_workspace(WorkspaceTarget::Previous, state, config)?;
-        }
-
-        if args.recent_workspace {
-          focus_workspace(WorkspaceTarget::Recent, state, config)?;
-        }
-
-        if args.next_empty_workspace {
-          focus_workspace(WorkspaceTarget::NextEmpty, state, config)?;
         }
 
         if args.urgent_window {
           focus_urgent_window(state, config)?;
         }
 
-        if args.next_active_workspace_on_monitor {
-          focus_workspace(
-            WorkspaceTarget::NextActiveInMonitor,
-            state,
-            config,
-          )?;
+        if args.special_workspace {
+          focus_special_workspace(state, config)?;
         }
 
-        if args.prev_active_workspace_on_monitor {
-          focus_workspace(
-            WorkspaceTarget::PreviousActiveInMonitor,
-            state,
-            config,
-          )?;
+        let column_target = if args.first_column {
+          Some(ColumnTarget::First)
+        } else if args.last_column {
+          Some(ColumnTarget::Last)
+        } else if args.next_column {
+          Some(ColumnTarget::Next)
+        } else if args.prev_column {
+          Some(ColumnTarget::Previous)
+        } else {
+          args.column.map(ColumnTarget::Index)
+        };
+
+        if let Some(target) = column_target {
+          focus_column(&subject_container, target, state);
+        }
+
+        let row_target = if args.column_top {
+          Some(RowTarget::Top)
+        } else if args.column_bottom {
+          Some(RowTarget::Bottom)
+        } else {
+          args.window_in_column.map(RowTarget::Index)
+        };
+
+        if let Some(target) = row_target {
+          focus_window_in_column(&subject_container, target, state);
         }
 
         Ok(())
@@ -708,7 +863,7 @@ impl WindowManager {
       }
       InvokeCommand::MoveCursor(args) => {
         if args.direction.is_some() {
-          move_cursor_to_active_window(state)?;
+          state.pending_sync.queue_cursor_move();
         }
         Ok(())
       }
@@ -724,94 +879,33 @@ impl WindowManager {
               )?;
             }
 
-            if let Some(direction) = &args.workspace_in_direction {
+            if let Some(target) = workspace_target!(&args) {
               move_window_to_workspace(
                 window.clone(),
-                WorkspaceTarget::Direction(direction.clone()),
+                target,
                 state,
                 config,
               )?;
             }
 
-            if let Some(name) = &args.workspace {
-              move_window_to_workspace(
+            if args.special_workspace {
+              move_window_to_special_workspace(
                 window.clone(),
-                WorkspaceTarget::Name(name.clone()),
                 state,
                 config,
               )?;
             }
 
-            if args.next_active_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::NextActive,
-                state,
-                config,
-              )?;
-            }
+            let column_target = if args.first_column {
+              Some(ColumnTarget::First)
+            } else if args.last_column {
+              Some(ColumnTarget::Last)
+            } else {
+              args.column.map(ColumnTarget::Index)
+            };
 
-            if args.prev_active_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::PreviousActive,
-                state,
-                config,
-              )?;
-            }
-
-            if args.next_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::Next,
-                state,
-                config,
-              )?;
-            }
-
-            if args.prev_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::Previous,
-                state,
-                config,
-              )?;
-            }
-
-            if args.recent_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::Recent,
-                state,
-                config,
-              )?;
-            }
-
-            if args.next_empty_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::NextEmpty,
-                state,
-                config,
-              )?;
-            }
-
-            if args.next_active_workspace_on_monitor {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::NextActiveInMonitor,
-                state,
-                config,
-              )?;
-            }
-
-            if args.prev_active_workspace_on_monitor {
-              move_window_to_workspace(
-                window,
-                WorkspaceTarget::PreviousActiveInMonitor,
-                state,
-                config,
-              )?;
+            if let Some(target) = column_target {
+              move_column(&window.into(), target, state)?;
             }
             Ok(())
           }
@@ -1120,21 +1214,32 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
-      InvokeCommand::ToggleOverview { grid } => {
+      InvokeCommand::ToggleOverview { layout } => {
+        let layout = layout.unwrap_or(config.value.overview.layout);
+
         #[cfg(target_os = "windows")]
         crate::overview::toggle_overview(
           state,
           config,
-          if *grid {
-            wm_platform::OverviewLayoutMode::Grid
-          } else {
-            wm_platform::OverviewLayoutMode::Carousel
+          match layout {
+            wm_common::OverviewLayout::Activities => {
+              wm_platform::OverviewLayoutMode::Activities
+            }
+            wm_common::OverviewLayout::Stage => {
+              wm_platform::OverviewLayoutMode::Stage
+            }
+            wm_common::OverviewLayout::Carousel => {
+              wm_platform::OverviewLayoutMode::Carousel
+            }
+            wm_common::OverviewLayout::Grid => {
+              wm_platform::OverviewLayoutMode::Grid
+            }
           },
         )?;
 
         #[cfg(not(target_os = "windows"))]
         {
-          let _ = grid;
+          let _ = layout;
           tracing::warn!("The overview is only available on Windows.");
         }
 
@@ -1234,6 +1339,61 @@ impl WindowManager {
           tiling_direction,
         )
       }
+      InvokeCommand::SetLayout { layout } => {
+        let workspace =
+          subject_container.workspace().context("No workspace.")?;
+        set_layout(&workspace, *layout, state)
+      }
+      InvokeCommand::CycleColumnWidth { back } => {
+        cycle_column_width(&subject_container, !back, state, config)
+      }
+      InvokeCommand::CycleWindowHeight { back } => {
+        cycle_window_height(&subject_container, !back, state, config)
+      }
+      InvokeCommand::ResetWindowHeight => {
+        reset_window_height(&subject_container, state);
+        Ok(())
+      }
+      InvokeCommand::MaximizeColumn => {
+        maximize_column(&subject_container, state);
+        Ok(())
+      }
+      InvokeCommand::ExpandColumnToAvailableWidth => {
+        expand_column_to_available_width(&subject_container, state)
+      }
+      InvokeCommand::CenterColumn => {
+        center_column(&subject_container, state);
+        Ok(())
+      }
+      InvokeCommand::CenterVisibleColumns => {
+        center_visible_columns(&subject_container, state)
+      }
+      InvokeCommand::ConsumeOrExpelWindow { direction } => {
+        consume_or_expel_window(
+          &subject_container,
+          direction,
+          state,
+          config,
+        )
+      }
+      InvokeCommand::ConsumeWindowIntoColumn => {
+        consume_window_into_column(&subject_container, state, config)
+      }
+      InvokeCommand::ExpelWindowFromColumn => {
+        expel_window_from_column(&subject_container, state)
+      }
+      InvokeCommand::SwapWindow { direction } => {
+        swap_window(&subject_container, direction, state)
+      }
+      InvokeCommand::ToggleColumnTabbedDisplay => {
+        set_column_display(&subject_container, None, state, config)
+      }
+      InvokeCommand::SetColumnDisplay { display } => set_column_display(
+        &subject_container,
+        Some(*display),
+        state,
+        config,
+      ),
       InvokeCommand::WmCycleFocus {
         omit_floating,
         omit_fullscreen,
@@ -1312,7 +1472,7 @@ fn window_by_handle(
   action: &OverviewAction,
 ) -> Option<crate::models::WindowContainer> {
   let hwnd = match action {
-    OverviewAction::FocusWindow(hwnd)
+    OverviewAction::FocusWindow { hwnd, .. }
     | OverviewAction::CloseWindow(hwnd)
     | OverviewAction::MoveWindow { hwnd, .. } => *hwnd,
     _ => return None,
@@ -1324,10 +1484,47 @@ fn window_by_handle(
     .find(|window| window.native().id().0 == hwnd)
 }
 
-/// `focus --workspace <name>`.
+/// Whether `keybinding` may trigger at `now`, starting its `cooldown_ms`
+/// when it may.
+///
+/// `cooldowns` holds when each keybinding on cooldown comes off it.
+fn is_off_cooldown(
+  cooldowns: &mut HashMap<Keybinding, Instant>,
+  keybinding: &Keybinding,
+  cooldown_ms: Option<u32>,
+  now: Instant,
+) -> bool {
+  cooldowns.retain(|_, ready_at| *ready_at > now);
+
+  if cooldowns.contains_key(keybinding) {
+    return false;
+  }
+
+  if let Some(cooldown_ms) = cooldown_ms {
+    cooldowns.insert(
+      keybinding.clone(),
+      now + Duration::from_millis(u64::from(cooldown_ms)),
+    );
+  }
+
+  true
+}
+
+/// `focus --workspace <name>`, for a workspace readied by
+/// `prepare_target`; the special workspace too, which it has summoned.
 #[cfg(target_os = "windows")]
 fn focus_workspace_command(name: String) -> InvokeCommand {
   InvokeCommand::Focus(InvokeFocusCommand {
+    workspace: Some(name),
+    ..Default::default()
+  })
+}
+
+/// `move --workspace <name>`, for a workspace readied by
+/// `prepare_target`.
+#[cfg(target_os = "windows")]
+fn move_to_workspace_command(name: String) -> InvokeCommand {
+  InvokeCommand::Move(InvokeMoveCommand {
     workspace: Some(name),
     ..Default::default()
   })
@@ -1377,5 +1574,38 @@ fn send_due_keys(state: &mut WmState) {
         close_duplicate_tabs(&pending.then_close);
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+  };
+
+  use wm_platform::{Key, Keybinding};
+
+  use super::is_off_cooldown;
+
+  #[test]
+  fn keybindings_cool_down_on_their_own() {
+    let mut cooldowns = HashMap::new();
+    let slow = Keybinding::new(vec![Key::Alt, Key::WheelDown]).unwrap();
+    let fast = Keybinding::new(vec![Key::Alt, Key::WheelUp]).unwrap();
+    let start = Instant::now();
+    let at = |ms| start + Duration::from_millis(ms);
+
+    assert!(is_off_cooldown(&mut cooldowns, &slow, Some(500), at(0)));
+    assert!(!is_off_cooldown(&mut cooldowns, &slow, Some(500), at(100)));
+
+    // Another keybinding's shorter cooldown doesn't cut it short.
+    assert!(is_off_cooldown(&mut cooldowns, &fast, Some(100), at(200)));
+    assert!(is_off_cooldown(&mut cooldowns, &fast, Some(100), at(400)));
+    assert!(!is_off_cooldown(&mut cooldowns, &slow, Some(500), at(400)));
+
+    assert!(is_off_cooldown(&mut cooldowns, &slow, Some(500), at(500)));
+    assert!(is_off_cooldown(&mut cooldowns, &slow, None, at(1000)));
+    assert!(is_off_cooldown(&mut cooldowns, &slow, None, at(1000)));
   }
 }

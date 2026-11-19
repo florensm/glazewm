@@ -165,7 +165,24 @@ pub struct WindowEventNotification(
 );
 
 #[derive(Clone, Debug)]
-pub struct KeybindingEvent(pub Keybinding);
+pub struct KeybindingEvent {
+  pub keybinding: Keybinding,
+
+  /// When its keys were pressed, or its wheel turned, rather than when
+  /// the event is handled.
+  pub time: std::time::Instant,
+}
+
+impl KeybindingEvent {
+  /// `keybinding` triggered just now.
+  #[must_use]
+  pub fn now(keybinding: Keybinding) -> Self {
+    Self {
+      keybinding,
+      time: std::time::Instant::now(),
+    }
+  }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MouseButton {

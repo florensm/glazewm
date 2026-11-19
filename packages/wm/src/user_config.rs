@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env, fs, path::PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use wm_common::{
   InvokeCommand, KeybindingConfig, MatchType, ParsedConfig,
   WindowMatchConfig, WindowRuleConfig, WindowRuleEvent, WorkspaceConfig,
@@ -73,8 +73,32 @@ impl UserConfig {
     // TODO: Improve error formatting of serde_yaml errors. Something
     // similar to https://github.com/AlexanderThaller/format_serde_error
     let config_value = serde_yaml::from_str(&config_str)?;
+    Self::validate(&config_value)?;
 
     Ok((config_value, config_str))
+  }
+
+  /// Checks what the config's types can't express.
+  fn validate(config_value: &ParsedConfig) -> anyhow::Result<()> {
+    let special_name = &config_value.special_workspace.name;
+
+    if special_name.is_empty() || special_name.parse::<u32>().is_ok() {
+      bail!(
+        "Special workspace name '{special_name}' must be non-empty and non-numeric."
+      );
+    }
+
+    if config_value
+      .workspaces
+      .iter()
+      .any(|workspace| workspace.name == *special_name)
+    {
+      bail!(
+        "Special workspace name '{special_name}' is already used by a workspace in `workspaces`."
+      );
+    }
+
+    Ok(())
   }
 
   /// Initializes a new config file from the sample config resource.
@@ -385,22 +409,52 @@ impl UserConfig {
       .position(|config| config.name == workspace_name)
   }
 
+  /// Config of the special workspace, as a regular `WorkspaceConfig`.
+  pub fn special_workspace_config(&self) -> WorkspaceConfig {
+    let special = &self.value.special_workspace;
+
+    WorkspaceConfig {
+      name: special.name.clone(),
+      display_name: special.display_name.clone(),
+      bind_to_monitor: None,
+      keep_alive: false,
+      layout: Some(special.layout),
+    }
+  }
+
+  pub fn is_special_workspace_name(&self, workspace_name: &str) -> bool {
+    self.value.special_workspace.name == workspace_name
+  }
+
   /// Sort key that orders configured workspaces by their config index,
-  /// followed by dynamic workspaces ordered by their numeric name.
+  /// followed by dynamic workspaces ordered by their numeric name, and
+  /// the special workspace last.
   ///
   /// Dynamic workspaces have no config entry, so they'd otherwise all
   /// share the same (missing) index.
   fn workspace_sort_key(
     &self,
     workspace_name: &str,
-  ) -> (usize, u32, String) {
+  ) -> (bool, usize, u32, String) {
     (
+      self.is_special_workspace_name(workspace_name),
       self
         .workspace_config_index(workspace_name)
         .unwrap_or(usize::MAX),
       workspace_name.parse::<u32>().unwrap_or(u32::MAX),
       workspace_name.to_string(),
     )
+  }
+
+  /// How workspaces `a` and `b` are ordered on a monitor: configured
+  /// ones by config index, then dynamic ones by number, then the special
+  /// workspace.
+  pub fn compare_workspaces(
+    &self,
+    a: &str,
+    b: &str,
+  ) -> std::cmp::Ordering {
+    self.workspace_sort_key(a).cmp(&self.workspace_sort_key(b))
   }
 
   pub fn sort_workspaces(&self, workspaces: &mut [Workspace]) {
@@ -410,7 +464,7 @@ impl UserConfig {
   }
 
   /// Names of all workspaces in display order; the configured workspaces
-  /// plus any active dynamic workspaces.
+  /// plus any active dynamic workspaces, without the special workspace.
   ///
   /// Used to cycle through workspaces with next/previous targets, which
   /// would otherwise skip over (and fail to find an origin index for)
@@ -428,7 +482,10 @@ impl UserConfig {
         active_workspaces
           .iter()
           .map(|workspace| workspace.config().name)
-          .filter(|name| self.workspace_config_index(name).is_none()),
+          .filter(|name| {
+            self.workspace_config_index(name).is_none()
+              && !self.is_special_workspace_name(name)
+          }),
       )
       .collect::<Vec<_>>();
 
@@ -457,6 +514,7 @@ impl UserConfig {
       display_name: None,
       bind_to_monitor: None,
       keep_alive: false,
+      layout: None,
     })
   }
 
@@ -513,13 +571,12 @@ mod tests {
   use std::path::PathBuf;
 
   use wm_common::{
-    ParsedConfig, ResizeStyle, WindowTransitionStyle, WorkspaceConfig,
-    WorkspaceSwitchStyle,
+    ParsedConfig, ResizeStyle, WindowTransitionStyle, WorkspaceSwitchStyle,
   };
   use wm_platform::Rect;
 
   use super::*;
-  use crate::models::Workspace;
+  use crate::{models::Workspace, test_utils::mock_workspace_configs};
 
   /// The bundled sample config (which uses the `type` key for animation
   /// transition types) must always parse.
@@ -536,12 +593,26 @@ mod tests {
       config.animations.workspace_switch.style,
       WorkspaceSwitchStyle::Slide
     );
-    assert_eq!(config.overview.font_family, "Segoe UI");
+    assert_eq!(config.overview.font_family, "Segoe UI Variable Text");
     assert!(config.keybindings.iter().any(|keybinding| {
       keybinding.commands.iter().any(|command| {
         matches!(command, InvokeCommand::ToggleOverview { .. })
       })
     }));
+    assert_eq!(config.special_workspace.name, "special");
+    assert!(config.keybindings.iter().any(|keybinding| {
+      keybinding.commands.iter().any(|command| {
+        matches!(command, InvokeCommand::Focus(args) if args.special_workspace)
+      })
+    }));
+    assert!(config.keybindings.iter().any(|keybinding| {
+      keybinding.cooldown_ms == Some(150)
+        && keybinding
+          .bindings
+          .iter()
+          .any(|binding| binding.trigger_key().is_wheel())
+    }));
+    UserConfig::validate(&config).expect("sample config should be valid");
   }
 
   /// `window_resize.style` defaults to `fill` and accepts `stretch`.
@@ -645,24 +716,16 @@ window_effects:
       is_resizable: true,
       #[cfg(target_os = "windows")]
       shadow_borders: wm_platform::RectDelta::zero(),
+      min_width: 0,
     }
   }
 
   /// Creates a `UserConfig` with the given window rules for testing.
   fn test_config(window_rules: Vec<WindowRuleConfig>) -> UserConfig {
-    let config_value = ParsedConfig {
+    UserConfig::from_parsed(ParsedConfig {
       window_rules,
       ..ParsedConfig::default()
-    };
-
-    UserConfig {
-      path: PathBuf::new(),
-      window_rules_by_event: UserConfig::window_rules_by_event(
-        &config_value,
-      ),
-      value: config_value,
-      value_str: String::new(),
-    }
+    })
   }
 
   /// Creates a window rule with the given command matching the given
@@ -734,15 +797,7 @@ window_effects:
   ) -> UserConfig {
     let mut value = ParsedConfig::default();
     value.general.dynamic_workspaces = dynamic_workspaces;
-    value.workspaces = workspace_names
-      .iter()
-      .map(|name| WorkspaceConfig {
-        name: (*name).to_string(),
-        display_name: None,
-        bind_to_monitor: None,
-        keep_alive: false,
-      })
-      .collect();
+    value.workspaces = mock_workspace_configs(workspace_names);
 
     UserConfig {
       path: PathBuf::new(),
@@ -781,6 +836,94 @@ window_effects:
     assert_eq!(
       config.ordered_workspace_names(&workspaces),
       vec!["1", "2", "3"]
+    );
+  }
+
+  #[test]
+  fn special_workspace_name_is_validated() {
+    let validate = |yaml: &str| {
+      let config: ParsedConfig =
+        serde_yaml::from_str(yaml).expect("config should parse");
+      UserConfig::validate(&config)
+    };
+
+    assert!(validate("workspaces: [{ name: '1' }]").is_ok());
+    assert!(validate("special_workspace: { name: '7' }").is_err());
+    assert!(validate("special_workspace: { name: '' }").is_err());
+    assert!(validate(
+      "special_workspace: { name: 'web' }\nworkspaces: [{ name: 'web' }]"
+    )
+    .is_err());
+  }
+
+  #[test]
+  fn column_width_takes_a_length_or_window() {
+    use wm_common::ColumnWidth;
+    use wm_platform::LengthValue;
+
+    let column_width = |value: &str| {
+      let yaml = format!(
+        "layouts: {{ scrolling: {{ default_column_width: {value} }} }}"
+      );
+      serde_yaml::from_str::<ParsedConfig>(&yaml)
+        .map(|config| config.layouts.scrolling.default_column_width)
+    };
+
+    assert_eq!(column_width("'window'").unwrap(), ColumnWidth::Window);
+    assert_eq!(
+      column_width("'600px'").unwrap(),
+      ColumnWidth::Length(LengthValue::from_px(600))
+    );
+    assert!(matches!(
+      column_width("'40%'").unwrap(),
+      ColumnWidth::Length(length) if (length.amount - 0.4).abs() < 1e-6
+    ));
+    assert!(column_width("'wide'").is_err());
+
+    assert_eq!(
+      serde_json::to_value(ColumnWidth::Window).unwrap(),
+      serde_json::json!("window")
+    );
+  }
+
+  #[test]
+  fn special_workspace_config_uses_its_own_section() {
+    let config: ParsedConfig = serde_yaml::from_str(
+      "special_workspace: { name: 'scratch', display_name: 'S', layout: 'split' }",
+    )
+    .expect("config should parse");
+    let config = UserConfig::from_parsed(config);
+
+    let special = config.special_workspace_config();
+    assert_eq!(special.name, "scratch");
+    assert_eq!(special.display_name.as_deref(), Some("S"));
+    assert_eq!(special.layout, Some(wm_common::Layout::Split));
+    assert!(!special.keep_alive);
+    assert!(config.is_special_workspace_name("scratch"));
+
+    let default = UserConfig::from_parsed(ParsedConfig::default());
+    assert_eq!(default.special_workspace_config().name, "special");
+    assert_eq!(
+      default.special_workspace_config().layout,
+      Some(wm_common::Layout::Scrolling)
+    );
+  }
+
+  #[test]
+  fn special_workspace_sorts_last_and_is_not_ordered() {
+    let config = mock_config(&["b", "a"], true);
+    let mut workspaces = mock_workspaces(&["special", "3", "a", "b"]);
+    config.sort_workspaces(&mut workspaces);
+
+    let names = workspaces
+      .iter()
+      .map(|workspace| workspace.config().name)
+      .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["b", "a", "3", "special"]);
+    assert_eq!(
+      config.ordered_workspace_names(&workspaces),
+      vec!["b", "a", "3"]
     );
   }
 

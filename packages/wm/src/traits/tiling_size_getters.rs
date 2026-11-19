@@ -5,7 +5,10 @@ use anyhow::Context;
 use wm_common::{GapsConfig, TilingDirection};
 
 use super::{CommonGetters, TilingDirectionGetters};
-use crate::models::{Container, DirectionContainer, TilingContainer};
+use crate::{
+  layout::scrolling::column_workspace,
+  models::{Container, DirectionContainer, TilingContainer},
+};
 
 pub const MIN_TILING_SIZE: f32 = 0.01;
 
@@ -67,6 +70,11 @@ pub trait TilingSizeGetters: CommonGetters {
       TilingDirection::Horizontal => !is_width_resize,
       TilingDirection::Vertical => is_width_resize,
     };
+
+    // A column can be made wider even without other columns.
+    if !is_inverse_resize && column_workspace(&effective_self).is_some() {
+      return Ok(Some(effective_self));
+    }
 
     let container_to_resize = if is_inverse_resize {
       match parent {

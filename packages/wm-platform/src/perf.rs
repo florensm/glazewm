@@ -41,7 +41,7 @@ use std::{
 ///
 /// One 60 Hz frame period -- the most pessimistic common refresh rate, so
 /// an uncalibrated report over-counts slow frames rather than hiding them.
-const DEFAULT_FRAME_BUDGET: Duration = Duration::from_micros(16_667);
+const DEFAULT_FRAME_BUDGET_US: u64 = 16_667;
 
 /// The monitor's frame period, as last reported by [`set_frame_budget`].
 ///
@@ -51,7 +51,7 @@ const DEFAULT_FRAME_BUDGET: Duration = Duration::from_micros(16_667);
 /// that did not happen to match it (a 14 ms constant chosen for 144 Hz
 /// flagged every perfectly on-budget frame on a 60 Hz panel).
 static FRAME_BUDGET_US: AtomicU64 =
-  AtomicU64::new(DEFAULT_FRAME_BUDGET.as_micros() as u64);
+  AtomicU64::new(DEFAULT_FRAME_BUDGET_US);
 
 /// Sets the frame budget slow frames are counted against, from the frame
 /// period of the monitor the animation is actually being paced by.
@@ -320,7 +320,6 @@ impl Stage {
   /// [`is_cross_cutting`]: Stage::is_cross_cutting
   const fn depth(self) -> usize {
     match self {
-      Stage::Tick => 0,
       Stage::PlatformSync | Stage::Cleanup => 1,
       Stage::Redraw => 2,
       Stage::RedrawPrep
@@ -916,7 +915,7 @@ fn roll_up_frame() -> bool {
         if profiler
           .slowest_trace
           .as_ref()
-          .map_or(true, |(slowest, _)| to_first_frame > *slowest)
+          .is_none_or(|(slowest, _)| to_first_frame > *slowest)
         {
           profiler.slowest_trace = Some((to_first_frame, trace));
         }
@@ -962,6 +961,30 @@ pub fn report(reason: &str) {
 /// reports at every idle boundary emits nothing on the boundaries where
 /// nothing ran.
 fn take_report(reason: &str) -> Option<String> {
+  fn row(
+    lines: &mut String,
+    summary: &Profiler,
+    frames: f64,
+    stage: Stage,
+    indent: usize,
+  ) {
+    let index = stage.index();
+    if summary.calls[index] == 0 {
+      return;
+    }
+    let name = format!("{:indent$}{}", "", stage.label(), indent = indent);
+    // Writing into a `String` is infallible, so the result is discarded.
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>7}{:>9.1}ms{:>9.2}ms{:>9.2}ms",
+      name,
+      summary.calls[index],
+      summary.total[index].as_secs_f64() * 1000.0,
+      summary.total[index].as_secs_f64() * 1000.0 / frames,
+      summary.worst_frame[index].as_secs_f64() * 1000.0,
+    );
+  }
+
   let summary = PROFILER.with(|profiler| {
     let mut profiler = profiler.try_borrow_mut().ok()?;
     if profiler.frames == 0 {
@@ -995,29 +1018,6 @@ fn take_report(reason: &str) -> Option<String> {
 
   // Nesting tree first: each stage's time includes the stages indented
   // under it, so a parent is never the sum of its children.
-  fn row(
-    lines: &mut String,
-    summary: &Profiler,
-    frames: f64,
-    stage: Stage,
-    indent: usize,
-  ) {
-    let index = stage.index();
-    if summary.calls[index] == 0 {
-      return;
-    }
-    let name = format!("{:indent$}{}", "", stage.label(), indent = indent);
-    // Writing into a `String` is infallible, so the result is discarded.
-    let _ = writeln!(
-      lines,
-      "  {:<20}{:>7}{:>9.1}ms{:>9.2}ms{:>9.2}ms",
-      name,
-      summary.calls[index],
-      summary.total[index].as_secs_f64() * 1000.0,
-      summary.total[index].as_secs_f64() * 1000.0 / frames,
-      summary.worst_frame[index].as_secs_f64() * 1000.0,
-    );
-  }
 
   for stage in Stage::ALL {
     if !stage.is_cross_cutting() {
@@ -1302,7 +1302,7 @@ fn write_gesture_split(lines: &mut String, summary: &Profiler) {
   // Writing into a `String` is infallible, so the results are discarded.
   let _ = writeln!(lines, "  -- animations started (move vs resize) --");
   let _ =
-    writeln!(lines, "  {:<20}{:>7}{:>11}", "gesture", "count", "share",);
+    writeln!(lines, "  {:<20}{:>7}{:>11}", "gesture", "count", "share");
 
   for (label, count) in [
     ("move", summary.gesture_moves),

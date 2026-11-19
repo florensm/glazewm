@@ -96,10 +96,132 @@ pub struct TabFrame {
   /// The bar's window: `rect`, plus strip reaching under the stack's
   /// window to fill in its rounded corners.
   pub outer_rect: Rect,
+  /// Area the bar is cut off at, like its window, e.g. the monitor of a
+  /// scrolling layout's column.
+  pub clip: Option<Rect>,
   pub tabs: Vec<TabInfo>,
   pub active_index: usize,
-  /// The stack's active window. The bar is kept directly behind it in
-  /// z-order, so it is covered by whatever covers the window.
+  /// The window drawing the stack's active tab. The bar is kept directly
+  /// behind it in z-order, so it is covered by whatever covers it.
   pub anchor: isize,
   pub style: TabBarStyle,
+}
+
+impl TabFrame {
+  /// The part of `outer_rect` inside `clip`, or `None` when no part is.
+  #[must_use]
+  pub fn visible_rect(&self) -> Option<Rect> {
+    match &self.clip {
+      Some(clip) => self.outer_rect.intersection(clip),
+      None => Some(self.outer_rect.clone()),
+    }
+  }
+
+  /// Whether `other` draws the same picture, only elsewhere on screen or
+  /// cut off differently.
+  #[must_use]
+  pub fn draws_like(&self, other: &TabFrame) -> bool {
+    // `rect` within `outer_rect`, which the picture is the size of.
+    let local = |frame: &TabFrame| {
+      Rect::from_xy(
+        frame.rect.x() - frame.outer_rect.x(),
+        frame.rect.y() - frame.outer_rect.y(),
+        frame.rect.width(),
+        frame.rect.height(),
+      )
+    };
+
+    local(self) == local(other)
+      && self.outer_rect.width() == other.outer_rect.width()
+      && self.outer_rect.height() == other.outer_rect.height()
+      && self.tabs == other.tabs
+      && self.active_index == other.active_index
+      && self.style == other.style
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{CornerRadii, TabBarStyle, TabCloseMode, TabFrame};
+  use crate::{Color, Rect};
+
+  fn frame(clip: Option<Rect>) -> TabFrame {
+    let color = Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: u8::MAX,
+    };
+
+    TabFrame {
+      rect: Rect::from_ltrb(0, 0, 300, 28),
+      outer_rect: Rect::from_ltrb(0, 0, 300, 36),
+      clip,
+      tabs: Vec::new(),
+      active_index: 0,
+      anchor: 0,
+      style: TabBarStyle {
+        background: color,
+        active_background: color,
+        hover_background: color,
+        inactive_background: color,
+        urgent_background: color,
+        text: color,
+        inactive_text: color,
+        font_family: String::new(),
+        font_size: 12,
+        corner_radius: 0,
+        strip_radii: CornerRadii::default(),
+        min_tab_width: 0,
+        max_tab_width: 0,
+        show_icons: false,
+        show_numbers: false,
+        close_button: TabCloseMode::Never,
+        scale_factor: 1.0,
+      },
+    }
+  }
+
+  #[test]
+  fn moved_or_cut_off_bar_draws_alike() {
+    let bar = frame(None);
+
+    let moved = TabFrame {
+      rect: Rect::from_ltrb(-500, 40, -200, 68),
+      outer_rect: Rect::from_ltrb(-500, 40, -200, 76),
+      clip: Some(Rect::from_ltrb(-300, 0, 0, 500)),
+      anchor: 1,
+      ..frame(None)
+    };
+    assert!(bar.draws_like(&moved));
+
+    let resized = TabFrame {
+      rect: Rect::from_ltrb(0, 0, 200, 28),
+      outer_rect: Rect::from_ltrb(0, 0, 200, 36),
+      ..frame(None)
+    };
+    assert!(!bar.draws_like(&resized));
+
+    let switched = TabFrame {
+      active_index: 1,
+      ..frame(None)
+    };
+    assert!(!bar.draws_like(&switched));
+  }
+
+  #[test]
+  fn bar_is_cut_off_at_its_clip() {
+    assert_eq!(
+      frame(None).visible_rect(),
+      Some(Rect::from_ltrb(0, 0, 300, 36))
+    );
+    assert_eq!(
+      frame(Some(Rect::from_ltrb(200, -50, 1000, 500))).visible_rect(),
+      Some(Rect::from_ltrb(200, 0, 300, 36))
+    );
+    assert_eq!(
+      frame(Some(Rect::from_ltrb(300, 0, 1000, 500))).visible_rect(),
+      None
+    );
+  }
 }

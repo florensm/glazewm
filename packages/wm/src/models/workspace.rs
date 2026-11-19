@@ -7,13 +7,14 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, TilingDirection, WorkspaceConfig, WorkspaceDto,
+  ContainerDto, GapsConfig, Layout, ScrollingLayoutConfig, StrutsConfig,
+  TilingDirection, WorkspaceConfig, WorkspaceDto,
 };
 use wm_platform::{Rect, RectDelta};
 
 use crate::{
   impl_common_getters, impl_container_debug,
-  impl_tiling_direction_getters,
+  layout::scrolling::{StripView, ViewRequest},
   models::{
     Container, DirectionContainer, TilingContainer, WindowContainer,
   },
@@ -32,6 +33,13 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  layout: Layout,
+  scrolling_config: ScrollingLayoutConfig,
+  /// Where a scrolling layout's view is.
+  strip_view: StripView,
+  /// Whether this is the special workspace, which is kept out of
+  /// workspace cycling.
+  is_special: bool,
 }
 
 impl Workspace {
@@ -39,6 +47,9 @@ impl Workspace {
     config: WorkspaceConfig,
     gaps_config: GapsConfig,
     tiling_direction: TilingDirection,
+    layout: Layout,
+    scrolling_config: ScrollingLayoutConfig,
+    is_special: bool,
   ) -> Self {
     let workspace = WorkspaceInner {
       id: Uuid::new_v4(),
@@ -48,6 +59,10 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      layout,
+      scrolling_config,
+      strip_view: StripView::default(),
+      is_special,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -61,6 +76,65 @@ impl Workspace {
   /// Update the underlying config for the workspace.
   pub fn set_config(&self, config: WorkspaceConfig) {
     self.0.borrow_mut().config = config;
+  }
+
+  pub fn is_special(&self) -> bool {
+    self.0.borrow().is_special
+  }
+
+  pub fn layout(&self) -> Layout {
+    self.0.borrow().layout
+  }
+
+  pub fn set_layout(&self, layout: Layout) {
+    let mut inner = self.0.borrow_mut();
+    inner.layout = layout;
+    inner.strip_view = StripView::default();
+  }
+
+  pub fn set_scrolling_config(
+    &self,
+    scrolling_config: ScrollingLayoutConfig,
+  ) {
+    self.0.borrow_mut().scrolling_config = scrolling_config;
+  }
+
+  pub fn scrolling_config(&self) -> ScrollingLayoutConfig {
+    self.0.borrow().scrolling_config.clone()
+  }
+
+  /// The scrolling layout's struts, without cloning the rest of its
+  /// config, for the strip's geometry that every column's rect reads.
+  pub fn scrolling_struts(&self) -> StrutsConfig {
+    self.0.borrow().scrolling_config.struts.clone()
+  }
+
+  /// How far a scrolling layout's strip is scrolled: its first column
+  /// starts this far left of the left edge of the area between the
+  /// struts (see `scrolling::view_rect`).
+  pub fn scroll_offset(&self) -> i32 {
+    self.0.borrow().strip_view.offset
+  }
+
+  pub fn strip_view(&self) -> StripView {
+    self.0.borrow().strip_view.clone()
+  }
+
+  pub fn set_strip_view(&self, strip_view: StripView) {
+    self.0.borrow_mut().strip_view = strip_view;
+  }
+
+  /// Asks the next sync of a scrolling layout's view for `request`.
+  pub fn request_view(&self, request: ViewRequest) {
+    self.0.borrow_mut().strip_view.request(request);
+  }
+
+  /// Runs `update` on the scrolling layout's view state.
+  pub fn update_strip_view<R>(
+    &self,
+    update: impl FnOnce(&mut StripView) -> R,
+  ) -> R {
+    update(&mut self.0.borrow_mut().strip_view)
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.
@@ -96,6 +170,19 @@ impl Workspace {
     gaps.clone()
   }
 
+  /// Factor pixel gaps are scaled by on the workspace's monitor: its DPI
+  /// scale with `gaps.scale_with_dpi`, else 1.
+  pub fn gaps_scale_factor(&self) -> anyhow::Result<f32> {
+    let monitor =
+      self.monitor().context("Workspace has no parent monitor.")?;
+
+    Ok(if self.0.borrow().gaps_config.scale_with_dpi {
+      monitor.native_properties().scale_factor
+    } else {
+      1.
+    })
+  }
+
   /// Gets the bounds of a workspace with the given outer gap config.
   fn workspace_rect_with_gap_config(
     &self,
@@ -103,13 +190,7 @@ impl Workspace {
   ) -> anyhow::Result<Rect> {
     let monitor =
       self.monitor().context("Workspace has no parent monitor.")?;
-
-    let gaps_config = &self.0.borrow().gaps_config;
-    let scale_factor = if gaps_config.scale_with_dpi {
-      monitor.native_properties().scale_factor
-    } else {
-      1.
-    };
+    let scale_factor = self.gaps_scale_factor()?;
 
     // Get the delta between the monitor's bounds and its working area.
     let monitor_bounds = monitor.native_properties().bounds;
@@ -168,18 +249,34 @@ impl Workspace {
       child_focus_order: self.0.borrow().child_focus_order.clone().into(),
       has_focus: self.has_focus(None),
       is_displayed: self.is_displayed(),
+      is_special: self.is_special(),
       width: rect.width(),
       height: rect.height(),
       x: rect.x(),
       y: rect.y(),
       tiling_direction: self.tiling_direction(),
+      layout: self.layout(),
     }))
   }
 }
 
 impl_container_debug!(Workspace);
 impl_common_getters!(Workspace);
-impl_tiling_direction_getters!(Workspace);
+impl TilingDirectionGetters for Workspace {
+  /// A scrolling layout always lays its columns out horizontally.
+  fn tiling_direction(&self) -> TilingDirection {
+    let inner = self.0.borrow();
+
+    match inner.layout {
+      Layout::Scrolling => TilingDirection::Horizontal,
+      _ => inner.tiling_direction.clone(),
+    }
+  }
+
+  fn set_tiling_direction(&self, tiling_direction: TilingDirection) {
+    self.0.borrow_mut().tiling_direction = tiling_direction;
+  }
+}
 
 impl PositionGetters for Workspace {
   fn to_rect(&self) -> anyhow::Result<Rect> {
@@ -191,9 +288,10 @@ impl std::fmt::Display for Workspace {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(
       f,
-      "Workspace(name={}, tiling_direction={:?})",
+      "Workspace(name={}, tiling_direction={:?}, layout={:?})",
       self.config().name,
       self.tiling_direction(),
+      self.layout(),
     )
   }
 }

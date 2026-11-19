@@ -13,6 +13,12 @@ pub fn update_workspace_config(
   config: &UserConfig,
   new_config: &InvokeUpdateWorkspaceConfig,
 ) -> anyhow::Result<()> {
+  if workspace.is_special() {
+    anyhow::bail!(
+      "The special workspace is configured by `special_workspace` in the config."
+    );
+  }
+
   let current_config = workspace.config();
 
   // Validate the workspace name change.
@@ -38,6 +44,7 @@ pub fn update_workspace_config(
       .bind_to_monitor
       .or(current_config.bind_to_monitor),
     keep_alive: new_config.keep_alive.unwrap_or(current_config.keep_alive),
+    layout: current_config.layout,
   };
 
   workspace.set_config(updated_config);

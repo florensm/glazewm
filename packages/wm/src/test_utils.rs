@@ -4,9 +4,11 @@
 //! mock builders in the model modules.
 
 use bon::bon;
+use uuid::Uuid;
 use wm_common::{
-  FloatingStateConfig, GapsConfig, TabBarPosition, TilingDirection,
-  WindowState, WorkspaceConfig,
+  FloatingStateConfig, GapsConfig, Layout, ParsedConfig,
+  ScrollingLayoutConfig, TabBarPosition, TilingDirection, WindowState,
+  WorkspaceConfig,
 };
 use wm_platform::{Display, LengthValue, NativeWindow, Rect, RectDelta};
 
@@ -17,7 +19,8 @@ use crate::{
     NonTilingWindow, SplitContainer, StackContainer, TilingContainer,
     TilingWindow, Workspace,
   },
-  traits::TilingSizeGetters,
+  traits::{CommonGetters, TilingSizeGetters},
+  user_config::UserConfig,
   wm_state::WmState,
 };
 
@@ -48,6 +51,52 @@ pub fn mock_window_rect() -> Rect {
 
 pub fn mock_border_delta() -> RectDelta {
   RectDelta::zero()
+}
+
+/// Plain configs for workspaces with the given names.
+pub fn mock_workspace_configs(names: &[&str]) -> Vec<WorkspaceConfig> {
+  names
+    .iter()
+    .map(|name| WorkspaceConfig {
+      name: (*name).to_string(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+      layout: None,
+    })
+    .collect()
+}
+
+/// Config with every setting at its default.
+pub fn mock_config() -> UserConfig {
+  UserConfig::from_parsed(ParsedConfig::default())
+}
+
+/// Gaps with a 20px inner gap, so adjacent containers are told apart.
+pub fn mock_inner_gaps() -> GapsConfig {
+  GapsConfig {
+    inner_gap: LengthValue::from_px(20),
+    ..GapsConfig::default()
+  }
+}
+
+/// Tiling window with `mock_inner_gaps`.
+pub fn mock_gapped_window() -> TilingWindow {
+  TilingWindow::mock().gaps_config(mock_inner_gaps()).call()
+}
+
+/// Vertical split of `rows` with `mock_inner_gaps`.
+pub fn mock_gapped_column(rows: Vec<TilingContainer>) -> SplitContainer {
+  SplitContainer::mock()
+    .tiling_direction(TilingDirection::Vertical)
+    .gaps_config(mock_inner_gaps())
+    .tiling_containers(rows)
+    .call()
+}
+
+/// Ids of `container`'s children, in order.
+pub fn child_ids(container: &impl CommonGetters) -> Vec<Uuid> {
+  container.children().iter().map(CommonGetters::id).collect()
 }
 
 #[bon]
@@ -90,7 +139,6 @@ impl NativeMonitorProperties {
     #[builder(default = mock_working_area())] working_area: Rect,
     #[builder(default = MOCK_DPI)] dpi: u32,
     #[builder(default = MOCK_SCALE_FACTOR)] scale_factor: f32,
-    #[builder(default = 60)] refresh_rate: u32,
   ) -> Self {
     Self {
       device_name,
@@ -98,7 +146,6 @@ impl NativeMonitorProperties {
       working_area,
       dpi,
       scale_factor,
-      refresh_rate,
       #[cfg(target_os = "macos")]
       device_uuid: String::new(),
       #[cfg(target_os = "windows")]
@@ -133,6 +180,7 @@ impl NativeWindowProperties {
       class_name: String::new(),
       #[cfg(target_os = "windows")]
       shadow_borders: mock_border_delta(),
+      min_width: 0,
     }
   }
 }
@@ -264,6 +312,8 @@ impl Workspace {
     #[builder(default = TilingDirection::Horizontal)]
     tiling_direction: TilingDirection,
     #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
+    #[builder(default)] layout: Layout,
+    #[builder(default)] is_special: bool,
     #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
     #[builder(default = vec![])] non_tiling_windows: Vec<NonTilingWindow>,
   ) -> Self {
@@ -272,9 +322,17 @@ impl Workspace {
       display_name,
       bind_to_monitor: None,
       keep_alive: false,
+      layout: None,
     };
 
-    let workspace = Self::new(config, gaps_config, tiling_direction);
+    let workspace = Self::new(
+      config,
+      gaps_config,
+      tiling_direction,
+      layout,
+      ScrollingLayoutConfig::default(),
+      is_special,
+    );
 
     for child in tiling_containers {
       attach_container(&child.into(), &workspace.clone().into(), None)

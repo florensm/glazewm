@@ -4,6 +4,7 @@ use wm_platform::{LengthValue, Rect};
 
 use crate::{
   commands::container::resize_tiling_container,
+  layout::scrolling::{column_size, column_workspace},
   models::{NonTilingWindow, TilingWindow, WindowContainer},
   traits::{
     CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
@@ -70,22 +71,34 @@ fn set_tiling_window_length(
 
   if let Some(container_to_resize) = container_to_resize {
     let parent = container_to_resize.parent().context("No parent.")?;
-    let (horizontal_gap, vertical_gap) =
-      container_to_resize.inner_gaps()?;
 
-    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    let parent_length = if is_width_resize {
-      parent.to_rect()?.width()
-        - horizontal_gap
-          * container_to_resize.tiling_siblings().count() as i32
+    // Convert the target length to a tiling size. A column's width is of
+    // the whole workspace, not shared with the other columns.
+    let column_workspace =
+      column_workspace(&container_to_resize).filter(|_| is_width_resize);
+
+    let tiling_size = if let Some(workspace) = column_workspace {
+      column_size(&container_to_resize, &workspace, target_length)?
     } else {
-      parent.to_rect()?.height()
-        - vertical_gap
-          * container_to_resize.tiling_siblings().count() as i32
-    };
+      let (horizontal_gap, vertical_gap) =
+        container_to_resize.inner_gaps()?;
 
-    // Convert the target length to a tiling size.
-    let tiling_size = target_length.to_percentage(parent_length);
+      #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation
+      )]
+      let parent_length = if is_width_resize {
+        parent.to_rect()?.width()
+          - horizontal_gap
+            * container_to_resize.tiling_siblings().count() as i32
+      } else {
+        parent.to_rect()?.height()
+          - vertical_gap
+            * container_to_resize.tiling_siblings().count() as i32
+      };
+
+      target_length.to_percentage(parent_length)
+    };
 
     // Skip the resize if the window is already at the target size.
     if container_to_resize.tiling_size() - tiling_size != 0. {

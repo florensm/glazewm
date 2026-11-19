@@ -42,7 +42,7 @@ unsafe extern "system" fn iris_wnd_proc(
     WM_PAINT => {
       let mut ps = PAINTSTRUCT::default();
       // SAFETY: `hwnd` is valid; `ps` is a stack out-parameter.
-      let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+      let hdc = unsafe { BeginPaint(hwnd, &raw mut ps) };
       // SAFETY: the snapshot `HBITMAP` was stashed in `GWLP_USERDATA` at
       // creation and remains valid until the window is destroyed.
       let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
@@ -50,7 +50,7 @@ unsafe extern "system" fn iris_wnd_proc(
         let bitmap = HBITMAP(raw);
         let mut rc = RECT::default();
         // SAFETY: `hwnd` is valid; `rc` is a stack out-parameter.
-        let _ = unsafe { GetClientRect(hwnd, &mut rc) };
+        let _ = unsafe { GetClientRect(hwnd, &raw mut rc) };
         // SAFETY: `hdc` is the valid paint DC from `BeginPaint`.
         let mem_dc = unsafe { CreateCompatibleDC(hdc) };
         if mem_dc.0 != 0 {
@@ -70,10 +70,11 @@ unsafe extern "system" fn iris_wnd_proc(
       }
       // SAFETY: `ps` was populated by `BeginPaint`.
       unsafe {
-        let _ = EndPaint(hwnd, &ps);
+        let _ = EndPaint(hwnd, &raw const ps);
       }
       LRESULT(0)
     }
+    _ if window_class::is_close_request(msg, wparam) => LRESULT(0),
     // SAFETY: all parameters are passed through unchanged.
     _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
   }

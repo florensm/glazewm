@@ -28,8 +28,8 @@ impl OpacityValue {
   )]
   #[must_use]
   pub fn interpolate(&self, other: &OpacityValue, progress: f32) -> Self {
-    let start_alpha = self.to_alpha() as f32;
-    let end_alpha = other.to_alpha() as f32;
+    let start_alpha = f32::from(self.to_alpha());
+    let end_alpha = f32::from(other.to_alpha());
     let alpha = start_alpha + (end_alpha - start_alpha) * progress;
 
     OpacityValue::from_alpha((alpha.round() as u32).clamp(0, 255) as u8)

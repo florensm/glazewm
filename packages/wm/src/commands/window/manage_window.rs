@@ -14,14 +14,13 @@ use crate::{
     WindowTraits,
   },
   commands::{
-    container::{
-      attach_container, detach_container, set_focused_descendant,
-    },
+    container::{detach_container, set_focused_descendant},
     window::{
       find_named_stack, match_stack_tabs, new_named_stack, restored_state,
       run_window_rules_except, update_stack_state, update_window_state,
     },
   },
+  layout::{self, Insertion},
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
     StackContainer, TilingWindow, WindowContainer,
@@ -65,7 +64,7 @@ fn manage_window_inner(
 ) -> anyhow::Result<()> {
   let is_held = state.auto_stack.is_held(native_window.id());
 
-  let Some(native_properties) =
+  let Some(mut native_properties) =
     check_is_manageable(&native_window, is_held, config).unwrap_or(None)
   else {
     if state.auto_stack.release(native_window.id()).is_some() {
@@ -104,6 +103,8 @@ fn manage_window_inner(
   // successful hand-off undoes the cloak. See `CloakGuard`.
   #[cfg(target_os = "windows")]
   let cloak_guard = CloakGuard::cloak(&native_window);
+
+  native_properties.measure_min_width(&native_window);
 
   let placement = match &auto_stack_rule {
     Some(rule) => Some(auto_stack_placement(rule, state, config)?),
@@ -329,16 +330,16 @@ fn auto_stack_placement(
     .as_ref()
     .and_then(|name| state.workspace_by_name(name));
 
-  let (parent, index) = match configured_workspace {
-    Some(workspace) => {
-      let index = workspace.child_count();
-      (workspace.into(), index)
-    }
-    None => insertion_target(&WindowState::Tiling, false, state)?,
+  let insertion = match configured_workspace {
+    Some(workspace) => Insertion::At {
+      index: workspace.child_count(),
+      parent: workspace.into(),
+    },
+    None => layout::insertion_target(&WindowState::Tiling, false, state)?,
   };
 
   let stack = new_named_stack(&rule.name, config);
-  attach_container(&stack.clone().into(), &parent, Some(index))?;
+  layout::attach(&stack.clone().into(), &insertion, config)?;
 
   Ok(Placement {
     parent: stack.clone().into(),
@@ -890,9 +891,12 @@ fn create_window(
 
   // Attach the new window at the given placement (if provided),
   // otherwise, add as a sibling of the focused container.
-  let (target_parent, target_index) = match placement {
-    Some(placement) => (placement.parent, placement.index),
-    None => insertion_target(
+  let insertion = match placement {
+    Some(placement) => Insertion::At {
+      parent: placement.parent,
+      index: placement.index,
+    },
+    None => layout::insertion_target(
       &window_state,
       config.value.stack.new_windows_join_focused_stack,
       state,
@@ -900,7 +904,7 @@ fn create_window(
   };
 
   let target_workspace =
-    target_parent.workspace().context("No target workspace.")?;
+    insertion.workspace().context("No target workspace.")?;
 
   let prefers_centered = config
     .value
@@ -966,16 +970,12 @@ fn create_window(
   };
 
   // Joining a non-tiling stack, the window takes the place of the others.
-  let template = target_parent
-    .as_stack()
+  let template = insertion
+    .stack()
     .filter(|stack| !stack.is_tiling())
     .and_then(|stack| stack.windows().into_iter().next());
 
-  attach_container(
-    &window_container.clone().into(),
-    &target_parent,
-    Some(target_index),
-  )?;
+  layout::attach(&window_container.clone().into(), &insertion, config)?;
 
   if let (WindowContainer::NonTilingWindow(window), Some(template)) =
     (&window_container, template)
@@ -1043,73 +1043,16 @@ fn window_state_to_create(
   Ok(WindowState::default_from_config(&config.value))
 }
 
-/// Gets where to insert a new window in the container tree.
-///
-/// Rules:
-/// - For non-tiling windows: Always append to the workspace.
-/// - For tiling windows:
-///   1. Try to insert after the focused tiling window (or its parent
-///      stack) if one exists.
-///   2. If a non-tiling window is focused, try to insert after the first
-///      tiling window found.
-///   3. If no tiling windows exist, append to the workspace.
-///
-/// New windows are never inserted into an existing `StackContainer`
-/// automatically, unless configured. Stacking is otherwise an explicit
-/// user action, e.g. via `toggle-stack` or `stack-absorb-neighbor`.
-///
-/// Returns tuple of (parent container, insertion index).
-fn insertion_target(
-  window_state: &WindowState,
-  joins_focused_stack: bool,
-  state: &WmState,
-) -> anyhow::Result<(Container, usize)> {
-  let focused_container =
-    state.focused_container().context("No focused container.")?;
-
-  let focused_workspace =
-    focused_container.workspace().context("No workspace.")?;
-
-  // For tiling windows, try to find a suitable tiling window to insert
-  // next to.
-  if *window_state == WindowState::Tiling {
-    let sibling = match focused_container {
-      Container::TilingWindow(_) => Some(focused_container),
-      _ => focused_workspace
-        .descendant_focus_order()
-        .find(Container::is_tiling_window),
-    };
-
-    if let Some(sibling) = sibling {
-      let parent = sibling.parent().context("No parent.")?;
-
-      // Tile next to the sibling's stack rather than inside it, unless
-      // configured otherwise.
-      if parent.as_stack().is_some() && !joins_focused_stack {
-        let stack_parent = parent.parent().context("No parent.")?;
-        return Ok((stack_parent, parent.index() + 1));
-      }
-
-      return Ok((parent, sibling.index() + 1));
-    }
-  }
-
-  // Default to appending to workspace.
-  Ok((
-    focused_workspace.clone().into(),
-    focused_workspace.child_count(),
-  ))
-}
-
 #[cfg(test)]
 mod tests {
   use wm_common::{
     AutoStackRuleConfig, DuplicateTabs, ParsedConfig, WindowState,
   };
 
-  use super::{auto_stack_placement, insertion_target};
+  use super::auto_stack_placement;
   use crate::{
     commands::container::set_focused_descendant,
+    layout::{insertion_target, Insertion},
     models::{Monitor, StackContainer, TilingWindow, Workspace},
     traits::CommonGetters,
     user_config::UserConfig,
@@ -1224,13 +1167,19 @@ mod tests {
     let state = WmState::mock(vec![monitor]);
     set_focused_descendant(&stacked.into(), None);
 
-    let (parent, index) =
-      insertion_target(&WindowState::Tiling, false, &state).unwrap();
+    let Insertion::At { parent, index } =
+      insertion_target(&WindowState::Tiling, false, &state).unwrap()
+    else {
+      panic!("Expected an insertion at an index.");
+    };
     assert_eq!(parent.id(), workspace.id());
     assert_eq!(index, stack.index() + 1);
 
-    let (parent, index) =
-      insertion_target(&WindowState::Tiling, true, &state).unwrap();
+    let Insertion::At { parent, index } =
+      insertion_target(&WindowState::Tiling, true, &state).unwrap()
+    else {
+      panic!("Expected an insertion at an index.");
+    };
     assert_eq!(parent.id(), stack.id());
     assert_eq!(index, 1);
 
