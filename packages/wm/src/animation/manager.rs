@@ -1376,10 +1376,6 @@ impl AnimationManager {
     // This runs before `platform_sync` so that when the animation
     // completes, the incoming windows are queued for redraw and
     // uncloaked in the same tick.
-    if state.animation_manager.workspace_switch.is_some() {
-      state.switch_log.note_frame();
-    }
-
     let ws_complete_ids: Option<Vec<Uuid>> = {
       use crate::animation::engine::{
         animation_progress_at, apply_easing,
@@ -1653,7 +1649,6 @@ impl AnimationManager {
     // the final `platform_sync` call that unclocks the incoming real
     // windows.
     if let Some(ids) = ws_complete_ids {
-      state.switch_log.note_swapped();
       if let Some(ws) = state.animation_manager.workspace_switch.take() {
         state.animation_manager.stash_for_ws_cleanup(ws);
       }
@@ -1715,8 +1710,6 @@ impl AnimationManager {
     // may be no later tick.
     let handed_back = advance_ws_cleanup(state, config);
     if !handed_back.is_empty() {
-      state.switch_log.note_handed_back();
-
       let mut queued = 0;
       for id in handed_back {
         if let Some(window) = state.window_by_id(id) {
@@ -2026,12 +2019,6 @@ impl AnimationManager {
         Some((*id, entry.is_incoming, rect))
       })
       .collect()
-  }
-
-  /// Whether a workspace-switch animation is playing, not counting one
-  /// already being torn down.
-  pub fn is_workspace_switch_playing(&self) -> bool {
-    self.workspace_switch.is_some()
   }
 
   /// Whether `window_id` takes part in a workspace-switch slide, playing

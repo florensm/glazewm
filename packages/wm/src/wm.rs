@@ -222,10 +222,7 @@ impl WindowManager {
     if state.overview.open_session() != Some(session) {
       return Ok(());
     }
-    tracing::debug!(
-      target: wm_platform::OVERVIEW_LOG_TARGET,
-      "Carrying out overview action {action:?}."
-    );
+    tracing::debug!("Carrying out overview action {action:?}.");
 
     let focused_workspace = state
       .focused_container()
@@ -612,10 +609,7 @@ impl WindowManager {
       }
     }
 
-    self.state.switch_log.note_press(Some(event.time));
-    let result = self.process_commands(&commands, None, config);
-    self.state.switch_log.note_press(None);
-    result.map(|_| ())
+    self.process_commands(&commands, None, config).map(|_| ())
   }
 
   pub fn process_event(

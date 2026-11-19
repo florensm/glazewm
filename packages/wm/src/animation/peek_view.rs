@@ -4613,10 +4613,7 @@ pub fn hold_on_peek(
   if moved {
     peeks.hold(window.id(), true);
   } else {
-    tracing::info!(
-      target: crate::grab::GRAB_LOG_TARGET,
-      "{window}: live, its peek couldn't be put up."
-    );
+    tracing::debug!("{window}: live, its peek couldn't be put up.");
   }
 
   if moved {
@@ -4790,8 +4787,8 @@ pub fn restore_on_peek(
 }
 
 /// Restores `window`, if it is still natively minimized, at `rect` behind
-/// a cloak, so that no frame shows it before its peek does. One that can't be cloaked is left
-/// minimized, to be restored as it is handed back.
+/// a cloak, so that no frame shows it before its peek does. One that can't
+/// be cloaked is left minimized, to be restored as it is handed back.
 pub(super) fn restore_cloaked(window: &NativeWindow, rect: &Rect) {
   if !window.is_minimized() {
     return;

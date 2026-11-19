@@ -26,7 +26,6 @@ use crate::{
   },
   overview::Overview,
   pending_sync::PendingSync,
-  switch_log::SwitchLog,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   window_overlays::WindowOverlays,
@@ -114,9 +113,6 @@ pub struct WmState {
   /// Overview of every monitor's workspaces and their windows.
   pub overview: Overview,
 
-  /// Times each workspace switch for `switch.log`.
-  pub switch_log: SwitchLog,
-
   /// The grab gesture under way, if any.
   pub grab: crate::grab::GrabState,
 
@@ -174,7 +170,6 @@ impl WmState {
       window_overlays: HashMap::new(),
       drop_indicator: None,
       overview: Overview::new(overview_action_tx),
-      switch_log: SwitchLog::default(),
       grab: crate::grab::GrabState::default(),
       prev_effects_window: None,
       recent_workspace_name: None,

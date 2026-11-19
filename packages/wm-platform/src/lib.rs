@@ -106,14 +106,6 @@ pub use window_peek::WindowPeek;
 pub use window_placer::WindowPlacer;
 pub use workspace_surrogate::{stacking_ranks, WorkspaceSurrogate};
 
-/// `tracing` target of the overview's trace of picks through to its
-/// closing zoom, which the WM writes to a file of its own.
-pub const OVERVIEW_LOG_TARGET: &str = "glazewm::overview";
-
-/// `tracing` target of how WPF windows answer what the WM asks of them
-/// as it sizes them, which the WM writes to a file of its own.
-pub const WPF_LOG_TARGET: &str = "glazewm::wpf";
-
 /// Stops Windows from creating "ghost" windows for this process.
 ///
 /// Every overlay and surrogate window is created on the WM's own thread,

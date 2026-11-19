@@ -852,10 +852,7 @@ impl Overview {
     frame: OverviewFrame,
     layout: OverviewLayoutMode,
   ) {
-    tracing::debug!(
-      target: crate::OVERVIEW_LOG_TARGET,
-      "Overview opening, session {session}."
-    );
+    tracing::debug!("Overview opening, session {session}.");
     self.close();
     self.session = session;
     self.is_done = false;
@@ -1059,7 +1056,6 @@ impl Overview {
         Some(lowest.map_or(openness, |lowest| lowest.min(openness)))
       });
     tracing::debug!(
-      target: crate::OVERVIEW_LOG_TARGET,
       "Overview closed; zoom into the pick at openness {openness:?}."
     );
     self.frame = None;
@@ -1235,10 +1231,7 @@ impl Overview {
       .collect::<Vec<_>>();
 
     if duration == 0 {
-      tracing::debug!(
-        target: crate::OVERVIEW_LOG_TARGET,
-        "Overview closing without a zoom for {action:?}."
-      );
+      tracing::debug!("Overview closing without a zoom for {action:?}.");
       for (screen, card) in self.screens.iter().zip(&cards) {
         if let Some(card) = card {
           screen.celebrate_exit(*card, Duration::ZERO);
@@ -1248,7 +1241,6 @@ impl Overview {
     }
 
     tracing::debug!(
-      target: crate::OVERVIEW_LOG_TARGET,
       "Overview zooming into cards {cards:?} over {duration}ms for \
        {action:?}."
     );
@@ -1329,10 +1321,7 @@ impl Overview {
       .pending_pick
       .take_if(|(_, picked)| picked.elapsed() >= PICK_TIMEOUT);
     if let Some((action, _)) = overdue {
-      tracing::debug!(
-        target: crate::OVERVIEW_LOG_TARGET,
-        "Overview pick timed out waiting for the WM."
-      );
+      tracing::debug!("Overview pick timed out waiting for the WM.");
       self.start_closing(&action);
       self.after_input(None);
     }
@@ -1349,10 +1338,7 @@ impl Overview {
         .iter()
         .all(|screen| !screen.is_closing() || screen.is_zoomed_in())
     {
-      tracing::debug!(
-        target: crate::OVERVIEW_LOG_TARGET,
-        "Overview zoom ended; hiding."
-      );
+      tracing::debug!("Overview zoom ended; hiding.");
       self.close();
       return false;
     }
@@ -1455,7 +1441,6 @@ impl Overview {
           self.start_closing(&action);
         } else {
           tracing::debug!(
-            target: crate::OVERVIEW_LOG_TARGET,
             "Overview picked {action:?}; waiting for the WM."
           );
           self.pending_pick = Some((action.clone(), Instant::now()));
@@ -1665,7 +1650,6 @@ impl Overview {
   fn on_hide(&mut self) {
     let pending = self.pending_pick.take();
     tracing::debug!(
-      target: crate::OVERVIEW_LOG_TARGET,
       "Overview hide requested, {:?} after the pick.",
       pending.as_ref().map(|(_, picked)| picked.elapsed())
     );
@@ -1676,10 +1660,7 @@ impl Overview {
 
     // A closing overview hides itself once its zoom ends.
     if !self.is_closing() {
-      tracing::debug!(
-        target: crate::OVERVIEW_LOG_TARGET,
-        "Overview hiding at once, without a zoom."
-      );
+      tracing::debug!("Overview hiding at once, without a zoom.");
       self.close();
     }
   }
@@ -1692,7 +1673,6 @@ impl Overview {
     // into has just been focused.
     let is_to_own = self.screen_of(HWND(lparam.0)).is_some();
     tracing::debug!(
-      target: crate::OVERVIEW_LOG_TARGET,
       "Overview activation {:#x} (to own: {is_to_own}, closing: {}, \
        pick pending: {}).",
       wparam.0 & 0xffff,
@@ -1706,10 +1686,7 @@ impl Overview {
       && !self.is_closing()
       && self.pending_pick.is_none()
     {
-      tracing::debug!(
-        target: crate::OVERVIEW_LOG_TARGET,
-        "Overview lost the foreground; closing."
-      );
+      tracing::debug!("Overview lost the foreground; closing.");
       let was_done = self.is_done;
       self.close();
       if !was_done {

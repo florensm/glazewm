@@ -209,9 +209,6 @@ pub fn platform_sync(
   crate::particles::show_particles(state, config);
   drop(guards_scope);
 
-  let is_animating = state.animation_manager.is_workspace_switch_playing();
-  state.switch_log.note_synced(is_animating);
-
   // Tiles shown or moved by this sync get ready peeks once it is idle.
   state
     .animation_manager

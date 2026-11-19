@@ -53,7 +53,6 @@ mod overview;
 mod particles;
 mod pending_sync;
 mod stay_interactive;
-mod switch_log;
 mod sys_tray;
 mod tab_bars;
 mod traits;
@@ -607,11 +606,8 @@ fn log_panics() {
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`, the
-/// overview's trace of picks to `~/.glzr/glazewm/overview.log`, how WPF
-/// windows answer the WM to `~/.glzr/glazewm/wpf.log`, how grab resizes
-/// draw each window to `~/.glzr/glazewm/grab.log`, and with
-/// `--verbose` every log to `~/.glzr/glazewm/debug.log`.
+/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`, and
+/// with `--verbose` every log to `~/.glzr/glazewm/debug.log`.
 ///
 /// The latter is the only way to read verbose logs of a release build:
 /// `glazewm start` launches the WM detached, and the release WM has no
@@ -643,44 +639,6 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       )
     });
 
-  // A few lines per pick, so always on: kept apart from the rest, as the
-  // WM may be started without `--verbose`.
-  let overview_layer = fmt::Layer::new()
-    .with_ansi(false)
-    .with_writer(open_log_file(&error_log_dir, "overview.log")?)
-    .with_filter(
-      tracing_subscriber::filter::Targets::new()
-        .with_target(wm_platform::OVERVIEW_LOG_TARGET, Level::DEBUG),
-    );
-
-  // A few lines per WPF window, so always on, in its own file.
-  let wpf_layer = fmt::Layer::new()
-    .with_ansi(false)
-    .with_writer(open_log_file(&error_log_dir, "wpf.log")?)
-    .with_filter(
-      tracing_subscriber::filter::Targets::new()
-        .with_target(wm_platform::WPF_LOG_TARGET, Level::INFO),
-    );
-
-  // One line per workspace switch, so always on, in its own file.
-  let switch_layer = fmt::Layer::new()
-    .with_ansi(false)
-    .with_writer(open_log_file(&error_log_dir, "switch.log")?)
-    .with_filter(
-      tracing_subscriber::filter::Targets::new()
-        .with_target(switch_log::SWITCH_LOG_TARGET, Level::INFO),
-    );
-
-  // A few lines per grab resize drawn on peeks, so always on, in its own
-  // file.
-  let grab_layer = fmt::Layer::new()
-    .with_ansi(false)
-    .with_writer(open_log_file(&error_log_dir, "grab.log")?)
-    .with_filter(
-      tracing_subscriber::filter::Targets::new()
-        .with_target(grab::GRAB_LOG_TARGET, Level::INFO),
-    );
-
   let debug_layer = (verbosity.level() == Level::DEBUG)
     .then(|| open_log_file(&error_log_dir, "debug.log"))
     .transpose()?
@@ -702,10 +660,6 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_writer(error_writer.with_max_level(Level::WARN)),
     )
     .with(perf_layer)
-    .with(overview_layer)
-    .with(switch_layer)
-    .with(grab_layer)
-    .with(wpf_layer)
     .with(debug_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;

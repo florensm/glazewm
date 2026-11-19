@@ -16,7 +16,7 @@
 //! Its `RECT` is marshaled across processes by the system, so it must be
 //! sent, not posted. It is sent from a worker thread with
 //! `SMTO_ABORTIFHUNG`, as for `window_icons`, so a busy app never stalls
-//! the WM's main loop. Outcomes go to [`crate::WPF_LOG_TARGET`].
+//! the WM's main loop.
 
 use std::{
   collections::{HashMap, VecDeque},
@@ -32,7 +32,7 @@ use windows::Win32::{
   },
 };
 
-use crate::{platform_impl, WPF_LOG_TARGET};
+use crate::platform_impl;
 
 /// How long an app gets to answer. Long, as it doesn't hold up the WM, and
 /// windows that get it have often just opened, while their app is busy.
@@ -204,8 +204,7 @@ impl Worker {
       if record.is_new_beyond_max(size) {
         record.is_beyond_max_logged = true;
         if let MaxSize::Known(max_w, max_h) = max_size {
-          tracing::info!(
-            target: WPF_LOG_TARGET,
+          tracing::debug!(
             "WPF window {window:#x} is sized to {}x{}, past the most it \
              allows ({max_w}x{max_h}): WPF lays its content out no \
              larger, leaving the rest unpainted.",
@@ -231,18 +230,15 @@ fn log_outcome(
   outcome: Outcome,
 ) {
   match outcome {
-    Outcome::Answered => tracing::info!(
-      target: WPF_LOG_TARGET,
+    Outcome::Answered => tracing::debug!(
       "WPF window {window:#x} answered WM_SIZING, sized to \
        {width}x{height}: its SizeToContent is off from now on."
     ),
-    Outcome::TimedOut => tracing::info!(
-      target: WPF_LOG_TARGET,
+    Outcome::TimedOut => tracing::debug!(
       "WPF window {window:#x} didn't answer WM_SIZING within \
        {SIZING_TIMEOUT_MS}ms, or is hung: asked again at its next resize."
     ),
-    Outcome::Failed(code) => tracing::info!(
-      target: WPF_LOG_TARGET,
+    Outcome::Failed(code) => tracing::debug!(
       "WM_SIZING to WPF window {window:#x} failed (error {code}): asked \
        again at its next resize."
     ),

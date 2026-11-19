@@ -41,8 +41,8 @@ a resize by its border. A WPF window that sizes itself to its content
 (`SizeToContent`) is asked, as GlazeWM changes its size, to lay its
 content out to the size it gets, as after a resize with the mouse, until
 it answers once. A floating window GlazeWM only moves keeps sizing
-itself. How each WPF window answers is logged to
-`~/.glzr/glazewm/wpf.log`, along with a size past the most the window
+itself. With `--verbose`, how each WPF window answers is logged to
+`~/.glzr/glazewm/debug.log`, along with a size past the most the window
 allows (WPF draws no larger than that).
 
 Closing or removing a tab never changes the stack's size. An unnamed stack

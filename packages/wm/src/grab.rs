@@ -48,10 +48,6 @@ use crate::{
   wm_state::WmState,
 };
 
-/// `tracing` target of the lines saying how a resize draws each window,
-/// which go to their own file.
-pub const GRAB_LOG_TARGET: &str = "glazewm::grab";
-
 /// What [`GrabListener`] grabs with under `config`, if anything.
 pub fn settings(config: &UserConfig) -> Option<GrabSettings> {
   let grab = &config.value.general.grab_and_move;
@@ -437,7 +433,7 @@ fn log_peek_holds(
   let Some(workspace) = window.workspace() else {
     return;
   };
-  tracing::info!(target: GRAB_LOG_TARGET, "Resize of {window} on peeks:");
+  tracing::debug!("Resize of {window} on peeks:");
 
   for window in workspace
     .descendants()
@@ -445,10 +441,10 @@ fn log_peek_holds(
   {
     match crate::animation::peek_view::hold_refusal(state, &window) {
       None => {
-        tracing::info!(target: GRAB_LOG_TARGET, "{window}: on a peek.");
+        tracing::debug!("{window}: on a peek.");
       }
       Some(reason) => {
-        tracing::info!(target: GRAB_LOG_TARGET, "{window}: live, {reason}.");
+        tracing::debug!("{window}: live, {reason}.");
       }
     }
   }
