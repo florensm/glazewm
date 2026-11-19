@@ -64,30 +64,56 @@ pub trait WindowGetters: CommonGetters {
 
   fn set_border_delta(&self, border_delta: RectDelta);
 
+  /// Delta from the window's layout rect to its frame: the configured
+  /// border delta, its shadow borders, and, while tiling, the inset that
+  /// makes room for its border ring (see `Workspace::border_inset`).
   fn total_border_delta(&self) -> anyhow::Result<RectDelta> {
     let border_delta = self.border_delta();
 
     let shadow_border_delta = self.native_properties().shadow_borders;
 
+    let ring_inset = match self.state() {
+      WindowState::Tiling => self
+        .workspace()
+        .map_or(0, |workspace| workspace.border_inset()),
+      _ => 0,
+    };
+
     // TODO: Allow percentage length values.
     Ok(RectDelta {
       left: LengthValue::from_px(
         border_delta.left.to_px(0, None)
-          + shadow_border_delta.left.to_px(0, None),
+          + shadow_border_delta.left.to_px(0, None)
+          - ring_inset,
       ),
       right: LengthValue::from_px(
         border_delta.right.to_px(0, None)
-          + shadow_border_delta.right.to_px(0, None),
+          + shadow_border_delta.right.to_px(0, None)
+          - ring_inset,
       ),
       top: LengthValue::from_px(
         border_delta.top.to_px(0, None)
-          + shadow_border_delta.top.to_px(0, None),
+          + shadow_border_delta.top.to_px(0, None)
+          - ring_inset,
       ),
       bottom: LengthValue::from_px(
         border_delta.bottom.to_px(0, None)
-          + shadow_border_delta.bottom.to_px(0, None),
+          + shadow_border_delta.bottom.to_px(0, None)
+          - ring_inset,
       ),
     })
+  }
+
+  /// The visible frame (as `NativeWindow::frame` reads it) of the window
+  /// placed at `rect`, which takes in its invisible shadow borders.
+  ///
+  /// For a layout rect plus `total_border_delta`, this is where the window
+  /// and its border ring rest, `border_inset` included.
+  fn frame_at(&self, rect: &Rect) -> Rect {
+    rect.apply_delta(
+      &self.native_properties().shadow_borders.inverse(),
+      None,
+    )
   }
 
   /// Gets whether the window should be fullscreen for the given workspace.
@@ -338,4 +364,89 @@ macro_rules! impl_window_getters {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_platform::{LengthValue, Rect, RectDelta};
+
+  use super::WindowGetters;
+  use crate::{
+    models::{Monitor, NonTilingWindow, TilingWindow, Workspace},
+    traits::PositionGetters,
+  };
+
+  fn sides(delta: &RectDelta) -> [i32; 4] {
+    [&delta.left, &delta.top, &delta.right, &delta.bottom]
+      .map(|side| side.to_px(0, None))
+  }
+
+  #[test]
+  fn tiling_windows_are_inset_by_the_border_space() {
+    let tiling = TilingWindow::mock().call();
+    let floating = NonTilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![tiling.clone().into()])
+      .non_tiling_windows(vec![floating.clone()])
+      .call();
+
+    let tiling_base = sides(&tiling.total_border_delta().unwrap());
+    let floating_base = sides(&floating.total_border_delta().unwrap());
+
+    workspace.set_border_inset(2);
+
+    assert_eq!(
+      sides(&tiling.total_border_delta().unwrap()),
+      tiling_base.map(|side| side - 2)
+    );
+    assert_eq!(
+      sides(&floating.total_border_delta().unwrap()),
+      floating_base
+    );
+  }
+
+  #[test]
+  fn the_frame_at_a_placed_rect_rests_inside_the_tile() {
+    let tiling = TilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![tiling.clone().into()])
+      .call();
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    // Invisible borders as Windows 10 and 11 give a resizable window.
+    tiling.update_native_properties(|properties| {
+      properties.shadow_borders = RectDelta::new(
+        LengthValue::from_px(7),
+        LengthValue::from_px(0),
+        LengthValue::from_px(7),
+        LengthValue::from_px(7),
+      );
+    });
+    workspace.set_border_inset(2);
+
+    let tile = tiling.to_rect().unwrap();
+    let placed =
+      tile.apply_delta(&tiling.total_border_delta().unwrap(), None);
+    let frame = tiling.frame_at(&placed);
+
+    assert_eq!(
+      frame,
+      Rect::from_ltrb(
+        tile.left + 2,
+        tile.top + 2,
+        tile.right - 2,
+        tile.bottom - 2
+      )
+    );
+    assert_eq!(
+      Rect::from_ltrb(
+        placed.left + 7,
+        placed.top,
+        placed.right - 7,
+        placed.bottom - 7
+      ),
+      frame
+    );
+  }
 }

@@ -250,7 +250,7 @@ pub fn holds_on_peek(
   config.value.general.grab_and_move.draw == GrabDraw::Peeks
     && is_resizing_here
     && (state.animation_manager.peeks.is_held(&window.id())
-      || crate::animation::peek_view::can_hold(state, window, config))
+      || crate::animation::peek_view::can_hold(state, window))
 }
 
 impl GrabState {
@@ -443,8 +443,7 @@ fn log_peek_holds(
     .descendants()
     .filter_map(|container| container.as_window_container().ok())
   {
-    match crate::animation::peek_view::hold_refusal(state, &window, config)
-    {
+    match crate::animation::peek_view::hold_refusal(state, &window) {
       None => {
         tracing::info!(target: GRAB_LOG_TARGET, "{window}: on a peek.");
       }

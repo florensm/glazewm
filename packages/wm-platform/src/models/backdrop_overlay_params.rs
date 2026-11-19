@@ -1,4 +1,4 @@
-use crate::Color;
+use crate::{Color, Rect};
 
 /// Tint, blur radius, corner radius, opacity, saturation and grading knobs
 /// for a `NativeBackdropOverlay`, bundled so the growing set of overlay
@@ -62,13 +62,57 @@ pub struct BackdropOverlayParams {
   pub parallax: f32,
 }
 
-impl BackdropOverlayParams {
-  /// Whether a surrogate can draw this backdrop as copies of it (see
-  /// `OverlayCopies::carry_backdrop`): only square, as its copy of the
-  /// desktop behind the window is a rectangle, and pinned to the desktop,
-  /// as that copy is cut from a backdrop of the whole monitor.
-  #[must_use]
-  pub fn is_copyable(&self) -> bool {
-    self.corner_radius <= 0.0 && (self.parallax - 1.0).abs() < 1e-3
+/// Where in the backdrop image of `monitor` the backdrop of a window at
+/// `frame` is cut from: the offset of the frame's top-left from the
+/// image's, which is the window's offset within its monitor times
+/// `parallax`.
+///
+/// Rounded to whole pixels, so a thumbnail's source rect (see
+/// `OverlayCopies::carry_backdrop`) cuts exactly what the overlay shows.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub(crate) fn parallax_crop_origin(
+  frame: &Rect,
+  monitor: &Rect,
+  parallax: f32,
+) -> (i32, i32) {
+  let scaled = |offset: i32| (offset as f32 * parallax).round() as i32;
+  (
+    scaled(frame.left - monitor.left),
+    scaled(frame.top - monitor.top),
+  )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::parallax_crop_origin;
+  use crate::Rect;
+
+  const MONITOR: Rect = Rect {
+    left: 1920,
+    top: 0,
+    right: 3840,
+    bottom: 1080,
+  };
+
+  #[test]
+  fn crop_follows_the_window_at_full_parallax() {
+    let frame = Rect::from_xy(2020, 50, 800, 600);
+    assert_eq!(parallax_crop_origin(&frame, &MONITOR, 1.0), (100, 50));
+  }
+
+  #[test]
+  fn crop_trails_the_window_below_full_parallax() {
+    let frame = Rect::from_xy(2020, 50, 800, 600);
+    assert_eq!(parallax_crop_origin(&frame, &MONITOR, 0.5), (50, 25));
+    assert_eq!(parallax_crop_origin(&frame, &MONITOR, 0.0), (0, 0));
+  }
+
+  #[test]
+  fn crop_rounds_to_whole_pixels_symmetrically() {
+    let right = Rect::from_xy(1921, 3, 10, 10);
+    let left = Rect::from_xy(1919, -3, 10, 10);
+    assert_eq!(parallax_crop_origin(&right, &MONITOR, 0.5), (1, 2));
+    assert_eq!(parallax_crop_origin(&left, &MONITOR, 0.5), (-1, -2));
   }
 }

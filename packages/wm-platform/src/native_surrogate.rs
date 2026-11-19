@@ -544,6 +544,41 @@ impl NativeSurrogate {
     opacity: u8,
     is_shown: bool,
   ) -> Self {
+    let this =
+      Self::registered_on(surface, source_hwnd, thumbnail_rect, opacity);
+    if let Host::Shared(window) = &this.host {
+      window.admit(source_hwnd, is_shown);
+    }
+    this
+  }
+
+  /// Creates a surrogate drawing `source_hwnd` on `surface` as
+  /// [`create_hosted`](Self::create_hosted) does, kept from the start as a
+  /// ready peek of it (see [`retire`](Self::retire)): the surface is not
+  /// moved, and takes it as a tenant only at [`reclaim`](Self::reclaim).
+  #[must_use]
+  pub fn create_ready(
+    surface: &PeekSurface,
+    source_hwnd: HWND,
+    thumbnail_rect: &Rect,
+  ) -> Self {
+    let mut this =
+      Self::registered_on(surface, source_hwnd, thumbnail_rect, u8::MAX);
+    if let Host::Shared(window) = &this.host {
+      window.add_ready();
+    }
+    this.is_ready = true;
+    this
+  }
+
+  /// A hidden surrogate drawing `source_hwnd` on `surface`, its thumbnail
+  /// registered held, neither a tenant nor a ready peek of it yet.
+  fn registered_on(
+    surface: &PeekSurface,
+    source_hwnd: HWND,
+    thumbnail_rect: &Rect,
+    opacity: u8,
+  ) -> Self {
     let window = Rc::clone(surface.window());
 
     // No window to create: `sg_window` has nothing to time here.
@@ -564,8 +599,6 @@ impl NativeSurrogate {
       true,
     );
     drop(thumb_scope);
-
-    window.admit(source_hwnd, is_shown);
 
     Self {
       host: Host::Shared(window),
@@ -596,6 +629,12 @@ impl NativeSurrogate {
     self.is_ready = true;
   }
 
+  /// Whether it is kept as a ready peek of its surface (see
+  /// [`retire`](Self::retire)).
+  pub(crate) fn is_ready(&self) -> bool {
+    self.is_ready
+  }
+
   /// Has a retired surrogate draw `source_hwnd` again as
   /// [`create_hosted`](Self::create_hosted) would anew with
   /// `thumbnail_rect` and `opacity`, back on its surface, which goes just
@@ -604,6 +643,9 @@ impl NativeSurrogate {
   /// companion now (see [`keeps_window_thumbnail`]). Returns whether the
   /// thumbnail was registered anew, i.e. stacks above everything on the
   /// surface.
+  ///
+  /// Looks up the companion in the scan kept at rest (see
+  /// `Companion::find_kept`), so a motion start does no `EnumWindows`.
   pub(crate) fn reclaim(
     &mut self,
     source_hwnd: HWND,
@@ -617,7 +659,7 @@ impl NativeSurrogate {
 
     let thumb_scope =
       crate::perf::scope(crate::perf::Stage::SurrogateThumb);
-    let companion = Companion::find(source_hwnd);
+    let companion = Companion::find_kept(source_hwnd);
     let (src, dst) = content_rects(
       thumbnail_rect.width(),
       thumbnail_rect.height(),
@@ -710,76 +752,6 @@ impl NativeSurrogate {
   /// Whether its thumbnails are to be kept hidden: hosted and hidden.
   fn is_held(&self) -> bool {
     self.is_hosted() && !self.is_visible
-  }
-
-  /// Shows the part of the source window at `logical` that lies inside
-  /// `clip`, with the surrogate shrunk to that part. Hides the surrogate
-  /// when nothing is inside.
-  ///
-  /// The thumbnail draws the whole window at its place and the
-  /// surrogate's bounds cut it. Cut itself, it would change on every
-  /// frame the window moves across the edge of `clip`, while the move
-  /// can land in a later frame (always, with `batch`), and a frame
-  /// pairing the two badly showed a strip at that edge with no window in
-  /// it.
-  ///
-  /// With `batch`, a move of an already shown surrogate is queued into it.
-  /// A hosted one, which can't move, draws the part at its place on its
-  /// surface.
-  ///
-  /// Returns the visible rect, if any.
-  pub fn show_clipped(
-    &mut self,
-    logical: &Rect,
-    clip: &Rect,
-    border_inset: RECT,
-    opacity: u8,
-    batch: Option<&mut SurrogateBatch>,
-  ) -> Option<Rect> {
-    let Some(visible) = logical.intersection(clip) else {
-      self.set_visible(false);
-      return None;
-    };
-
-    let origin = match &self.host {
-      Host::Own(_) => (visible.left, visible.top),
-      Host::Shared(window) => (window.clip().left, window.clip().top),
-    };
-    let Some((src, dst)) = placed_rects(
-      logical,
-      logical,
-      (logical.width(), logical.height()),
-      border_inset,
-      origin,
-    ) else {
-      self.set_visible(false);
-      return None;
-    };
-    self.set_thumbnail_rects(src, dst);
-    self.move_to(&visible, batch);
-    self.set_window_opacity(opacity);
-    self.set_visible(true);
-
-    Some(visible)
-  }
-
-  /// Moves the surrogate to `rect`. With `batch`, a move of an already
-  /// shown surrogate is queued into it. None for a hosted one.
-  pub(crate) fn move_to(
-    &mut self,
-    rect: &Rect,
-    batch: Option<&mut SurrogateBatch>,
-  ) {
-    match batch {
-      Some(batch) if self.is_visible => {
-        self.defer_reposition(batch, rect);
-      }
-      _ => {
-        if let Err(err) = self.reposition(rect) {
-          tracing::warn!("Surrogate clipped update failed: {err}.");
-        }
-      }
-    }
   }
 
   /// Returns the raw handle of the window it draws on: its own, or its
@@ -1096,29 +1068,6 @@ impl NativeSurrogate {
       look,
       self.is_held(),
     );
-  }
-
-  /// Queues a reposition to `rect` into `batch` instead of issuing an
-  /// immediate `SetWindowPos`.
-  ///
-  /// All surrogates queued into the same [`SurrogateBatch`] are
-  /// repositioned atomically when the batch is committed, so adjacent
-  /// windows' edges move in the same DWM composition frame. No-op when
-  /// `rect` matches the last applied position, and for a hosted one, as
-  /// for [`reposition`](Self::reposition).
-  pub fn defer_reposition(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    rect: &Rect,
-  ) {
-    let Host::Own(hwnd) = self.host else {
-      return;
-    };
-    if self.last_rect.as_ref() == Some(rect) {
-      return;
-    }
-    batch.push(hwnd, rect.clone());
-    self.last_rect = Some(rect.clone());
   }
 }
 

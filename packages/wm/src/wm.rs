@@ -510,6 +510,7 @@ impl WindowManager {
           state.animation_manager.remove_animation(&id);
           state.window_overlays.remove(&id);
 
+          tracing::debug!("Sending WM_CLOSE to {id}, still cloaked.");
           if let Err(err) = NativeWindow::from_handle(handle).close() {
             warn!("Failed to close window: {:?}", err);
           }
@@ -540,6 +541,7 @@ impl WindowManager {
 
           // Uncloaked even when hidden by the app (e.g. to its tray
           // icon), so it doesn't come back invisible when shown again.
+          tracing::debug!("Uncloaking closing window {id}: {outcome:?}.");
           let _ = native.set_cloaked(false);
 
           if outcome == CloseOutcome::Refused {
@@ -710,6 +712,12 @@ impl WindowManager {
   ) -> anyhow::Result<()> {
     self.state.animation_manager.replace_stalled_timer();
     self.update_animations(config)
+  }
+
+  /// Makes ready peeks of tiles at rest while the WM is idle (see
+  /// `peek_view::prewarm_ready`).
+  pub fn prewarm_peeks(&mut self, config: &UserConfig) {
+    crate::animation::peek_view::prewarm_ready(&mut self.state, config);
   }
 
   /// Updates all active animations and redraws windows that are animating.

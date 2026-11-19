@@ -8,6 +8,7 @@ mod backdrop_source;
 mod click_guard;
 mod companion;
 mod companion_cover;
+mod corner_bands;
 mod dispatcher;
 mod display;
 mod display_listener;
@@ -103,9 +104,7 @@ pub use window_edges::{sample_edge_color_async, EdgeColorCache};
 pub use window_listener::*;
 pub use window_peek::WindowPeek;
 pub use window_placer::WindowPlacer;
-pub use workspace_surrogate::{
-  stacking_ranks, LiveFrame, WorkspaceSurrogate,
-};
+pub use workspace_surrogate::{stacking_ranks, WorkspaceSurrogate};
 
 /// `tracing` target of the overview's trace of picks through to its
 /// closing zoom, which the WM writes to a file of its own.
@@ -170,6 +169,19 @@ pub fn process_sent_messages() {
   let _ = unsafe {
     PeekMessageW(&raw mut msg, None, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE)
   };
+}
+
+/// The registration order the next DWM thumbnail gets: a peek whose
+/// thumbnails are all below it has registered nothing since.
+#[must_use]
+pub fn next_thumbnail_order() -> u64 {
+  dwm_thumbnail::next_order()
+}
+
+/// Scans for companion windows at rest, so a ready peek's next motion
+/// finds its window's companion without a scan of its own.
+pub fn refresh_companions_at_rest() {
+  companion::Companion::refresh_at_rest();
 }
 
 /// Waits for the next DWM composition frame to complete.

@@ -921,8 +921,8 @@ impl SurrogateFill {
 /// A live `Windows.UI.Composition` visual tree providing a border
 /// overlay's rendering: a rounded rectangle *stroked* with a solid color,
 /// so only the ring band is ever painted and the interior stays fully
-/// transparent, plus a hairline along its inner edge and the bands of its
-/// glow. Considerably lighter than [`BackdropVisual`] -- no effect graph,
+/// transparent, plus a hairline along its inner edge and its glow.
+/// Considerably lighter than [`BackdropVisual`] -- no effect graph,
 /// no live backdrop sampling, just stroked shapes.
 ///
 /// `NativeBorderOverlay` sizes and positions the overlay's `HWND` to the
@@ -960,9 +960,9 @@ pub(crate) struct BorderVisual {
   rim: CompositionSpriteShape,
   rim_brush: CompositionColorBrush,
   rim_geometry: CompositionRoundedRectangleGeometry,
-  /// The glow's bands, outward from the ring (see `BorderGlow`). Made as
-  /// a glow first needs them and kept, drawing nothing, past its reach.
-  glow: RefCell<Vec<GlowBand>>,
+  /// The glow around the ring (see `BorderGlow`), over the ring's shapes
+  /// as the visual's children.
+  glow: Glow,
   /// Cuts the ring short of its own edges. Zero except while the ring
   /// slides with a workspace switch.
   clip: InsetClip,
@@ -973,40 +973,271 @@ pub(crate) struct BorderVisual {
   ring: Cell<Ring>,
 }
 
-/// One pixel-wide band of a border's glow: a stroke around the ring, as
-/// many pixels out as its index.
-struct GlowBand {
-  shape: CompositionSpriteShape,
-  brush: CompositionColorBrush,
-  geometry: CompositionRoundedRectangleGeometry,
+/// A border's glow: four corner and four edge sprites around the ring,
+/// painted by three gradients holding its fade, so the glow costs the same
+/// at any reach and a resize only moves and sizes the sprites.
+///
+/// One brush serves both sprites of each kind of edge, and one all four
+/// corners: each sprite is laid out as its kind's top or left one, the
+/// rest mirrored onto their sides by a negative scale (see
+/// [`glow_pieces`]).
+struct Glow {
+  container: ContainerVisual,
+  /// In [`glow_pieces`]' order.
+  pieces: [SpriteVisual; 8],
+  /// Centered on the corner's arc, so the fade rounds the corner.
+  corners: GlowGradient,
+  /// From the ring's top edge up, for the top and bottom edges.
+  rows: GlowGradient,
+  /// From the ring's left edge to the left, for the left and right edges.
+  columns: GlowGradient,
+  /// The ring's color the glow was last colored in.
+  color: Cell<crate::Color>,
+  /// Each band's opacity, outward from the ring (see
+  /// `BorderGlow::band_opacities`).
+  opacities: RefCell<Vec<f32>>,
+  /// Reach and corner radius the gradients' stops were last laid out for.
+  laid_out: Cell<(f32, f32)>,
 }
 
-impl GlowBand {
-  /// Creates `count` bands, drawing nothing until laid out and colored.
-  fn create_all(
-    compositor: &Compositor,
-    count: usize,
-  ) -> windows::core::Result<Vec<Self>> {
-    (0..count)
-      .map(|_| {
-        let geometry = compositor.CreateRoundedRectangleGeometry()?;
-        let brush = compositor.CreateColorBrushWithColor(Color {
-          A: 0,
-          R: 0,
-          G: 0,
-          B: 0,
-        })?;
-        let shape = compositor.CreateSpriteShapeWithGeometry(&geometry)?;
-        shape.SetStrokeBrush(&brush)?;
-        shape.SetStrokeThickness(0.0)?;
+/// One of a glow's gradients and the stops it holds, made ahead as the
+/// glow first needs them and kept, clear at its end, past those in use.
+struct GlowGradient {
+  collection: CompositionColorGradientStopCollection,
+  stops: RefCell<Vec<CompositionColorGradientStop>>,
+}
 
-        Ok(Self {
-          shape,
-          brush,
-          geometry,
-        })
+impl GlowGradient {
+  /// Lays `stops` (offset, opacity) out in `color`, clearing the rest.
+  fn write(
+    &self,
+    color: crate::Color,
+    stops: &[(f32, f32)],
+  ) -> windows::core::Result<()> {
+    for (index, stop) in self.stops.borrow().iter().enumerate() {
+      let (offset, opacity) =
+        stops.get(index).copied().unwrap_or((1.0, 0.0));
+      #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+      let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+      stop.SetOffset(offset)?;
+      stop.SetColor(to_ui_color(crate::Color { a: alpha, ..color }))?;
+    }
+    Ok(())
+  }
+
+  /// Adds `made` to the gradient, after those it holds.
+  fn extend(
+    &self,
+    made: Vec<CompositionColorGradientStop>,
+  ) -> windows::core::Result<()> {
+    for stop in &made {
+      self.collection.Append(stop)?;
+    }
+    self.stops.borrow_mut().extend(made);
+    Ok(())
+  }
+}
+
+/// Stops a glow's gradient needs for `bands` bands, at most: a corner's
+/// clear stops inside the ring, the ring's edge, each band and the end.
+fn glow_stop_count(bands: usize) -> usize {
+  bands + 4
+}
+
+/// Makes `count` clear stops, on the composition thread.
+fn create_stops(
+  compositor: &Compositor,
+  count: usize,
+) -> windows::core::Result<Vec<CompositionColorGradientStop>> {
+  let clear = Color {
+    A: 0,
+    R: 0,
+    G: 0,
+    B: 0,
+  };
+  (0..count)
+    .map(|_| {
+      compositor.CreateColorGradientStopWithOffsetAndColor(1.0, clear)
+    })
+    .collect()
+}
+
+impl Glow {
+  /// Builds the glow's sprites and gradients, with stops for `bands`
+  /// bands, under `parent`. Runs on the composition thread.
+  fn create(
+    compositor: &Compositor,
+    parent: &ContainerVisual,
+    bands: usize,
+  ) -> windows::core::Result<Self> {
+    let gradient = |collection: CompositionColorGradientStopCollection| {
+      let stops = create_stops(compositor, glow_stop_count(bands))?;
+      for stop in &stops {
+        collection.Append(stop)?;
+      }
+      windows::core::Result::Ok(GlowGradient {
+        collection,
+        stops: RefCell::new(stops),
       })
-      .collect()
+    };
+
+    let corner_brush = compositor.CreateRadialGradientBrush()?;
+    corner_brush.SetMappingMode(CompositionMappingMode::Relative)?;
+    corner_brush.SetEllipseCenter(Vector2 { X: 1.0, Y: 1.0 })?;
+    corner_brush.SetEllipseRadius(Vector2 { X: 1.0, Y: 1.0 })?;
+
+    let row_brush = compositor.CreateLinearGradientBrush()?;
+    row_brush.SetMappingMode(CompositionMappingMode::Relative)?;
+    row_brush.SetStartPoint(Vector2 { X: 0.0, Y: 1.0 })?;
+    row_brush.SetEndPoint(Vector2 { X: 0.0, Y: 0.0 })?;
+
+    let column_brush = compositor.CreateLinearGradientBrush()?;
+    column_brush.SetMappingMode(CompositionMappingMode::Relative)?;
+    column_brush.SetStartPoint(Vector2 { X: 1.0, Y: 0.0 })?;
+    column_brush.SetEndPoint(Vector2 { X: 0.0, Y: 0.0 })?;
+
+    let corners = gradient(corner_brush.ColorStops()?)?;
+    let rows = gradient(row_brush.ColorStops()?)?;
+    let columns = gradient(column_brush.ColorStops()?)?;
+
+    let container = compositor.CreateContainerVisual()?;
+    container.SetIsVisible(false)?;
+    let children = container.Children()?;
+    let sprite = |brush: &CompositionBrush| {
+      let sprite = compositor.CreateSpriteVisual()?;
+      sprite.SetBrush(brush)?;
+      children.InsertAtTop(&sprite)?;
+      windows::core::Result::Ok(sprite)
+    };
+    let (corner, row, column): (
+      CompositionBrush,
+      CompositionBrush,
+      CompositionBrush,
+    ) = (
+      corner_brush.cast()?,
+      row_brush.cast()?,
+      column_brush.cast()?,
+    );
+    let pieces = [
+      sprite(&corner)?,
+      sprite(&corner)?,
+      sprite(&corner)?,
+      sprite(&corner)?,
+      sprite(&row)?,
+      sprite(&row)?,
+      sprite(&column)?,
+      sprite(&column)?,
+    ];
+
+    parent.Children()?.InsertAtTop(&container)?;
+
+    Ok(Self {
+      container,
+      pieces,
+      corners,
+      rows,
+      columns,
+      color: Cell::new(crate::Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+      }),
+      opacities: RefCell::new(Vec::new()),
+      laid_out: Cell::new((f32::NAN, f32::NAN)),
+    })
+  }
+
+  /// Makes sure each gradient has stops for `bands` bands, making the
+  /// missing ones on the composition thread. They are kept, so this waits
+  /// on that thread at most as often as a window's glow first reaches
+  /// further.
+  fn reserve(&self, bands: usize) -> crate::Result<()> {
+    let missing = glow_stop_count(bands)
+      .saturating_sub(self.corners.stops.borrow().len());
+    if missing == 0 {
+      return Ok(());
+    }
+
+    let [corners, rows, columns] =
+      with_composition_thread(move |compositor, _| {
+        Ok([
+          create_stops(&compositor, missing)?,
+          create_stops(&compositor, missing)?,
+          create_stops(&compositor, missing)?,
+        ])
+      })?;
+
+    self.corners.extend(corners)?;
+    self.rows.extend(rows)?;
+    self.columns.extend(columns)?;
+    Ok(())
+  }
+
+  /// Places the sprites around `ring`, and lays the gradients' stops out
+  /// anew if its reach or corner radius changed.
+  fn layout(&self, ring: Ring) -> windows::core::Result<()> {
+    let reach = ring.glow_reach.max(0.0);
+    self.container.SetIsVisible(reach > 0.0)?;
+    if reach <= 0.0 {
+      return Ok(());
+    }
+
+    for (sprite, piece) in self.pieces.iter().zip(glow_pieces(ring)) {
+      sprite.SetOffset(Vector3 {
+        X: piece.offset.X,
+        Y: piece.offset.Y,
+        Z: 0.0,
+      })?;
+      sprite.SetSize(piece.size)?;
+      sprite.SetScale(Vector3 {
+        X: piece.scale.X,
+        Y: piece.scale.Y,
+        Z: 1.0,
+      })?;
+    }
+
+    let shape = (reach, glow_corner_radius(ring));
+    if self.laid_out.get() != shape {
+      self.laid_out.set(shape);
+      self.write_stops()?;
+    }
+    Ok(())
+  }
+
+  /// Colors the glow `color`, each band at its one of `opacities`.
+  fn set_colors(
+    &self,
+    color: crate::Color,
+    opacities: &[f32],
+  ) -> windows::core::Result<()> {
+    self.color.set(color);
+    {
+      let mut kept = self.opacities.borrow_mut();
+      kept.clear();
+      kept.extend_from_slice(opacities);
+    }
+    self.write_stops()
+  }
+
+  /// Lays every gradient's stops out for the reach and corner radius last
+  /// laid out, in the glow's color and opacities.
+  fn write_stops(&self) -> windows::core::Result<()> {
+    let (reach, radius) = self.laid_out.get();
+    // `NAN` until first laid out.
+    if reach.is_nan() || reach <= 0.0 {
+      return Ok(());
+    }
+
+    let color = self.color.get();
+    let opacities = self.opacities.borrow();
+    self
+      .corners
+      .write(color, &glow_stops(reach, radius, &opacities))?;
+    let edge = glow_stops(reach, 0.0, &opacities);
+    self.rows.write(color, &edge)?;
+    self.columns.write(color, &edge)
   }
 }
 
@@ -1021,13 +1252,22 @@ const RIM_WIDTH: f32 = 1.0;
 /// The inputs a stroked ring's geometry is derived from: the overlay's own
 /// (already-outset) size in pixels, the border width the stroke is drawn
 /// at, the ring's *outer* corner radius, and how far its glow reaches
-/// past it, which the ring is inset by.
+/// past it and the empty `margin` past that (see
+/// `BorderOverlayParams::margin`), which the ring is inset by.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Ring {
   size: Vector2,
   width: f32,
   corner_radius: f32,
   glow_reach: f32,
+  margin: f32,
+}
+
+impl Ring {
+  /// How far in from the overlay's edge the ring's outer edge is.
+  fn inset(self) -> f32 {
+    self.margin.max(0.0) + self.glow_reach.max(0.0)
+  }
 }
 
 /// The rounded rectangle a stroke follows -- its offset, size and corner
@@ -1080,11 +1320,7 @@ fn set_path(
 fn ring_geometry(ring: Ring) -> (Vector2, Vector2, f32) {
   let half = ring.width.max(0.0) / 2.0;
 
-  inset_path(
-    ring.size,
-    ring.glow_reach.max(0.0) + half,
-    ring.corner_radius - half,
-  )
+  inset_path(ring.size, ring.inset() + half, ring.corner_radius - half)
 }
 
 /// The path and thickness of the hairline along `ring`'s inner edge: the
@@ -1098,24 +1334,114 @@ fn rim_geometry(ring: Ring) -> ((Vector2, Vector2, f32), f32) {
   (
     inset_path(
       ring.size,
-      ring.glow_reach.max(0.0) + depth,
+      ring.inset() + depth,
       ring.corner_radius - depth,
     ),
     thickness,
   )
 }
 
-/// The path of the glow's `band`-th band out from `ring`, concentric with
-/// it, so a square ring's glow rounds off at the corners like any glow.
-#[allow(clippy::cast_precision_loss)]
-fn glow_band_geometry(ring: Ring, band: usize) -> (Vector2, Vector2, f32) {
-  let distance = band as f32 + 0.5;
+/// Where one of a glow's sprites goes, and the scale mirroring its
+/// gradient onto its side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GlowPiece {
+  offset: Vector2,
+  size: Vector2,
+  scale: Vector2,
+}
 
-  inset_path(
-    ring.size,
-    ring.glow_reach - distance,
-    ring.corner_radius + distance,
-  )
+/// The ring's outer corner radius the glow rounds off around: cut to half
+/// the ring's size, as its stroke is.
+fn glow_corner_radius(ring: Ring) -> f32 {
+  let (_, size, _) = inset_path(ring.size, ring.inset(), 0.0);
+  ring
+    .corner_radius
+    .max(0.0)
+    .min(size.X / 2.0)
+    .min(size.Y / 2.0)
+}
+
+/// The glow's sprites around `ring`: the top-left, top-right, bottom-left
+/// and bottom-right corners, then the top, bottom, left and right edges.
+///
+/// Each is laid out as the top-left corner, top edge or left edge its
+/// gradient is made for, then mirrored by a scale of `-1` about its
+/// offset, which is therefore its far side. A corner reaches from its
+/// arc's center out past the ring by the glow's reach, so its fade rounds
+/// the corner concentric with the ring, as the glow's old stroked bands
+/// did.
+fn glow_pieces(ring: Ring) -> [GlowPiece; 8] {
+  let (outer, size, _) = inset_path(ring.size, ring.inset(), 0.0);
+  let reach = ring.glow_reach.max(0.0);
+  let radius = glow_corner_radius(ring);
+  let corner = radius + reach;
+
+  let (left, top) = (outer.X - reach, outer.Y - reach);
+  let (right, bottom) =
+    (outer.X + size.X + reach, outer.Y + size.Y + reach);
+  let along = Vector2 {
+    X: (size.X - 2.0 * radius).max(0.0),
+    Y: reach,
+  };
+  let down = Vector2 {
+    X: reach,
+    Y: (size.Y - 2.0 * radius).max(0.0),
+  };
+
+  let piece =
+    |x: f32, y: f32, size: Vector2, scale: (f32, f32)| GlowPiece {
+      offset: Vector2 { X: x, Y: y },
+      size,
+      scale: Vector2 {
+        X: scale.0,
+        Y: scale.1,
+      },
+    };
+  let square = Vector2 {
+    X: corner,
+    Y: corner,
+  };
+
+  [
+    piece(left, top, square, (1.0, 1.0)),
+    piece(right, top, square, (-1.0, 1.0)),
+    piece(left, bottom, square, (1.0, -1.0)),
+    piece(right, bottom, square, (-1.0, -1.0)),
+    piece(outer.X + radius, top, along, (1.0, 1.0)),
+    piece(outer.X + radius, bottom, along, (1.0, -1.0)),
+    piece(left, outer.Y + radius, down, (1.0, 1.0)),
+    piece(right, outer.Y + radius, down, (-1.0, 1.0)),
+  ]
+}
+
+/// A glow gradient's stops, as (offset, opacity), for a fade of `reach`
+/// starting `inside` from the gradient's origin: `0` for an edge's, the
+/// corner radius for a corner's, which is clear inside it.
+///
+/// Each band's opacity sits at its middle, as each stroked band was drawn
+/// one pixel wide around it, held to the ring's edge and fading out to
+/// none at the reach.
+#[allow(clippy::cast_precision_loss)]
+fn glow_stops(
+  reach: f32,
+  inside: f32,
+  opacities: &[f32],
+) -> Vec<(f32, f32)> {
+  let extent = inside + reach;
+  if extent <= 0.0 {
+    return Vec::new();
+  }
+
+  let at = |distance: f32| ((inside + distance) / extent).clamp(0.0, 1.0);
+  let mut stops = Vec::with_capacity(glow_stop_count(opacities.len()));
+  stops.push((0.0, 0.0));
+  stops.push((at(0.0), 0.0));
+  stops.push((at(0.0), opacities.first().copied().unwrap_or(0.0)));
+  for (band, opacity) in opacities.iter().enumerate() {
+    stops.push((at(band as f32 + 0.5), *opacity));
+  }
+  stops.push((1.0, 0.0));
+  stops
 }
 
 /// Number of bands a glow reaching `reach` past its ring is drawn in.
@@ -1146,11 +1472,8 @@ impl BorderVisual {
 
   /// Re-derives and applies the stroke thicknesses and geometry for
   /// `ring`, storing it as the new baseline for the next partial update.
-  ///
-  /// Lays out the glow bands made so far, leaving any more it reaches to
-  /// [`grow_glow`](Self::grow_glow).
   fn apply_ring(&self, ring: Ring) -> windows::core::Result<()> {
-    let reach = ring.glow_reach.max(0.0);
+    let reach = ring.inset();
 
     self.root.SetSize(ring.size)?;
     self
@@ -1167,61 +1490,9 @@ impl BorderVisual {
     self.rim.SetStrokeThickness(rim_thickness)?;
     set_path(&self.rim_geometry, rim_path)?;
 
-    // Bands past the reach are only touched as it shrinks past them.
-    let (bands, drawn) = (
-      glow_bands(ring.glow_reach),
-      glow_bands(self.ring.get().glow_reach),
-    );
-    for (index, band) in self.glow.borrow().iter().enumerate() {
-      if index < bands {
-        band.shape.SetStrokeThickness(1.0)?;
-        set_path(&band.geometry, glow_band_geometry(ring, index))?;
-      } else if index < drawn {
-        band.shape.SetStrokeThickness(0.0)?;
-      }
-    }
+    self.glow.layout(ring)?;
 
     self.ring.set(ring);
-    Ok(())
-  }
-
-  /// Makes sure the glow has `bands` bands to draw, making the missing
-  /// ones on the composition thread. They are kept, so this waits on that
-  /// thread at most as often as a window's glow first reaches further.
-  fn grow_glow(&self, bands: usize) -> crate::Result<()> {
-    let missing = bands.saturating_sub(self.glow.borrow().len());
-    if missing == 0 {
-      return Ok(());
-    }
-
-    let made = with_composition_thread(move |compositor, _| {
-      GlowBand::create_all(&compositor, missing)
-    })?;
-
-    let shapes = self.root.Shapes()?;
-    for band in &made {
-      shapes.Append(&band.shape)?;
-    }
-    self.glow.borrow_mut().extend(made);
-    Ok(())
-  }
-
-  /// Colors the glow's bands, outward from the ring, `color` at each of
-  /// `opacities`, leaving those past them transparent.
-  fn color_glow(
-    &self,
-    color: crate::Color,
-    opacities: &[f32],
-  ) -> windows::core::Result<()> {
-    for (index, band) in self.glow.borrow().iter().enumerate() {
-      let opacity = opacities.get(index).copied().unwrap_or(0.0);
-      #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-      let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-
-      band
-        .brush
-        .SetColor(to_ui_color(crate::Color { a: alpha, ..color }))?;
-    }
     Ok(())
   }
 
@@ -1232,8 +1503,8 @@ impl BorderVisual {
     color: crate::Color,
     opacities: &[f32],
   ) -> crate::Result<()> {
-    self.grow_glow(opacities.len())?;
-    Ok(self.color_glow(color, opacities)?)
+    self.glow.reserve(opacities.len())?;
+    Ok(self.glow.set_colors(color, opacities)?)
   }
 
   /// Resizes the ring to match `rect`. Does not reposition the `HWND`
@@ -1265,24 +1536,26 @@ impl BorderVisual {
     Ok(())
   }
 
-  /// Updates the border width, i.e. the stroke's thickness, and how far
-  /// the glow reaches past it.
+  /// Updates the border width, i.e. the stroke's thickness, how far the
+  /// glow reaches past it, and the empty `margin` past the glow.
   ///
-  /// The overlay's `HWND` is outset by both, so callers must resize the
-  /// window (and hence call [`set_rect`]) to match -- this only updates
-  /// what is drawn inside it.
+  /// The overlay's `HWND` is outset by all three, so callers must resize
+  /// the window (and hence call [`set_rect`]) when their sum changes --
+  /// this only updates what is drawn inside it.
   ///
   /// [`set_rect`]: BorderVisual::set_rect
   pub(crate) fn set_widths(
     &self,
     width: f32,
     glow_reach: f32,
+    margin: f32,
   ) -> crate::Result<()> {
-    self.grow_glow(glow_bands(glow_reach))?;
+    self.glow.reserve(glow_bands(glow_reach))?;
 
     Ok(self.apply_ring(Ring {
       width,
       glow_reach,
+      margin,
       ..self.ring.get()
     })?)
   }
@@ -1334,7 +1607,7 @@ impl BorderVisual {
 
 /// Builds the full visual tree: a `ShapeVisual` rooting a
 /// `CompositionSpriteShape` that strokes a rounded rectangle in the border
-/// color, the hairline over its inner edge and the glow's bands around it.
+/// color, the hairline over its inner edge and the glow around it.
 /// No fill brush is set, so the shapes' interiors stay transparent and the
 /// tracked window shows through with no window region, mask, or reliance
 /// on that window occluding a fill.
@@ -1381,18 +1654,15 @@ fn build_border_visual_tree(
   let rim = compositor.CreateSpriteShapeWithGeometry(&rim_geometry)?;
   rim.SetStrokeBrush(&rim_brush)?;
 
-  // Made here for the glow it starts with, as `grow_glow` can't wait on
-  // the composition thread from that very thread.
-  let glow = GlowBand::create_all(compositor, params.glow.bands())?;
-
   let root = compositor.CreateShapeVisual()?;
   root.SetOpacity(params.opacity)?;
   let shapes = root.Shapes()?;
   shapes.Append(&shape)?;
   shapes.Append(&rim)?;
-  for band in &glow {
-    shapes.Append(&band.shape)?;
-  }
+
+  // Made here with stops for the glow it starts with, as `Glow::reserve`
+  // can't wait on the composition thread from that very thread.
+  let glow = Glow::create(compositor, &root.cast()?, params.glow.bands())?;
 
   let clip = compositor.CreateInsetClip()?;
   root.SetClip(&clip)?;
@@ -1409,13 +1679,14 @@ fn build_border_visual_tree(
     rim,
     rim_brush,
     rim_geometry,
-    glow: RefCell::new(glow),
+    glow,
     clip,
     ring: Cell::new(Ring {
       size: Vector2 { X: 0.0, Y: 0.0 },
       width: params.width,
       corner_radius: params.corner_radius,
       glow_reach: 0.0,
+      margin: 0.0,
     }),
   };
 
@@ -1429,8 +1700,9 @@ fn build_border_visual_tree(
     width: params.width,
     corner_radius: params.corner_radius,
     glow_reach: params.glow.reach,
+    margin: params.margin(),
   })?;
-  visual.color_glow(
+  visual.glow.set_colors(
     params.color,
     &BorderGlow::band_opacities(&params.glow, &params.glow, 1.0),
   )?;
@@ -2295,8 +2567,9 @@ mod tests {
   use windows::Foundation::Numerics::Vector2;
 
   use super::{
-    blurred_bake_scale, glow_band_geometry, rim_geometry, ring_geometry,
-    wallpaper_surface::FULL_SCALE, Ring, BLURRED_BAKE_SCALE,
+    blurred_bake_scale, glow_pieces, glow_stop_count, glow_stops,
+    rim_geometry, ring_geometry, wallpaper_surface::FULL_SCALE, GlowPiece,
+    Ring, BLURRED_BAKE_SCALE,
   };
 
   /// A light blur still shows detail, which a smaller surface would
@@ -2321,6 +2594,7 @@ mod tests {
       width: 4.0,
       corner_radius: 10.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 2.0, Y: 2.0 });
@@ -2337,6 +2611,7 @@ mod tests {
       width: 0.0,
       corner_radius: 10.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
@@ -2354,6 +2629,7 @@ mod tests {
       width: 40.0,
       corner_radius: 2.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(size, Vector2 { X: 0.0, Y: 0.0 });
@@ -2369,6 +2645,7 @@ mod tests {
       width: -8.0,
       corner_radius: 4.0,
       glow_reach: 0.0,
+      margin: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
@@ -2381,6 +2658,7 @@ mod tests {
       width,
       corner_radius,
       glow_reach,
+      margin: 0.0,
     }
   }
 
@@ -2411,19 +2689,115 @@ mod tests {
     assert!((thin - 0.5).abs() < f32::EPSILON);
   }
 
-  /// Bands run outward from the ring's outer edge, a pixel each, rounding
-  /// off further out.
+  /// Each piece, once mirrored, covers its side of the ring out to the
+  /// reach: corners from the arc's center, edges between them.
   #[test]
-  fn glow_bands_run_outward_from_the_ring() {
-    let (offset, size, corner_radius) =
-      glow_band_geometry(ring(2.0, 2.0, 6.0), 0);
-    assert_eq!(offset, Vector2 { X: 5.5, Y: 5.5 });
-    assert_eq!(size, Vector2 { X: 789.0, Y: 589.0 });
-    assert!((corner_radius - 2.5).abs() < f32::EPSILON);
+  #[allow(clippy::float_cmp)]
+  fn glow_pieces_surround_the_ring() {
+    // Ring outer rect from (6, 6) to (794, 594), corner radius 2.
+    let pieces = glow_pieces(ring(2.0, 2.0, 6.0));
+    let span = |piece: &GlowPiece| {
+      let ends = |offset: f32, size: f32, scale: f32| {
+        let far = offset + size * scale;
+        (offset.min(far), offset.max(far))
+      };
+      (
+        ends(piece.offset.X, piece.size.X, piece.scale.X),
+        ends(piece.offset.Y, piece.size.Y, piece.scale.Y),
+      )
+    };
 
-    let (offset, _, corner_radius) =
-      glow_band_geometry(ring(2.0, 2.0, 6.0), 5);
-    assert_eq!(offset, Vector2 { X: 0.5, Y: 0.5 });
-    assert!((corner_radius - 7.5).abs() < f32::EPSILON);
+    assert_eq!(span(&pieces[0]), ((0.0, 8.0), (0.0, 8.0)));
+    assert_eq!(span(&pieces[1]), ((792.0, 800.0), (0.0, 8.0)));
+    assert_eq!(span(&pieces[2]), ((0.0, 8.0), (592.0, 600.0)));
+    assert_eq!(span(&pieces[3]), ((792.0, 800.0), (592.0, 600.0)));
+    assert_eq!(span(&pieces[4]), ((8.0, 792.0), (0.0, 6.0)));
+    assert_eq!(span(&pieces[5]), ((8.0, 792.0), (594.0, 600.0)));
+    assert_eq!(span(&pieces[6]), ((0.0, 6.0), (8.0, 592.0)));
+    assert_eq!(span(&pieces[7]), ((794.0, 800.0), (8.0, 592.0)));
+  }
+
+  /// A corner radius past half the ring is cut to it, so edges never get
+  /// a negative length.
+  #[test]
+  #[allow(clippy::float_cmp)]
+  fn glow_corners_are_cut_to_half_the_ring() {
+    let mut small = ring(2.0, 100.0, 4.0);
+    small.size = Vector2 { X: 48.0, Y: 28.0 };
+    let pieces = glow_pieces(small);
+
+    assert_eq!(pieces[0].size, Vector2 { X: 14.0, Y: 14.0 });
+    assert_eq!(pieces[4].size, Vector2 { X: 20.0, Y: 4.0 });
+    assert_eq!(pieces[6].size, Vector2 { X: 4.0, Y: 0.0 });
+  }
+
+  /// Each band's opacity sits at its middle, from the ring's edge out,
+  /// clear inside a corner's arc and at the reach.
+  #[test]
+  #[allow(clippy::float_cmp)]
+  fn glow_stops_hold_each_band_at_its_middle() {
+    let edge = glow_stops(4.0, 0.0, &[0.5, 0.25, 0.1, 0.0]);
+    assert_eq!(
+      edge,
+      vec![
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.5),
+        (0.125, 0.5),
+        (0.375, 0.25),
+        (0.625, 0.1),
+        (0.875, 0.0),
+        (1.0, 0.0),
+      ]
+    );
+    assert_eq!(edge.len(), glow_stop_count(4));
+
+    let corner = glow_stops(4.0, 4.0, &[0.5, 0.25, 0.1, 0.0]);
+    assert_eq!(corner[1], (0.5, 0.0));
+    assert_eq!(corner[2], (0.5, 0.5));
+    assert_eq!(corner[3], (0.5625, 0.5));
+    assert!(corner.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+
+    assert!(glow_stops(0.0, 0.0, &[]).is_empty());
+  }
+
+  /// An overlay sized for a style reaching further draws a nearer one
+  /// inset by the margin, where it would be in an overlay of its own.
+  #[test]
+  fn margin_insets_ring_rim_and_glow_alike() {
+    let own = ring(2.0, 4.0, 3.0);
+    let wider = Ring {
+      size: Vector2 {
+        X: own.size.X + 14.0,
+        Y: own.size.Y + 14.0,
+      },
+      margin: 7.0,
+      ..own
+    };
+    let moved = |(offset, size, radius): (Vector2, Vector2, f32)| {
+      (
+        Vector2 {
+          X: offset.X - 7.0,
+          Y: offset.Y - 7.0,
+        },
+        size,
+        radius,
+      )
+    };
+
+    assert_eq!(moved(ring_geometry(wider)), ring_geometry(own));
+    assert_eq!(moved(rim_geometry(wider).0), rim_geometry(own).0);
+    for (wide, own) in glow_pieces(wider).iter().zip(glow_pieces(own)) {
+      assert_eq!(
+        GlowPiece {
+          offset: Vector2 {
+            X: wide.offset.X - 7.0,
+            Y: wide.offset.Y - 7.0,
+          },
+          ..*wide
+        },
+        own
+      );
+    }
   }
 }

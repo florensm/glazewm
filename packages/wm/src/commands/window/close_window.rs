@@ -2,7 +2,7 @@ use tracing::warn;
 use wm_common::WindowTransitionParams;
 
 use crate::{
-  animation::{peek_view::Leave, AwayTransition},
+  animation::{peek_view::Leave, AwayTransition, MakingWay},
   commands::window::detach_window_for_close,
   models::WindowContainer,
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -80,7 +80,12 @@ pub(crate) fn animate_away(
     .is_some_and(|focused| focused.id() == window.id());
 
   // On a peek, pinned or live (`STAND_INS_PLAN.md` task 4).
-  crate::animation::peek_view::leave_on_peek(
+  let leaves = crate::animation::peek_view::leave_on_peek(
     state, window, &rect, transition, &params, config, is_focused,
-  ) == Leave::Leaving
+  ) == Leave::Leaving;
+  if leaves {
+    state.pending_sync.make_way(MakingWay::leaving(&params));
+  }
+
+  leaves
 }

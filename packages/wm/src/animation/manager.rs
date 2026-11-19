@@ -163,26 +163,27 @@ fn keep_first_error(
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, EffectSet, ResizeStyle, WorkspaceSwitchDirection,
-  WorkspaceSwitchStyle,
+  EasingFunction, EffectSet, ResizeStyle, WindowTransitionParams,
+  WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
 use wm_platform::{
   lerp_f32,
   perf::{self, Stage},
   sample_edge_color_async, Color, CompanionCover, DxgiVsyncWaiter,
-  EdgeColorCache, FrameClock, NativeBackdropOverlay, NativeBorderOverlay,
-  NativeWindow, Overlay, Rect, StyleBlend, SurrogateBatch,
-  WorkspaceSurrogate, HWND,
+  EdgeColorCache, FrameClock, NativeBorderOverlay, NativeWindow, Overlay,
+  Rect, StyleBlend, SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
 use crate::{
-  animation::focus_fade::{FocusFades, FocusMix},
+  animation::{
+    focus_fade::{FocusFades, FocusMix},
+    transit::Direction,
+  },
   commands::general::{
     advance_focus_fades, apply_focus_effects,
     border_hidden_for_fullscreen, overlay_params_for, overlay_z_anchor,
     platform_sync, resync_settling_overlays, surrogate_effects_for,
-    track_overlays, upsert_live_backdrop_overlay,
-    upsert_pinned_border_overlay, SyncableOverlay,
+    track_overlays, upsert_pinned_border_overlay, SyncableOverlay,
   },
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
@@ -796,10 +797,8 @@ impl AnimationManager {
   }
 
   /// Returns `true` if `window_id` has a workspace-switch surrogate
-  /// actively tracked this tick, or in its `pending_ws_cleanup` grace tail
-  /// -- regardless of whether that surrogate is `Live`-mode and so has a
-  /// backdrop overlay tracking it (`WorkspaceSurrogate::is_live`, checked
-  /// separately by the per-tick driver at its own backdrop tracking step).
+  /// actively tracked this tick, or in its `pending_ws_cleanup` grace
+  /// tail.
   ///
   /// Both the backdrop and border overlay for such a window are owned
   /// entirely by the per-tick driver in `update_internal` for as long as
@@ -1243,19 +1242,50 @@ impl AnimationManager {
     state: &mut WmState,
     times: FrameTimes,
   ) -> (super::peek_view::Landed, SurrogateBatch) {
-    let mut batch = SurrogateBatch::new();
+    let batch = SurrogateBatch::new();
     super::peek_view::note_fill_inputs(state);
-    let mut landed = state.animation_manager.peeks.tick(
-      times.now,
-      times.clock_origin,
-      &mut batch,
-    );
+    let mut landed = state
+      .animation_manager
+      .peeks
+      .tick(times.now, times.clock_origin);
     super::peek_view::finish_leaving(
       state,
       std::mem::take(&mut landed.left),
     );
 
     (landed, batch)
+  }
+
+  /// Applies the focus effects (transparency among them) while the
+  /// focused window, landing in `shown`, is still cloaked, if the OS
+  /// hasn't confirmed its focus yet.
+  ///
+  /// `sync_focus` defers `SetForegroundWindow` while a peek draws the
+  /// focused window, so a focus change that scrolls only gets its effects
+  /// from the focus event after the hand-back, while peeks, rings and
+  /// backdrops wore the new styles all along: each window was handed back
+  /// at its old alpha, the one losing focus still see-through over its
+  /// faded-out backdrop for a few frames. As a workspace switch's end
+  /// does (see `update_internal`).
+  fn apply_landing_focus_effects(
+    state: &mut WmState,
+    shown: &[Uuid],
+    config: &UserConfig,
+  ) {
+    let Some(focused) = state.focused_container() else {
+      return;
+    };
+    let effects_on =
+      state.prev_effects_window.as_ref().map(CommonGetters::id);
+    if !lands_unconfirmed_focus(focused.id(), effects_on, shown) {
+      return;
+    }
+
+    tracing::debug!(
+      "Focus effects applied to {} as it lands, ahead of its focus event.",
+      focused.id()
+    );
+    apply_focus_effects(state, &focused, false, config);
   }
 
   /// Moved columns that end shown get their real window back in the
@@ -1329,6 +1359,7 @@ impl AnimationManager {
       .filter(|_| state.animation_manager.peeks.is_active())
       .map(|at| perf::scope_since(Stage::PeekFrame, Some(at)));
     let (landed, batch) = Self::tick_peeks(state, times);
+    Self::apply_landing_focus_effects(state, &landed.shown, config);
     Self::queue_landed(state, landed);
     // Under `peek_frame` only, which a frame with no peek moving lacks.
     let track_scope =
@@ -1361,7 +1392,7 @@ impl AnimationManager {
       let ws_vsync_now = state.animation_manager.predictive_vsync_now();
 
       // Likewise precomputed before the mutable borrow below -- needed by
-      // the live backdrop-overlay tracker to pick each surrogate's effect
+      // the per-tick overlay tracker to pick each surrogate's effect
       // set.
       let focused_id_for_overlay =
         state.focused_container().map(|c| c.id());
@@ -1426,17 +1457,6 @@ impl AnimationManager {
         // ~1% gap between surrogate and the just-uncloaked real window
         // exposes the desktop for one frame.
         let eased_final = if ws_done { 1.0 } else { eased };
-
-        // Batches every workspace-switch surrogate's `SetWindowPos` (only
-        // issued by `Live`-mode surrogates, which track their own
-        // footprint instead of staying pinned to the viewport so the
-        // backdrop overlay has something to follow)
-        // into one `DeferWindowPos` transaction per tick — mirrors the
-        // `SurrogateBatch` already used for move/resize relayouts.
-        // Surrogates with no live backdrop never push into this
-        // batch, so it stays empty (a no-op commit) for the common
-        // case.
-        let mut ws_batch = SurrogateBatch::new();
 
         // Incoming first, which a cut relies on: a composition landing
         // between the two halves of its one tick then shows the new
@@ -1552,7 +1572,6 @@ impl AnimationManager {
                 let is_vertical =
                   ws.slide_direction == WorkspaceSwitchDirection::Vertical;
                 s.slide_axis(
-                  &mut ws_batch,
                   eased_final,
                   entry.is_incoming,
                   ws.order_direction,
@@ -1572,56 +1591,11 @@ impl AnimationManager {
                 s.update_fade(eased_final, entry.is_incoming);
               }
               WorkspaceSwitchStyle::Zoom => {
-                s.update_zoom(
-                  &mut ws_batch,
-                  eased_final,
-                  entry.is_incoming,
-                );
+                s.update_zoom(eased_final, entry.is_incoming);
               }
             }
 
-            // `Live`-mode surrogates carry no backdrop of their own (see
-            // `WorkspaceSurrogate::new`'s doc comment) -- instead, the
-            // same backdrop overlay used in steady state is
-            // kept alive and repositioned to follow the
-            // surrogate's own live footprint every
-            // tick, computed by the `update_*` call just above. This is
-            // what keeps `blur_amount`/tint/corner_radius
-            // correct and continuous through the whole slide
-            // instead of a fixed-intensity look that
-            // jumps to the tuned value only once the animation ends.
-            if s.is_live() {
-              match s.live_frame() {
-                Some(live) => {
-                  if let Some(blend) = StyleBlend::between(
-                    from_overlays.backdrop,
-                    to_overlays.backdrop,
-                    eased_final,
-                    NativeBackdropOverlay::transparent,
-                  ) {
-                    upsert_live_backdrop_overlay(
-                      &mut state.window_overlays,
-                      window_id,
-                      blend,
-                      live,
-                      s.hwnd(),
-                      &mut ws_batch,
-                    );
-                  }
-                }
-                None => {
-                  if let Some(overlay) = state
-                    .window_overlays
-                    .get_mut(&window_id)
-                    .and_then(|overlays| overlays.backdrop.as_mut())
-                  {
-                    overlay.hide();
-                  }
-                }
-              }
-            }
-
-            // A surrogate that can't carry a copy of the ring (`Live`, see
+            // A surrogate that doesn't carry a copy of the ring (see
             // `WorkspaceSurrogate::carry_ring`) has the overlay pinned to
             // the monitor viewport instead, its ring slid within it by a
             // composition offset. It follows the unclipped window rect,
@@ -1664,7 +1638,6 @@ impl AnimationManager {
             }
           }
         }
-        ws_batch.commit();
 
         if ws_done {
           Some(ws.windows.keys().copied().collect())
@@ -2730,6 +2703,61 @@ pub enum Motion {
   Fullscreen,
 }
 
+/// A window entering or leaving that a relayout's tiles make way for,
+/// whose timing they move on (see [`relayout_timing`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MakingWay {
+  direction: Direction,
+  duration_ms: u32,
+  easing: EasingFunction,
+}
+
+impl MakingWay {
+  /// For a window opening or restoring by `params`.
+  pub fn entering(params: &WindowTransitionParams) -> Self {
+    Self::new(Direction::In, params)
+  }
+
+  /// For a window closing or minimizing by `params`.
+  pub fn leaving(params: &WindowTransitionParams) -> Self {
+    Self::new(Direction::Out, params)
+  }
+
+  fn new(direction: Direction, params: &WindowTransitionParams) -> Self {
+    Self {
+      direction,
+      duration_ms: params.duration_ms,
+      easing: params.easing.clone(),
+    }
+  }
+}
+
+/// The duration and easing a tile's `motion` runs on in a relayout that
+/// makes way for a window entering or leaving, if any: the same as that
+/// window's, so the edges they share meet throughout rather than drifting
+/// apart and closing up again at the end.
+///
+/// For a leaving window, only its duration: its easing is usually an
+/// ease-in, which would bring the tiles growing over it to a dead stop.
+/// Columns and fullscreen toggles keep their own (see
+/// [`movement_timing`]).
+pub(crate) fn relayout_timing(
+  motion: Motion,
+  cycle_has_resize: bool,
+  making_way: Option<&MakingWay>,
+  config: &UserConfig,
+) -> (u32, EasingFunction) {
+  let own = movement_timing(motion, cycle_has_resize, config);
+
+  match (motion, making_way) {
+    (Motion::Move | Motion::Resize, Some(way)) => match way.direction {
+      Direction::In => (way.duration_ms, way.easing.clone()),
+      Direction::Out => (way.duration_ms, own.1),
+    },
+    _ => own,
+  }
+}
+
 /// The duration and easing a window's `motion` runs on.
 ///
 /// When any window in the cycle resizes, pure translations share the
@@ -2780,11 +2808,32 @@ fn tick_wake(
     .unwrap_or(now)
 }
 
+/// Whether `focused` lands among `shown` with the focus effects still on
+/// `effects_on`, the window the OS last confirmed focus for (see
+/// `AnimationManager::apply_landing_focus_effects`).
+fn lands_unconfirmed_focus(
+  focused: Uuid,
+  effects_on: Option<Uuid>,
+  shown: &[Uuid],
+) -> bool {
+  effects_on != Some(focused) && shown.contains(&focused)
+}
+
 #[cfg(test)]
 mod tests {
   use wm_common::ParsedConfig;
 
   use super::*;
+
+  #[test]
+  fn landing_focus_takes_its_effects_only_if_unconfirmed() {
+    let (focused, other) = (Uuid::new_v4(), Uuid::new_v4());
+
+    assert!(lands_unconfirmed_focus(focused, Some(other), &[focused]));
+    assert!(lands_unconfirmed_focus(focused, None, &[other, focused]));
+    assert!(!lands_unconfirmed_focus(focused, Some(focused), &[focused]));
+    assert!(!lands_unconfirmed_focus(focused, Some(other), &[other]));
+  }
 
   fn motion(
     distance: i32,
@@ -2881,6 +2930,48 @@ mod tests {
         ResizeStyle::Stretch,
       false
     ));
+  }
+
+  /// Tiles making way for an entering window take its timing, for a
+  /// leaving one its duration only; columns and fullscreen toggles keep
+  /// their own.
+  #[test]
+  fn tiles_making_way_move_in_step() {
+    let mut parsed = ParsedConfig::default();
+    parsed.animations.window_open.duration_ms = 400;
+    parsed.animations.window_open.easing =
+      EasingFunction::CubicBezier(0.05, 0.9, 0.1, 1.05);
+    parsed.animations.window_close.duration_ms = 300;
+    let config = UserConfig::from_parsed(parsed);
+    let animations = &config.value.animations;
+    let open = MakingWay::entering(&WindowTransitionParams::from_open(
+      &animations.window_open,
+    ));
+    let close = MakingWay::leaving(&WindowTransitionParams::from_close(
+      &animations.window_close,
+    ));
+    let resize = (
+      animations.window_resize.duration_ms,
+      animations.window_resize.easing.clone(),
+    );
+
+    for motion in [Motion::Move, Motion::Resize] {
+      assert_eq!(
+        relayout_timing(motion, true, Some(&open), &config),
+        (400, animations.window_open.easing.clone())
+      );
+      assert_eq!(
+        relayout_timing(motion, true, Some(&close), &config),
+        (300, resize.1.clone())
+      );
+      assert_eq!(relayout_timing(motion, true, None, &config), resize);
+    }
+    for motion in [Motion::Column, Motion::Fullscreen] {
+      assert_eq!(
+        relayout_timing(motion, true, Some(&open), &config),
+        movement_timing(motion, true, &config)
+      );
+    }
   }
 
   /// The profiler times a peek frame from the wake its tick came from,

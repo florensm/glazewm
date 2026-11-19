@@ -40,6 +40,16 @@ impl IpcClient {
 
   /// Waits and returns the next reply from the IPC server.
   pub async fn next_message(&mut self) -> anyhow::Result<ServerMessage> {
+    let json_response =
+      serde_json::from_str::<ServerMessage>(&self.next_text().await?)?;
+
+    Ok(json_response)
+  }
+
+  /// Waits and returns the next reply from the IPC server, unparsed, for
+  /// a client that reads a server whose messages may differ from this
+  /// crate's types.
+  pub async fn next_text(&mut self) -> anyhow::Result<String> {
     let response = self
       .stream
       .next()
@@ -47,10 +57,7 @@ impl IpcClient {
       .context("Failed to receive response.")?
       .context("Invalid response message.")?;
 
-    let json_response =
-      serde_json::from_str::<ServerMessage>(response.to_text()?)?;
-
-    Ok(json_response)
+    Ok(response.to_text()?.to_owned())
   }
 
   pub async fn client_response(

@@ -4,6 +4,7 @@ use uuid::Uuid;
 use wm_common::WorkspaceSwitchDirection;
 
 use crate::{
+  animation::MakingWay,
   models::{Container, Workspace},
   traits::CommonGetters,
 };
@@ -96,6 +97,10 @@ pub struct PendingSync {
   /// event in a loop). In-flight animations of redrawn windows are
   /// cancelled and their windows snap to their target rect.
   animations_suppressed: bool,
+
+  /// A window leaving this sync cycle, closed or minimized on a peek,
+  /// that the relayout's tiles make way for in step with.
+  making_way: Option<MakingWay>,
 }
 
 impl PendingSync {
@@ -125,6 +130,7 @@ impl PendingSync {
     self.wm_fullscreen_toggles.clear();
     self.window_restores.clear();
     self.animations_suppressed = false;
+    self.making_way = None;
     self
   }
 
@@ -334,5 +340,16 @@ impl PendingSync {
   /// Returns `true` if animations should be skipped for this sync cycle.
   pub fn animations_suppressed(&self) -> bool {
     self.animations_suppressed
+  }
+
+  /// Notes a window leaving this cycle that the relayout makes way for.
+  /// The first one noted is kept.
+  pub fn make_way(&mut self, way: MakingWay) -> &mut Self {
+    self.making_way.get_or_insert(way);
+    self
+  }
+
+  pub fn making_way(&self) -> Option<&MakingWay> {
+    self.making_way.as_ref()
   }
 }

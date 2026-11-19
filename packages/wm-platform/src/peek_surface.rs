@@ -53,12 +53,6 @@ impl PeekSurface {
     self.window.hwnd()
   }
 
-  /// Whether any tenant draws on it, which shows it.
-  #[must_use]
-  pub fn is_shown(&self) -> bool {
-    self.window.drawing.get() > 0
-  }
-
   /// Whether no peek is hosted on it, ready ones aside.
   #[must_use]
   pub fn is_empty(&self) -> bool {
@@ -94,13 +88,6 @@ impl PeekSurface {
     companion::is_above(window, self.hwnd())
   }
 
-  /// Puts it at the top of the non-topmost windows.
-  pub fn raise_to_top(&self) {
-    if let Err(err) = self.window.raise_to_top() {
-      tracing::warn!("Failed to raise a peek surface to the top: {err}");
-    }
-  }
-
   /// Opens or closes a pass of raises, within which a raise of the
   /// surface still at the top since its last one is skipped (see
   /// [`note_covered`](Self::note_covered)).
@@ -127,6 +114,11 @@ impl PeekSurface {
     let _scope = perf::scope(Stage::Surface);
     self.window.on_top.set(false);
     self.window.topped.set(false);
+    tracing::debug!(
+      "Peek surface {:#x} put at rest above {:#x}.",
+      self.hwnd().0,
+      window.0
+    );
     match window_class::place_above(self.hwnd(), window) {
       Ok(()) => self.window.rests_above.set(window.0),
       Err(err) => {
@@ -209,10 +201,6 @@ impl SurfaceWindow {
     HWND(self.hwnd)
   }
 
-  pub(crate) fn clip(&self) -> &Rect {
-    &self.clip
-  }
-
   /// Takes in a tenant drawing `window`, which still shows or not, moving
   /// the surface as [`admission`] says. One whose window is cloaked keeps
   /// the surface from going down from then on (see
@@ -233,6 +221,11 @@ impl SurfaceWindow {
     }
 
     let _scope = perf::scope(Stage::Surface);
+    tracing::debug!(
+      "Peek surface {:#x} put {admission:?} {:#x} for a tenant.",
+      self.hwnd,
+      window.0
+    );
     self.on_top.set(false);
     self.rests_above.set(0);
     let placed = if admission == Admission::Above {
@@ -276,6 +269,11 @@ impl SurfaceWindow {
     }
 
     let _scope = perf::scope(Stage::Surface);
+    tracing::debug!(
+      "Peek surface {:#x} put above {:#x} to keep drawing over it.",
+      self.hwnd,
+      window.0
+    );
     self.on_top.set(false);
     self.rests_above.set(0);
     if let Err(err) = window_class::place_above(self.hwnd(), window) {
@@ -299,6 +297,12 @@ impl SurfaceWindow {
   /// ready peek, which never keeps the surface from taking new tenants.
   pub(crate) fn retire(&self) {
     self.release();
+    self.add_ready();
+  }
+
+  /// Takes in a ready peek that was never a tenant (see
+  /// `NativeSurrogate::create_ready`).
+  pub(crate) fn add_ready(&self) {
     self.ready.set(self.ready.get() + 1);
   }
 
@@ -327,6 +331,11 @@ impl SurfaceWindow {
 
     if (before == 0) != (after == 0) {
       let _scope = perf::scope(Stage::Surface);
+      tracing::debug!(
+        "Peek surface {:#x} {}.",
+        self.hwnd,
+        if after > 0 { "shown" } else { "hidden" }
+      );
       self.on_top.set(false);
       // SAFETY: `self.hwnd` is valid until drop.
       unsafe {

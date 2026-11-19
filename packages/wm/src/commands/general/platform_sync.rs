@@ -9,15 +9,15 @@ use wm_common::{
 use wm_platform::{
   perf::{self, Stage},
   BackdropOverlayParams, BorderOverlayParams, CompanionCover, CornerStyle,
-  LiveFrame, NativeBackdropOverlay, NativeBorderOverlay, OpacityValue,
-  Overlay, OverlayParams, Rect, StyleBlend, SurrogateBatch, WindowZOrder,
+  NativeBackdropOverlay, NativeBorderOverlay, OpacityValue, Overlay,
+  OverlayParams, Rect, StyleBlend, SurrogateBatch, WindowZOrder,
   WorkspaceSurrogate, HWND,
 };
 
 use crate::{
   animation::{
     manager::Motion, peek_view::PeekRaise, AnimationPositionResult,
-    AwayTransition, HandBack, WorkspaceSwitchEntry,
+    AwayTransition, HandBack, MakingWay, WorkspaceSwitchEntry,
   },
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
@@ -176,6 +176,10 @@ pub fn platform_sync(
     repositioned.into_iter().chain(z_order_touched),
   );
 
+  // Last of what restacks windows in the pass: a close or minimize stays
+  // over the neighbours handed back while it plays (proposal 6).
+  crate::animation::peek_view::keep_leaving_above(state);
+
   let restack = if state.pending_sync.needs_tab_bar_update() {
     crate::tab_bars::Restack::All
   } else {
@@ -207,6 +211,12 @@ pub fn platform_sync(
 
   let is_animating = state.animation_manager.is_workspace_switch_playing();
   state.switch_log.note_synced(is_animating);
+
+  // Tiles shown or moved by this sync get ready peeks once it is idle.
+  state
+    .animation_manager
+    .peeks
+    .schedule_prewarm(std::time::Instant::now());
 
   state.pending_sync.clear();
 
@@ -574,12 +584,23 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
   // flushes after putting up their peeks, earlier in the same pass, so a
   // pass cloaking only those skips a second wait of up to a frame before
   // the scroll's first.
+  //
+  // Nor one whose peeks were all reclaimed ready, with nothing registered
+  // on them since (proposal 1): their thumbnails were composited, held,
+  // long before. The thumbnails' showing and the cloak still go to DWM in
+  // that order, a call apart, as after a flush.
   let flushes = pending.iter().any(|cloak| {
-    !state
+    state
       .animation_manager
       .peeks
-      .is_composited(&cloak.window.id())
+      .needs_flush(&cloak.window.id())
   });
+  if !flushes {
+    tracing::debug!(
+      "Cloaking {} window(s) without a flush: every peek kept ready.",
+      pending.len()
+    );
+  }
 
   // Flush before cloaking so DWM renders one frame with every queued
   // surrogate (and its now-correctly-anchored overlays) visible and its
@@ -602,7 +623,9 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
       .animation_manager
       .peeks
       .take_over(&window.id(), &window.native());
+    let cloak_scope = perf::scope(Stage::TakeOverCloak);
     let _ = window.native().set_cloaked(true);
+    drop(cloak_scope);
     drop(take_over_scope);
 
     let preposition_scope = perf::scope(Stage::Preposition);
@@ -613,6 +636,53 @@ fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
 
 /// Whether `window`, new and floating, opens on a pinned peek: not
 /// natively maximized, which `reposition_window` restores first.
+/// A tiling window opening or restoring in this pass that its neighbours
+/// make way for in step with (see `relayout_timing`), if any. The same
+/// tests `redraw_containers` picks an entry animation by, short of those
+/// for windows it doesn't relay out beside (columns, a switch's).
+fn entering_way(
+  state: &WmState,
+  windows: &[&WindowContainer],
+  config: &UserConfig,
+) -> Option<MakingWay> {
+  let animations = &config.value.animations;
+
+  windows.iter().find_map(|window| {
+    let is_tile = window.state() == WindowState::Tiling
+      && crate::layout::scrolling::column_of(&window.as_container())
+        .is_none()
+      && window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+      && !is_hidden_in_layout(*window)
+      && !state
+        .pending_sync
+        .is_workspace_switch_outgoing(&window.id())
+      && !state
+        .pending_sync
+        .is_workspace_switch_incoming(&window.id());
+    if !is_tile {
+      return None;
+    }
+
+    if state.pending_sync.is_window_restore(&window.id()) {
+      animations.window_minimize.enabled.then(|| {
+        MakingWay::entering(&WindowTransitionParams::from_restore(
+          &animations.window_minimize,
+        ))
+      })
+    } else if !state.window_target_positions.contains_key(&window.id()) {
+      animations.window_open.enabled.then(|| {
+        MakingWay::entering(&WindowTransitionParams::from_open(
+          &animations.window_open,
+        ))
+      })
+    } else {
+      None
+    }
+  })
+}
+
 fn opens_floating_on_peek(window: &WindowContainer) -> bool {
   !window.native().is_maximized()
 }
@@ -876,52 +946,43 @@ fn redraw_containers(
             .is_some_and(|w| w.id() == id);
           let (opacity, _, from) =
             surrogate_effects_for(window.effect_set(was_focused), config);
-          let (_, corner_style, to) = surrogate_effects_for(
+          let (_, _, to) = surrogate_effects_for(
             window.effect_set(id == focused_container.id()),
             config,
           );
 
           // A backdrop rides in a surrogate pinned to the viewport as
           // copies of it (see `WorkspaceSurrogate::carry_backdrop`), in
-          // the style the window shows at its end of the switch. Only one
-          // that can't be copied switches the surrogate to `Live` mode,
-          // so the steady-state backdrop overlay is repositioned onto its
-          // footprint each tick instead.
-          let is_live = [from.backdrop, to.backdrop]
-            .iter()
-            .flatten()
-            .any(|params| !params.is_copyable());
-          let overlay_tint = from
-            .backdrop
-            .or(to.backdrop)
-            .filter(|_| is_live)
-            .map(|p| p.tint.to_abgr());
-          let copied_backdrop = if is_incoming {
-            to.backdrop
-          } else {
-            from.backdrop
-          }
-          .filter(|_| !is_live);
+          // the style the window shows at its end of the switch.
+          let copied = if is_incoming { to } else { from };
+          let copied_backdrop = copied.backdrop;
+          // Hides the steps of rounded corners cut in rows (see
+          // `OverlayCopies::carry_backdrop`).
+          let copied_ring_width = copied
+            .border
+            .filter(|_| !border_hidden_for_fullscreen(window, config))
+            .map(|border| border.width);
           // Before anything else is copied into it: the backdrop goes
           // under the window, the rest over it.
           let carry_backdrop = |mut surrogate: WorkspaceSurrogate| {
             if let Some(params) = copied_backdrop {
-              surrogate.carry_backdrop(params);
+              surrogate.carry_backdrop(params, copied_ring_width);
             }
             surrogate
           };
-          let hosts = hosts_switch_window(
-            is_live,
-            window.state() == WindowState::Tiling,
-          );
+          let hosts = window.state() == WindowState::Tiling;
 
           if is_incoming {
+            // Drawn from the frame the real window shows once handed back,
+            // inside its tile by `border_inset`, not from the tile.
             let surrogate = window
               .to_rect()
-              .and_then(|frame_rect| {
-                window
-                  .total_border_delta()
-                  .map(|d| (frame_rect.apply_delta(&d, None), frame_rect))
+              .and_then(|tile| {
+                window.total_border_delta().map(|delta| {
+                  let rect = tile.apply_delta(&delta, None);
+                  let frame_rect = window.frame_at(&rect);
+                  (rect, frame_rect)
+                })
               })
               .ok()
               .and_then(|(rect, frame_rect)| {
@@ -944,8 +1005,6 @@ fn redraw_containers(
                       &monitor_work_area,
                       opacity,
                       opacity_incoming,
-                      &corner_style,
-                      overlay_tint,
                     )
                   },
                   Ok,
@@ -978,15 +1037,13 @@ fn redraw_containers(
             // invisible resize/shadow border -- not the frame rect that
             // steady-state sync reads. Passing it as both would draw the
             // border ring around the inflated rect for the whole slide and
-            // snap it down at settle. Only the `frame()` fallback
+            // snap it down at settle. Nor is it `to_rect()`, the tile,
+            // `border_inset` larger. Only the `frame()` fallback
             // legitimately doubles as both.
             let (current, frame_rect) = if let Some(target) =
               state.window_target_positions.get(&id)
             {
-              (
-                target.clone(),
-                window.to_rect().unwrap_or_else(|_| target.clone()),
-              )
+              (target.clone(), window.frame_at(target))
             } else {
               let frame = window
                 .native()
@@ -1013,8 +1070,6 @@ fn redraw_containers(
                   &monitor_work_area,
                   opacity,
                   opacity_outgoing,
-                  &corner_style,
-                  overlay_tint,
                 )
               },
               Ok,
@@ -1223,6 +1278,14 @@ fn redraw_containers(
       _ => false,
     }
   });
+
+  // Tiles making way for a window entering or leaving move in step with
+  // it.
+  let making_way = state
+    .pending_sync
+    .making_way()
+    .cloned()
+    .or_else(|| entering_way(state, &windows_to_update, config));
 
   // With `window_resize` enabled, in either style, the relayout's resizes
   // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e), each tile's as
@@ -1563,7 +1626,7 @@ fn redraw_containers(
       })
       .flatten();
 
-    // An open or a restore enters on a peek, pinned or live, instead
+    // An open or a restore enters on a peek instead
     // (`STAND_INS_PLAN.md` tasks 3 and 5); a floating one as a floating
     // open does, raised in its band by `floating_raise`.
     let enters_on_peek = match &entry_transition {
@@ -1678,6 +1741,7 @@ fn redraw_containers(
             from,
             &target_rect,
             cycle_has_resize,
+            making_way.as_ref(),
             if is_state_change {
               crate::animation::peek_view::state_change_resize(
                 &config.value.animations.window_resize,
@@ -1757,9 +1821,10 @@ fn redraw_containers(
         // floating one jumps there (see `follow_duration`).
         if state.animation_manager.peeks.follows_tile(&window.id()) {
           let (duration_ms, easing) =
-            crate::animation::manager::movement_timing(
+            crate::animation::manager::relayout_timing(
               motion,
               cycle_has_resize,
+              making_way.as_ref(),
               config,
             );
           // One a grab holds jumps, as its steps put it.
@@ -2041,7 +2106,6 @@ fn redraw_containers(
       && !band_moves.contains(id)
     {
       state.animation_manager.peeks.raise_moving(id);
-      crate::animation::peek_view::restack_live_overlays(state, id);
     }
   }
   state.animation_manager.peeks.set_raise_pass(false);
@@ -2066,10 +2130,6 @@ fn redraw_containers(
       .animation_manager
       .peeks
       .raise_in_band(&window.id(), *raise);
-    crate::animation::peek_view::restack_live_overlays(
-      state,
-      &window.id(),
-    );
   }
   drop(raise_scope);
 
@@ -2850,6 +2910,9 @@ pub(crate) fn resync_overlays_and_tab_bars(state: &mut WmState) {
   for bar in state.tab_bars.values() {
     bar.keep_behind_anchor();
   }
+
+  // E.g. an app raising a neighbour of a close or minimize still playing.
+  crate::animation::peek_view::keep_leaving_above(state);
 }
 
 /// Puts shown overlays of kind `O` back directly behind their windows.
@@ -2893,9 +2956,8 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
 /// concealed until the switch ends; one sliding out shows its own until
 /// its copy has been composited over it.
 ///
-/// A surrogate in `Live` mode (with a backdrop) can't carry the ring, so
-/// it slides on its own instead (see `NativeBorderOverlay::pin_or_slide`),
-/// as it also does when a copy can't be made.
+/// A ring a copy can't be made of slides on its own instead (see
+/// `NativeBorderOverlay::pin_or_slide`).
 fn park_switch_borders(
   state: &mut WmState,
   ws_windows: &mut [(uuid::Uuid, WorkspaceSwitchEntry)],
@@ -2903,11 +2965,7 @@ fn park_switch_borders(
   config: &UserConfig,
 ) {
   for (id, entry) in ws_windows {
-    let Some(surrogate) = entry
-      .surrogate
-      .as_mut()
-      .filter(|surrogate| !surrogate.is_live())
-    else {
+    let Some(surrogate) = entry.surrogate.as_mut() else {
       continue;
     };
 
@@ -2968,15 +3026,6 @@ fn park_switch_borders(
   }
 }
 
-/// Whether a window of a starting workspace switch is drawn on its
-/// monitor's switch surface: only a tile whose backdrop can be copied. A
-/// floating or fullscreen window overlaps others of the
-/// switch, and its own window just below its real one keeps it over them
-/// through every cloak and uncloak; a `Live` one moves.
-fn hosts_switch_window(is_live: bool, is_tiling: bool) -> bool {
-  !is_live && is_tiling
-}
-
 /// `hwnd`'s surrogate on the switch surface of the working area `area`, if
 /// it `hosts` there and can (see `WorkspaceSurrogate::hosted`).
 #[allow(clippy::too_many_arguments)]
@@ -3019,10 +3068,8 @@ fn hosted_switch_surrogate(
 /// `AnimationManager::hand_over_cut_short_slide`), along with their
 /// overlays.
 ///
-/// An outgoing window's backdrop follows its new surrogate right away,
-/// rather than on the slide's first frame, since a semi-transparent
-/// window shows what is behind it. One sliding in starts off-screen, so
-/// its overlays are hidden until that first frame places them.
+/// One sliding in starts off-screen, so its overlays are hidden until the
+/// slide's first frame places them.
 fn hand_over_cut_short_slide(
   state: &mut WmState,
   ws_windows: &mut [(uuid::Uuid, WorkspaceSwitchEntry)],
@@ -3031,78 +3078,25 @@ fn hand_over_cut_short_slide(
     .animation_manager
     .hand_over_cut_short_slide(ws_windows);
 
-  let mut batch = SurrogateBatch::new();
   for (id, is_incoming) in handed_over {
+    if !is_incoming {
+      continue;
+    }
     let Some(overlays) = state.window_overlays.get_mut(&id) else {
       continue;
     };
 
-    if is_incoming {
-      if let Some(overlay) = &mut overlays.backdrop {
-        overlay.hide();
-      }
-      // A parked ring stays for the new surrogate's copy of it.
-      if let Some(overlay) = overlays
-        .border
-        .as_mut()
-        .filter(|overlay| !overlay.is_parked())
-      {
-        overlay.hide();
-      }
-      continue;
+    if let Some(overlay) = &mut overlays.backdrop {
+      overlay.hide();
     }
-
-    let surrogate = ws_windows
-      .iter()
-      .find(|(window_id, _)| *window_id == id)
-      .and_then(|(_, entry)| entry.surrogate.as_ref());
-
-    if let (Some(surrogate), Some(overlay)) =
-      (surrogate, &mut overlays.backdrop)
+    // A parked ring stays for the new surrogate's copy of it.
+    if let Some(overlay) = overlays
+      .border
+      .as_mut()
+      .filter(|overlay| !overlay.is_parked())
     {
-      if let Some(live) = surrogate.live_frame() {
-        overlay.defer_cut_rect(
-          &mut batch,
-          &live.frame,
-          &live.shown,
-          &live.visible,
-          surrogate.hwnd(),
-        );
-      }
+      overlay.hide();
     }
-  }
-  batch.commit();
-}
-
-/// Creates or updates `window_id`'s backdrop overlay for one frame of a
-/// workspace-switch slide, following its `Live` surrogate's `live` frame
-/// (see `NativeBackdropOverlay::defer_cut_rect`).
-///
-/// Created at the visible rect, so a backdrop first shown mid-slide (a
-/// focus change turning it on) cannot show past the monitor for a frame.
-pub(crate) fn upsert_live_backdrop_overlay(
-  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
-  window_id: uuid::Uuid,
-  blend: StyleBlend<BackdropOverlayParams>,
-  live: &LiveFrame,
-  anchor: HWND,
-  batch: &mut SurrogateBatch,
-) {
-  if let Some(overlay) = overlay_entry::<NativeBackdropOverlay>(
-    overlays,
-    window_id,
-    blend.from,
-    &live.visible,
-    anchor,
-  ) {
-    overlay.apply_blend(blend);
-    overlay.defer_cut_rect(
-      batch,
-      &live.frame,
-      &live.shown,
-      &live.visible,
-      anchor,
-    );
   }
 }
 
@@ -3241,11 +3235,20 @@ pub(crate) fn border_overlay_params_for(
   // the real managed window's own DWM-rendered corners.
   let corner_radius = effect_cfg.window_corner_radius_px();
 
-  Some(effect_cfg.border.to_overlay_params(
-    target_color,
-    corner_radius,
-    &config.value.gaps,
-  ))
+  // Sized for every style the window may take, so a focus change only
+  // redraws the ring inside its window.
+  Some(BorderOverlayParams {
+    reserve: config
+      .value
+      .window_effects
+      .border_reserve(&config.value.gaps),
+    ..effect_cfg.border.to_overlay_params(
+      target_color,
+      corner_radius,
+      config.value.window_effects.border_inset(),
+      &config.value.gaps,
+    )
+  })
 }
 
 /// Resolves the backdrop overlay params of a window taking `set`, or
@@ -3446,13 +3449,12 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// unrelated to whatever triggered this sync (e.g. other
 /// monitors/workspaces during a workspace-switch animation elsewhere).
 ///
-/// Windows with a `Live`-mode (backdrop-tracked) workspace-switch
-/// surrogate are owned entirely by the per-tick tracker in
-/// `AnimationManager::update_internal` for the whole slide plus the
-/// `pending_ws_cleanup` grace ticks -- it updates `tint`/`blur_amount`/
-/// `corner_radius`/`rect` every tick using the surrogate's own live
-/// position, which this function cannot do since it isn't invoked on most
-/// mid-slide ticks (only when `platform_sync` itself runs). Leave these
+/// Windows with a workspace-switch surrogate are owned entirely by the
+/// per-tick tracker in `AnimationManager::update_internal` for the whole
+/// slide plus the `pending_ws_cleanup` grace ticks -- it slides the ring
+/// of one whose surrogate carries no copy of it every tick, which this
+/// function cannot do since it isn't invoked on most mid-slide ticks
+/// (only when `platform_sync` itself runs). Leave these
 /// overlays untouched here entirely: falling through to the hide logic
 /// below would hide them out from under the tracker, since the outgoing
 /// workspace's `!is_displayed()` flips true the instant the switch command
@@ -3822,18 +3824,9 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    hosts_switch_window, is_unanimated_reveal, should_note_size,
-    FrozenStep, SyncableOverlay,
+    is_unanimated_reveal, should_note_size, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
-
-  /// Only copyable tiles go on a switch surface.
-  #[test]
-  fn only_copyable_tiles_host_on_a_switch_surface() {
-    assert!(hosts_switch_window(false, true));
-    assert!(!hosts_switch_window(true, true));
-    assert!(!hosts_switch_window(false, false));
-  }
 
   #[test]
   fn a_window_still_shown_is_taken_over() {

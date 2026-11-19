@@ -40,6 +40,10 @@ impl HiddenAlpha {
       return;
     };
 
+    tracing::debug!(
+      "Hiding window {:#x} by its alpha, setting {alpha} aside.",
+      window.hwnd().0
+    );
     match window.set_transparency(&OpacityValue::from_alpha(0)) {
       Ok(()) => self.0 = Some((window.hwnd().0, alpha)),
       Err(err) => tracing::warn!("Failed to hide window by alpha: {err}"),
@@ -60,7 +64,16 @@ impl HiddenAlpha {
     };
 
     let window = NativeWindow::new(handle);
-    if window.layered_alpha().ok().flatten() == Some(0) {
+    let current = window.layered_alpha().ok().flatten();
+    tracing::debug!(
+      "Giving window {handle:#x} its alpha {alpha} back: {}.",
+      if current == Some(0) {
+        "restored"
+      } else {
+        "set again since, left"
+      }
+    );
+    if current == Some(0) {
       if let Err(err) =
         window.set_transparency(&OpacityValue::from_alpha(alpha))
       {
