@@ -9,6 +9,23 @@ use crate::{
   OverviewWindow, OverviewWorkspace,
 };
 
+/// Where window `hwnd` of `workspace` sits in its stack: the stack's
+/// shown window, and how deep behind it the window is, from 0 for the
+/// shown one, counting on from it in tab order. `None` outside a stack.
+pub(crate) fn tab_depth(
+  workspace: &OverviewWorkspace,
+  hwnd: isize,
+) -> Option<(isize, usize)> {
+  workspace.tab_bars.iter().find_map(|bar| {
+    let count = bar.tabs.len();
+    let index = bar.tabs.iter().position(|tab| tab.hwnd == hwnd)?;
+    Some((
+      bar.anchor,
+      (index + count - bar.active_index % count) % count,
+    ))
+  })
+}
+
 /// A window on a scene.
 pub(crate) struct SceneWindow {
   pub preview: Preview,
@@ -22,6 +39,10 @@ pub(crate) struct SceneWindow {
   /// A tab of a stack other than its shown one: only the exposé shows
   /// it.
   pub is_hidden_tab: bool,
+
+  /// Its stack's shown window, and how deep behind it it sits, while in
+  /// a stack (see `tab_depth`).
+  pub tab_depth: Option<(isize, usize)>,
 }
 
 impl SceneWindow {
@@ -43,6 +64,7 @@ impl SceneWindow {
       alpha: Spring::new(0.0, settle_ms, 0.002),
       lift: Spring::new(0.0, settle_ms, 0.0005),
       is_hidden_tab: false,
+      tab_depth: None,
     }
   }
 
@@ -138,7 +160,7 @@ impl Scene {
       .collect::<Vec<_>>();
     let mut is_restyled = false;
 
-    let windows = workspace
+    let mut windows = workspace
       .windows
       .iter()
       .filter(|window| !window.is_minimized)
@@ -175,10 +197,20 @@ impl Scene {
         scene_window.preview.screen_rect = rect;
         scene_window.preview.is_scrolled_off = window.is_scrolled_off;
         scene_window.is_hidden_tab = window.is_hidden_tab;
+        scene_window.tab_depth = tab_depth(workspace, window.hwnd);
         is_restyled |= scene_window.preview.restyle(window);
         scene_window
       })
       .collect::<Vec<_>>();
+
+    // A stack's other tabs go below every shown window, the deepest
+    // lowest, so the exposé's piles show their front tab on top.
+    windows.sort_by_key(|window| {
+      std::cmp::Reverse(match window.tab_depth {
+        Some((_, depth)) if window.is_hidden_tab => depth,
+        _ => 0,
+      })
+    });
 
     let is_changed = is_restyled
       || windows

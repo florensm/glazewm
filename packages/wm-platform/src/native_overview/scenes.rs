@@ -10,7 +10,7 @@ use super::{cards::screen_rect, to_ms, Screen, ScreenFrame};
 const SLIDE_GAP: f32 = 48.0;
 
 use crate::{
-  overview_expose::spread,
+  overview_expose::{pile_rects, pile_size, spread},
   overview_layout::{CardView, RectF, Tile},
   overview_scene::{Scene, SceneWindow},
   OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
@@ -72,6 +72,9 @@ struct Spread {
   gap: f32,
   max_scale: f32,
   max_per_row: usize,
+
+  /// Window picked on the scene, which rises out of its pile.
+  picked: Option<isize>,
 }
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
@@ -84,24 +87,10 @@ fn scene_rects(
   spread_as: Option<&Spread>,
 ) -> Vec<Option<RectF>> {
   if let Some(how) = spread_as {
-    let screen_rects = scene
-      .windows
-      .iter()
-      .map(|window| window.preview.screen_rect)
-      .collect::<Vec<_>>();
     for window in &mut scene.windows {
       window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
     }
-    return spread(
-      &screen_rects,
-      &how.area,
-      how.gap,
-      how.max_scale,
-      how.max_per_row,
-    )
-    .into_iter()
-    .map(Some)
-    .collect();
+    return spread_piles(scene, how).into_iter().map(Some).collect();
   }
 
   scene
@@ -115,6 +104,51 @@ fn scene_rects(
       (!window.is_hidden_tab).then_some(tile.rect)
     })
     .collect()
+}
+
+/// Where the exposé shows each window of `scene`: each stack's tabs as
+/// one pile in a slot of its own, and every other window alone in one,
+/// its picked tab risen out of the pile.
+fn spread_piles(scene: &Scene, how: &Spread) -> Vec<RectF> {
+  // Indices of each pile's windows, front tab first.
+  let mut piles: Vec<(isize, Vec<usize>)> = Vec::new();
+  for (index, window) in scene.windows.iter().enumerate() {
+    let key = window
+      .tab_depth
+      .map_or(window.preview.hwnd, |(anchor, _)| anchor);
+    match piles.iter_mut().find(|(other, _)| *other == key) {
+      Some((_, members)) => members.push(index),
+      None => piles.push((key, vec![index])),
+    }
+  }
+  for (_, members) in &mut piles {
+    members.sort_by_key(|&index| {
+      scene.windows[index].tab_depth.map_or(0, |(_, depth)| depth)
+    });
+  }
+
+  let rooms = piles
+    .iter()
+    .map(|(_, members)| {
+      let front = &scene.windows[members[0]].preview.screen_rect;
+      pile_size(front, members.len())
+    })
+    .collect::<Vec<_>>();
+  let slots =
+    spread(&rooms, &how.area, how.gap, how.max_scale, how.max_per_row);
+
+  let mut rects = vec![RectF::default(); scene.windows.len()];
+  for ((_, members), slot) in piles.iter().zip(slots) {
+    let pulled = members.iter().position(|&index| {
+      Some(scene.windows[index].preview.hwnd) == how.picked
+    });
+    for (&index, rect) in
+      members.iter().zip(pile_rects(&slot, members.len(), pulled))
+    {
+      rects[index] = rect;
+    }
+  }
+  rects
 }
 
 impl Screen {
@@ -297,7 +331,9 @@ impl Screen {
         .max(0.0),
       max_per_row: usize::try_from(expose.max_per_row)
         .unwrap_or(usize::MAX),
+      picked: None,
     };
+    let picked = self.focus.selected_window;
 
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
@@ -320,8 +356,12 @@ impl Screen {
       // A scene being zoomed into lands as laid out, where the real
       // windows are.
       let spreading = spreads && closing != Some(index);
+      let spread_here = Spread {
+        picked: picked.filter(|_| index == selected),
+        ..spread_as
+      };
       let rects =
-        scene_rects(scene, &tiles, spreading.then_some(&spread_as));
+        scene_rects(scene, &tiles, spreading.then_some(&spread_here));
 
       for ((window, rect), tile) in
         scene.windows.iter_mut().zip(rects).zip(&tiles)

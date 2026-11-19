@@ -73,6 +73,67 @@ pub(crate) fn spread(
   rects
 }
 
+/// Step, as a fraction of a tab's size, between one tab of a pile and
+/// the next behind it.
+const PILE_STEP: f32 = 0.07;
+
+/// Most the tabs behind a pile's front one reach past it, as a fraction
+/// of its size, however many there are.
+const PILE_REACH: f32 = 0.28;
+
+/// How far a pulled tab rises out of its pile, as a fraction of its
+/// height.
+const PILE_PULL: f32 = 0.14;
+
+/// Step between the tabs of a pile of `count`.
+#[allow(clippy::cast_precision_loss)]
+fn pile_step(count: usize) -> f32 {
+  match count {
+    0 | 1 => 0.0,
+    _ => PILE_STEP.min(PILE_REACH / (count - 1) as f32),
+  }
+}
+
+/// The room a pile of `count` tabs, each of `size`, takes: grown up and
+/// right by the tabs behind the front one.
+pub(crate) fn pile_size(size: &RectF, count: usize) -> RectF {
+  #[allow(clippy::cast_precision_loss)]
+  let grow = 1.0 + pile_step(count) * count.saturating_sub(1) as f32;
+  RectF::new(size.x, size.y, size.w * grow, size.h * grow)
+}
+
+/// Where each of a pile's `count` tabs shows in `slot`, front first: the
+/// front one in its bottom-left corner, each further one a step up and
+/// right, and the one at depth `pulled` risen out of the pile.
+pub(crate) fn pile_rects(
+  slot: &RectF,
+  count: usize,
+  pulled: Option<usize>,
+) -> Vec<RectF> {
+  let step = pile_step(count);
+  #[allow(clippy::cast_precision_loss)]
+  let grow = 1.0 + step * count.saturating_sub(1) as f32;
+  let (w, h) = (slot.w / grow, slot.h / grow);
+
+  (0..count)
+    .map(|depth| {
+      #[allow(clippy::cast_precision_loss)]
+      let along = step * depth as f32;
+      let pull = if pulled == Some(depth) && depth > 0 {
+        PILE_PULL * h
+      } else {
+        0.0
+      };
+      RectF::new(
+        slot.x + along * w,
+        slot.bottom() - h - along * h - pull,
+        w,
+        h,
+      )
+    })
+    .collect()
+}
+
 /// Splits `order` into `row_count` runs of at most `max_per_row`,
 /// keeping it in order, so the narrowest fit of any row is as wide as can
 /// be. `row_count` must leave room for every window.
@@ -171,7 +232,7 @@ fn row_height(windows: &[RectF], row: &[usize]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-  use super::spread;
+  use super::{pile_rects, pile_size, spread};
   use crate::overview_layout::RectF;
 
   const AREA: RectF = RectF::new(0.0, 0.0, 1600.0, 900.0);
@@ -256,6 +317,42 @@ mod tests {
         assert!(!overlaps(rect, other), "{rect:?} {other:?}");
       }
     }
+  }
+
+  /// A pile's tabs keep their size and shape, the front one in the
+  /// bottom-left corner and each further one up and right, all within the
+  /// slot its size asked for.
+  #[test]
+  fn a_pile_fits_its_slot_front_tab_first() {
+    let tab = RectF::new(0.0, 0.0, 800.0, 600.0);
+    let room = pile_size(&tab, 3);
+    let slot = RectF::new(100.0, 100.0, room.w / 2.0, room.h / 2.0);
+    let rects = pile_rects(&slot, 3, None);
+
+    assert!((rects[0].w - 400.0).abs() < 1e-3);
+    assert!((rects[0].x - slot.x).abs() < 1e-3);
+    assert!((rects[0].bottom() - slot.bottom()).abs() < 1e-3);
+    assert!(rects[1].x > rects[0].x && rects[1].y < rects[0].y);
+    assert!((rects[2].right() - slot.right()).abs() < 1e-3);
+    assert!((rects[2].y - slot.y).abs() < 1e-3);
+  }
+
+  /// A pulled tab rises out of its pile; the front one never does.
+  #[test]
+  fn a_pulled_tab_rises_out_of_its_pile() {
+    let slot = RectF::new(0.0, 0.0, 1000.0, 800.0);
+    let resting = pile_rects(&slot, 3, None);
+
+    assert!(pile_rects(&slot, 3, Some(1))[1].y < resting[1].y);
+    assert_eq!(pile_rects(&slot, 3, Some(0)), resting);
+  }
+
+  /// However many tabs, a pile reaches no further past its front one.
+  #[test]
+  fn a_tall_pile_reaches_no_further() {
+    let tab = RectF::new(0.0, 0.0, 100.0, 100.0);
+    assert!(pile_size(&tab, 20).w <= 128.0 + 1e-3);
+    assert_eq!(pile_size(&tab, 1), tab);
   }
 
   #[test]
