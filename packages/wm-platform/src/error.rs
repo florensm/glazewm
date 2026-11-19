@@ -65,6 +65,9 @@ pub enum ParseError {
 
   #[error("Invalid direction '{0}': must be one of 'left', 'right', 'up', or 'down'.")]
   Direction(String),
+
+  #[error("Invalid particle style '{0}': must be one of 'sparks', 'dust', 'embers', 'confetti', 'glints', or 'bubbles'.")]
+  ParticleStyle(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

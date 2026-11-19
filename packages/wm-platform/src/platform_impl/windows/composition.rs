@@ -29,7 +29,7 @@
 //! keeping the per-tick hot path cheap.
 
 use std::{
-  cell::Cell,
+  cell::{Cell, RefCell},
   sync::{mpsc, OnceLock},
   time::Duration,
 };
@@ -47,18 +47,25 @@ use windows::{
   UI::{
     Color,
     Composition::{
-      CompositionColorBrush, CompositionMappingMode,
+      CompositionBrush, CompositionColorBrush,
+      CompositionColorGradientStop,
+      CompositionColorGradientStopCollection,
+      CompositionLinearGradientBrush, CompositionMappingMode,
       CompositionPropertySet, CompositionRadialGradientBrush,
       CompositionRoundedRectangleGeometry, CompositionSpriteShape,
       CompositionSurfaceBrush, Compositor, ContainerVisual,
-      Desktop::DesktopWindowTarget, InsetClip, ScalarKeyFrameAnimation,
-      ShapeVisual, SpriteVisual, Vector2KeyFrameAnimation,
+      Desktop::DesktopWindowTarget, InsetClip, KeyFrameAnimation,
+      ScalarKeyFrameAnimation, ShapeVisual, SpriteVisual,
+      Vector2KeyFrameAnimation,
     },
   },
 };
 
 use super::wallpaper_surface::{self, BakeKnobs};
-use crate::{BackdropOverlayParams, BorderOverlayParams, Rect};
+use crate::{
+  particles::{BurstPlan, ParticleStyle, PATH_KEYS},
+  BackdropOverlayParams, BorderGlow, BorderOverlayParams, Rect,
+};
 
 /// The dedicated, self-pumping composition thread and its `Compositor`.
 struct CompositionThread {
@@ -921,18 +928,19 @@ impl SurrogateFill {
 }
 
 /// A live `Windows.UI.Composition` visual tree providing a border
-/// overlay's rendering: a single rounded rectangle *stroked* with a solid
-/// color, so only the ring band is ever painted and the interior stays
-/// fully transparent. Considerably lighter than [`BackdropVisual`] -- no
-/// effect graph, no live backdrop sampling, just one stroked shape.
+/// overlay's rendering: a rounded rectangle *stroked* with a solid color,
+/// so only the ring band is ever painted and the interior stays fully
+/// transparent, plus a hairline along its inner edge and the bands of its
+/// glow. Considerably lighter than [`BackdropVisual`] -- no effect graph,
+/// no live backdrop sampling, just stroked shapes.
 ///
 /// `NativeBorderOverlay` sizes and positions the overlay's `HWND` to the
-/// tracked window's rect *outset* by the configured border width, directly
-/// behind the real window in z-order (same `OverlayWindow` pairing as
-/// [`BackdropVisual`]'s). The stroke
-/// is that border width thick and its geometry is inset by half of it, so
-/// the ring's outer edge lands exactly on the overlay's outer rect and its
-/// inner edge exactly on the tracked window's own rect.
+/// tracked window's rect *outset* by the configured border width and glow
+/// reach, directly behind the real window in z-order (same
+/// `OverlayWindow` pairing as [`BackdropVisual`]'s). The stroke is that
+/// border width thick and its geometry is inset by half of it past the
+/// glow, so the ring's inner edge lands exactly on the tracked window's
+/// own rect.
 ///
 /// A stroke rounds the ring's inner *and* outer corners exactly, which a
 /// fill clipped by a `CreateRoundRectRgn` hole only approximated. The
@@ -949,26 +957,117 @@ pub(crate) struct BorderVisual {
   /// the previous design needed a separate `ContainerVisual` for.
   root: ShapeVisual,
   shape: CompositionSpriteShape,
-  stroke_brush: CompositionColorBrush,
+  /// Runs from the ring's top edge, in its lit color, down to
+  /// [`HIGHLIGHT_FALLOFF`] of its height, in its color, which it keeps
+  /// below.
+  stroke_brush: CompositionLinearGradientBrush,
+  /// The lit and the plain color's stops, in that order.
+  stroke_stops: [CompositionColorGradientStop; 2],
   geometry: CompositionRoundedRectangleGeometry,
+  /// A hairline along the ring's inner edge (see
+  /// `BorderOverlayParams::rim`), over the ring.
+  rim: CompositionSpriteShape,
+  rim_brush: CompositionColorBrush,
+  rim_geometry: CompositionRoundedRectangleGeometry,
+  /// The glow's bands, outward from the ring (see `BorderGlow`). Made as
+  /// a glow first needs them and kept, drawing nothing, past its reach.
+  glow: RefCell<Vec<GlowBand>>,
   /// Cuts the ring short of its own edges. Zero except while the ring
   /// slides with a workspace switch.
   clip: InsetClip,
 
-  /// Last-applied ring inputs, so any one of `set_rect`/`set_width`/
+  /// Last-applied ring inputs, so any one of `set_rect`/`set_widths`/
   /// `set_corner_radius` can recompute the derived geometry (which
-  /// depends on all three) from the other two's current values.
+  /// depends on all of them) from the others' current values.
   ring: Cell<Ring>,
 }
 
+/// One pixel-wide band of a border's glow: a stroke around the ring, as
+/// many pixels out as its index.
+struct GlowBand {
+  shape: CompositionSpriteShape,
+  brush: CompositionColorBrush,
+  geometry: CompositionRoundedRectangleGeometry,
+}
+
+impl GlowBand {
+  /// Creates `count` bands, drawing nothing until laid out and colored.
+  fn create_all(
+    compositor: &Compositor,
+    count: usize,
+  ) -> windows::core::Result<Vec<Self>> {
+    (0..count)
+      .map(|_| {
+        let geometry = compositor.CreateRoundedRectangleGeometry()?;
+        let brush = compositor.CreateColorBrushWithColor(Color {
+          A: 0,
+          R: 0,
+          G: 0,
+          B: 0,
+        })?;
+        let shape = compositor.CreateSpriteShapeWithGeometry(&geometry)?;
+        shape.SetStrokeBrush(&brush)?;
+        shape.SetStrokeThickness(0.0)?;
+
+        Ok(Self {
+          shape,
+          brush,
+          geometry,
+        })
+      })
+      .collect()
+  }
+}
+
+/// How far down a ring, as a fraction of its height, its highlight fades
+/// out (see `BorderOverlayParams::highlight`).
+const HIGHLIGHT_FALLOFF: f32 = 0.35;
+
+/// Thickness of the hairline along a ring's inner edge, or of the whole
+/// ring if thinner (see `BorderOverlayParams::rim`).
+const RIM_WIDTH: f32 = 1.0;
+
 /// The inputs a stroked ring's geometry is derived from: the overlay's own
 /// (already-outset) size in pixels, the border width the stroke is drawn
-/// at, and the ring's *outer* corner radius.
+/// at, the ring's *outer* corner radius, and how far its glow reaches
+/// past it, which the ring is inset by.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Ring {
   size: Vector2,
   width: f32,
   corner_radius: f32,
+  glow_reach: f32,
+}
+
+/// The rounded rectangle a stroke follows -- its offset, size and corner
+/// radius -- inset by `inset` from an overlay of `size`, clamped so it
+/// never goes negative, which composition rejects.
+fn inset_path(
+  size: Vector2,
+  inset: f32,
+  corner_radius: f32,
+) -> (Vector2, Vector2, f32) {
+  (
+    Vector2 { X: inset, Y: inset },
+    Vector2 {
+      X: (size.X - 2.0 * inset).max(0.0),
+      Y: (size.Y - 2.0 * inset).max(0.0),
+    },
+    corner_radius.max(0.0),
+  )
+}
+
+/// Applies `path` (see [`inset_path`]) to `geometry`.
+fn set_path(
+  geometry: &CompositionRoundedRectangleGeometry,
+  (offset, size, corner_radius): (Vector2, Vector2, f32),
+) -> windows::core::Result<()> {
+  geometry.SetOffset(offset)?;
+  geometry.SetSize(size)?;
+  geometry.SetCornerRadius(Vector2 {
+    X: corner_radius,
+    Y: corner_radius,
+  })
 }
 
 /// Derives a [`Ring`]'s centerline geometry, i.e. the rounded rectangle a
@@ -983,22 +1082,55 @@ struct Ring {
 /// curves rather than the old hole punch's `CreateRoundRectRgn`
 /// approximation.
 ///
-/// Returns `(offset, size, corner_radius)` for the geometry, each clamped
-/// so a width exceeding the overlay's own size (or its corner radius)
-/// degenerates gracefully instead of producing a negative extent, which
-/// composition rejects.
+/// Returns `(offset, size, corner_radius)` for the geometry, inset by the
+/// glow's reach too, each clamped so a width exceeding the overlay's own
+/// size (or its corner radius) degenerates gracefully instead of
+/// producing a negative extent, which composition rejects.
 fn ring_geometry(ring: Ring) -> (Vector2, Vector2, f32) {
+  let half = ring.width.max(0.0) / 2.0;
+
+  inset_path(
+    ring.size,
+    ring.glow_reach.max(0.0) + half,
+    ring.corner_radius - half,
+  )
+}
+
+/// The path and thickness of the hairline along `ring`'s inner edge: the
+/// innermost [`RIM_WIDTH`] of the ring's band.
+fn rim_geometry(ring: Ring) -> ((Vector2, Vector2, f32), f32) {
   let width = ring.width.max(0.0);
-  let inset = width / 2.0;
+  let thickness = RIM_WIDTH.min(width);
+  // From the ring's outer edge to the hairline's centerline.
+  let depth = width - thickness / 2.0;
 
-  let offset = Vector2 { X: inset, Y: inset };
-  let size = Vector2 {
-    X: (ring.size.X - width).max(0.0),
-    Y: (ring.size.Y - width).max(0.0),
-  };
-  let corner_radius = (ring.corner_radius - inset).max(0.0);
+  (
+    inset_path(
+      ring.size,
+      ring.glow_reach.max(0.0) + depth,
+      ring.corner_radius - depth,
+    ),
+    thickness,
+  )
+}
 
-  (offset, size, corner_radius)
+/// The path of the glow's `band`-th band out from `ring`, concentric with
+/// it, so a square ring's glow rounds off at the corners like any glow.
+#[allow(clippy::cast_precision_loss)]
+fn glow_band_geometry(ring: Ring, band: usize) -> (Vector2, Vector2, f32) {
+  let distance = band as f32 + 0.5;
+
+  inset_path(
+    ring.size,
+    ring.glow_reach - distance,
+    ring.corner_radius + distance,
+  )
+}
+
+/// Number of bands a glow reaching `reach` past its ring is drawn in.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn glow_bands(reach: f32) -> usize {
+  reach.round().max(0.0) as usize
 }
 
 impl BorderVisual {
@@ -1021,22 +1153,96 @@ impl BorderVisual {
     })
   }
 
-  /// Re-derives and applies the stroke thickness and geometry for `ring`,
-  /// storing it as the new baseline for the next partial update.
+  /// Re-derives and applies the stroke thicknesses and geometry for
+  /// `ring`, storing it as the new baseline for the next partial update.
+  ///
+  /// Lays out the glow bands made so far, leaving any more it reaches to
+  /// [`grow_glow`](Self::grow_glow).
   fn apply_ring(&self, ring: Ring) -> windows::core::Result<()> {
-    let (offset, size, corner_radius) = ring_geometry(ring);
+    let reach = ring.glow_reach.max(0.0);
 
     self.root.SetSize(ring.size)?;
-    self.shape.SetStrokeThickness(ring.width.max(0.0))?;
-    self.geometry.SetOffset(offset)?;
-    self.geometry.SetSize(size)?;
-    self.geometry.SetCornerRadius(Vector2 {
-      X: corner_radius,
-      Y: corner_radius,
+    self
+      .stroke_brush
+      .SetStartPoint(Vector2 { X: 0.0, Y: reach })?;
+    self.stroke_brush.SetEndPoint(Vector2 {
+      X: 0.0,
+      Y: reach + (ring.size.Y - 2.0 * reach).max(0.0) * HIGHLIGHT_FALLOFF,
     })?;
+    self.shape.SetStrokeThickness(ring.width.max(0.0))?;
+    set_path(&self.geometry, ring_geometry(ring))?;
+
+    let (rim_path, rim_thickness) = rim_geometry(ring);
+    self.rim.SetStrokeThickness(rim_thickness)?;
+    set_path(&self.rim_geometry, rim_path)?;
+
+    // Bands past the reach are only touched as it shrinks past them.
+    let (bands, drawn) = (
+      glow_bands(ring.glow_reach),
+      glow_bands(self.ring.get().glow_reach),
+    );
+    for (index, band) in self.glow.borrow().iter().enumerate() {
+      if index < bands {
+        band.shape.SetStrokeThickness(1.0)?;
+        set_path(&band.geometry, glow_band_geometry(ring, index))?;
+      } else if index < drawn {
+        band.shape.SetStrokeThickness(0.0)?;
+      }
+    }
 
     self.ring.set(ring);
     Ok(())
+  }
+
+  /// Makes sure the glow has `bands` bands to draw, making the missing
+  /// ones on the composition thread. They are kept, so this waits on that
+  /// thread at most as often as a window's glow first reaches further.
+  fn grow_glow(&self, bands: usize) -> crate::Result<()> {
+    let missing = bands.saturating_sub(self.glow.borrow().len());
+    if missing == 0 {
+      return Ok(());
+    }
+
+    let made = with_composition_thread(move |compositor, _| {
+      GlowBand::create_all(&compositor, missing)
+    })?;
+
+    let shapes = self.root.Shapes()?;
+    for band in &made {
+      shapes.Append(&band.shape)?;
+    }
+    self.glow.borrow_mut().extend(made);
+    Ok(())
+  }
+
+  /// Colors the glow's bands, outward from the ring, `color` at each of
+  /// `opacities`, leaving those past them transparent.
+  fn color_glow(
+    &self,
+    color: crate::Color,
+    opacities: &[f32],
+  ) -> windows::core::Result<()> {
+    for (index, band) in self.glow.borrow().iter().enumerate() {
+      let opacity = opacities.get(index).copied().unwrap_or(0.0);
+      #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+      let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+      band
+        .brush
+        .SetColor(to_ui_color(crate::Color { a: alpha, ..color }))?;
+    }
+    Ok(())
+  }
+
+  /// Colors the glow `color`, each band at its one of `opacities` (see
+  /// `BorderGlow::band_opacities`).
+  pub(crate) fn set_glow(
+    &self,
+    color: crate::Color,
+    opacities: &[f32],
+  ) -> crate::Result<()> {
+    self.grow_glow(opacities.len())?;
+    Ok(self.color_glow(color, opacities)?)
   }
 
   /// Resizes the ring to match `rect`. Does not reposition the `HWND`
@@ -1053,25 +1259,39 @@ impl BorderVisual {
     })?)
   }
 
-  /// Updates the ring's color.
-  pub(crate) fn set_color(
+  /// Updates the ring's color, `lit` at its top edge, and its inner
+  /// edge's hairline `rim` color.
+  pub(crate) fn set_colors(
     &self,
     color: crate::Color,
+    lit: crate::Color,
+    rim: crate::Color,
   ) -> crate::Result<()> {
-    self.stroke_brush.SetColor(to_ui_color(color))?;
+    let [lit_stop, stop] = &self.stroke_stops;
+    lit_stop.SetColor(to_ui_color(lit))?;
+    stop.SetColor(to_ui_color(color))?;
+    self.rim_brush.SetColor(to_ui_color(rim))?;
     Ok(())
   }
 
-  /// Updates the border width, i.e. the stroke's thickness.
+  /// Updates the border width, i.e. the stroke's thickness, and how far
+  /// the glow reaches past it.
   ///
-  /// The overlay's `HWND` is outset by this same width, so callers must
-  /// resize the window (and hence call [`set_rect`]) to match -- this only
-  /// updates the band drawn inside it.
+  /// The overlay's `HWND` is outset by both, so callers must resize the
+  /// window (and hence call [`set_rect`]) to match -- this only updates
+  /// what is drawn inside it.
   ///
   /// [`set_rect`]: BorderVisual::set_rect
-  pub(crate) fn set_width(&self, width: f32) -> crate::Result<()> {
+  pub(crate) fn set_widths(
+    &self,
+    width: f32,
+    glow_reach: f32,
+  ) -> crate::Result<()> {
+    self.grow_glow(glow_bands(glow_reach))?;
+
     Ok(self.apply_ring(Ring {
       width,
+      glow_reach,
       ..self.ring.get()
     })?)
   }
@@ -1121,11 +1341,12 @@ impl BorderVisual {
   }
 }
 
-/// Builds the full visual tree: a `ShapeVisual` rooting a single
+/// Builds the full visual tree: a `ShapeVisual` rooting a
 /// `CompositionSpriteShape` that strokes a rounded rectangle in the border
-/// color. No fill brush is set, so the shape's interior stays transparent
-/// and the tracked window shows through with no window region, mask, or
-/// reliance on that window occluding a fill.
+/// color, the hairline over its inner edge and the glow's bands around it.
+/// No fill brush is set, so the shapes' interiors stay transparent and the
+/// tracked window shows through with no window region, mask, or reliance
+/// on that window occluding a fill.
 fn build_border_visual_tree(
   compositor: &Compositor,
   hwnd: HWND,
@@ -1141,14 +1362,46 @@ fn build_border_visual_tree(
 
   let geometry = compositor.CreateRoundedRectangleGeometry()?;
 
-  let stroke_brush =
-    compositor.CreateColorBrushWithColor(to_ui_color(params.color))?;
+  // In the shape's own pixels, as the end point is set from the ring's
+  // height (see `BorderVisual::apply_ring`).
+  let stroke_brush = compositor.CreateLinearGradientBrush()?;
+  stroke_brush.SetMappingMode(CompositionMappingMode::Absolute)?;
+  let stroke_stops = [
+    compositor.CreateColorGradientStopWithOffsetAndColor(
+      0.0,
+      to_ui_color(params.lit_color()),
+    )?,
+    compositor.CreateColorGradientStopWithOffsetAndColor(
+      1.0,
+      to_ui_color(params.color),
+    )?,
+  ];
+  let stops = stroke_brush.ColorStops()?;
+  for stop in &stroke_stops {
+    stops.Append(stop)?;
+  }
+
   let shape = compositor.CreateSpriteShapeWithGeometry(&geometry)?;
   shape.SetStrokeBrush(&stroke_brush)?;
 
+  let rim_geometry = compositor.CreateRoundedRectangleGeometry()?;
+  let rim_brush = compositor
+    .CreateColorBrushWithColor(to_ui_color(params.rim_color()))?;
+  let rim = compositor.CreateSpriteShapeWithGeometry(&rim_geometry)?;
+  rim.SetStrokeBrush(&rim_brush)?;
+
+  // Made here for the glow it starts with, as `grow_glow` can't wait on
+  // the composition thread from that very thread.
+  let glow = GlowBand::create_all(compositor, params.glow.bands())?;
+
   let root = compositor.CreateShapeVisual()?;
   root.SetOpacity(params.opacity)?;
-  root.Shapes()?.Append(&shape)?;
+  let shapes = root.Shapes()?;
+  shapes.Append(&shape)?;
+  shapes.Append(&rim)?;
+  for band in &glow {
+    shapes.Append(&band.shape)?;
+  }
 
   let clip = compositor.CreateInsetClip()?;
   root.SetClip(&clip)?;
@@ -1160,12 +1413,18 @@ fn build_border_visual_tree(
     root,
     shape,
     stroke_brush,
+    stroke_stops,
     geometry,
+    rim,
+    rim_brush,
+    rim_geometry,
+    glow: RefCell::new(glow),
     clip,
     ring: Cell::new(Ring {
       size: Vector2 { X: 0.0, Y: 0.0 },
       width: params.width,
       corner_radius: params.corner_radius,
+      glow_reach: 0.0,
     }),
   };
 
@@ -1178,13 +1437,56 @@ fn build_border_visual_tree(
     },
     width: params.width,
     corner_radius: params.corner_radius,
+    glow_reach: params.glow.reach,
   })?;
+  visual.color_glow(
+    params.color,
+    &BorderGlow::band_opacities(&params.glow, &params.glow, 1.0),
+  )?;
 
   Ok(visual)
 }
 
 /// Thickness of a drop indicator's outline.
 const DROP_INDICATOR_STROKE: f32 = 2.0;
+
+/// A backdrop's vignette alone, for a copy of a window's backdrop (see
+/// `VignetteSource`): the overlay's own brush, stretched over the whole of
+/// its `HWND`, so the copy matches the overlay.
+pub(crate) struct VignetteVisual {
+  /// Binds the visual tree to the `HWND`. Kept alive but never touched
+  /// again -- dropping it would unbind composition from the window.
+  _target: DesktopWindowTarget,
+  _root: SpriteVisual,
+}
+
+impl VignetteVisual {
+  /// Builds the vignette at `strength`, from `0.0` to `1.0`, on `hwnd`,
+  /// which must have been created with `WS_EX_NOREDIRECTIONBITMAP`.
+  pub(crate) fn create(hwnd: HWND, strength: f32) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+
+    with_composition_thread(move |compositor, _| {
+      // SAFETY: `hwnd` is a valid, already-created top-level window.
+      let target = unsafe {
+        compositor
+          .cast::<ICompositorDesktopInterop>()?
+          .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
+      };
+
+      let root = compositor.CreateSpriteVisual()?;
+      root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      root.SetBrush(&build_vignette_brush(&compositor)?)?;
+      root.SetOpacity(strength.clamp(0.0, 1.0))?;
+      target.SetRoot(&root)?;
+
+      Ok(Self {
+        _target: target,
+        _root: root,
+      })
+    })
+  }
+}
 
 /// Share of the outline color's alpha a drop indicator's fill gets.
 const DROP_INDICATOR_FILL_ALPHA: f32 = 0.2;
@@ -1433,6 +1735,347 @@ fn build_drop_indicator_tree(
   })
 }
 
+/// A particle burst's visual tree: a sprite per particle, drawn in its
+/// style and played along its planned path by the compositor as it fades,
+/// turns and tumbles, with nothing left for the caller to drive.
+pub(crate) struct ParticleVisual {
+  /// Binds the visual tree to the burst's `HWND`. Kept alive but never
+  /// touched again.
+  _target: DesktopWindowTarget,
+  _root: ContainerVisual,
+}
+
+impl ParticleVisual {
+  /// Builds `plan`'s particles for `hwnd`, which covers the plan's
+  /// bounds, and sets them off.
+  pub(crate) fn create(
+    hwnd: HWND,
+    plan: &BurstPlan,
+  ) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+    let plan = plan.clone();
+
+    with_composition_thread(move |compositor, _| {
+      build_particle_tree(&compositor, HWND(hwnd_raw), &plan)
+    })
+  }
+}
+
+/// A piece of a particle's look: `brush` filling `size` (a multiple of
+/// the particle's own), centered at `center` (a share of the particle's
+/// size), turned `angle` degrees.
+struct ParticlePart {
+  brush: CompositionBrush,
+  size: (f32, f32),
+  center: (f32, f32),
+  angle: f32,
+}
+
+impl ParticlePart {
+  /// A part filling the whole particle.
+  fn whole(brush: CompositionBrush) -> Self {
+    Self {
+      brush,
+      size: (1.0, 1.0),
+      center: (0.5, 0.5),
+      angle: 0.0,
+    }
+  }
+}
+
+/// A brush fading through `stops` from its middle out to its rim,
+/// stretched over whatever it fills.
+fn radial_brush(
+  compositor: &Compositor,
+  stops: &[(f32, crate::Color)],
+) -> windows::core::Result<CompositionBrush> {
+  let brush = compositor.CreateRadialGradientBrush()?;
+  brush.SetMappingMode(CompositionMappingMode::Relative)?;
+  brush.SetEllipseCenter(Vector2 { X: 0.5, Y: 0.5 })?;
+  brush.SetEllipseRadius(Vector2 { X: 0.5, Y: 0.5 })?;
+  append_stops(compositor, &brush.ColorStops()?, stops)?;
+  brush.cast()
+}
+
+/// A brush running through `stops` from its top left to its bottom right.
+fn diagonal_brush(
+  compositor: &Compositor,
+  stops: &[(f32, crate::Color)],
+) -> windows::core::Result<CompositionBrush> {
+  let brush = compositor.CreateLinearGradientBrush()?;
+  brush.SetMappingMode(CompositionMappingMode::Relative)?;
+  brush.SetStartPoint(Vector2 { X: 0.0, Y: 0.0 })?;
+  brush.SetEndPoint(Vector2 { X: 1.0, Y: 1.0 })?;
+  append_stops(compositor, &brush.ColorStops()?, stops)?;
+  brush.cast()
+}
+
+fn append_stops(
+  compositor: &Compositor,
+  collection: &CompositionColorGradientStopCollection,
+  stops: &[(f32, crate::Color)],
+) -> windows::core::Result<()> {
+  for (offset, color) in stops {
+    collection.Append(
+      &compositor.CreateColorGradientStopWithOffsetAndColor(
+        *offset,
+        to_ui_color(*color),
+      )?,
+    )?;
+  }
+  Ok(())
+}
+
+/// The parts a particle of `style` in `color` is drawn with; the first
+/// fills the particle itself, the rest sit on it.
+fn particle_parts(
+  compositor: &Compositor,
+  style: ParticleStyle,
+  color: crate::Color,
+) -> windows::core::Result<Vec<ParticlePart>> {
+  const WHITE: crate::Color = crate::Color {
+    r: u8::MAX,
+    g: u8::MAX,
+    b: u8::MAX,
+    a: u8::MAX,
+  };
+  const BLACK: crate::Color = crate::Color {
+    r: 0,
+    g: 0,
+    b: 0,
+    a: u8::MAX,
+  };
+
+  let color = crate::Color {
+    a: u8::MAX,
+    ..color
+  };
+  let tint = |a: u8| crate::Color { a, ..color };
+  let white = |a: u8| crate::Color { a, ..WHITE };
+  // `color` heated toward white, as `heat` goes from 0 to 1.
+  let hot = |heat: f32, a: u8| crate::Color {
+    a,
+    ..color.lerp(&WHITE, heat)
+  };
+  let radial = |stops: &[(f32, crate::Color)]| {
+    radial_brush(compositor, stops).map(ParticlePart::whole)
+  };
+
+  Ok(match style {
+    ParticleStyle::Sparks => vec![radial(&[
+      (0.0, hot(0.7, u8::MAX)),
+      (0.35, tint(220)),
+      (1.0, tint(0)),
+    ])?],
+    ParticleStyle::Dust => {
+      vec![radial(&[
+        (0.0, tint(170)),
+        (0.5, tint(90)),
+        (1.0, tint(0)),
+      ])?]
+    }
+    ParticleStyle::Embers => vec![radial(&[
+      (0.0, hot(0.45, u8::MAX)),
+      (0.3, tint(235)),
+      (0.6, tint(90)),
+      (1.0, tint(0)),
+    ])?],
+    // A flat fleck with a sheen across it, which catches the eye as it
+    // turns and tumbles.
+    ParticleStyle::Confetti => {
+      vec![ParticlePart::whole(diagonal_brush(
+        compositor,
+        &[
+          (0.0, hot(0.35, u8::MAX)),
+          (0.45, color),
+          (1.0, color.lerp(&BLACK, 0.2)),
+        ],
+      )?)]
+    }
+    // A white-hot core crossed by two long, thin rays.
+    ParticleStyle::Glints => {
+      let ray = radial_brush(
+        compositor,
+        &[(0.0, hot(0.85, u8::MAX)), (0.35, tint(160)), (1.0, tint(0))],
+      )?;
+      let ray = |angle: f32| ParticlePart {
+        brush: ray.clone(),
+        size: (2.6, 0.16),
+        center: (0.5, 0.5),
+        angle,
+      };
+
+      vec![
+        radial(&[
+          (0.0, white(u8::MAX)),
+          (0.3, hot(0.6, 220)),
+          (1.0, tint(0)),
+        ])?,
+        ray(0.0),
+        ray(90.0),
+      ]
+    }
+    // A thin ring around a faint film, with a highlight up and to the
+    // left.
+    ParticleStyle::Bubbles => vec![
+      radial(&[
+        (0.0, tint(18)),
+        (0.7, tint(40)),
+        (0.84, hot(0.3, 210)),
+        (0.93, tint(110)),
+        (1.0, tint(0)),
+      ])?,
+      ParticlePart {
+        brush: radial_brush(
+          compositor,
+          &[(0.0, white(230)), (1.0, white(0))],
+        )?,
+        size: (0.28, 0.28),
+        center: (0.32, 0.3),
+        angle: 0.0,
+      },
+    ],
+  })
+}
+
+/// Builds a particle burst's visual tree and starts every particle's
+/// animations, each after its own delay, before which it is transparent.
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+fn build_particle_tree(
+  compositor: &Compositor,
+  hwnd: HWND,
+  plan: &BurstPlan,
+) -> windows::core::Result<ParticleVisual> {
+  // SAFETY: `hwnd` is a valid, already-created top-level window.
+  let target = unsafe {
+    compositor
+      .cast::<ICompositorDesktopInterop>()?
+      .CreateDesktopWindowTarget(hwnd, false)?
+  };
+
+  let root = compositor.CreateContainerVisual()?;
+  root.SetSize(rect_size(&plan.bounds))?;
+  target.SetRoot(&root)?;
+
+  // Every key is already where it should be at its time, so each runs
+  // straight to the next.
+  let linear = compositor.CreateLinearEasingFunction()?;
+  let children = root.Children()?;
+  let point = |(x, y): (f32, f32)| Vector3 { X: x, Y: y, Z: 0.0 };
+  let scale = |(x, y): (f32, f32)| Vector3 { X: x, Y: y, Z: 1.0 };
+
+  // Each look's parts, made once and shared by its particles.
+  let mut looks =
+    Vec::<(ParticleStyle, crate::Color, Vec<ParticlePart>)>::new();
+
+  for particle in &plan.particles {
+    let made = looks.iter().position(|(style, color, _)| {
+      *style == particle.style && *color == particle.color
+    });
+    let index = if let Some(index) = made {
+      index
+    } else {
+      let parts =
+        particle_parts(compositor, particle.style, particle.color)?;
+      looks.push((particle.style, particle.color, parts));
+      looks.len() - 1
+    };
+    let Some((body, parts)) = looks[index].2.split_first() else {
+      continue;
+    };
+
+    let (width, height) = particle.size;
+    let scale_keys = particle.scale_keys();
+
+    let sprite = compositor.CreateSpriteVisual()?;
+    sprite.SetBrush(&body.brush)?;
+    sprite.SetSize(Vector2 {
+      X: width,
+      Y: height,
+    })?;
+    sprite.SetAnchorPoint(Vector2 { X: 0.5, Y: 0.5 })?;
+    sprite.SetCenterPoint(point((width / 2.0, height / 2.0)))?;
+    sprite.SetOffset(point(particle.path[0]))?;
+    sprite.SetRotationAngleInDegrees(particle.angle)?;
+    if let Some((_, first)) = scale_keys.first() {
+      sprite.SetScale(scale(*first))?;
+    }
+    sprite.SetOpacity(0.0)?;
+
+    for part in parts {
+      let size = Vector2 {
+        X: width * part.size.0,
+        Y: height * part.size.1,
+      };
+      let child = compositor.CreateSpriteVisual()?;
+      child.SetBrush(&part.brush)?;
+      child.SetSize(size)?;
+      child.SetAnchorPoint(Vector2 { X: 0.5, Y: 0.5 })?;
+      child.SetCenterPoint(point((size.X / 2.0, size.Y / 2.0)))?;
+      child.SetOffset(point((
+        width * part.center.0,
+        height * part.center.1,
+      )))?;
+      child.SetRotationAngleInDegrees(part.angle)?;
+      sprite.Children()?.InsertAtTop(&child)?;
+    }
+    children.InsertAtTop(&sprite)?;
+
+    let path = compositor.CreateVector3KeyFrameAnimation()?;
+    for (key, position) in particle.path.iter().enumerate() {
+      path.InsertKeyFrameWithEasingFunction(
+        key as f32 / (PATH_KEYS - 1) as f32,
+        point(*position),
+        &linear,
+      )?;
+    }
+
+    let fade = compositor.CreateScalarKeyFrameAnimation()?;
+    for (progress, opacity) in &particle.opacity {
+      fade
+        .InsertKeyFrameWithEasingFunction(*progress, *opacity, &linear)?;
+    }
+
+    let grow = compositor.CreateVector3KeyFrameAnimation()?;
+    for (progress, value) in &scale_keys {
+      grow.InsertKeyFrameWithEasingFunction(
+        *progress,
+        scale(*value),
+        &linear,
+      )?;
+    }
+
+    let start = |property: &HSTRING, animation: KeyFrameAnimation| {
+      animation.SetDuration(particle.duration.into())?;
+      animation.SetDelayTime(particle.delay.into())?;
+      sprite.StartAnimation(property, &animation)
+    };
+    start(h!("Offset"), path.cast()?)?;
+    start(h!("Opacity"), fade.cast()?)?;
+    start(h!("Scale"), grow.cast()?)?;
+
+    if particle.spin.abs() > f32::EPSILON {
+      let turn = compositor.CreateScalarKeyFrameAnimation()?;
+      turn.InsertKeyFrameWithEasingFunction(
+        0.0,
+        particle.angle,
+        &linear,
+      )?;
+      turn.InsertKeyFrameWithEasingFunction(
+        1.0,
+        particle.angle + particle.spin,
+        &linear,
+      )?;
+      start(h!("RotationAngleInDegrees"), turn.cast()?)?;
+    }
+  }
+
+  Ok(ParticleVisual {
+    _target: target,
+    _root: root,
+  })
+}
+
 /// The window overview's background: the monitor's wallpaper as it is,
 /// with a blurred, tinted copy of it fading in on top.
 ///
@@ -1614,7 +2257,7 @@ impl OverviewBackdrop {
 mod tests {
   use windows::Foundation::Numerics::Vector2;
 
-  use super::{ring_geometry, Ring};
+  use super::{glow_band_geometry, rim_geometry, ring_geometry, Ring};
 
   /// A ring's stroke straddles its geometry, so the path sits half a width
   /// inside the overlay on every side and its radius shrinks by that same
@@ -1626,6 +2269,7 @@ mod tests {
       size: Vector2 { X: 800.0, Y: 600.0 },
       width: 4.0,
       corner_radius: 10.0,
+      glow_reach: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 2.0, Y: 2.0 });
@@ -1641,6 +2285,7 @@ mod tests {
       size: Vector2 { X: 800.0, Y: 600.0 },
       width: 0.0,
       corner_radius: 10.0,
+      glow_reach: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
@@ -1657,6 +2302,7 @@ mod tests {
       size: Vector2 { X: 20.0, Y: 10.0 },
       width: 40.0,
       corner_radius: 2.0,
+      glow_reach: 0.0,
     });
 
     assert_eq!(size, Vector2 { X: 0.0, Y: 0.0 });
@@ -1671,9 +2317,62 @@ mod tests {
       size: Vector2 { X: 100.0, Y: 50.0 },
       width: -8.0,
       corner_radius: 4.0,
+      glow_reach: 0.0,
     });
 
     assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
     assert_eq!(size, Vector2 { X: 100.0, Y: 50.0 });
+  }
+
+  fn ring(width: f32, corner_radius: f32, glow_reach: f32) -> Ring {
+    Ring {
+      size: Vector2 { X: 800.0, Y: 600.0 },
+      width,
+      corner_radius,
+      glow_reach,
+    }
+  }
+
+  /// The glow takes the outer part of the overlay, so the ring sits inside
+  /// it, still ending on the tracked window's rect.
+  #[test]
+  fn glow_insets_the_ring_by_its_reach() {
+    let (offset, size, corner_radius) =
+      ring_geometry(ring(4.0, 10.0, 6.0));
+
+    assert_eq!(offset, Vector2 { X: 8.0, Y: 8.0 });
+    assert_eq!(size, Vector2 { X: 784.0, Y: 584.0 });
+    assert!((corner_radius - 8.0).abs() < f32::EPSILON);
+  }
+
+  /// The rim is the innermost pixel of the ring, or all of a thinner one.
+  #[test]
+  fn rim_follows_the_ring_inner_edge() {
+    let ((offset, size, corner_radius), thickness) =
+      rim_geometry(ring(4.0, 10.0, 6.0));
+
+    assert!((thickness - 1.0).abs() < f32::EPSILON);
+    assert_eq!(offset, Vector2 { X: 9.5, Y: 9.5 });
+    assert_eq!(size, Vector2 { X: 781.0, Y: 581.0 });
+    assert!((corner_radius - 6.5).abs() < f32::EPSILON);
+
+    let (_, thin) = rim_geometry(ring(0.5, 10.0, 0.0));
+    assert!((thin - 0.5).abs() < f32::EPSILON);
+  }
+
+  /// Bands run outward from the ring's outer edge, a pixel each, rounding
+  /// off further out.
+  #[test]
+  fn glow_bands_run_outward_from_the_ring() {
+    let (offset, size, corner_radius) =
+      glow_band_geometry(ring(2.0, 2.0, 6.0), 0);
+    assert_eq!(offset, Vector2 { X: 5.5, Y: 5.5 });
+    assert_eq!(size, Vector2 { X: 789.0, Y: 589.0 });
+    assert!((corner_radius - 2.5).abs() < f32::EPSILON);
+
+    let (offset, _, corner_radius) =
+      glow_band_geometry(ring(2.0, 2.0, 6.0), 5);
+    assert_eq!(offset, Vector2 { X: 0.5, Y: 0.5 });
+    assert!((corner_radius - 7.5).abs() < f32::EPSILON);
   }
 }

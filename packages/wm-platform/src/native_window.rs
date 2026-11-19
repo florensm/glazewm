@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowId(pub isize);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowZOrder {
   Normal,
   AfterWindow(WindowId),

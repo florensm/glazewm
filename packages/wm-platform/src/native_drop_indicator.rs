@@ -100,8 +100,7 @@ impl NativeDropIndicator {
     // it floats for the drag.
     window_class::match_z_band(self.window.hwnd(), anchor);
 
-    if let Err(err) = self.window.place(viewport, anchor) {
-      tracing::warn!("{err}");
+    if !self.window.place(viewport, anchor) {
       return;
     }
 

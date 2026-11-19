@@ -8,7 +8,8 @@ use windows::{
   Win32::{
     Foundation::{BOOL, HWND, LPARAM, RECT, TRUE},
     UI::WindowsAndMessaging::{
-      EnumWindows, GetPropW, GetWindowRect, IsWindowVisible,
+      EnumWindows, GetPropW, GetWindow, GetWindowRect, IsWindowVisible,
+      GW_HWNDNEXT,
     },
   },
 };
@@ -20,9 +21,10 @@ use crate::{platform_impl::NativeWindow, window_class};
 /// window's handle), e.g. shades' recolored copy of a window.
 ///
 /// The contract: the companion covers exactly the window's DWM extended
-/// frame bounds, and while the window is cloaked the companion stays shown
-/// but cloaked, so DWM keeps rendering it for thumbnails. Animations then
-/// show the companion in the window's place.
+/// frame bounds from above it in the z-order, and while the window is
+/// cloaked the companion stays shown but cloaked, so DWM keeps rendering
+/// it for thumbnails. Animations then show the companion in the window's
+/// place, and hand the window back once the companion covers it again.
 const COMPANION_PROPERTY: PCWSTR = w!("shades.CompanionOf");
 
 /// How long a scan for companions is reused. A workspace switch creates a
@@ -36,30 +38,53 @@ type Snapshot = (Instant, Vec<(isize, isize)>);
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
 
+/// Most windows [`Companion::covers_window`] walks down past, bounding a
+/// walk of a z-order that changes under it.
+const MAX_Z_ORDER_WALK: usize = 4096;
+
 /// Upper bound on how long a stand-in keeps covering a window after it is
 /// uncloaked, for a companion owner that never puts the companion back on
 /// screen.
 const HANDOFF_MAX_WAIT: Duration = Duration::from_millis(200);
 
-/// Waits out a companion's return to the screen when a stand-in showing
+/// Waits out a companion's return over its window when a stand-in showing
 /// it hands the window back.
 ///
 /// Once the real window is uncloaked, the companion's owner only learns of
-/// it from a window event and shows the companion some time later. Until
-/// then the window shows as it really is (e.g. without shades' colors), so
-/// the stand-in should keep covering it.
+/// it from a window event and shows the companion some time later, as it
+/// restacks the companion over a window raised past it. Until then the
+/// window shows as it really is (e.g. without shades' colors), so the
+/// stand-in should keep covering it.
 #[derive(Debug, Default)]
 pub(crate) struct HandoffWait {
-  /// When the companion was first found still off screen.
+  /// When the companion was first found not covering its window.
   started_at: Option<Instant>,
+  /// Whether the companion covered its window on the last call.
+  covered_last: bool,
 }
 
 impl HandoffWait {
   /// Whether to keep covering the window: `companion` is shown by the
-  /// stand-in and not back on screen yet, and the wait hasn't timed out.
+  /// stand-in and hasn't been over the window since the last call, and
+  /// the wait hasn't timed out.
+  ///
+  /// Called once a tick, a composition apart: a companion found covering
+  /// is handed the window on the next call, once what its owner did to put
+  /// it back has been composited. Handed it at once, the stand-in could go
+  /// a composition before the companion showed, and the window showed
+  /// uncolored for a frame.
   pub(crate) fn awaits(&mut self, companion: Option<Companion>) -> bool {
-    if !companion.is_some_and(Companion::is_off_screen) {
-      return false;
+    companion.is_some_and(|companion| {
+      self.awaits_cover(companion.covers_window())
+    })
+  }
+
+  /// [`awaits`](Self::awaits), for a companion that `covers` its window
+  /// this call or not.
+  fn awaits_cover(&mut self, covers: bool) -> bool {
+    let covered_before = std::mem::replace(&mut self.covered_last, covers);
+    if covers {
+      return !covered_before;
     }
 
     let started = *self.started_at.get_or_insert_with(Instant::now);
@@ -71,6 +96,9 @@ impl HandoffWait {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Companion {
   hwnd: isize,
+
+  /// The window the companion draws over.
+  source: isize,
 
   /// Where the companion's origin lies in the window's own coordinates,
   /// i.e. the window's invisible left and top resize borders.
@@ -102,6 +130,7 @@ impl Companion {
 
     Some(Self {
       hwnd: hwnd.0,
+      source: window.0,
       origin: frame_origin(window)?,
     })
   }
@@ -110,12 +139,14 @@ impl Companion {
     HWND(self.hwnd)
   }
 
-  /// Whether the companion is not on screen yet: hidden or cloaked.
-  pub(crate) fn is_off_screen(self) -> bool {
+  /// Whether the companion is on screen over its window: shown, not
+  /// cloaked, and above the window in the z-order.
+  pub(crate) fn covers_window(self) -> bool {
     // SAFETY: A stale handle just returns false.
     let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
-    !is_visible
-      || NativeWindow::new(self.hwnd).is_cloaked().unwrap_or(false)
+    is_visible
+      && !NativeWindow::new(self.hwnd).is_cloaked().unwrap_or(false)
+      && is_above(self.hwnd(), HWND(self.source))
   }
 
   /// Maps a thumbnail's `(rcSource, rcDestination)`, with the source in
@@ -186,6 +217,24 @@ fn map_rects(
   (src, dst)
 }
 
+/// Whether `upper` is anywhere above `lower` in the z-order.
+fn is_above(upper: HWND, lower: HWND) -> bool {
+  let mut below = upper;
+
+  for _ in 0..MAX_Z_ORDER_WALK {
+    // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
+    below = unsafe { GetWindow(below, GW_HWNDNEXT) };
+    if below.0 == 0 {
+      return false;
+    }
+    if below == lower {
+      return true;
+    }
+  }
+
+  false
+}
+
 /// Where `window`'s visible frame starts within its own rect: past its
 /// invisible left and top resize borders.
 fn frame_origin(window: HWND) -> Option<(i32, i32)> {
@@ -236,7 +285,31 @@ fn scan() -> Vec<(isize, isize)> {
 mod tests {
   use windows::Win32::Foundation::RECT;
 
-  use super::map_rects;
+  use super::{map_rects, HandoffWait};
+
+  #[test]
+  fn hands_back_a_call_after_the_companion_covers() {
+    let mut wait = HandoffWait::default();
+    assert!(wait.awaits_cover(false));
+    assert!(wait.awaits_cover(true));
+    assert!(!wait.awaits_cover(true));
+  }
+
+  #[test]
+  fn waits_a_call_for_a_companion_covering_from_the_start() {
+    let mut wait = HandoffWait::default();
+    assert!(wait.awaits_cover(true));
+    assert!(!wait.awaits_cover(true));
+  }
+
+  #[test]
+  fn waits_again_for_a_companion_that_stops_covering() {
+    let mut wait = HandoffWait::default();
+    assert!(wait.awaits_cover(true));
+    assert!(wait.awaits_cover(false));
+    assert!(wait.awaits_cover(true));
+    assert!(!wait.awaits_cover(true));
+  }
 
   fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
     RECT {

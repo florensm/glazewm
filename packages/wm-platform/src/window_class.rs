@@ -28,8 +28,21 @@ pub(crate) fn create_popup(
   rect: &Rect,
   label: &str,
 ) -> crate::Result<HWND> {
+  create_owned_popup(class_name, ex_style, rect, None, label)
+}
+
+/// Creates a hidden popup as [`create_popup`] does, owned by `owner` if
+/// given, which keeps it above `owner` however that is raised.
+pub(crate) fn create_owned_popup(
+  class_name: PCWSTR,
+  ex_style: WINDOW_EX_STYLE,
+  rect: &Rect,
+  owner: Option<HWND>,
+  label: &str,
+) -> crate::Result<HWND> {
   // SAFETY: `class_name` is a static, null-terminated literal; creation
-  // with a class that isn't registered fails, which is checked below.
+  // with a class that isn't registered fails, as does one with a stale
+  // `owner`, which is checked below.
   let hwnd = unsafe {
     CreateWindowExW(
       ex_style,
@@ -40,7 +53,7 @@ pub(crate) fn create_popup(
       rect.y(),
       rect.width(),
       rect.height(),
-      None,
+      owner.unwrap_or_default(),
       None,
       None,
       None,

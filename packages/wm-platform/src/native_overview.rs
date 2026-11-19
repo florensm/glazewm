@@ -1185,17 +1185,23 @@ impl Overview {
       .frame
       .as_ref()
       .map_or(0, |frame| frame.style.close_duration_ms);
+    let cards = (0..self.screens.len())
+      .map(|index| self.closing_card(index, action))
+      .collect::<Vec<_>>();
+
     if duration == 0 {
       tracing::debug!(
         target: crate::OVERVIEW_LOG_TARGET,
         "Overview closing without a zoom for {action:?}."
       );
+      for (screen, card) in self.screens.iter().zip(&cards) {
+        if let Some(card) = card {
+          screen.celebrate_exit(*card, Duration::ZERO);
+        }
+      }
       return;
     }
 
-    let cards = (0..self.screens.len())
-      .map(|index| self.closing_card(index, action))
-      .collect::<Vec<_>>();
     tracing::debug!(
       target: crate::OVERVIEW_LOG_TARGET,
       "Overview zooming into cards {cards:?} over {duration}ms for \

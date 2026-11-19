@@ -26,6 +26,10 @@ pub struct LoadedConfig {
   /// The main file's contents, or with `include`, the merged config as
   /// YAML.
   pub value_str: String,
+
+  /// Dotted paths of the keys no setting reads, e.g. of settings since
+  /// removed, which are ignored.
+  pub unknown_keys: Vec<String>,
 }
 
 /// Reads the config at `main_path`, along with every file it lists under
@@ -33,21 +37,48 @@ pub struct LoadedConfig {
 pub fn load(main_path: &Path) -> anyhow::Result<LoadedConfig> {
   let main_file = read_file(main_path)?;
   let main_document = parse_document(&main_file)?;
+  let include_paths = include_paths(&main_document, main_path)?;
 
   let mut files = vec![main_file];
-  for path in include_paths(&main_document, main_path)? {
-    files.push(read_file(&path)?);
+  let mut documents = vec![main_document];
+  for path in include_paths {
+    let file = read_file(&path)?;
+    documents.push(parse_document(&file)?);
+    files.push(file);
   }
 
-  combine(&files)
+  let loaded = merge(&files, documents)?;
+  if !loaded.unknown_keys.is_empty() {
+    tracing::warn!(
+      "Config keys ignored, as no setting reads them: {}.",
+      loaded.unknown_keys.join(", ")
+    );
+  }
+
+  Ok(loaded)
 }
 
-/// Merges config files into one config. The first file is the main one,
-/// the only one that may set `include`.
+/// [`merge`] for files not parsed yet.
+#[cfg(test)]
+pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
+  let documents = files
+    .iter()
+    .map(parse_document)
+    .collect::<anyhow::Result<Vec<_>>>()?;
+
+  merge(files, documents)
+}
+
+/// Merges config files, parsed into `documents`, one each, into one
+/// config. The first file is the main one, the only one that may set
+/// `include`.
 ///
 /// Sections are merged key by key, so one can be split across files. A
 /// setting set in more than one file is an error naming both.
-pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
+fn merge(
+  files: &[ConfigFile],
+  documents: Vec<Mapping>,
+) -> anyhow::Result<LoadedConfig> {
   let main_dir = files
     .first()
     .context("No config file to read.")?
@@ -58,8 +89,9 @@ pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
   let mut merged = Mapping::new();
   let mut origins = HashMap::new();
 
-  for (index, file) in files.iter().enumerate() {
-    let mut document = parse_document(file)?;
+  for (index, (file, mut document)) in
+    files.iter().zip(documents).enumerate()
+  {
     let name = display_name(&file.path, &main_dir);
 
     if document.remove(INCLUDE_KEY).is_some() && index != 0 {
@@ -72,9 +104,22 @@ pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
     merge_into(&mut merged, document, &name, "", &mut origins)?;
   }
 
+  let mut unknown_keys = Vec::new();
+  let mut note_unknown = |path: serde_ignored::Path| {
+    let path = path.to_string();
+    // No setting, but read by `load` from the main file itself.
+    if path != INCLUDE_KEY {
+      unknown_keys.push(path);
+    }
+  };
+
   // A lone file is parsed from its text, so that errors point at a line.
   if let [file] = files {
-    let value = serde_yaml::from_str(&file.contents).map_err(|err| {
+    let value = serde_ignored::deserialize(
+      serde_yaml::Deserializer::from_str(&file.contents),
+      &mut note_unknown,
+    )
+    .map_err(|err| {
       anyhow::anyhow!(
         "Invalid config in {}: {err}",
         display_name(&file.path, &main_dir)
@@ -84,15 +129,20 @@ pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
     return Ok(LoadedConfig {
       value,
       value_str: file.contents.clone(),
+      unknown_keys,
     });
   }
 
-  let value = serde_yaml::from_value(Value::Mapping(merged.clone()))
-    .map_err(|err| locate_error(files, &main_dir, &err))?;
+  let value = serde_ignored::deserialize(
+    Value::Mapping(merged.clone()),
+    &mut note_unknown,
+  )
+  .map_err(|err| locate_error(files, &main_dir, &err))?;
 
   Ok(LoadedConfig {
     value,
     value_str: serde_yaml::to_string(&merged)?,
+    unknown_keys,
   })
 }
 
@@ -433,6 +483,35 @@ mod tests {
 
       assert!(err.contains(expected), "{contents}: {err}");
     }
+  }
+
+  #[test]
+  fn reports_keys_no_setting_reads() {
+    let lone = combine(&[file(
+      "config.yaml",
+      "include: []\ngeneral:\n  hide_method: cloak\n  \
+       focus_follows_cursor: true\nbogus: 1\n",
+    )])
+    .unwrap();
+
+    assert!(lone.value.general.focus_follows_cursor);
+    assert_eq!(lone.unknown_keys, ["general.hide_method", "bogus"]);
+
+    let merged = combine(&[
+      file("config.yaml", "include: [a.yaml]\n"),
+      file(
+        "a.yaml",
+        "window_effects:\n  overlay_tracking: true\n\
+         keybindings:\n  - commands: [close]\n    bindings: [alt+q]\n    \
+         bogus: 1\n",
+      ),
+    ])
+    .unwrap();
+
+    assert_eq!(
+      merged.unknown_keys,
+      ["window_effects.overlay_tracking", "keybindings.0.bogus"]
+    );
   }
 
   #[test]

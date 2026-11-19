@@ -4,6 +4,7 @@
 #[cfg(not(target_os = "windows"))]
 compile_error!("GlazeWM only supports Windows.");
 
+mod backdrop_source;
 mod click_guard;
 mod companion;
 mod dispatcher;
@@ -13,6 +14,8 @@ mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;
+mod hidden_alpha;
+pub mod isolation;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;
@@ -21,9 +24,11 @@ mod native_border_overlay;
 mod native_drop_indicator;
 mod native_iris_overlay;
 mod native_overview;
+mod native_particles;
 mod native_stack_tab_bar;
 mod native_surrogate;
 mod native_window;
+mod overlay_copies;
 mod overlay_window;
 mod overview_chrome;
 mod overview_effects;
@@ -34,6 +39,7 @@ mod overview_state;
 mod overview_tab_bars;
 mod overview_thumbnails;
 mod paint;
+mod particles;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
@@ -73,6 +79,10 @@ pub use native_stack_tab_bar::NativeStackTabBar;
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 pub use native_window::*;
 pub use overlay_window::Overlay;
+pub use particles::{
+  ParticleBurst, ParticleEdges, ParticleEffects, ParticleLook,
+  ParticleSource, ParticleStyle,
+};
 pub use platform_event::*;
 pub use resize_session::{
   sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,

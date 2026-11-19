@@ -133,6 +133,9 @@ pub struct WmState {
   /// Tab bar settings resolved from the config, cleared on reload.
   pub tab_bar_settings: Option<crate::tab_bars::TabBarSettings>,
 
+  /// Particle bursts noted for the next sync, and their thread.
+  pub particles: crate::particles::Particles,
+
   /// Keeps clicks from the windows a click should only focus (see
   /// `layout::scrolling::sync_click_guard`).
   pub click_guard: ClickGuard,
@@ -176,6 +179,7 @@ impl WmState {
       tab_bars: HashMap::new(),
       tab_bar_thread: std::cell::OnceCell::new(),
       tab_bar_settings: None,
+      particles: crate::particles::Particles::default(),
       click_guard: ClickGuard::new(guarded_click_tx),
     }
   }

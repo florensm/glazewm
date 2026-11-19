@@ -21,6 +21,9 @@ pub fn close_window(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   if animate_away(window, AwayTransition::Close, state, config) {
+    // Detached below, before the OS reports it gone.
+    crate::particles::note_close(state, window);
+
     // Cloaked only now that the surrogate covers it: the slow
     // `IApplicationView` cloak could otherwise hide the window a frame
     // before the surrogate is composited, exposing the desktop.

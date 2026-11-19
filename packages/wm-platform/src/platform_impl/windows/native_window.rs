@@ -170,7 +170,12 @@ impl NativeWindow {
         rect.bottom,
       ))
     } else {
-      warn!("Failed to get window's frame position. Falling back to border position.");
+      // Routine for a window being destroyed, which the fallback then
+      // fails for too.
+      tracing::debug!(
+        "Failed to get window's frame position. Falling back to border \
+         position."
+      );
       self.frame_with_shadows()
     }
   }

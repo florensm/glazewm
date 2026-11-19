@@ -399,6 +399,7 @@ fn overview_frame(
       highlight_duration_ms: overview.highlight_duration_ms,
       bounce: overview.bounce,
       effects: overview.effects,
+      particles: config.value.animations.particles.look(),
     },
   }
 }
@@ -1254,9 +1255,9 @@ mod tests {
   }
 
   #[test]
-  fn a_border_reaches_past_its_window_by_its_width() {
+  fn a_border_reaches_past_its_window_by_its_width_and_glow() {
     use wm_platform::{
-      BorderOverlayParams, Color, NativeBorderOverlay, Overlay,
+      BorderGlow, BorderOverlayParams, Color, NativeBorderOverlay, Overlay,
     };
 
     use super::outset;
@@ -1267,11 +1268,24 @@ mod tests {
       width: 3.0,
       corner_radius: 8.0,
       opacity: 1.0,
+      highlight: 0.0,
+      rim: 0.0,
+      glow: BorderGlow::default(),
     };
 
     let bounds = NativeBorderOverlay::bounds(&frame, &params);
     assert_eq!(outset(&frame, &bounds), [3, 3, 3, 3]);
     assert_eq!(outset(&frame, &frame), [0; 4], "as a backdrop does");
+
+    let glowing = BorderOverlayParams {
+      glow: BorderGlow {
+        reach: 6.0,
+        opacity: 0.5,
+      },
+      ..params
+    };
+    let bounds = NativeBorderOverlay::bounds(&frame, &glowing);
+    assert_eq!(outset(&frame, &bounds), [9, 9, 9, 9]);
   }
 
   #[test]

@@ -29,7 +29,7 @@ impl OverlayParams {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::Color;
+  use crate::{BorderGlow, Color};
 
   fn backdrop(opacity: f32) -> BackdropOverlayParams {
     BackdropOverlayParams {
@@ -64,6 +64,9 @@ mod tests {
       width: 2.0,
       corner_radius: 8.0,
       opacity,
+      highlight: 0.0,
+      rim: 0.0,
+      glow: BorderGlow::default(),
     }
   }
 

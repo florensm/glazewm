@@ -15,7 +15,7 @@ use wm_platform::{
 };
 
 use crate::{
-  animation::{AnimationPositionResult, WorkspaceSwitchEntry},
+  animation::{AnimationPositionResult, HandBack, WorkspaceSwitchEntry},
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, Container, WindowContainer},
@@ -69,6 +69,10 @@ pub fn platform_sync(
 
   let focused_container =
     state.focused_container().context("No focused container.")?;
+
+  // Before the scroll view below draws columns moving with the focus
+  // change, so their peeks show the fade from their first frame.
+  start_focus_fades(state, &focused_container, config);
 
   // A focus change or relayout can scroll a scrolling layout, which then
   // moves the rest of its columns too. That includes focus the OS moved
@@ -195,6 +199,9 @@ pub fn platform_sync(
     tracing::warn!("Failed to sync the click guard: {err}");
   }
 
+  // Once the layout has settled, so resized windows' new rects are known.
+  crate::particles::show_particles(state, config);
+
   state.pending_sync.clear();
 
   Ok(())
@@ -253,6 +260,142 @@ pub(crate) fn apply_focus_effects(
         let _ = window.native().set_transparency(&opacity);
       }
     }
+  }
+}
+
+/// Fades the borders and backdrops of the window gaining focus and the one
+/// losing it from their old focus state's style to their new one's (see
+/// `FocusFades`), rather than switching them at once.
+///
+/// Keyed to the WM's focus, which overlays and peeks are drawn from,
+/// rather than `prev_effects_window`: that follows the OS confirming
+/// focus, which a scrolling layout defers until its scroll lands, long
+/// after the overlays took the new style.
+///
+/// Their transparency still switches at once: a stand-in that takes a
+/// semi-transparent window over hides it by its alpha and gives back the
+/// alpha it found, so one faded while it moved would keep an alpha from
+/// mid-fade.
+fn start_focus_fades(
+  state: &mut WmState,
+  focused_container: &Container,
+  config: &UserConfig,
+) {
+  let focused = focused_container.as_window_container().ok();
+  let focused_id = focused.as_ref().map(CommonGetters::id);
+  let previous_id = state.animation_manager.restyle_focus(focused_id);
+
+  if previous_id == focused_id
+    || !config.value.animations.focus_change.enabled
+    || animations_suppressed(state)
+  {
+    return;
+  }
+
+  let previous = previous_id.and_then(|id| state.window_by_id(id));
+  let fades = focused
+    .map(|window| (window.effect_set(false), EffectSet::Focused, window))
+    .into_iter()
+    .chain(previous.map(|window| {
+      (EffectSet::Focused, window.effect_set(false), window)
+    }));
+
+  for (from, to, window) in fades {
+    state.animation_manager.start_focus_fade(
+      window.id(),
+      from,
+      to,
+      config,
+    );
+  }
+}
+
+/// `window_id`'s overlay of kind `O` as it is drawn now: blended across
+/// its focus fade toward `set` (see `FocusFades`), or in `set`'s style.
+pub(crate) fn focus_blend<O: SyncableOverlay>(
+  state: &WmState,
+  window_id: uuid::Uuid,
+  set: EffectSet,
+  config: &UserConfig,
+) -> Option<StyleBlend<O::Params>> {
+  match state.animation_manager.focus_mix(&window_id, set, config) {
+    Some(mix) => {
+      let from = O::params_for(mix.from, config);
+      if from.is_none() && O::shows_at_once(mix.from, mix.to, config) {
+        return O::params_for(mix.to, config).map(StyleBlend::settled);
+      }
+
+      StyleBlend::between(
+        from,
+        O::params_for(mix.to, config),
+        mix.t,
+        O::transparent,
+      )
+    }
+    None => O::params_for(set, config).map(StyleBlend::settled),
+  }
+}
+
+/// Draws the windows fading between focus states (see `FocusFades`) one
+/// frame further, and settles those done. Only those at rest: peeks draw
+/// theirs blended too (see `scroll_view::track_overlays`).
+///
+/// Other stand-ins end the fade: a workspace switch blends between focus
+/// states itself, and a move or close draws one style. Left running, the
+/// fade would take the window back to mid-fade once it lands.
+pub(crate) fn advance_focus_fades(
+  state: &mut WmState,
+  config: &UserConfig,
+) {
+  let window_ids = state.animation_manager.focus_fade_windows(config);
+  let focused_id = state.focused_container().map(|focused| focused.id());
+
+  for id in window_ids {
+    let manager = &mut state.animation_manager;
+    if manager.has_active_surrogate(&id)
+      && !manager.scroll_view.owns_window(&id)
+    {
+      manager.cancel_focus_fade(&id);
+      continue;
+    }
+
+    let Some(window) = state.window_by_id(id) else {
+      continue;
+    };
+    if overlays_tracked_elsewhere(state, id)
+      || overlays_hidden(state, &window)
+    {
+      continue;
+    }
+
+    let set = window.effect_set(focused_id == Some(id));
+    advance_focus_fade::<NativeBackdropOverlay>(
+      state, &window, set, config,
+    );
+    advance_focus_fade::<NativeBorderOverlay>(state, &window, set, config);
+  }
+}
+
+/// Draws `window`'s overlay of kind `O`, if shown, where its focus fade
+/// toward `set` is, hiding it once a fade-out is done.
+fn advance_focus_fade<O: SyncableOverlay>(
+  state: &mut WmState,
+  window: &WindowContainer,
+  set: EffectSet,
+  config: &UserConfig,
+) {
+  let blend = focus_blend::<O>(state, window.id(), set, config)
+    .filter(|_| !O::suppressed_for(window, config));
+  let Some(overlay) =
+    overlay_mut::<O>(&mut state.window_overlays, window.id())
+      .filter(|overlay| overlay.is_visible())
+  else {
+    return;
+  };
+
+  match blend {
+    Some(blend) => overlay.apply_blend(blend),
+    None => overlay.hide(),
   }
 }
 
@@ -434,6 +577,18 @@ fn commit_pending_cloaks(
 
   let _scope = perf::scope(Stage::Cloak);
 
+  // Scrolling layout columns are covered already: `sync_scroll_view`
+  // flushes after putting up their peeks, earlier in the same pass, so a
+  // pass cloaking only those skips a second wait of up to a frame before
+  // the scroll's first.
+  let flushes = !overlay_batch.is_empty()
+    || pending.iter().any(|cloak| {
+      !state
+        .animation_manager
+        .scroll_view
+        .is_composited(&cloak.window.id())
+    });
+
   overlay_batch.commit();
 
   // Flush before cloaking so DWM renders one frame with every queued
@@ -441,7 +596,9 @@ fn commit_pending_cloaks(
   // thumbnail populated while the real windows are still visible. Without
   // this, thumbnail content may not be ready for the first composition
   // after the cloak, producing a blank frame at animation start.
-  wm_platform::dwm_flush();
+  if flushes {
+    wm_platform::dwm_flush();
+  }
 
   for PendingCloak {
     window,
@@ -449,6 +606,11 @@ fn commit_pending_cloaks(
     target_rect,
   } in pending
   {
+    // A scrolling layout's peek takes over as its window is cloaked.
+    state
+      .animation_manager
+      .scroll_view
+      .take_over(&window.id(), &window.native());
     let _ = window.native().set_cloaked(true);
 
     // Pre-position the cloaked window at its target rect so it appears
@@ -523,6 +685,44 @@ fn commit_pending_cloaks(
     {
       session.mark_session_cloaked();
     }
+  }
+}
+
+/// Moves a scrolling layout column's cloaked real window to `target_rect`
+/// when its move is retargeted mid-way, as `commit_pending_cloaks` did
+/// when it cloaked it, so it lands where it already is (see
+/// `reposition_window`'s `already_at_rect`). Moved there only as it is
+/// uncloaked, its pixels would be discarded, leaving it blank for as long
+/// as its app takes to repaint.
+fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
+  use wm_platform::{
+    discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
+  };
+
+  let current = window.native().frame_with_shadows().ok();
+  if current.as_ref() == Some(target_rect) {
+    return;
+  }
+
+  // Asynchronous, as nothing shows the window until it lands, and with a
+  // frame change only when resized: a pure move needs no repaint.
+  let discard = discard_bits_if_resized(current.as_ref(), target_rect);
+  let mut flags = SWP_NOZORDER
+    | SWP_NOACTIVATE
+    | SWP_NOSENDCHANGING
+    | SWP_ASYNCWINDOWPOS
+    | discard;
+  if discard == SWP_NOCOPYBITS {
+    flags |= SWP_FRAMECHANGED;
+  }
+
+  if let Err(err) = window.native().set_window_pos(
+    &WindowZOrder::Normal,
+    target_rect,
+    flags,
+  ) {
+    debug!("Failed to move retargeted column {window}: {err}.");
   }
 }
 
@@ -725,12 +925,35 @@ fn redraw_containers(
             config,
           );
 
-          // A backdrop on either side switches the surrogate to `Live`
-          // mode, so the steady-state backdrop overlay is repositioned
-          // onto its footprint each tick and the frosted-glass effect
-          // stays visible (and can fade) while the workspace slides.
-          let overlay_tint =
-            from.backdrop.or(to.backdrop).map(|p| p.tint.to_abgr());
+          // A backdrop rides in a surrogate pinned to the viewport as
+          // copies of it (see `WorkspaceSurrogate::carry_backdrop`), in
+          // the style the window shows at its end of the switch. Only one
+          // that can't be copied switches the surrogate to `Live` mode,
+          // so the steady-state backdrop overlay is repositioned onto its
+          // footprint each tick instead.
+          let is_live = [from.backdrop, to.backdrop]
+            .iter()
+            .flatten()
+            .any(|params| !params.is_copyable());
+          let overlay_tint = from
+            .backdrop
+            .or(to.backdrop)
+            .filter(|_| is_live)
+            .map(|p| p.tint.to_abgr());
+          let copied_backdrop = if is_incoming {
+            to.backdrop
+          } else {
+            from.backdrop
+          }
+          .filter(|_| !is_live);
+          // Before anything else is copied into it: the backdrop goes
+          // under the window, the rest over it.
+          let carry_backdrop = |mut surrogate: WorkspaceSurrogate| {
+            if let Some(params) = copied_backdrop {
+              surrogate.carry_backdrop(params);
+            }
+            surrogate
+          };
 
           if is_incoming {
             let surrogate = window
@@ -765,7 +988,8 @@ fn redraw_containers(
                   e
                 })
                 .ok()
-              });
+              })
+              .map(carry_backdrop);
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
@@ -776,6 +1000,7 @@ fn redraw_containers(
                 surrogate,
                 is_incoming: true,
                 was_focused,
+                hand_back: HandBack::Pending,
               },
             ));
           } else {
@@ -820,13 +1045,15 @@ fn redraw_containers(
               tracing::warn!("Failed to create outgoing surrogate: {e}.");
               e
             })
-            .ok();
+            .ok()
+            .map(carry_backdrop);
             ws_windows.push((
               id,
               WorkspaceSwitchEntry {
                 surrogate,
                 is_incoming: false,
                 was_focused,
+                hand_back: HandBack::Pending,
               },
             ));
           }
@@ -851,7 +1078,6 @@ fn redraw_containers(
             focused_container.id(),
             config,
           );
-
           // Show outgoing surrogates before flushing: real windows are
           // still active so their DWM thumbnails are immediately
           // warm. For stationary (non-slide) styles, also show
@@ -1000,6 +1226,27 @@ fn redraw_containers(
         }
       }
       _ => WindowZOrder::Normal,
+    };
+
+    // A window a scrolling layout's peek hands back is uncloaked right
+    // under any companion (e.g. shades' recolored copy) and above its
+    // backdrop and border, all stacked around where it is. It keeps its
+    // place, which `Normal` does for a non-topmost window; columns don't
+    // overlap, so their order is moot. Going after the focused window
+    // instead moved it past them: below its opaque backdrop, where one
+    // frame makes DWM stop drawing it until something above it changes,
+    // or above its companion, showing it uncolored until the companion's
+    // app restacked.
+    let z_order = match z_order {
+      WindowZOrder::AfterWindow(_)
+        if state
+          .animation_manager
+          .scroll_view
+          .is_handing_back(&window.id()) =>
+      {
+        WindowZOrder::Normal
+      }
+      z_order => z_order,
     };
 
     // Set the z-order of the window.
@@ -1360,9 +1607,15 @@ fn redraw_containers(
           // `pending_cloaks`.
           pending_cloaks.push(PendingCloak {
             window: (*window).clone(),
-            z_order: z_order.clone(),
+            z_order,
             target_rect: real_rect.clone(),
           });
+        } else if state
+          .animation_manager
+          .scroll_view
+          .owns_window(&window.id())
+        {
+          follow_retargeted_column(window, &real_rect);
         }
       }
       AnimationPositionResult::Apply(ref apply_rect) => {
@@ -1411,9 +1664,9 @@ fn redraw_containers(
         let mut did_move = false;
 
         // A window cloaked or uncloaked under a workspace switch's
-        // surrogate is first hidden by its alpha, so the swap with the
-        // surrogate lands in one frame however late the shell's
-        // (un)cloak does. See `WorkspaceSurrogate::take_over`.
+        // surrogate or a scrolling layout's peek is first hidden by its
+        // alpha, so the swap with it lands in one frame however late the
+        // shell's (un)cloak does. See `HiddenAlpha`.
         if is_outgoing_switch {
           state
             .animation_manager
@@ -1426,6 +1679,11 @@ fn redraw_containers(
           state
             .animation_manager
             .prepare_ws_hand_back(window.id(), &window.native());
+        } else if is_visible {
+          state
+            .animation_manager
+            .scroll_view
+            .prepare_hand_back(&window.id(), &window.native());
         }
 
         if !already_positioned {
@@ -2120,16 +2378,16 @@ fn overlay_mut<O: SyncableOverlay>(
 pub(crate) fn upsert_clipped_overlay<O: SyncableOverlay>(
   overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
-  params: O::Params,
+  blend: StyleBlend<O::Params>,
   rect: &Rect,
   clip: &Rect,
   anchor: HWND,
   batch: &mut SurrogateBatch,
 ) {
   if let Some(overlay) =
-    overlay_entry::<O>(overlays, window_id, params, rect, anchor)
+    overlay_entry::<O>(overlays, window_id, blend.from, rect, anchor)
   {
-    overlay.apply(params);
+    overlay.apply_blend(blend);
     overlay.defer_clipped_rect(batch, rect, clip, anchor);
   }
 }
@@ -2187,14 +2445,19 @@ fn follow_frame<O: SyncableOverlay>(
   config: &UserConfig,
   batch: &mut SurrogateBatch,
 ) {
-  let params = O::params_for(window.effect_set(is_focused), config)
-    .filter(|_| !O::suppressed_for(window, config));
+  let blend = focus_blend::<O>(
+    state,
+    window.id(),
+    window.effect_set(is_focused),
+    config,
+  )
+  .filter(|_| !O::suppressed_for(window, config));
 
-  if let Some(params) = params {
-    upsert_overlay::<O>(
+  if let Some(blend) = blend {
+    upsert_blended_overlay::<O>(
       &mut state.window_overlays,
       window.id(),
-      params,
+      blend,
       &O::overlay_rect(window, frame),
       overlay_z_anchor(window),
       batch,
@@ -2462,7 +2725,7 @@ pub(crate) fn upsert_pinned_border_overlay(
 
 /// Returns `window_id`'s tracked overlay, creating it at `rect` with
 /// `params` when absent. `None` when creation failed, which is logged.
-fn overlay_entry<'a, O: SyncableOverlay>(
+pub(crate) fn overlay_entry<'a, O: SyncableOverlay>(
   overlays: &'a mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   params: O::Params,
@@ -2490,6 +2753,17 @@ fn overlay_entry<'a, O: SyncableOverlay>(
 }
 
 /// Resolves the effects a surrogate needs to stand in for a window:
+/// Alpha of a window taking `set`, from its transparency.
+fn window_alpha(set: EffectSet, config: &UserConfig) -> u8 {
+  let transparency =
+    &config.value.window_effects.for_set(set).transparency;
+  if transparency.enabled {
+    transparency.opacity.to_alpha()
+  } else {
+    u8::MAX
+  }
+}
+
 /// `(effect_opacity, corner_style, overlay_params)`.
 ///
 /// Snapshotted onto the `ResizeSession` rather than re-read live, because
@@ -2501,19 +2775,13 @@ pub(crate) fn surrogate_effects_for(
   set: EffectSet,
   config: &UserConfig,
 ) -> (u8, CornerStyle, OverlayParams) {
-  let effect_cfg = config.value.window_effects.for_set(set);
-
-  let effect_opacity = if effect_cfg.transparency.enabled {
-    effect_cfg.transparency.opacity.to_alpha()
-  } else {
-    u8::MAX
-  };
-
-  let corner_style = effect_cfg.resolved_corner_style();
-
   (
-    effect_opacity,
-    corner_style,
+    window_alpha(set, config),
+    config
+      .value
+      .window_effects
+      .for_set(set)
+      .resolved_corner_style(),
     overlay_params_for(set, config),
   )
 }
@@ -2560,11 +2828,11 @@ pub(crate) fn border_overlay_params_for(
   // the real managed window's own DWM-rendered corners.
   let corner_radius = effect_cfg.window_corner_radius_px();
 
-  Some(
-    effect_cfg
-      .border
-      .to_overlay_params(target_color, corner_radius),
-  )
+  Some(effect_cfg.border.to_overlay_params(
+    target_color,
+    corner_radius,
+    &config.value.gaps,
+  ))
 }
 
 /// Resolves the backdrop overlay params of a window taking `set`, or
@@ -2655,6 +2923,16 @@ pub(crate) trait SyncableOverlay: Overlay {
   /// the effect is off on one side of it.
   fn transparent(params: Self::Params) -> Self::Params;
 
+  /// Whether this effect, off in `from`'s style, shows in full at once
+  /// rather than fading in as a window takes `to`'s.
+  fn shows_at_once(
+    _from: EffectSet,
+    _to: EffectSet,
+    _config: &UserConfig,
+  ) -> bool {
+    false
+  }
+
   /// The rect this overlay tracks for `window` shown at `frame`.
   fn overlay_rect(_window: &WindowContainer, frame: &Rect) -> Rect {
     frame.clone()
@@ -2685,6 +2963,17 @@ impl SyncableOverlay for NativeBackdropOverlay {
       opacity: 0.0,
       ..params
     }
+  }
+
+  /// A window's transparency switches at once (see `start_focus_fades`),
+  /// so one turning more see-through would show what is behind it
+  /// unblurred while its backdrop faded in.
+  fn shows_at_once(
+    from: EffectSet,
+    to: EffectSet,
+    config: &UserConfig,
+  ) -> bool {
+    window_alpha(to, config) < window_alpha(from, config)
   }
 }
 
@@ -2747,7 +3036,7 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// Windows with a `Live`-mode (backdrop-tracked) workspace-switch
 /// surrogate are owned entirely by the per-tick tracker in
 /// `AnimationManager::update_internal` for the whole slide plus the
-/// `pending_ws_cleanup` grace tick -- it updates `tint`/`blur_amount`/
+/// `pending_ws_cleanup` grace ticks -- it updates `tint`/`blur_amount`/
 /// `corner_radius`/`rect` every tick using the surrogate's own live
 /// position, which this function cannot do since it isn't invoked on most
 /// mid-slide ticks (only when `platform_sync` itself runs). Leave these
@@ -2768,8 +3057,8 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// is running, the real window is cloaked at its target rect; reading
 /// `frame()` would return the target position while the surrogate is still
 /// mid-animation, causing the overlay to jump ahead. Also hides for
-/// windows on inactive workspaces; the entry stays alive so it can be
-/// re-shown immediately when the workspace returns.
+/// minimized windows and windows on inactive workspaces; the entry stays
+/// alive so it can be re-shown immediately when the window returns.
 ///
 /// `full_z_order_resync` is `true` for one tick after any `place_at_top`
 /// surrogate goes up, which can silently displace *any* window's overlay
@@ -2848,29 +3137,28 @@ fn sync_overlays<O: SyncableOverlay>(
       wanted_ids.insert(window.id());
     }
 
-    // The animation trackers own these overlays outright -- including
-    // fading one out whose effect is off on the window's new focus side,
-    // which the hide below would otherwise cut short on the first tick.
-    if state.animation_manager.has_live_ws_surrogate(&window.id())
-      || state
-        .animation_manager
-        .has_live_resize_tracker(&window.id())
-      || state
-        .animation_manager
-        .scroll_view
-        .draws_window(&window.id())
-    {
+    if overlays_tracked_elsewhere(state, window.id()) {
       continue;
     }
 
-    let params = match window.effect_set(is_focused) {
-      EffectSet::Focused => focused_params,
-      EffectSet::Urgent => urgent_params,
-      EffectSet::Other => other_params,
+    let set = window.effect_set(is_focused);
+    let blend = if state
+      .animation_manager
+      .focus_mix(&window.id(), set, config)
+      .is_some()
+    {
+      focus_blend::<O>(state, window.id(), set, config)
+    } else {
+      match set {
+        EffectSet::Focused => focused_params,
+        EffectSet::Urgent => urgent_params,
+        EffectSet::Other => other_params,
+      }
+      .map(StyleBlend::settled)
     }
     .filter(|_| !O::suppressed_for(window, config));
 
-    let Some(params) = params else {
+    let Some(blend) = blend else {
       // Configured, but not for this window's effect set, or suppressed
       // for this particular window: hide rather than destroy.
       // Guarded on `is_visible` because `hide` issues a `ShowWindow`
@@ -2885,12 +3173,7 @@ fn sync_overlays<O: SyncableOverlay>(
       continue;
     };
 
-    let should_hide =
-      state.animation_manager.has_active_surrogate(&window.id())
-        || !window.workspace().is_some_and(|ws| ws.is_displayed())
-        || is_hidden_in_layout(window);
-
-    if should_hide {
+    if overlays_hidden(state, window) {
       if let Some(overlay) =
         overlay_mut::<O>(&mut state.window_overlays, window.id())
       {
@@ -2905,7 +3188,7 @@ fn sync_overlays<O: SyncableOverlay>(
       O::slot(state.window_overlays.entry(window.id()).or_default());
 
     if let Some(overlay) = slot {
-      overlay.apply(params);
+      overlay.apply_blend(blend);
 
       // Always re-query and re-show when the overlay isn't currently
       // visible, even if this window isn't part of this tick's redraw --
@@ -2974,9 +3257,11 @@ fn sync_overlays<O: SyncableOverlay>(
         continue;
       };
 
-      match O::create(&O::overlay_rect(window, &rect), params, anchor) {
-        Ok(overlay) => {
+      match O::create(&O::overlay_rect(window, &rect), blend.from, anchor)
+      {
+        Ok(mut overlay) => {
           debug!("{} overlay created for {}.", O::LABEL, window.id());
+          overlay.apply_blend(blend);
           *slot = Some(overlay);
         }
         Err(err) => {
@@ -3042,6 +3327,36 @@ fn sync_overlays<O: SyncableOverlay>(
   }
 }
 
+/// Whether an animation tracker draws `window_id`'s overlays, which
+/// `sync_overlays` then leaves to it -- including fading one out whose
+/// effect is off on the window's new focus side, which steady state would
+/// otherwise hide on the first tick.
+fn overlays_tracked_elsewhere(
+  state: &WmState,
+  window_id: uuid::Uuid,
+) -> bool {
+  let manager = &state.animation_manager;
+
+  manager.has_live_ws_surrogate(&window_id)
+    || manager.has_live_resize_tracker(&window_id)
+    || manager.scroll_view.draws_window(&window_id)
+}
+
+/// Whether `window`'s overlays are hidden in steady state: behind a
+/// surrogate, on a workspace not shown, or with the window not shown.
+///
+/// Minimized windows show nothing, so their overlays are hidden rather
+/// than left to follow them off screen: an overlay is only re-placed when
+/// its window is redrawn, which one its app minimizes itself (e.g.
+/// `AnyDesk`'s helper window) needn't be, so it stays at its last rect,
+/// seen through the gaps between windows.
+fn overlays_hidden(state: &WmState, window: &WindowContainer) -> bool {
+  state.animation_manager.has_active_surrogate(&window.id())
+    || !window.workspace().is_some_and(|ws| ws.is_displayed())
+    || window.state() == WindowState::Minimized
+    || is_hidden_in_layout(window)
+}
+
 /// Puts every overlay and tab bar back behind its window once per
 /// animation tick while any window is still settling after a z-order
 /// change. See `AnimationManager::settle_overlay_z_order`.
@@ -3093,4 +3408,29 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
   }
 
   resync_overlays_and_tab_bars(state);
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{EffectSet, ParsedConfig};
+  use wm_platform::{NativeBackdropOverlay, OpacityValue};
+
+  use super::SyncableOverlay;
+  use crate::user_config::UserConfig;
+
+  #[test]
+  fn backdrops_show_at_once_behind_windows_turning_see_through() {
+    let mut parsed = ParsedConfig::default();
+    let focused = &mut parsed.window_effects.focused_window.transparency;
+    focused.enabled = true;
+    focused.opacity = OpacityValue::from_alpha(204);
+    parsed.window_effects.other_windows.transparency.enabled = false;
+    let config = UserConfig::from_parsed(parsed);
+
+    let shows_at_once =
+      |from, to| NativeBackdropOverlay::shows_at_once(from, to, &config);
+    assert!(shows_at_once(EffectSet::Other, EffectSet::Focused));
+    assert!(!shows_at_once(EffectSet::Focused, EffectSet::Other));
+    assert!(!shows_at_once(EffectSet::Other, EffectSet::Other));
+  }
 }

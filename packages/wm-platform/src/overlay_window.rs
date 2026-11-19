@@ -1,14 +1,17 @@
-use std::sync::OnceLock;
+use std::{
+  collections::HashSet,
+  sync::{LazyLock, Mutex, OnceLock},
+};
 
 use windows::{
   core::{w, PCWSTR},
   Win32::{
-    Foundation::HWND,
+    Foundation::{E_ACCESSDENIED, HWND},
     UI::WindowsAndMessaging::{
       DestroyWindow, GetClassNameW, GetWindow, SetLayeredWindowAttributes,
-      SetWindowPos, ShowWindow, GW_HWNDPREV, LWA_ALPHA, SWP_HIDEWINDOW,
-      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
-      SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WS_EX_LAYERED,
+      SetWindowPos, ShowWindow, GW_HWNDPREV, HWND_BOTTOM, LWA_ALPHA,
+      SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
+      SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WS_EX_LAYERED,
       WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
       WS_EX_TRANSPARENT,
     },
@@ -27,6 +30,7 @@ pub(crate) enum OverlayKind {
   Backdrop,
   Border,
   DropIndicator,
+  BackdropSource,
 }
 
 impl OverlayKind {
@@ -35,6 +39,7 @@ impl OverlayKind {
       Self::Backdrop => w!("GlazeWM_BackdropOverlay"),
       Self::Border => w!("GlazeWM_BorderOverlay"),
       Self::DropIndicator => w!("GlazeWM_DropIndicator"),
+      Self::BackdropSource => w!("GlazeWM_BackdropSource"),
     }
   }
 
@@ -59,18 +64,20 @@ impl OverlayKind {
   /// while thumbnails of it still draw it (see
   /// [`OverlayWindow::set_alpha`]).
   fn is_layered(self) -> bool {
-    matches!(self, Self::Border)
+    matches!(self, Self::Border | Self::BackdropSource)
   }
 
   fn registered(self) -> &'static OnceLock<()> {
     static BACKDROP: OnceLock<()> = OnceLock::new();
     static BORDER: OnceLock<()> = OnceLock::new();
     static DROP_INDICATOR: OnceLock<()> = OnceLock::new();
+    static BACKDROP_SOURCE: OnceLock<()> = OnceLock::new();
 
     match self {
       Self::Backdrop => &BACKDROP,
       Self::Border => &BORDER,
       Self::DropIndicator => &DROP_INDICATOR,
+      Self::BackdropSource => &BACKDROP_SOURCE,
     }
   }
 
@@ -80,6 +87,7 @@ impl OverlayKind {
       Self::Backdrop => "Backdrop overlay",
       Self::Border => "Border overlay",
       Self::DropIndicator => "Drop indicator",
+      Self::BackdropSource => "Backdrop source",
     }
   }
 }
@@ -180,17 +188,14 @@ impl OverlayWindow {
     self.is_visible = false;
   }
 
-  /// Moves the window to `rect` behind `anchor` and shows it.
+  /// Moves the window to `rect` behind `anchor` and shows it, returning
+  /// whether it did. Logs a failure itself.
   ///
   /// Leaves the tracked state untouched on failure, so the next call
   /// retries.
-  pub(crate) fn place(
-    &mut self,
-    rect: &Rect,
-    anchor: HWND,
-  ) -> crate::Result<()> {
+  pub(crate) fn place(&mut self, rect: &Rect, anchor: HWND) -> bool {
     // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
-    unsafe {
+    let placed = unsafe {
       SetWindowPos(
         self.hwnd(),
         window_class::insert_after_point(anchor),
@@ -200,17 +205,82 @@ impl OverlayWindow {
         rect.height(),
         SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
       )
+    };
+
+    if let Err(err) = placed {
+      self.report_place_failure(anchor, &err);
+      return false;
+    }
+
+    self.anchor = anchor.0;
+    self.is_visible = true;
+    true
+  }
+
+  /// Shows the window at `rect` at the bottom of the z-order, for a window
+  /// only thumbnails of it show (see [`set_alpha`](Self::set_alpha)):
+  /// there nothing settles behind or in front of it, and where it is
+  /// doesn't change what they show.
+  pub(crate) fn place_at_bottom(
+    &mut self,
+    rect: &Rect,
+  ) -> crate::Result<()> {
+    // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
+    unsafe {
+      SetWindowPos(
+        self.hwnd(),
+        HWND_BOTTOM,
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+      )
     }
     .map_err(|err| {
       crate::Error::Platform(format!(
-        "{} SetWindowPos failed: {err}.",
+        "{} placement failed: {err}.",
         self.kind.label()
       ))
     })?;
 
-    self.anchor = anchor.0;
+    self.anchor = HWND_BOTTOM.0;
     self.is_visible = true;
     Ok(())
+  }
+
+  /// Logs a failed [`place`](Self::place).
+  ///
+  /// Being denied access repeats on every retry, so it is logged once per
+  /// anchor: Windows refuses to order a window behind one of an app with
+  /// a higher integrity level (e.g. run as administrator), and every
+  /// window while the secure desktop (UAC prompt, lock screen) is up.
+  fn report_place_failure(
+    &self,
+    anchor: HWND,
+    err: &windows::core::Error,
+  ) {
+    static DENIED_ANCHORS: LazyLock<Mutex<HashSet<isize>>> =
+      LazyLock::new(Mutex::default);
+
+    if err.code() != E_ACCESSDENIED {
+      tracing::warn!("{} SetWindowPos failed: {err}.", self.kind.label());
+      return;
+    }
+
+    let is_new = DENIED_ANCHORS
+      .lock()
+      .is_ok_and(|mut anchors| anchors.insert(anchor.0));
+
+    if is_new {
+      tracing::warn!(
+        "{} can't be placed behind window {:#x}: access denied, as for a \
+         window of an app run as administrator when GlazeWM isn't. \
+         Further denials for that window aren't logged.",
+        self.kind.label(),
+        anchor.0
+      );
+    }
   }
 
   /// Puts the window back directly behind `anchor` if it has drifted,
@@ -328,9 +398,7 @@ pub(crate) fn swap(
     return;
   }
 
-  if let Err(err) = show.place(rect, anchor) {
-    tracing::warn!("{err}");
-  }
+  show.place(rect, anchor);
   hide.hide();
 }
 

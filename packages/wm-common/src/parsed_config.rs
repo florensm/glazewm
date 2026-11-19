@@ -2,9 +2,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
-  Keybinding, LengthUnit, LengthValue, OpacityValue, OverviewEffects,
-  RectDelta,
+  BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
+  CornerStyle, Key, Keybinding, LengthUnit, LengthValue, OpacityValue,
+  OverviewEffects, ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -687,7 +687,7 @@ pub struct OverviewConfig {
   /// opening zoom overshoots by it too.
   pub bounce: f32,
 
-  /// Glow, ripples and sparks, each of which can be turned off.
+  /// Glow, ripples and particles, each of which can be turned off.
   pub effects: OverviewEffects,
 }
 
@@ -1290,6 +1290,17 @@ pub struct BorderEffectConfig {
   /// `corner_style`'s fixed presets (`square`/`small_rounded`/`rounded`)
   /// allow.
   pub radius: Option<LengthValue>,
+
+  /// How far the border lightens toward white at its top edge, fading out
+  /// down its sides, from `0.0` (off) to `1.0`.
+  pub highlight: f32,
+
+  /// Brightness of a hairline along the border's inner edge, like the
+  /// edge of a pane of glass, from `0.0` (off) to `1.0`.
+  pub rim: f32,
+
+  /// A soft glow of the border's color around it.
+  pub glow: BorderGlowConfig,
 }
 
 impl Default for BorderEffectConfig {
@@ -1299,6 +1310,67 @@ impl Default for BorderEffectConfig {
       color: BorderColorSource::default(),
       width: LengthValue::from_px(2),
       radius: None,
+      highlight: 0.0,
+      rim: 0.0,
+      glow: BorderGlowConfig::default(),
+    }
+  }
+}
+
+/// A soft glow of a window border's color around it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct BorderGlowConfig {
+  /// Whether to enable the glow.
+  pub enabled: bool,
+
+  /// How far the glow reaches past the border, at most (see
+  /// [`to_border_glow`](Self::to_border_glow)).
+  pub reach: LengthValue,
+
+  /// Opacity of the glow against the border, from `0.0` to `1.0`, fading
+  /// out from there.
+  pub opacity: f32,
+}
+
+impl Default for BorderGlowConfig {
+  fn default() -> Self {
+    BorderGlowConfig {
+      enabled: false,
+      reach: LengthValue::from_px(10),
+      opacity: 0.5,
+    }
+  }
+}
+
+impl BorderGlowConfig {
+  /// The glow around a border `border_width` wide, reaching no further
+  /// than keeps the inner gap's far side, a neighbor and its border, clear
+  /// of it: a glow over a window takes that window's edge from apps that
+  /// look up the window under the cursor.
+  ///
+  /// The gap is taken unscaled, which DPI scaling only widens, and as
+  /// none when given in percent, which depends on the monitor.
+  #[must_use]
+  pub fn to_border_glow(
+    &self,
+    border_width: f32,
+    gaps: &GapsConfig,
+  ) -> BorderGlow {
+    if !self.enabled {
+      return BorderGlow::default();
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let (reach, gap) = (
+      self.reach.to_px(0, None) as f32,
+      gaps.inner_gap.to_px(0, None) as f32,
+    );
+    let room = gap - 2.0 * border_width.max(0.0);
+
+    BorderGlow {
+      reach: reach.min(room).max(0.0).floor(),
+      opacity: self.opacity.clamp(0.0, 1.0),
     }
   }
 }
@@ -1318,9 +1390,9 @@ impl BorderEffectConfig {
   }
 
   /// Builds a [`BorderOverlayParams`] from this config, given the
-  /// already-resolved `color` (see [`abgr_color`]) and the tracked
-  /// window's *own* corner radius (derived from the sibling
-  /// `corner_style` effect, not stored on this type).
+  /// already-resolved `color` (see [`abgr_color`]), the tracked window's
+  /// *own* corner radius (derived from the sibling `corner_style` effect,
+  /// not stored on this type), and the `gaps` the glow is kept within.
   ///
   /// The overlay's own outer corner radius is `self.radius` when set,
   /// otherwise `window_corner_radius + width` so the ring lines up
@@ -1332,6 +1404,7 @@ impl BorderEffectConfig {
     &self,
     color: Color,
     window_corner_radius: f32,
+    gaps: &GapsConfig,
   ) -> BorderOverlayParams {
     #[allow(clippy::cast_precision_loss)]
     let width = self.width.to_px(0, None) as f32;
@@ -1347,6 +1420,9 @@ impl BorderEffectConfig {
       width,
       corner_radius,
       opacity: 1.0,
+      highlight: self.highlight.clamp(0.0, 1.0),
+      rim: self.rim.clamp(0.0, 1.0),
+      glow: self.glow.to_border_glow(width, gaps),
     }
   }
 }
@@ -1506,6 +1582,12 @@ pub struct AnimationsConfig {
   pub window_close: WindowCloseConfig,
   /// Animation settings for when a window is minimized or restored.
   pub window_minimize: WindowMinimizeConfig,
+  /// Animation settings for a window's effects changing as it gains or
+  /// loses focus.
+  pub focus_change: FocusChangeAnimationConfig,
+  /// Particle bursts as windows are resized or closed, and how every
+  /// burst looks, the overview's too.
+  pub particles: ParticlesConfig,
 }
 
 impl Default for AnimationsConfig {
@@ -1522,6 +1604,95 @@ impl Default for AnimationsConfig {
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
       window_minimize: WindowMinimizeConfig::default(),
+      focus_change: FocusChangeAnimationConfig::default(),
+      particles: ParticlesConfig::default(),
+    }
+  }
+}
+
+/// Particle bursts as windows are resized or closed, played by the
+/// compositor. Its look applies to the overview's bursts too (see
+/// `OverviewEffects`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct ParticlesConfig {
+  /// Particles thrown off the edges a resize moves, as it lands.
+  pub on_resize: ParticleEffects,
+  /// Particles thrown off the edges of a moved window facing the way it
+  /// went, as it lands.
+  pub on_move: ParticleEffects,
+  /// Particles thrown off a new window's edges, once it is in place.
+  pub on_open: ParticleEffects,
+  /// Particles thrown off a window's edges where it closes.
+  pub on_close: ParticleEffects,
+  /// Particles thrown off the edges of the window that takes focus.
+  pub on_focus: ParticleEffects,
+  /// Particles thrown off the windows of the workspace switched to, or
+  /// out of the middle of its monitor without any, as the switch lands.
+  pub on_workspace_switch: ParticleEffects,
+  /// Color of the particles. By default each window's border color (white
+  /// without a border), and the overview's accent color in the overview.
+  pub color: Option<Color>,
+  /// Diameter of a particle.
+  pub size: LengthValue,
+  /// How many particles, as a multiple of each style's own amount, up to
+  /// `4`.
+  pub density: f32,
+  /// How long a particle lasts, give or take.
+  pub duration_ms: u32,
+}
+
+impl ParticlesConfig {
+  /// How every burst looks, wherever it is thrown off.
+  #[must_use]
+  pub fn look(&self) -> ParticleLook {
+    #[allow(clippy::cast_precision_loss)]
+    let size = self.size.to_px(0, None) as f32;
+
+    ParticleLook {
+      color: self.color,
+      size,
+      density: self.density,
+      duration: std::time::Duration::from_millis(u64::from(
+        self.duration_ms,
+      )),
+    }
+  }
+}
+
+impl Default for ParticlesConfig {
+  fn default() -> Self {
+    ParticlesConfig {
+      on_resize: ParticleEffects::NONE,
+      on_move: ParticleEffects::NONE,
+      on_open: ParticleEffects::NONE,
+      on_close: ParticleEffects::NONE,
+      on_focus: ParticleEffects::NONE,
+      on_workspace_switch: ParticleEffects::NONE,
+      color: None,
+      size: LengthValue::from_px(5),
+      density: 1.0,
+      duration_ms: 650,
+    }
+  }
+}
+
+/// Animation settings for a window's border, backdrop and transparency
+/// blending from one focus state's to the other's.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct FocusChangeAnimationConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+}
+
+impl Default for FocusChangeAnimationConfig {
+  fn default() -> Self {
+    FocusChangeAnimationConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.0, 0.0, 0.58, 1.0),
     }
   }
 }
@@ -2329,9 +2500,15 @@ where
 
 #[cfg(test)]
 mod tests {
+  use std::str::FromStr;
+
+  use wm_platform::ParticleStyle;
+
   use super::{
-    BackdropEffectConfig, Color, EasingFunction, OverviewConfig,
-    OverviewLayout, ScrollingLayoutConfig, SpringParams,
+    BackdropEffectConfig, BorderEffectConfig, BorderGlow,
+    BorderGlowConfig, Color, EasingFunction, GapsConfig, LengthValue,
+    OverviewConfig, OverviewEffects, OverviewLayout, ParticlesConfig,
+    ScrollingLayoutConfig, SpringParams,
   };
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
@@ -2478,6 +2655,33 @@ mod tests {
     );
   }
 
+  #[test]
+  fn particle_effects_read_none_one_or_several_names() {
+    let effects = |value: serde_json::Value| {
+      serde_json::from_value::<ParticlesConfig>(
+        serde_json::json!({ "on_close": value }),
+      )
+      .map(|config| config.on_close.iter().collect::<Vec<_>>())
+      .ok()
+    };
+
+    assert_eq!(effects("none".into()), Some(vec![]));
+    assert_eq!(effects("dust".into()), Some(vec![ParticleStyle::Dust]));
+    assert_eq!(
+      effects(serde_json::json!(["glints", "confetti"])),
+      Some(vec![ParticleStyle::Confetti, ParticleStyle::Glints])
+    );
+    assert_eq!(effects(serde_json::json!([])), Some(vec![]));
+    assert_eq!(effects("fireworks".into()), None);
+    assert_eq!(effects(serde_json::json!(["sparks", "none"])), None);
+
+    let written = serde_json::to_value(OverviewEffects::default())
+      .expect("effects should serialize");
+    let read = serde_json::from_value::<OverviewEffects>(written)
+      .expect("serialized effects should read back");
+    assert_eq!(read, OverviewEffects::default());
+  }
+
   /// `to_overlay_params` must map every field through to the resulting
   /// `BackdropOverlayParams` unchanged (plus the two parameters passed in
   /// separately, since neither is stored on `BackdropEffectConfig`
@@ -2514,6 +2718,54 @@ mod tests {
     assert_eq!(params.vignette, 0.4);
     assert_eq!(params.grain, 0.1);
     assert_eq!(params.parallax, 0.8);
+  }
+
+  fn gaps(inner_gap: &str) -> GapsConfig {
+    GapsConfig {
+      inner_gap: LengthValue::from_str(inner_gap).expect("valid length"),
+      ..GapsConfig::default()
+    }
+  }
+
+  fn glow(reach: i32) -> BorderGlowConfig {
+    BorderGlowConfig {
+      enabled: true,
+      reach: LengthValue::from_px(reach),
+      opacity: 0.5,
+    }
+  }
+
+  #[test]
+  fn border_glow_stays_within_the_inner_gap() {
+    // 20px gap, less both windows' 2px borders.
+    assert_eq!(glow(30).to_border_glow(2.0, &gaps("20px")).reach, 16.0);
+    assert_eq!(glow(8).to_border_glow(2.0, &gaps("20px")).reach, 8.0);
+    assert_eq!(glow(8).to_border_glow(2.0, &gaps("3px")).reach, 0.0);
+    assert_eq!(glow(8).to_border_glow(2.0, &gaps("5%")).reach, 0.0);
+
+    let off = BorderGlowConfig {
+      enabled: false,
+      ..glow(8)
+    };
+    assert_eq!(
+      off.to_border_glow(2.0, &gaps("20px")),
+      BorderGlow::default()
+    );
+  }
+
+  #[test]
+  fn border_params_carry_rim_and_glow() {
+    let config = BorderEffectConfig {
+      rim: 1.5,
+      glow: glow(6),
+      ..BorderEffectConfig::default()
+    };
+
+    let params =
+      config.to_overlay_params(Color::from_abgr(0), 0.0, &gaps("20px"));
+    assert_eq!(params.rim, 1.0);
+    assert_eq!(params.glow.reach, 6.0);
+    assert_eq!(params.glow.opacity, 0.5);
   }
 
   /// `overlay_tint` doubles as the "does this window get a

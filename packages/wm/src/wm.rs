@@ -719,6 +719,8 @@ impl WindowManager {
       bail!("Cannot run command because subject container is detached.");
     }
 
+    crate::particles::note_command(state, &subject_container, command);
+
     match &command {
       InvokeCommand::AdjustBorders(args) => {
         let Ok(window) = subject_container.as_window_container() else {

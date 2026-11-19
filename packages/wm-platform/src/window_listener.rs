@@ -4,10 +4,11 @@ use crate::{platform_impl, Dispatcher, WindowEvent};
 
 /// A listener for system-wide window events.
 pub struct WindowListener {
-  event_rx: mpsc::UnboundedReceiver<WindowEvent>,
-
-  /// Inner platform-specific window listener.
+  /// Inner platform-specific window listener. Declared before `event_rx`,
+  /// so its hooks are removed before the channel they send to closes.
   inner: platform_impl::WindowListener,
+
+  event_rx: mpsc::UnboundedReceiver<WindowEvent>,
 }
 
 impl WindowListener {
@@ -16,7 +17,7 @@ impl WindowListener {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let inner = platform_impl::WindowListener::new(event_tx, dispatcher)?;
 
-    Ok(Self { event_rx, inner })
+    Ok(Self { inner, event_rx })
   }
 
   /// Returns the next window event from the listener.

@@ -52,10 +52,7 @@ use std::{
 
 use windows::{
   core::{ComInterface, PCWSTR},
-  Foundation::{
-    Numerics::{Matrix3x2, Vector2, Vector4},
-    TypedEventHandler,
-  },
+  Foundation::Numerics::{Matrix3x2, Vector2, Vector4},
   Graphics::{
     DirectX::{DirectXAlphaMode, DirectXPixelFormat},
     SizeInt32,
@@ -511,18 +508,14 @@ fn surface_for(
     return Ok(surface);
   }
 
-  let surface = with_graphics_device(compositor, |device, is_new| {
-    if is_new {
-      subscribe_device_replaced(compositor, device)?;
-    }
-    bake(device, &key)
-  })
-  .inspect_err(|_| {
-    // Almost every failure below the composition layer means the GPU
-    // device went away; dropping it here is what lets the next attempt
-    // rebuild rather than re-failing forever against a dead device.
-    graphics_device::reset();
-  })?;
+  let surface =
+    with_graphics_device(compositor, |device| bake(device, &key))
+      .inspect_err(|_| {
+        // Almost every failure below the composition layer means the GPU
+        // device went away; dropping it here is what lets the next attempt
+        // rebuild rather than re-failing forever against a dead device.
+        graphics_device::reset();
+      })?;
 
   SURFACES.with(|cache| {
     let mut cache = cache.borrow_mut();
@@ -562,46 +555,28 @@ fn surface_for(
   Ok(surface)
 }
 
-/// Re-draws every cached surface when the composition graphics device
-/// replaces its rendering device.
-///
-/// The surfaces themselves survive a device swap -- brushes keep pointing
-/// at them -- but their *contents* do not, so without this every backdrop
-/// would go blank after a driver update or a TDR until something happened
-/// to force a re-bake.
-fn subscribe_device_replaced(
-  compositor: &Compositor,
-  device: &GraphicsDevice,
-) -> windows::core::Result<()> {
-  let compositor = compositor.clone();
+/// Re-draws every cached surface, whose contents a replaced rendering
+/// device loses (see `graphics_device::with_graphics_device`).
+pub(crate) fn redraw_cached(compositor: &Compositor) {
+  let entries = SURFACES.with(|cache| {
+    cache
+      .borrow()
+      .iter()
+      .map(|entry| (entry.key.clone(), entry.surface.clone()))
+      .collect::<Vec<_>>()
+  });
 
-  device
-    .composition
-    .RenderingDeviceReplaced(&TypedEventHandler::new(move |_, _| {
-      let entries = SURFACES.with(|cache| {
-        cache
-          .borrow()
-          .iter()
-          .map(|entry| (entry.key.clone(), entry.surface.clone()))
-          .collect::<Vec<_>>()
-      });
+  for (key, surface) in entries {
+    let result = with_graphics_device(compositor, |device| {
+      draw_into(device, &surface, &key)
+    });
 
-      for (key, surface) in entries {
-        let result = with_graphics_device(&compositor, |device, _| {
-          draw_into(device, &surface, &key)
-        });
-
-        if let Err(err) = result {
-          tracing::warn!(
-            "Wallpaper backdrop redraw after device loss failed: {err}."
-          );
-        }
-      }
-
-      Ok(())
-    }))?;
-
-  Ok(())
+    if let Err(err) = result {
+      tracing::warn!(
+        "Wallpaper backdrop redraw after device loss failed: {err}."
+      );
+    }
+  }
 }
 
 /// Allocates a monitor-sized surface and draws the blurred wallpaper into
@@ -1581,7 +1556,7 @@ mod tests {
       let drew =
         crate::platform_impl::composition::with_composition_thread(
           move |compositor, _| {
-            super::with_graphics_device(&compositor, |device, _| {
+            super::with_graphics_device(&compositor, |device| {
               let surface = device.composition.CreateDrawingSurface2(
                 super::SizeInt32 {
                   Width: key.wallpaper.monitor.width(),

@@ -252,13 +252,15 @@ use wm_platform::{
 
 use crate::{
   animation::{
+    focus_fade::{FocusFades, FocusMix},
     stand_in::{moved_along, StandIn},
     state::WindowAnimationState,
   },
   commands::general::{
-    apply_focus_effects, border_hidden_for_fullscreen, overlay_params_for,
-    overlay_z_anchor, platform_sync, resync_settling_overlays,
-    surrogate_effects_for, track_overlays, upsert_live_backdrop_overlay,
+    advance_focus_fades, apply_focus_effects,
+    border_hidden_for_fullscreen, overlay_params_for, overlay_z_anchor,
+    platform_sync, resync_settling_overlays, surrogate_effects_for,
+    track_overlays, upsert_live_backdrop_overlay,
     upsert_pinned_border_overlay, SyncableOverlay,
   },
   traits::{CommonGetters, WindowGetters},
@@ -307,6 +309,55 @@ pub(crate) struct WorkspaceSwitchEntry {
   /// one for its post-switch focus state over the switch, rather than
   /// snapping on the first frame.
   pub was_focused: bool,
+  /// How far its real window is shown again in its place, once the slide
+  /// is over (see `AnimationManager::hide_pending_ws_cleanup_surrogate`).
+  pub hand_back: HandBack,
+}
+
+/// How far a window of a finished workspace switch is handed back from its
+/// surrogate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HandBack {
+  /// Its real window is still cloaked.
+  #[default]
+  Pending,
+  /// Uncloaked under its surrogate, which covers it until the window's
+  /// companion is back over it (see
+  /// `WorkspaceSurrogate::awaits_companion`).
+  AwaitingCompanion,
+  /// Shown again in its place.
+  Done,
+}
+
+/// A step of tearing down a finished workspace switch's surrogates.
+///
+/// Each step changes what is on screen, which DWM has to have composited
+/// before the next: the uncloak before the overlays move, those before the
+/// surrogates go. Each runs a tick after the last: the tick loop is paced
+/// by the animation thread's vblank wait, so the next tick is a later
+/// composition, without the WM thread blocking on a `DwmFlush` for each
+/// (three in a row at the end of every switch).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum WsCleanupStep {
+  /// Waits for the incoming windows' uncloak, issued this tick.
+  #[default]
+  AwaitUncloak,
+  /// Shows their overlays where they end, still behind the surrogates.
+  ShowOverlays,
+  /// Moves those overlays behind the windows themselves.
+  Reanchor,
+  /// Drops the surrogates.
+  Drop,
+}
+
+impl WsCleanupStep {
+  fn next(self) -> Self {
+    match self {
+      Self::AwaitUncloak => Self::ShowOverlays,
+      Self::ShowOverlays => Self::Reanchor,
+      Self::Reanchor | Self::Drop => Self::Drop,
+    }
+  }
 }
 
 /// Shared state for all windows in a workspace-switch animation.
@@ -543,8 +594,11 @@ pub struct AnimationManager {
   /// Peeks drawing scrolling layouts' columns.
   pub scroll_view: super::scroll_view::ScrollView,
   /// Workspace-switch state that just completed; kept alive until the
-  /// final `platform_sync` call unclocks the incoming real windows.
+  /// incoming real windows are uncloaked and their overlays settled under
+  /// its surrogates, over the ticks of `ws_cleanup_step`.
   pending_ws_cleanup: Option<WorkspaceSwitchState>,
+  /// What tearing down `pending_ws_cleanup` does on the coming tick.
+  ws_cleanup_step: WsCleanupStep,
   /// Windows of a slide cut short by a newer one, to be redrawn on the
   /// next frame so they are uncloaked at their final rect. See
   /// [`start_workspace_switch`].
@@ -563,6 +617,10 @@ pub struct AnimationManager {
   away_windows: HashMap<Uuid, AwayWindow>,
   /// Active iris-wipe workspace transition, or `None` when idle.
   iris_switch: Option<IrisSwitchState>,
+  /// Windows whose effects fade between focus states. Drawn by
+  /// `advance_focus_fades` while at rest, and by the scroll view while it
+  /// draws them.
+  focus_fades: FocusFades,
 }
 
 impl Drop for AnimationManager {
@@ -614,10 +672,12 @@ impl AnimationManager {
       workspace_switch: None,
       scroll_view: super::scroll_view::ScrollView::default(),
       pending_ws_cleanup: None,
+      ws_cleanup_step: WsCleanupStep::default(),
       interrupted_ws_windows: Vec::new(),
       sync_demoted_until: HashMap::new(),
       away_windows: HashMap::new(),
       iris_switch: None,
+      focus_fades: FocusFades::default(),
     }
   }
 
@@ -636,6 +696,34 @@ impl AnimationManager {
     window_id: &Uuid,
   ) -> Option<&WindowAnimationState> {
     self.animations.get(window_id)
+  }
+
+  /// How long until `window_id` comes to rest at `now`: once its own
+  /// animation, its column's scroll and a workspace switch it slides in
+  /// with have all ended. Zero when none of them moves it.
+  pub fn time_to_rest(&self, window_id: &Uuid, now: Instant) -> Duration {
+    let own = self
+      .animations
+      .get(window_id)
+      .filter(|animation| !animation.is_complete())
+      .map(|animation| animation.remaining_at(now));
+
+    let switch = self
+      .workspace_switch
+      .as_ref()
+      .filter(|_| self.is_workspace_switch_incoming(window_id))
+      .map(|switch| match switch.start_time {
+        Some(start) => {
+          (start + switch.duration).saturating_duration_since(now)
+        }
+        None => switch.duration,
+      });
+
+    [own, switch, self.scroll_view.time_to_land(window_id, now)]
+      .into_iter()
+      .flatten()
+      .max()
+      .unwrap_or_default()
   }
 
   /// Returns `true` if a close animation is in flight for the given
@@ -836,8 +924,8 @@ impl AnimationManager {
       return true;
     }
     // Anything still holding a surrogate needs ticks to be torn down, even
-    // once its animation entry is gone. `pending_ws_cleanup` is set a
-    // whole tick before it is cleared, with a fallible `platform_sync` in
+    // once its animation entry is gone. `pending_ws_cleanup` is cleared
+    // only ticks after it is set, with a fallible `platform_sync` in
     // between: an error there leaves it set while `workspace_switch` is
     // already `None`. Without these two checks the timer then parks with
     // surrogates still up and the real windows still cloaked, which looks
@@ -855,7 +943,68 @@ impl AnimationManager {
     if !self.overlay_z_settle.is_empty() {
       return true;
     }
-    false
+    !self.focus_fades.is_empty()
+  }
+
+  /// Fades `window_id`'s effects from `from`'s style to `to`'s (see
+  /// [`FocusFades::start`]).
+  pub fn start_focus_fade(
+    &mut self,
+    window_id: Uuid,
+    from: EffectSet,
+    to: EffectSet,
+    config: &UserConfig,
+  ) {
+    self.focus_fades.start(
+      window_id,
+      from,
+      to,
+      Instant::now(),
+      &config.value.animations.focus_change,
+    );
+
+    if !self.focus_fades.is_empty() {
+      self.ensure_timer_running();
+    }
+  }
+
+  /// See [`FocusFades::restyle_focus`].
+  pub fn restyle_focus(&mut self, focused: Option<Uuid>) -> Option<Uuid> {
+    self.focus_fades.restyle_focus(focused)
+  }
+
+  /// Where `window_id` is in a fade toward `set`'s style, if it is fading
+  /// toward it.
+  pub fn focus_mix(
+    &self,
+    window_id: &Uuid,
+    set: EffectSet,
+    config: &UserConfig,
+  ) -> Option<FocusMix> {
+    self
+      .focus_fades
+      .mix(
+        window_id,
+        Instant::now(),
+        &config.value.animations.focus_change,
+      )
+      .filter(|mix| mix.to == set)
+  }
+
+  /// Ends `window_id`'s focus fade, leaving it to whatever draws it now.
+  pub fn cancel_focus_fade(&mut self, window_id: &Uuid) {
+    self.focus_fades.cancel(window_id);
+  }
+
+  /// Windows with a focus fade, dropping the fades done, whose windows
+  /// are still among those returned so they can be settled.
+  pub fn focus_fade_windows(&mut self, config: &UserConfig) -> Vec<Uuid> {
+    let ids = self.focus_fades.window_ids().collect();
+    self.focus_fades.take_finished(
+      Instant::now(),
+      &config.value.animations.focus_change,
+    );
+    ids
   }
 
   /// Keeps re-asserting the overlays of `window_ids` behind their windows
@@ -1538,6 +1687,18 @@ impl AnimationManager {
             // screen by now.
             if !entry.is_incoming {
               s.restore_alpha();
+
+              // Likewise its copy of the backdrop covered the real one,
+              // which can go, staying at rest while the window leaves.
+              if let Some(overlay) = s
+                .carries_backdrop()
+                .then(|| state.window_overlays.get_mut(&window_id))
+                .flatten()
+                .and_then(|overlays| overlays.backdrop.as_mut())
+                .filter(|overlay| overlay.is_visible())
+              {
+                overlay.hide();
+              }
             }
 
             // At completion, hide outgoing surrogates immediately. They
@@ -1548,6 +1709,7 @@ impl AnimationManager {
             if ws_done && !entry.is_incoming {
               s.hide_thumbnail();
               s.hide_ring();
+              s.hide_backdrop();
 
               // The ring is parked, or pinned to the viewport, rather
               // than tracking its window, so nothing else would take it
@@ -1841,6 +2003,7 @@ impl AnimationManager {
       }
     }
 
+    advance_focus_fades(state, config);
     resync_settling_overlays(state);
 
     // Held in an `Option` so the nested `platform_sync` below can close it
@@ -1853,24 +2016,23 @@ impl AnimationManager {
     // real windows to their final positions, then drop them. Dropping
     // a session destroys its surrogate overlay.
     {
-      // Flush before fading new surrogates or dropping workspace-switch
-      // cleanup. The uncloak issued inside `platform_sync` is a DWM
-      // attribute change that only takes effect at the next composition —
-      // fading or destroying the surrogate without waiting for that frame
-      // can produce one composition where the surrogate is dimmed/gone but
-      // the real window is still cloaked: a visible blank flash at the end
-      // of the animation. The flush guarantees DWM renders one frame with
-      // the real window visible (including its compositor shadow, which
+      // The uncloak issued inside `platform_sync` is a DWM attribute
+      // change that only takes effect at the next composition — fading or
+      // destroying the surrogate before that frame can produce one
+      // composition where the surrogate is dimmed/gone but the real
+      // window is still cloaked: a visible blank flash at the end of the
+      // animation. So teardown waits for DWM to render one frame with the
+      // real window visible (including its compositor shadow, which
       // thumbnails do not capture) while the surrogate still fully covers
       // it.
       //
       // For transparent windows (`effect_opacity < 255`), the surrogate
       // opacity and the real window's `LWA_ALPHA` compose
       // multiplicatively: a surrogate at 80 % over a real window at
-      // 80 % would appear ~96 % opaque in the flushed frame instead
-      // of the intended 80 %. Zero out those surrogates before the
-      // flush so the rendered frame already shows the correct
-      // real-window + backdrop-overlay composite.
+      // 80 % would appear ~96 % opaque in that frame instead of the
+      // intended 80 %. Zero out those surrogates first so the frame
+      // already shows the correct real-window + backdrop-overlay
+      // composite.
       for (_, fade_start, session) in
         &mut state.animation_manager.pending_session_cleanup
       {
@@ -1941,13 +2103,8 @@ impl AnimationManager {
       // construction a later composition: the same guarantee, without this
       // thread waiting for it. Deferring costs nothing visually either --
       // the first step's progress is ~0, so it was a no-op fade anyway.
-      //
-      // Workspace-switch cleanup still flushes: it tears its surrogates
-      // down in this same tick rather than across ticks, so it has no
-      // later tick to defer to.
-      if state.animation_manager.pending_ws_cleanup.is_some() {
-        wm_platform::dwm_flush();
-      }
+      // Workspace-switch cleanup is spread over ticks the same way (see
+      // `WsCleanupStep`).
 
       // After `pre_commit` the surrogate is a pixel-aligned live mirror of
       // the uncloaked window beneath it, so ramping its opacity to zero
@@ -2097,161 +2254,16 @@ impl AnimationManager {
         state.animation_manager.stash_warm_surrogate(id, surrogate);
       }
 
-      // `sync_overlays` (called from `platform_sync` above) hides each
-      // window's static backdrop overlay while its workspace-switch
-      // surrogate is alive, including this `pending_ws_cleanup` grace
-      // period. The backdrop overlay is repositioned onto the surrogate's
-      // own footprint throughout, so that's fine while it's alive -- but
-      // dropping `pending_ws_cleanup` below destroys the surrogate
-      // outright, and nothing shows the static overlay again until a later
-      // `platform_sync` call runs. Between those two moments DWM can
-      // composite a frame with *no* backdrop behind the (semi-transparent)
-      // real window at all -- a one-frame flicker at the end of every
-      // switch. Pre-show the static overlay at its final rect while the
-      // surrogate is still alive, so the two overlap for a flushed frame
-      // instead of leaving a gap.
-      //
-      // That final rect is read from the real window's own `frame()`
-      // (shadow-*excluded* visual bounds -- the same value steady-state
-      // overlay sync reads) rather than the surrogate's own `rect`, which
-      // is a *positioning* rect (`window.to_rect() +
-      // total_border_delta()`, including the OS's invisible drop-shadow
-      // expansion) meant for `SetWindowPos`, not overlay tracking. Using
-      // `surrogate.rect` directly here made backdrop/border overlays pop
-      // visibly larger right at the end of every workspace switch, then
-      // snap down once a later `platform_sync` tick re-synced them from
-      // `frame()`. Falls back to `surrogate.rect` only if the window/frame
-      // lookup fails.
-      let incoming_backdrop_windows: Vec<(Uuid, Rect, HWND)> = state
-        .animation_manager
-        .pending_ws_cleanup
-        .as_ref()
-        .map_or_default(|ws| {
-          ws.windows
-            .iter()
-            .filter(|(_, entry)| entry.is_incoming)
-            .filter_map(|(id, entry)| {
-              let surrogate = entry.surrogate.as_ref()?;
-              let rect = state
-                .window_by_id(*id)
-                .and_then(|w| w.native().frame().ok())
-                .unwrap_or_else(|| surrogate.rect.clone());
-              Some((*id, rect, surrogate.hwnd()))
-            })
-            .collect()
-        });
-
-      let focused_id = state.focused_container().map(|c| c.id());
-      let mut pre_shown = false;
-      let mut pre_show_batch = SurrogateBatch::new();
-
-      // Covers both backdrop and border overlays despite the name -- see
-      // the comment above where this is built.
-      for (id, rect, anchor) in &incoming_backdrop_windows {
-        let is_focused = Some(*id) == focused_id;
-        let mut params =
-          overlay_params_for(state.effect_set(*id, is_focused), config);
-
-        if state.window_by_id(*id).is_some_and(|window| {
-          border_hidden_for_fullscreen(&window, config)
-        }) {
-          params.border = None;
-        }
-
-        pre_shown |= params.backdrop.is_some() || params.border.is_some();
-
-        // A ring parked for the switch is revealed under its identical
-        // copy here, which goes with the surrogate after two
-        // flushed frames.
-        track_overlays(
-          &mut state.window_overlays,
-          *id,
-          params,
-          Some(&OverlayPlacement::new(*anchor, rect.clone())),
-          &mut pre_show_batch,
-        );
-
-        // One the window doesn't end with goes without being revealed.
-        if params.border.is_none() {
-          if let Some(overlay) = state
-            .window_overlays
-            .get_mut(id)
-            .and_then(|overlays| overlays.border.as_mut())
-            .filter(|overlay| overlay.is_parked())
-          {
-            overlay.hide();
-          }
-        }
-      }
-      pre_show_batch.commit();
-
-      if pre_shown {
-        wm_platform::dwm_flush();
-      }
-
-      // Re-anchor each incoming window's overlay to its own real `HWND`
-      // (instead of the surrogate's) *before* the surrogate is torn down
-      // just below. `WorkspaceSurrogate`'s `Drop` synchronously
-      // unregisters its DWM thumbnail -- without re-anchoring first,
-      // there's a window where the overlay is left anchored to a
-      // `HWND` that no longer exists until the follow-up
-      // `platform_sync` call eventually corrects it via the normal
-      // `sync_overlays` path. DWM can composite a frame in that gap
-      // showing the overlay in whatever stale z-slot that leaves it
-      // -- a one-frame flicker at the end of every switch, on every
-      // incoming window (masked on the focused one in practice,
-      // since `sync_focus`'s `SetForegroundWindow` -- queued
-      // around this same moment -- happens to trigger its own z-order
-      // correction as a side effect; unfocused siblings get no such
-      // incidental save).
-      let mut final_anchor_batch = SurrogateBatch::new();
-      for (id, rect, _) in &incoming_backdrop_windows {
-        let Some(window) = state.window_by_id(*id) else {
-          continue;
-        };
-        let Some(overlays) = state.window_overlays.get_mut(id) else {
-          continue;
-        };
-        // Only shown ones: placing one would show it, e.g. the ring of a
-        // window whose border is off now that it is unfocused, for the
-        // frames until the follow-up sync hid it again.
-        let anchor = overlay_z_anchor(&window);
-        if let Some(overlay) = overlays
-          .backdrop
-          .as_mut()
-          .filter(|overlay| overlay.is_visible())
-        {
-          overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
-        }
-        if let Some(overlay) = overlays
-          .border
-          .as_mut()
-          .filter(|overlay| overlay.is_visible())
-        {
-          overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
-        }
-      }
-      final_anchor_batch.commit();
-      if !incoming_backdrop_windows.is_empty() {
-        wm_platform::dwm_flush();
-      }
-
-      // Capture the participating window IDs before dropping the cleanup
-      // state (which destroys the surrogates) so a follow-up
-      // `platform_sync` call can settle their overlays' tint/rect
-      // through the normal path. Without this second sync, an
-      // overlay would stay however it was left above until some
-      // unrelated redraw happens to fire -- the animation
-      // timer stops right after this block when no other animation is
-      // active, so there may be no later tick. Combined with
-      // `dropped_session_ids` (resize-session surrogates dropped above,
-      // subject to the exact same hazard).
+      // Redrawn by a follow-up `platform_sync` call: the windows whose
+      // surrogates were dropped this tick, resize sessions' above and a
+      // workspace switch's here, so that call can settle their overlays'
+      // tint/rect through the normal path. Without this second sync, an
+      // overlay would stay however it was left until some unrelated
+      // redraw happens to fire -- the animation timer stops right after
+      // this block when no other animation is active, so there may be no
+      // later tick.
       let mut cleanup_window_ids = dropped_session_ids;
-      if let Some(ws) = &state.animation_manager.pending_ws_cleanup {
-        cleanup_window_ids.extend(ws.windows.keys().copied());
-      }
-
-      state.animation_manager.pending_ws_cleanup = None;
+      cleanup_window_ids.extend(advance_ws_cleanup(state, config));
 
       if !cleanup_window_ids.is_empty() {
         let mut queued = 0;
@@ -3114,6 +3126,10 @@ impl AnimationManager {
       Some(pending) => pending.windows.extend(ws.windows),
       None => self.pending_ws_cleanup = Some(ws),
     }
+
+    // Its windows are uncloaked on this tick or the next, which the
+    // teardown then has to wait for from the start.
+    self.ws_cleanup_step = WsCleanupStep::default();
   }
 
   /// Returns `true` while `window_id` is an incoming participant in the
@@ -3132,16 +3148,16 @@ impl AnimationManager {
   }
 
   /// Returns `true` when `window_id` is an incoming participant held in
-  /// `pending_ws_cleanup` (the one-tick cleanup state after the animation
-  /// completes). Used to force synchronous `SetWindowPos` before
-  /// uncloaking so the window is already at its target position when
-  /// revealed.
+  /// `pending_ws_cleanup` (the cleanup state after the animation
+  /// completes) that is yet to be handed back. Used to force synchronous
+  /// `SetWindowPos` before uncloaking so the window is already at its
+  /// target position when revealed.
   pub fn is_pending_ws_cleanup_incoming(&self, window_id: &Uuid) -> bool {
     self
       .pending_ws_cleanup
       .as_ref()
       .and_then(|ws| ws.windows.get(window_id))
-      .is_some_and(|e| e.is_incoming)
+      .is_some_and(|e| e.is_incoming && e.hand_back == HandBack::Pending)
   }
 
   /// Installs a workspace-switch animation for the provided windows.
@@ -3172,12 +3188,23 @@ impl AnimationManager {
     // rather than dropped: its incoming windows are only uncloaked when it
     // completes, so dropping it left them invisible until something else
     // redrew them. Windows taking part in the new slide are left to it.
+    let is_in_new_slide =
+      |id: &Uuid| windows.iter().any(|(new_id, _)| new_id == id);
+
     if let Some(mut previous) = self.workspace_switch.take() {
-      previous
-        .windows
-        .retain(|id, _| !windows.iter().any(|(new_id, _)| new_id == id));
+      previous.windows.retain(|id, _| !is_in_new_slide(id));
       self.interrupted_ws_windows.extend(previous.windows.keys());
       self.stash_for_ws_cleanup(previous);
+    }
+
+    // Likewise for a finished one still being torn down, whose surrogates
+    // would go on drawing what is left of them (a ring copy) where the
+    // window ended.
+    if let Some(pending) = &mut self.pending_ws_cleanup {
+      pending.windows.retain(|id, _| !is_in_new_slide(id));
+      if pending.windows.is_empty() {
+        self.pending_ws_cleanup = None;
+      }
     }
 
     let ws_config = &config.value.animations.workspace_switch;
@@ -3596,8 +3623,16 @@ impl AnimationManager {
       return;
     };
     if let Some(entry) = ws.windows.get_mut(&window_id) {
+      entry.hand_back = HandBack::Done;
       if let Some(ref mut s) = entry.surrogate {
-        s.hide_thumbnail();
+        // Its window, still hidden by its alpha, would show uncolored
+        // until its companion is back over it, so the hide waits
+        // for that (see `finish_ws_hand_backs`).
+        if s.awaits_companion() {
+          entry.hand_back = HandBack::AwaitingCompanion;
+        } else {
+          s.hide_thumbnail();
+        }
       }
     }
   }
@@ -3632,31 +3667,46 @@ impl AnimationManager {
   /// one's thumbnail hidden back to back, and no frame shows neither. One
   /// sliding in starts off-screen and is only shown on the new slide's
   /// first frame, so its old surrogate is just hidden.
+  ///
+  /// So are the windows of a finished slide still being torn down. One
+  /// handed back is on screen again and taken over from as usual, so of
+  /// its old surrogate only the ring and backdrop copies need covering
+  /// for: the teardown may not have shown the real ones again yet, and
+  /// the old surrogate goes before the take-over.
   pub fn hand_over_cut_short_slide(
     &mut self,
     windows: &mut [(Uuid, WorkspaceSwitchEntry)],
   ) -> Vec<(Uuid, bool)> {
-    let Some(previous) = self.workspace_switch.as_mut() else {
-      return Vec::new();
-    };
-
     let mut handed_over = Vec::new();
     for (id, entry) in windows {
-      let (Some(old), Some(new)) = (
-        previous
-          .windows
-          .get_mut(id)
-          .and_then(|previous| previous.surrogate.as_mut()),
-        entry.surrogate.as_mut(),
-      ) else {
+      let Some(new) = entry.surrogate.as_mut() else {
+        continue;
+      };
+      let Some((old, handed_back)) = [
+        self.workspace_switch.as_mut(),
+        self.pending_ws_cleanup.as_mut(),
+      ]
+      .into_iter()
+      .flatten()
+      .find_map(|previous| previous.windows.get_mut(id))
+      .and_then(|previous| {
+        let handed_back = previous.hand_back != HandBack::Pending;
+        previous.surrogate.as_mut().map(|old| (old, handed_back))
+      }) else {
         continue;
       };
 
-      if !entry.is_incoming {
-        new.apply_effect_opacity();
+      match (entry.is_incoming, handed_back) {
+        (true, _) => {}
+        (false, true) => {
+          new.cover_ring();
+          new.cover_backdrop();
+        }
+        (false, false) => new.apply_effect_opacity(),
       }
       old.hide_thumbnail();
       old.hide_ring();
+      old.hide_backdrop();
       handed_over.push((*id, entry.is_incoming));
     }
 
@@ -3700,6 +3750,217 @@ impl AnimationManager {
   }
 }
 
+/// Takes a finished workspace switch's teardown one step further (see
+/// `WsCleanupStep`), returning its windows once its surrogates are gone.
+fn advance_ws_cleanup(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> Vec<Uuid> {
+  let Some(ws) = state.animation_manager.pending_ws_cleanup.as_mut()
+  else {
+    return Vec::new();
+  };
+  let is_awaiting_companions = finish_ws_hand_backs(ws);
+
+  loop {
+    let step = state.animation_manager.ws_cleanup_step;
+    let changed_screen = match step {
+      WsCleanupStep::AwaitUncloak => true,
+      WsCleanupStep::ShowOverlays => show_final_overlays(state, config),
+      WsCleanupStep::Reanchor => reanchor_final_overlays(state),
+      // The surrogates go with their thumbnails, which those waiting for
+      // a companion still show.
+      WsCleanupStep::Drop if is_awaiting_companions => return Vec::new(),
+      WsCleanupStep::Drop => {
+        return state
+          .animation_manager
+          .pending_ws_cleanup
+          .take()
+          .map_or_default(|ws| ws.windows.into_keys().collect());
+      }
+    };
+
+    state.animation_manager.ws_cleanup_step = step.next();
+
+    // The next step only has to wait for a change to the screen.
+    if changed_screen {
+      return Vec::new();
+    }
+  }
+}
+
+/// Hands back the incoming windows of a finished switch whose surrogates
+/// waited for their companions, once each is back over its window or the
+/// wait timed out (see `WorkspaceSurrogate::awaits_companion`). Returns
+/// whether any still waits.
+fn finish_ws_hand_backs(ws: &mut WorkspaceSwitchState) -> bool {
+  let mut is_awaiting = false;
+
+  for entry in ws
+    .windows
+    .values_mut()
+    .filter(|entry| entry.hand_back == HandBack::AwaitingCompanion)
+  {
+    let Some(surrogate) = entry.surrogate.as_mut() else {
+      entry.hand_back = HandBack::Done;
+      continue;
+    };
+
+    if surrogate.awaits_companion() {
+      is_awaiting = true;
+    } else {
+      surrogate.hide_thumbnail();
+      entry.hand_back = HandBack::Done;
+    }
+  }
+
+  is_awaiting
+}
+
+/// The finished switch's incoming windows, each with where it ends and its
+/// surrogate.
+///
+/// Where it ends is read from the real window's own `frame()`
+/// (shadow-*excluded* visual bounds -- the same value steady-state overlay
+/// sync reads) rather than the surrogate's own `rect`, which is a
+/// *positioning* rect (`window.to_rect() + total_border_delta()`,
+/// including the OS's invisible drop-shadow expansion) meant for
+/// `SetWindowPos`, not overlay tracking. Using `surrogate.rect` made
+/// backdrop/border overlays pop visibly larger right at the end of every
+/// workspace switch, then snap down once a later `platform_sync` tick
+/// re-synced them from `frame()`. Falls back to `surrogate.rect` only if
+/// the window/frame lookup fails.
+fn final_overlay_rects(state: &WmState) -> Vec<(Uuid, Rect, HWND)> {
+  state
+    .animation_manager
+    .pending_ws_cleanup
+    .as_ref()
+    .map_or_default(|ws| {
+      ws.windows
+        .iter()
+        .filter(|(_, entry)| entry.is_incoming)
+        .filter_map(|(id, entry)| {
+          let surrogate = entry.surrogate.as_ref()?;
+          let rect = state
+            .window_by_id(*id)
+            .and_then(|w| w.native().frame().ok())
+            .unwrap_or_else(|| surrogate.rect.clone());
+          Some((*id, rect, surrogate.hwnd()))
+        })
+        .collect()
+    })
+}
+
+/// Shows the overlays of the finished switch's incoming windows where they
+/// end, still behind their surrogates. Returns whether any is shown.
+///
+/// `sync_overlays` (called from `platform_sync`) hides each window's
+/// static backdrop overlay while its workspace-switch surrogate is alive,
+/// including through this teardown. The backdrop overlay is repositioned
+/// onto the surrogate's own footprint throughout, so that's fine while
+/// it's alive -- but dropping the surrogate destroys it outright, and
+/// nothing shows the static overlay again until a later `platform_sync`
+/// call runs. Between those two moments DWM can composite a frame with
+/// *no* backdrop behind the (semi-transparent) real window at all -- a
+/// one-frame flicker at the end of every switch. Shown first, the two
+/// overlap for a composited frame instead of leaving a gap.
+///
+/// Border overlays likewise: a ring parked for the switch is revealed here
+/// under its identical copy, which goes with the surrogate.
+fn show_final_overlays(state: &mut WmState, config: &UserConfig) -> bool {
+  let focused_id = state.focused_container().map(|c| c.id());
+  let mut shown = false;
+  let mut batch = SurrogateBatch::new();
+
+  for (id, rect, anchor) in final_overlay_rects(state) {
+    let is_focused = Some(id) == focused_id;
+    let mut params =
+      overlay_params_for(state.effect_set(id, is_focused), config);
+
+    if state
+      .window_by_id(id)
+      .is_some_and(|window| border_hidden_for_fullscreen(&window, config))
+    {
+      params.border = None;
+    }
+
+    shown |= params.backdrop.is_some() || params.border.is_some();
+
+    track_overlays(
+      &mut state.window_overlays,
+      id,
+      params,
+      Some(&OverlayPlacement::new(anchor, rect)),
+      &mut batch,
+    );
+
+    // One the window doesn't end with goes without being revealed.
+    if params.border.is_none() {
+      if let Some(overlay) = state
+        .window_overlays
+        .get_mut(&id)
+        .and_then(|overlays| overlays.border.as_mut())
+        .filter(|overlay| overlay.is_parked())
+      {
+        overlay.hide();
+      }
+    }
+  }
+  batch.commit();
+
+  shown
+}
+
+/// Moves the shown overlays of the finished switch's incoming windows
+/// behind the windows themselves. Returns whether it had windows to do so
+/// for.
+///
+/// Done before the surrogates are dropped: `WorkspaceSurrogate`'s `Drop`
+/// synchronously unregisters its DWM thumbnail, and without re-anchoring
+/// first there's a window where the overlay is left anchored to a `HWND`
+/// that no longer exists until the follow-up `platform_sync` call
+/// eventually corrects it via the normal `sync_overlays` path. DWM can
+/// composite a frame in that gap showing the overlay in whatever stale
+/// z-slot that leaves it -- a one-frame flicker at the end of every
+/// switch, on every incoming window (masked on the focused one in
+/// practice, since `sync_focus`'s `SetForegroundWindow` happens to trigger
+/// its own z-order correction as a side effect; unfocused siblings get no
+/// such incidental save).
+fn reanchor_final_overlays(state: &mut WmState) -> bool {
+  let windows = final_overlay_rects(state);
+  let mut batch = SurrogateBatch::new();
+
+  for (id, rect, _) in &windows {
+    let Some(window) = state.window_by_id(*id) else {
+      continue;
+    };
+    let Some(overlays) = state.window_overlays.get_mut(id) else {
+      continue;
+    };
+    // Only shown ones: placing one would show it, e.g. the ring of a
+    // window whose border is off now that it is unfocused, for the frames
+    // until the follow-up sync hid it again.
+    let anchor = overlay_z_anchor(&window);
+    if let Some(overlay) = overlays
+      .backdrop
+      .as_mut()
+      .filter(|overlay| overlay.is_visible())
+    {
+      overlay.defer_rect(&mut batch, rect, anchor);
+    }
+    if let Some(overlay) = overlays
+      .border
+      .as_mut()
+      .filter(|overlay| overlay.is_visible())
+    {
+      overlay.defer_rect(&mut batch, rect, anchor);
+    }
+  }
+  batch.commit();
+
+  !windows.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
   use wm_common::ParsedConfig;
@@ -3718,6 +3979,7 @@ mod tests {
           surrogate: None,
           is_incoming: true,
           was_focused: false,
+          hand_back: HandBack::Pending,
         };
         (*id, entry)
       })
@@ -3818,5 +4080,54 @@ mod tests {
       .expect("interrupted slides should await cleanup");
     assert!(cleanup.windows.contains_key(&a));
     assert!(cleanup.windows.contains_key(&b));
+  }
+
+  #[test]
+  fn windows_added_to_cleanup_restart_its_teardown() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let [a, b] = [Uuid::new_v4(), Uuid::new_v4()];
+
+    start_slide(&mut manager, &[a], &config);
+    manager.ws_cleanup_step = WsCleanupStep::Drop;
+    start_slide(&mut manager, &[b], &config);
+
+    // `a`'s window is only uncloaked on the next tick.
+    assert_eq!(manager.ws_cleanup_step, WsCleanupStep::AwaitUncloak);
+  }
+
+  #[test]
+  fn new_slide_takes_over_windows_awaiting_cleanup() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+
+    start_slide(&mut manager, &[a, b], &config);
+    start_slide(&mut manager, &[c], &config);
+    start_slide(&mut manager, &[a], &config);
+
+    let cleanup = manager
+      .pending_ws_cleanup
+      .as_ref()
+      .expect("windows left out of the new slide should await cleanup");
+    assert!(!cleanup.windows.contains_key(&a));
+    assert!(cleanup.windows.contains_key(&b));
+    assert!(cleanup.windows.contains_key(&c));
+  }
+
+  #[test]
+  fn cleanup_ends_once_a_new_slide_takes_all_its_windows() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let [a, b] = [Uuid::new_v4(), Uuid::new_v4()];
+
+    start_slide(&mut manager, &[a], &config);
+    start_slide(&mut manager, &[b], &config);
+    start_slide(&mut manager, &[a, b], &config);
+
+    assert!(manager.pending_ws_cleanup.is_none());
   }
 }

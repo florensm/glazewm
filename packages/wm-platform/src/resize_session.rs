@@ -38,10 +38,9 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
 use crate::{
-  companion::HandoffWait, discard_bits_if_resized,
-  native_surrogate::to_logical, platform_impl::NativeWindow, window_class,
-  Color, CornerStyle, NativeSurrogate, OverlayParams, Rect,
-  SurrogateBatch,
+  discard_bits_if_resized, native_surrogate::to_logical,
+  platform_impl::NativeWindow, window_class, Color, CornerStyle,
+  NativeSurrogate, OverlayParams, Rect, SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -221,8 +220,6 @@ pub struct ResizeSession {
   /// the first `pre_commit` call for the current target. See
   /// [`COMMIT_CONFIRM_MAX_WAIT`].
   commit_started_at: Option<Instant>,
-  /// See [`ResizeSession::awaits_companion`].
-  companion_wait: HandoffWait,
 }
 
 impl ResizeSession {
@@ -387,7 +384,6 @@ impl ResizeSession {
       current_rect: None,
       commit_confirmed: false,
       commit_started_at: None,
-      companion_wait: HandoffWait::default(),
     };
     session.sync_fill();
     session
@@ -567,9 +563,10 @@ impl ResizeSession {
   /// [`NativeSurrogate::is_companion_off_screen`]), which is not back on
   /// screen yet, so fading now would reveal the window's own pixels.
   pub fn awaits_companion(&mut self) -> bool {
-    let companion =
-      self.surrogate.as_ref().and_then(NativeSurrogate::companion);
-    self.companion_wait.awaits(companion)
+    self
+      .surrogate
+      .as_mut()
+      .is_some_and(NativeSurrogate::awaits_companion)
   }
 
   /// Takes this session's surrogate, if any, for reuse via

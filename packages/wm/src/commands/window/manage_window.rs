@@ -182,6 +182,11 @@ fn manage_window_inner(
       config,
     )?;
 
+    // Not one already open as the WM starts.
+    if is_new {
+      crate::particles::note_open(state, &window);
+    }
+
     // The window is managed and queued for redraw, so `platform_sync`
     // (non-tiling) or the slide-in animation (tiling) now owns the
     // uncloak. Every earlier return leaves the guard to undo it.
@@ -397,8 +402,9 @@ fn auto_stacking(
     }
     AutoStackDecision::Blocked(reason) => {
       info!(
-        "Not auto-stacking window '{}' because {reason}.",
-        properties.title
+        "Not auto-stacking window {:?} ({}) because {reason}.",
+        native_window.id(),
+        properties.process_name
       );
       AutoStacking::None
     }
@@ -587,8 +593,9 @@ fn duplicate_tabs(window: &WindowContainer) -> Vec<NativeWindow> {
 pub fn close_duplicate_tabs(duplicates: &[NativeWindow]) {
   for duplicate in duplicates {
     info!(
-      "Closing tab duplicated by a new window: '{}'",
-      duplicate.title()
+      "Closing tab duplicated by a new window: {:?} ({}).",
+      duplicate.id(),
+      duplicate.process_name().unwrap_or_default()
     );
 
     if let Err(err) = duplicate.close() {

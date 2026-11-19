@@ -96,11 +96,10 @@ impl NativeBackdropOverlay {
     rect: &Rect,
     anchor: HWND,
   ) {
-    if !self.window.is_placed_behind(anchor) || &self.rect != rect {
-      if let Err(err) = self.window.place(rect, anchor) {
-        tracing::warn!("{err}");
-        return;
-      }
+    if (!self.window.is_placed_behind(anchor) || &self.rect != rect)
+      && !self.window.place(rect, anchor)
+    {
+      return;
     }
 
     self.lay_out(frame, shown, rect);
@@ -189,9 +188,7 @@ impl Overlay for NativeBackdropOverlay {
       OverlayWindow::create(OverlayKind::Backdrop, rect, anchor)?;
     let composition = BackdropVisual::create(window.hwnd(), rect, params)?;
 
-    if let Err(err) = window.place(rect, anchor) {
-      tracing::warn!("{err}");
-    }
+    window.place(rect, anchor);
 
     Ok(Self {
       composition,
