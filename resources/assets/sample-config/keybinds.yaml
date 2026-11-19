@@ -1,0 +1,242 @@
+# Modes swap in their own keybindings, e.g. with `wm-enable-binding-mode`.
+# Each can set a `display_name`, shown by bars.
+binding_modes:
+  - name: "stack"
+    keybindings:
+      # Pull the neighbor in that direction into the stack.
+      - commands: ["stack-absorb-neighbor --direction left"]
+        bindings: ["h", "left"]
+      - commands: ["stack-absorb-neighbor --direction right"]
+        bindings: ["l", "right"]
+      - commands: ["stack-absorb-neighbor --direction up"]
+        bindings: ["k", "up"]
+      - commands: ["stack-absorb-neighbor --direction down"]
+        bindings: ["j", "down"]
+      - commands: ["cycle-stack-focus"]
+        bindings: ["n"]
+      - commands: ["cycle-stack-focus --prev"]
+        bindings: ["p"]
+      - commands: ["toggle-stack"]
+        bindings: ["g"]
+      - commands: ["float-out-of-stack"]
+        bindings: ["f"]
+      # More stack commands are in docs/stacks.md.
+      - commands: ["wm-disable-binding-mode --name stack"]
+        bindings: ["escape", "enter"]
+
+  - name: "resize"
+    keybindings:
+      - commands: ["resize --width -2%"]
+        bindings: ["h", "left"]
+      - commands: ["resize --width +2%"]
+        bindings: ["l", "right"]
+      - commands: ["resize --height +2%"]
+        bindings: ["k", "up"]
+      - commands: ["resize --height -2%"]
+        bindings: ["j", "down"]
+      - commands: ["wm-disable-binding-mode --name resize"]
+        bindings: ["escape", "enter", "alt+r"]
+
+keybindings:
+  - commands: ["focus --direction left"]
+    bindings: ["alt+h", "alt+left"]
+  - commands: ["focus --direction right"]
+    bindings: ["alt+l", "alt+right"]
+  - commands: ["focus --direction up"]
+    bindings: ["alt+k", "alt+up"]
+  - commands: ["focus --direction down"]
+    bindings: ["alt+j", "alt+down"]
+
+  - commands: ["move --direction left"]
+    bindings: ["alt+shift+h", "alt+shift+left"]
+  - commands: ["move --direction right"]
+    bindings: ["alt+shift+l", "alt+shift+right"]
+  - commands: ["move --direction up"]
+    bindings: ["alt+shift+k", "alt+shift+up"]
+  - commands: ["move --direction down"]
+    bindings: ["alt+shift+j", "alt+shift+down"]
+
+  - commands: ["resize --width -2%"]
+    bindings: ["alt+u"]
+  - commands: ["resize --width +2%"]
+    bindings: ["alt+p"]
+  - commands: ["resize --height +2%"]
+    bindings: ["alt+shift+o"]
+  - commands: ["resize --height -2%"]
+    bindings: ["alt+i"]
+
+  # Resize with arrow keys or HJKL, see `binding_modes`.
+  - commands: ["wm-enable-binding-mode --name resize"]
+    bindings: ["alt+r"]
+
+  # Pause the WM and all other keybindings until pressed again.
+  - commands: ["wm-toggle-pause"]
+    bindings: ["alt+shift+p"]
+
+  # Where new tiling windows go.
+  - commands: ["toggle-tiling-direction"]
+    bindings: ["alt+v"]
+
+  - commands: ["toggle-stack"]
+    bindings: ["alt+g"]
+  # Stack with neighbors or cycle the stack, see `binding_modes`.
+  - commands: ["wm-enable-binding-mode --name stack"]
+    bindings: ["alt+shift+g"]
+  - commands: ["cycle-stack-focus"]
+    bindings: ["alt+oem_period"]
+  - commands: ["cycle-stack-focus --prev"]
+    bindings: ["alt+oem_comma"]
+
+  # Tiling -> floating -> fullscreen.
+  - commands: ["wm-cycle-focus"]
+    bindings: ["alt+space"]
+
+  - commands: ["toggle-overview"]
+    bindings: ["alt+w"]
+
+  - commands: ["toggle-floating --centered"]
+    bindings: ["alt+shift+space"]
+  - commands: ["toggle-tiling"]
+    bindings: ["alt+t"]
+  - commands: ["toggle-fullscreen"]
+    bindings: ["alt+f"]
+  - commands: ["toggle-minimized"]
+    bindings: ["alt+m"]
+  - commands: ["close"]
+    bindings: ["alt+shift+q"]
+
+  - commands: ["wm-exit"]
+    bindings: ["alt+shift+e"]
+  - commands: ["wm-reload-config"]
+    bindings: ["alt+shift+r"]
+  - commands: ["wm-redraw"]
+    bindings: ["alt+shift+w"]
+
+  # Or `shell-exec wt` for Windows Terminal.
+  - commands: ["shell-exec cmd"]
+    bindings: ["alt+enter"]
+
+  - commands: ["focus --next-active-workspace"]
+    bindings: ["alt+s"]
+  - commands: ["focus --prev-active-workspace"]
+    bindings: ["alt+a"]
+  - commands: ["focus --recent-workspace"]
+    bindings: ["alt+d"]
+
+  # Creates a workspace when all are in use (`dynamic_workspaces`).
+  - commands: ["focus --next-empty-workspace"]
+    bindings: ["alt+n"]
+  - commands: ["move --next-empty-workspace"]
+    bindings: ["alt+shift+n"]
+
+  - commands: ["focus --urgent-window"]
+    bindings: ["alt+shift+u"]
+
+  # Summon the special workspace or go back; send a window there or back.
+  - commands: ["focus --special-workspace"]
+    bindings: ["alt+oem_minus"]
+  - commands: ["move --special-workspace"]
+    bindings: ["alt+shift+oem_minus"]
+
+  # Scrolling layout. Move the window into the neighbouring column, or out
+  # of a shared one.
+  - commands: ["consume-or-expel-window --direction left"]
+    bindings: ["alt+oem_open_brackets"]
+  - commands: ["consume-or-expel-window --direction right"]
+    bindings: ["alt+oem_close_brackets"]
+  - commands: ["cycle-column-width"]
+    bindings: ["alt+c"]
+  - commands: ["cycle-window-height"]
+    bindings: ["alt+shift+c"]
+  - commands: ["maximize-column"]
+    bindings: ["alt+z"]
+  - commands: ["expand-column-to-available-width"]
+    bindings: ["alt+shift+z"]
+  - commands: ["center-column"]
+    bindings: ["alt+x"]
+  - commands: ["center-visible-columns"]
+    bindings: ["alt+shift+x"]
+  - commands: ["toggle-column-tabbed-display"]
+    bindings: ["alt+b"]
+  - commands: ["focus --first-column"]
+    bindings: ["alt+home"]
+  - commands: ["focus --last-column"]
+    bindings: ["alt+end"]
+  - commands: ["move --first-column"]
+    bindings: ["alt+shift+home"]
+  - commands: ["move --last-column"]
+    bindings: ["alt+shift+end"]
+  # Also: consume-window-into-column, expel-window-from-column,
+  # swap-window, reset-window-height, focus/move --column <n>,
+  # focus --next-column.
+
+  # Mouse wheel. `cooldown_ms` makes a flick one step.
+  - commands: ["focus --next-workspace"]
+    bindings: ["alt+wheel_down"]
+    cooldown_ms: 150
+  - commands: ["focus --prev-workspace"]
+    bindings: ["alt+wheel_up"]
+    cooldown_ms: 150
+  - commands: ["move --next-workspace", "focus --next-workspace"]
+    bindings: ["alt+ctrl+wheel_down"]
+    cooldown_ms: 150
+  - commands: ["move --prev-workspace", "focus --prev-workspace"]
+    bindings: ["alt+ctrl+wheel_up"]
+    cooldown_ms: 150
+  # Along the strip with the horizontal wheel, or with shift held.
+  - commands: ["focus --direction right"]
+    bindings: ["alt+wheel_right", "alt+shift+wheel_down"]
+  - commands: ["focus --direction left"]
+    bindings: ["alt+wheel_left", "alt+shift+wheel_up"]
+  - commands: ["move --direction right"]
+    bindings: ["alt+ctrl+wheel_right", "alt+ctrl+shift+wheel_down"]
+  - commands: ["move --direction left"]
+    bindings: ["alt+ctrl+wheel_left", "alt+ctrl+shift+wheel_up"]
+
+  - commands: ["focus --workspace 1"]
+    bindings: ["alt+1"]
+  - commands: ["focus --workspace 2"]
+    bindings: ["alt+2"]
+  - commands: ["focus --workspace 3"]
+    bindings: ["alt+3"]
+  - commands: ["focus --workspace 4"]
+    bindings: ["alt+4"]
+  - commands: ["focus --workspace 5"]
+    bindings: ["alt+5"]
+  - commands: ["focus --workspace 6"]
+    bindings: ["alt+6"]
+  - commands: ["focus --workspace 7"]
+    bindings: ["alt+7"]
+  - commands: ["focus --workspace 8"]
+    bindings: ["alt+8"]
+  - commands: ["focus --workspace 9"]
+    bindings: ["alt+9"]
+
+  # Move the focused workspace to the monitor in that direction.
+  - commands: ["move-workspace --direction left"]
+    bindings: ["alt+shift+a"]
+  - commands: ["move-workspace --direction right"]
+    bindings: ["alt+shift+f"]
+  - commands: ["move-workspace --direction up"]
+    bindings: ["alt+shift+d"]
+  - commands: ["move-workspace --direction down"]
+    bindings: ["alt+shift+s"]
+
+  - commands: ["move --workspace 1", "focus --workspace 1"]
+    bindings: ["alt+shift+1"]
+  - commands: ["move --workspace 2", "focus --workspace 2"]
+    bindings: ["alt+shift+2"]
+  - commands: ["move --workspace 3", "focus --workspace 3"]
+    bindings: ["alt+shift+3"]
+  - commands: ["move --workspace 4", "focus --workspace 4"]
+    bindings: ["alt+shift+4"]
+  - commands: ["move --workspace 5", "focus --workspace 5"]
+    bindings: ["alt+shift+5"]
+  - commands: ["move --workspace 6", "focus --workspace 6"]
+    bindings: ["alt+shift+6"]
+  - commands: ["move --workspace 7", "focus --workspace 7"]
+    bindings: ["alt+shift+7"]
+  - commands: ["move --workspace 8", "focus --workspace 8"]
+    bindings: ["alt+shift+8"]
+  - commands: ["move --workspace 9", "focus --workspace 9"]
+    bindings: ["alt+shift+9"]

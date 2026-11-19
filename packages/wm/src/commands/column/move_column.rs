@@ -197,35 +197,15 @@ mod tests {
     commands::{column::ColumnTarget, container::set_focused_descendant},
     layout::scrolling::sync_view,
     models::{Monitor, SplitContainer, TilingWindow, Workspace},
-    test_utils::{child_ids, MOCK_MONITOR_WIDTH},
+    test_utils::{child_ids, scrolling_column_setup, MOCK_MONITOR_WIDTH},
     traits::{CommonGetters, PositionGetters, TilingSizeGetters},
     wm_state::WmState,
   };
 
-  /// A scrolling workspace of a window, a two-row column and a window,
-  /// with the column focused.
+  /// [`scrolling_column_setup`], with its view synced.
   fn setup() -> (WmState, Workspace, [TilingWindow; 4]) {
-    let windows = [
-      TilingWindow::mock().call(),
-      TilingWindow::mock().call(),
-      TilingWindow::mock().call(),
-      TilingWindow::mock().call(),
-    ];
-    let [first, top, bottom, last] = windows.clone();
-    let column = SplitContainer::mock()
-      .tiling_direction(TilingDirection::Vertical)
-      .tiling_containers(vec![top.into(), bottom.clone().into()])
-      .call();
-    let workspace = Workspace::mock()
-      .layout(Layout::Scrolling)
-      .tiling_containers(vec![first.into(), column.into(), last.into()])
-      .call();
-    let state = WmState::mock(vec![Monitor::mock()
-      .workspaces(vec![workspace.clone()])
-      .call()]);
-    set_focused_descendant(&bottom.into(), None);
+    let (state, workspace, windows) = scrolling_column_setup();
     sync_view(&workspace).unwrap();
-
     (state, workspace, windows)
   }
 

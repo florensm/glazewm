@@ -316,9 +316,10 @@ fn tab_frame_at(
   let active_index = windows.iter().position(|w| w.id() == active.id())?;
   let active_window = windows.get(active_index)?;
   let anchor = active_window.native().id().0;
-  let is_focused = focused_id == Some(active_window.id());
-  let border = border_overlay_params_for(is_focused, config);
-  let window_effects = config.value.window_effects.for_focus(is_focused);
+  let set =
+    active_window.effect_set(focused_id == Some(active_window.id()));
+  let border = border_overlay_params_for(set, config);
+  let window_effects = config.value.window_effects.for_set(set);
 
   let tabs = windows
     .iter()

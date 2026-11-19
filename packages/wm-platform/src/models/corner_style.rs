@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 
 /// Corner style of a window's frame.
 ///
-/// # Platform-specific
-///
 /// Only has an effect on Windows 11.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,

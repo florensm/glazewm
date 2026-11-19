@@ -1,8 +1,3 @@
-#[cfg(target_os = "macos")]
-use objc2_application_services::AXUIElement;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::{CFBoolean, CFRetained, CFString};
-#[cfg(target_os = "windows")]
 use windows::Win32::{
   Foundation::HWND,
   UI::WindowsAndMessaging::{
@@ -10,41 +5,15 @@ use windows::Win32::{
   },
 };
 
-use crate::{platform_impl, Rect};
-#[cfg(target_os = "macos")]
-use crate::{platform_impl::AXUIElementExt, ThreadBound};
-#[cfg(target_os = "windows")]
-use crate::{CornerStyle, Delta, OpacityValue, RectDelta};
+use crate::{
+  platform_impl, CornerStyle, Delta, OpacityValue, Rect, RectDelta,
+};
 
 /// Unique identifier of a window.
 ///
-/// Can be obtained with `window.id()`.
-///
-/// # Platform-specific
-///
-/// - **Windows**: `isize` (`HWND`)
-/// - **macOS**: `u32` (`CGWindowID`)
+/// Can be obtained with `window.id()`. Wraps the window's `HWND`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WindowId(
-  #[cfg(target_os = "windows")] pub isize,
-  #[cfg(target_os = "macos")] pub u32,
-);
-
-impl WindowId {
-  #[cfg(target_os = "macos")]
-  pub(crate) fn from_window_element(el: &CFRetained<AXUIElement>) -> Self {
-    let mut window_id = 0;
-
-    unsafe {
-      platform_impl::ffi::_AXUIElementGetWindow(
-        CFRetained::as_ptr(el),
-        &raw mut window_id,
-      )
-    };
-
-    Self(window_id)
-  }
-}
+pub struct WindowId(pub isize);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WindowZOrder {
@@ -52,615 +21,6 @@ pub enum WindowZOrder {
   AfterWindow(WindowId),
   Top,
   TopMost,
-}
-
-/// macOS-specific extension trait for [`NativeWindow`].
-#[cfg(target_os = "macos")]
-pub trait NativeWindowExtMacOs {
-  /// Gets the `AXUIElement` instance for this window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn ax_ui_element(&self) -> &ThreadBound<CFRetained<AXUIElement>>;
-
-  /// Gets the bundle ID of the application that owns the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn bundle_id(&self) -> Option<String>;
-
-  /// Gets the role of the window (e.g. `AXWindow`).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn role(&self) -> crate::Result<String>;
-
-  /// Gets the sub-role of the window (e.g. `AXStandardWindow`).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn subrole(&self) -> crate::Result<String>;
-
-  /// Whether the window is modal.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn is_modal(&self) -> crate::Result<bool>;
-
-  /// Whether the window is the main window for its application.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn is_main(&self) -> crate::Result<bool>;
-}
-
-#[cfg(target_os = "macos")]
-impl NativeWindowExtMacOs for NativeWindow {
-  fn ax_ui_element(&self) -> &ThreadBound<CFRetained<AXUIElement>> {
-    &self.inner.element
-  }
-
-  fn bundle_id(&self) -> Option<String> {
-    self.inner.application.bundle_id()
-  }
-
-  fn role(&self) -> crate::Result<String> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFString>("AXRole")
-        .map(|cf_string| cf_string.to_string())
-    })?
-  }
-
-  fn subrole(&self) -> crate::Result<String> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFString>("AXSubrole")
-        .map(|cf_string| cf_string.to_string())
-    })?
-  }
-
-  fn is_modal(&self) -> crate::Result<bool> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFBoolean>("AXModal")
-        .map(|cf_bool| cf_bool.value())
-    })?
-  }
-
-  fn is_main(&self) -> crate::Result<bool> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFBoolean>("AXMain")
-        .map(|cf_bool| cf_bool.value())
-    })?
-  }
-}
-
-/// Windows-specific extensions for [`NativeWindow`].
-#[cfg(target_os = "windows")]
-pub trait NativeWindowWindowsExt {
-  /// Creates a [`NativeWindow`] from a window handle.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn from_handle(handle: isize) -> NativeWindow;
-
-  /// Gets the window handle.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn hwnd(&self) -> HWND;
-
-  /// Gets the class name of the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn class_name(&self) -> crate::Result<String>;
-
-  /// Gets the window's frame, including the window's shadow borders.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn frame_with_shadows(&self) -> crate::Result<Rect>;
-
-  /// Gets the delta between the window's frame and the window's border.
-  /// This represents the size of a window's shadow borders.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn shadow_borders(&self) -> crate::Result<RectDelta>;
-
-  /// Smallest width and height the window's app lets it be resized to,
-  /// shadow borders included, as it answers `WM_GETMINMAXINFO`.
-  ///
-  /// Asks the app, waiting a moment at most; `None` if it doesn't answer
-  /// in time.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn min_window_size(&self) -> Option<(i32, i32)>;
-
-  /// Whether the window has an owner window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn has_owner_window(&self) -> bool;
-
-  /// ID of the window's owner window, if it has one.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn owner_window_id(&self) -> Option<WindowId>;
-
-  /// Whether the window is shown, but cloaked along with its cloaked owner
-  /// window, e.g. while the WM animates the owner.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn is_cloaked_by_owner(&self) -> bool;
-
-  /// Presses `keys` together (e.g. `ctrl+p`) in the window, if it is the
-  /// foreground window.
-  ///
-  /// Returns `false` without sending anything if it isn't, since key
-  /// presses always go to the foreground window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn press_keys(&self, keys: &[crate::Key]) -> crate::Result<bool>;
-
-  /// Whether the window's parent is the desktop, rather than another
-  /// window it was embedded into (e.g. via `SetParent`).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn is_top_level(&self) -> bool;
-
-  /// ID of the process that owns the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn process_id(&self) -> u32;
-
-  /// Whether the window accepts mouse and keyboard input, i.e. it hasn't
-  /// been disabled with `EnableWindow`.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn is_enabled(&self) -> bool;
-
-  /// Whether the window is disabled behind a shown, enabled popup it owns,
-  /// i.e. a modal dialog such as a "Save changes?" prompt.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn has_modal_prompt(&self) -> bool;
-
-  /// Whether the window's app has stopped responding, as judged by the OS
-  /// (no messages processed for about 5 seconds).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn is_hung(&self) -> bool;
-
-  /// Re-enables input to a window its app disabled, without blocking:
-  /// `EnableWindow` waits for the app to handle `WM_ENABLE`, so it is
-  /// called from a worker thread.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn enable_async(&self);
-
-  /// Whether the window has the given window style flag(s) set.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn has_window_style(&self, style: WINDOW_STYLE) -> bool;
-
-  /// Whether the window has the given extended window style flag(s) set.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn has_window_style_ex(&self, style: WINDOW_EX_STYLE) -> bool;
-
-  /// Thin wrapper around [`SetWindowPos`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_window_pos(
-    &self,
-    z_order: &WindowZOrder,
-    rect: &Rect,
-    flags: SET_WINDOW_POS_FLAGS,
-  ) -> crate::Result<()>;
-
-  /// Shows the window asynchronously.
-  ///
-  /// NOTE: Cloaked windows do not get shown until uncloaked.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn show(&self) -> crate::Result<()>;
-
-  /// Hides the window asynchronously.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn hide(&self) -> crate::Result<()>;
-
-  /// Restores the window (unminimizes and unmaximizes).
-  ///
-  /// If `outer_frame` is provided, the window will be restored to the
-  /// specified position. This avoids flickering compared to restoring
-  /// and then repositioning the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn restore(&self, outer_frame: Option<&Rect>) -> crate::Result<()>;
-
-  /// Cloaks or uncloaks the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_cloaked(&self, cloaked: bool) -> crate::Result<()>;
-
-  /// Cloaks or uncloaks the window, or hides or shows it if it can't be
-  /// cloaked.
-  ///
-  /// Only app windows can be cloaked, not e.g. the windows an app's main
-  /// window owns, which `set_cloaked` would leave on screen. Unlike a
-  /// cloaked window, a hidden one is not rendered for thumbnails.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_cloaked_or_hidden(&self, hidden: bool) -> crate::Result<()>;
-
-  /// Whether the shell has a view of the window to cloak it by. Without
-  /// one, `set_cloaked_or_hidden` hides the window instead.
-  ///
-  /// `false` as well if the shell can't be asked.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn can_be_cloaked(&self) -> bool;
-
-  /// Returns whether the window is currently cloaked by DWM.
-  ///
-  /// Cloaking hides the window visually while keeping `WS_VISIBLE` set.
-  /// The WM uses this for workspace hiding (`HideMethod::Cloak`) and
-  /// surrogate animations.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn is_cloaked(&self) -> crate::Result<bool>;
-
-  /// Whether the window currently sits in the always-on-top band.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn is_topmost(&self) -> bool;
-
-  /// Stops the window's taskbar button from flashing.
-  ///
-  /// Has no effect if the window isn't flashing.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn stop_flashing(&self);
-
-  /// Marks the window as fullscreen.
-  ///
-  /// Causes the native Windows taskbar to be moved to the bottom of the
-  /// z-order when this window is active.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()>;
-
-  /// Adds or removes the window from the native taskbar.
-  ///
-  /// Cloaked windows are normally always shown in the taskbar, but can be
-  /// manually toggled. Hidden windows (`SW_HIDE`) can never be shown in
-  /// the taskbar.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_taskbar_visibility(&self, visible: bool) -> crate::Result<()>;
-
-  /// Adds the given extended window style flag(s) to the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn add_window_style_ex(&self, style: WINDOW_EX_STYLE);
-
-  /// Sets the window's z-order.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_z_order(&self, zorder: &WindowZOrder) -> crate::Result<()>;
-
-  /// Sets the visibility of the window's title bar.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()>;
-
-  /// Hides or restores the window's own OS-drawn border, so it doesn't
-  /// show as a second line inside a [`NativeBorderOverlay`] ring.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows, and only does anything on
-  /// Windows 11 (build 22000) and later -- earlier builds draw no such
-  /// border and return `Err`.
-  ///
-  /// [`NativeBorderOverlay`]: crate::NativeBorderOverlay
-  fn set_native_border_hidden(&self, hidden: bool) -> crate::Result<()>;
-
-  /// Sets the corner style of the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_corner_style(
-    &self,
-    corner_style: &CornerStyle,
-  ) -> crate::Result<()>;
-
-  /// Sets the transparency of the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_transparency(
-    &self,
-    opacity_value: &OpacityValue,
-  ) -> crate::Result<()>;
-
-  /// Adjusts the window's transparency by a relative delta.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn adjust_transparency(
-    &self,
-    opacity_delta: &Delta<OpacityValue>,
-  ) -> crate::Result<()>;
-
-  /// Re-applies the window's current layered-window alpha, if any, without
-  /// changing its value.
-  ///
-  /// `SWP_FRAMECHANGED` (issued whenever a window is resized) forces a
-  /// non-client-area recalculation that can make DWM briefly composite the
-  /// window at full opacity before the existing `LWA_ALPHA` value is
-  /// reasserted — a one-frame flash to solid on every
-  /// resize/move/workspace- switch landing for any window using the
-  /// `transparency` effect. Calling this immediately after such a
-  /// `SetWindowPos` forces DWM to recomposite with the correct alpha
-  /// right away, closing that gap. No-op if the window isn't currently
-  /// layered.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn reassert_transparency(&self) -> crate::Result<()>;
-
-  /// The window's layered-window alpha, or `None` when it has none, e.g.
-  /// when the `transparency` effect was never applied to it.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn layered_alpha(&self) -> crate::Result<Option<u8>>;
-}
-
-#[cfg(target_os = "windows")]
-impl NativeWindowWindowsExt for NativeWindow {
-  fn from_handle(handle: isize) -> Self {
-    platform_impl::NativeWindow::new(handle).into()
-  }
-
-  fn stop_flashing(&self) {
-    self.inner.stop_flashing();
-  }
-
-  fn hwnd(&self) -> HWND {
-    self.inner.hwnd()
-  }
-
-  fn class_name(&self) -> crate::Result<String> {
-    self.inner.class_name()
-  }
-
-  fn frame_with_shadows(&self) -> crate::Result<Rect> {
-    self.inner.frame_with_shadows()
-  }
-
-  fn shadow_borders(&self) -> crate::Result<RectDelta> {
-    self.inner.shadow_borders()
-  }
-
-  fn min_window_size(&self) -> Option<(i32, i32)> {
-    self.inner.min_window_size()
-  }
-
-  fn has_owner_window(&self) -> bool {
-    self.inner.has_owner_window()
-  }
-
-  fn owner_window_id(&self) -> Option<WindowId> {
-    self.inner.owner_window_id()
-  }
-
-  fn is_cloaked_by_owner(&self) -> bool {
-    self.inner.is_cloaked_by_owner()
-  }
-
-  fn press_keys(&self, keys: &[crate::Key]) -> crate::Result<bool> {
-    self.inner.press_keys(keys)
-  }
-
-  fn is_top_level(&self) -> bool {
-    self.inner.is_top_level()
-  }
-
-  fn process_id(&self) -> u32 {
-    self.inner.process_id()
-  }
-
-  fn is_enabled(&self) -> bool {
-    self.inner.is_enabled()
-  }
-
-  fn has_modal_prompt(&self) -> bool {
-    self.inner.has_modal_prompt()
-  }
-
-  fn is_hung(&self) -> bool {
-    self.inner.is_hung()
-  }
-
-  fn enable_async(&self) {
-    self.inner.enable_async();
-  }
-
-  fn has_window_style(&self, style: WINDOW_STYLE) -> bool {
-    self.inner.has_window_style(style)
-  }
-
-  fn has_window_style_ex(&self, style: WINDOW_EX_STYLE) -> bool {
-    self.inner.has_window_style_ex(style)
-  }
-
-  fn set_window_pos(
-    &self,
-    z_order: &WindowZOrder,
-    rect: &Rect,
-    flags: SET_WINDOW_POS_FLAGS,
-  ) -> crate::Result<()> {
-    self.inner.set_window_pos(z_order, rect, flags)
-  }
-
-  fn show(&self) -> crate::Result<()> {
-    self.inner.show()
-  }
-
-  fn hide(&self) -> crate::Result<()> {
-    self.inner.hide()
-  }
-
-  fn restore(&self, outer_frame: Option<&Rect>) -> crate::Result<()> {
-    self.inner.restore(outer_frame)
-  }
-
-  fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
-    self.inner.set_cloaked(cloaked)
-  }
-
-  fn set_cloaked_or_hidden(&self, hidden: bool) -> crate::Result<()> {
-    self.inner.set_cloaked_or_hidden(hidden)
-  }
-
-  fn can_be_cloaked(&self) -> bool {
-    self.inner.can_be_cloaked()
-  }
-
-  fn is_cloaked(&self) -> crate::Result<bool> {
-    self.inner.is_cloaked()
-  }
-
-  fn is_topmost(&self) -> bool {
-    crate::window_class::is_topmost(self.inner.hwnd())
-  }
-
-  fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()> {
-    self.inner.mark_fullscreen(fullscreen)
-  }
-
-  fn set_taskbar_visibility(&self, visible: bool) -> crate::Result<()> {
-    self.inner.set_taskbar_visibility(visible)
-  }
-
-  fn add_window_style_ex(&self, style: WINDOW_EX_STYLE) {
-    self.inner.add_window_style_ex(style);
-  }
-
-  fn set_z_order(&self, z_order: &WindowZOrder) -> crate::Result<()> {
-    self.inner.set_z_order(z_order)
-  }
-
-  fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()> {
-    self.inner.set_title_bar_visibility(visible)
-  }
-
-  fn set_native_border_hidden(&self, hidden: bool) -> crate::Result<()> {
-    self.inner.set_native_border_hidden(hidden)
-  }
-
-  fn set_corner_style(
-    &self,
-    corner_style: &CornerStyle,
-  ) -> crate::Result<()> {
-    self.inner.set_corner_style(corner_style)
-  }
-
-  fn set_transparency(
-    &self,
-    opacity_value: &OpacityValue,
-  ) -> crate::Result<()> {
-    self.inner.set_transparency(opacity_value)
-  }
-
-  fn adjust_transparency(
-    &self,
-    opacity_delta: &Delta<OpacityValue>,
-  ) -> crate::Result<()> {
-    self.inner.adjust_transparency(opacity_delta)
-  }
-
-  fn reassert_transparency(&self) -> crate::Result<()> {
-    self.inner.reassert_transparency()
-  }
-
-  fn layered_alpha(&self) -> crate::Result<Option<u8>> {
-    self.inner.layered_alpha()
-  }
 }
 
 /// `SWP_NOCOPYBITS` when moving a window from `current` to `target`
@@ -671,7 +31,6 @@ impl NativeWindowWindowsExt for NativeWindow {
 /// showing their content at the old size with the rest black, until a
 /// resize by hand forces a full repaint. A pure move keeps the old pixels,
 /// which are still correct, and spares the app a repaint.
-#[cfg(target_os = "windows")]
 #[must_use]
 pub fn discard_bits_if_resized(
   current: Option<&Rect>,
@@ -704,11 +63,8 @@ impl NativeWindow {
   /// Gets the window's title.
   ///
   /// Note that empty strings are valid window titles.
-  ///
-  /// # Errors
-  ///
-  /// Returns [`Error::WindowNotFound`] if the window is invalid.
-  pub fn title(&self) -> crate::Result<String> {
+  #[must_use]
+  pub fn title(&self) -> String {
     self.inner.title()
   }
 
@@ -718,13 +74,7 @@ impl NativeWindow {
 
   /// Gets a rectangle of the window's size and position.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Includes the window's shadow borders.
-  /// - **macOS**: If the window was previously resized to a value outside
-  ///   of the window's allowed min/max width & height (e.g. via calling
-  ///   `set_frame`), this can return those invalid values and might not
-  ///   reflect the actual window size.
+  /// Includes the window's shadow borders.
   pub fn frame(&self) -> crate::Result<Rect> {
     let _scope = crate::perf::scope(crate::perf::Stage::NativeFrame);
     self.inner.frame()
@@ -749,37 +99,38 @@ impl NativeWindow {
   }
 
   /// Whether the window is actually visible.
-  pub fn is_visible(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_visible(&self) -> bool {
     self.inner.is_visible()
   }
 
   /// Whether the window is minimized.
-  pub fn is_minimized(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_minimized(&self) -> bool {
     self.inner.is_minimized()
   }
 
   /// Whether the window is maximized.
-  pub fn is_maximized(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_maximized(&self) -> bool {
     self.inner.is_maximized()
   }
 
   /// Whether the window can be resized.
-  pub fn is_resizable(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_resizable(&self) -> bool {
     self.inner.is_resizable()
   }
 
   /// Whether the window is the OS's desktop window.
-  pub fn is_desktop_window(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_desktop_window(&self) -> bool {
     self.inner.is_desktop_window()
   }
 
   /// Repositions and resizes the window to the specified rectangle.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Automatically adjusts the `rect` prior to calling [`SetWindowPos`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos)
-  ///   to include the window's shadow borders. To set the window's
-  ///   position directly, use [`NativeWindowWindowsExt::set_window_pos`].
+  /// Automatically adjusts the `rect` prior to calling [`SetWindowPos`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos) to include the window's shadow borders. To set the window's position directly, use [`Self::set_window_pos`].
   pub fn set_frame(&self, rect: &Rect) -> crate::Result<()> {
     self.inner.set_frame(rect)
   }
@@ -809,13 +160,302 @@ impl NativeWindow {
 
   /// Closes the window.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: This sends a `WM_CLOSE` message to the window.
-  /// - **macOS**: This simulates pressing the close button on the window's
-  ///   title bar.
+  /// This sends a `WM_CLOSE` message to the window.
   pub fn close(&self) -> crate::Result<()> {
     self.inner.close()
+  }
+
+  /// Creates a [`NativeWindow`] from a window handle.
+  #[must_use]
+  pub fn from_handle(handle: isize) -> Self {
+    platform_impl::NativeWindow::new(handle).into()
+  }
+
+  /// Gets the window handle.
+  #[must_use]
+  pub fn hwnd(&self) -> HWND {
+    self.inner.hwnd()
+  }
+
+  /// Gets the class name of the window.
+  pub fn class_name(&self) -> crate::Result<String> {
+    self.inner.class_name()
+  }
+
+  /// Gets the window's frame, including the window's shadow borders.
+  pub fn frame_with_shadows(&self) -> crate::Result<Rect> {
+    self.inner.frame_with_shadows()
+  }
+
+  /// Gets the delta between the window's frame and the window's border.
+  /// This represents the size of a window's shadow borders.
+  pub fn shadow_borders(&self) -> crate::Result<RectDelta> {
+    self.inner.shadow_borders()
+  }
+
+  /// Smallest width and height the window's app lets it be resized to,
+  /// shadow borders included, as it answers `WM_GETMINMAXINFO`.
+  ///
+  /// Asks the app, waiting a moment at most; `None` if it doesn't answer
+  /// in time.
+  #[must_use]
+  pub fn min_window_size(&self) -> Option<(i32, i32)> {
+    self.inner.min_window_size()
+  }
+
+  /// Whether the window has an owner window.
+  #[must_use]
+  pub fn has_owner_window(&self) -> bool {
+    self.inner.has_owner_window()
+  }
+
+  /// ID of the window's owner window, if it has one.
+  #[must_use]
+  pub fn owner_window_id(&self) -> Option<WindowId> {
+    self.inner.owner_window_id()
+  }
+
+  /// Whether the window is shown, but cloaked along with its cloaked owner
+  /// window, e.g. while the WM animates the owner.
+  #[must_use]
+  pub fn is_cloaked_by_owner(&self) -> bool {
+    self.inner.is_cloaked_by_owner()
+  }
+
+  /// Presses `keys` together (e.g. `ctrl+p`) in the window, if it is the
+  /// foreground window.
+  ///
+  /// Returns `false` without sending anything if it isn't, since key
+  /// presses always go to the foreground window.
+  pub fn press_keys(&self, keys: &[crate::Key]) -> crate::Result<bool> {
+    self.inner.press_keys(keys)
+  }
+
+  /// Whether the window's parent is the desktop, rather than another
+  /// window it was embedded into (e.g. via `SetParent`).
+  #[must_use]
+  pub fn is_top_level(&self) -> bool {
+    self.inner.is_top_level()
+  }
+
+  /// ID of the process that owns the window.
+  #[must_use]
+  pub fn process_id(&self) -> u32 {
+    self.inner.process_id()
+  }
+
+  /// Whether the window accepts mouse and keyboard input, i.e. it hasn't
+  /// been disabled with `EnableWindow`.
+  #[must_use]
+  pub fn is_enabled(&self) -> bool {
+    self.inner.is_enabled()
+  }
+
+  /// Whether the window is disabled behind a shown, enabled popup it owns,
+  /// i.e. a modal dialog such as a "Save changes?" prompt.
+  #[must_use]
+  pub fn has_modal_prompt(&self) -> bool {
+    self.inner.has_modal_prompt()
+  }
+
+  /// Whether the window's app has stopped responding, as judged by the OS
+  /// (no messages processed for about 5 seconds).
+  #[must_use]
+  pub fn is_hung(&self) -> bool {
+    self.inner.is_hung()
+  }
+
+  /// Re-enables input to a window its app disabled, without blocking:
+  /// `EnableWindow` waits for the app to handle `WM_ENABLE`, so it is
+  /// called from a worker thread.
+  pub fn enable_async(&self) {
+    self.inner.enable_async();
+  }
+
+  /// Whether the window has the given window style flag(s) set.
+  #[must_use]
+  pub fn has_window_style(&self, style: WINDOW_STYLE) -> bool {
+    self.inner.has_window_style(style)
+  }
+
+  /// Whether the window has the given extended window style flag(s) set.
+  #[must_use]
+  pub fn has_window_style_ex(&self, style: WINDOW_EX_STYLE) -> bool {
+    self.inner.has_window_style_ex(style)
+  }
+
+  /// Thin wrapper around [`SetWindowPos`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
+  pub fn set_window_pos(
+    &self,
+    z_order: &WindowZOrder,
+    rect: &Rect,
+    flags: SET_WINDOW_POS_FLAGS,
+  ) -> crate::Result<()> {
+    self.inner.set_window_pos(z_order, rect, flags)
+  }
+
+  /// Shows the window asynchronously.
+  ///
+  /// NOTE: Cloaked windows do not get shown until uncloaked.
+  pub fn show(&self) -> crate::Result<()> {
+    self.inner.show()
+  }
+
+  /// Hides the window asynchronously.
+  pub fn hide(&self) -> crate::Result<()> {
+    self.inner.hide()
+  }
+
+  /// Restores the window (unminimizes and unmaximizes).
+  ///
+  /// If `outer_frame` is provided, the window will be restored to the
+  /// specified position. This avoids flickering compared to restoring
+  /// and then repositioning the window.
+  pub fn restore(&self, outer_frame: Option<&Rect>) -> crate::Result<()> {
+    self.inner.restore(outer_frame)
+  }
+
+  /// Cloaks or uncloaks the window.
+  pub fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
+    self.inner.set_cloaked(cloaked)
+  }
+
+  /// Cloaks or uncloaks the window, or hides or shows it if it can't be
+  /// cloaked.
+  ///
+  /// Only app windows can be cloaked, not e.g. the windows an app's main
+  /// window owns, which `set_cloaked` would leave on screen. Unlike a
+  /// cloaked window, a hidden one is not rendered for thumbnails.
+  pub fn set_cloaked_or_hidden(&self, hidden: bool) -> crate::Result<()> {
+    self.inner.set_cloaked_or_hidden(hidden)
+  }
+
+  /// Whether the shell has a view of the window to cloak it by. Without
+  /// one, `set_cloaked_or_hidden` hides the window instead.
+  ///
+  /// `false` as well if the shell can't be asked.
+  #[must_use]
+  pub fn can_be_cloaked(&self) -> bool {
+    self.inner.can_be_cloaked()
+  }
+
+  /// Returns whether the window is currently cloaked by DWM.
+  ///
+  /// Cloaking hides the window visually while keeping `WS_VISIBLE` set.
+  /// The WM uses this for workspace hiding and surrogate animations.
+  pub fn is_cloaked(&self) -> crate::Result<bool> {
+    self.inner.is_cloaked()
+  }
+
+  /// Whether the window currently sits in the always-on-top band.
+  #[must_use]
+  pub fn is_topmost(&self) -> bool {
+    crate::window_class::is_topmost(self.inner.hwnd())
+  }
+
+  /// Stops the window's taskbar button from flashing.
+  ///
+  /// Has no effect if the window isn't flashing.
+  pub fn stop_flashing(&self) {
+    self.inner.stop_flashing();
+  }
+
+  /// Marks the window as fullscreen.
+  ///
+  /// Causes the native Windows taskbar to be moved to the bottom of the
+  /// z-order when this window is active.
+  pub fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()> {
+    self.inner.mark_fullscreen(fullscreen)
+  }
+
+  /// Adds or removes the window from the native taskbar.
+  ///
+  /// Cloaked windows are normally always shown in the taskbar, but can be
+  /// manually toggled. Hidden windows (`SW_HIDE`) can never be shown in
+  /// the taskbar.
+  pub fn set_taskbar_visibility(
+    &self,
+    visible: bool,
+  ) -> crate::Result<()> {
+    self.inner.set_taskbar_visibility(visible)
+  }
+
+  /// Adds the given extended window style flag(s) to the window.
+  pub fn add_window_style_ex(&self, style: WINDOW_EX_STYLE) {
+    self.inner.add_window_style_ex(style);
+  }
+
+  /// Sets the window's z-order.
+  pub fn set_z_order(&self, z_order: &WindowZOrder) -> crate::Result<()> {
+    self.inner.set_z_order(z_order)
+  }
+
+  /// Sets the visibility of the window's title bar.
+  pub fn set_title_bar_visibility(
+    &self,
+    visible: bool,
+  ) -> crate::Result<()> {
+    self.inner.set_title_bar_visibility(visible)
+  }
+
+  /// Hides or restores the window's own OS-drawn border, so it doesn't
+  /// show as a second line inside a [`NativeBorderOverlay`] ring.
+  ///
+  /// Only does anything on Windows 11 (build 22000) and later -- earlier
+  /// builds draw no such border and return `Err`.
+  ///
+  /// [`NativeBorderOverlay`]: crate::NativeBorderOverlay
+  pub fn set_native_border_hidden(
+    &self,
+    hidden: bool,
+  ) -> crate::Result<()> {
+    self.inner.set_native_border_hidden(hidden)
+  }
+
+  /// Sets the corner style of the window.
+  pub fn set_corner_style(
+    &self,
+    corner_style: &CornerStyle,
+  ) -> crate::Result<()> {
+    self.inner.set_corner_style(corner_style)
+  }
+
+  /// Sets the transparency of the window.
+  pub fn set_transparency(
+    &self,
+    opacity_value: &OpacityValue,
+  ) -> crate::Result<()> {
+    self.inner.set_transparency(opacity_value)
+  }
+
+  /// Adjusts the window's transparency by a relative delta.
+  pub fn adjust_transparency(
+    &self,
+    opacity_delta: &Delta<OpacityValue>,
+  ) -> crate::Result<()> {
+    self.inner.adjust_transparency(opacity_delta)
+  }
+
+  /// Re-applies the window's current layered-window alpha, if any, without
+  /// changing its value.
+  ///
+  /// `SWP_FRAMECHANGED` (issued whenever a window is resized) forces a
+  /// non-client-area recalculation that can make DWM briefly composite the
+  /// window at full opacity before the existing `LWA_ALPHA` value is
+  /// reasserted — a one-frame flash to solid on every
+  /// resize/move/workspace- switch landing for any window using the
+  /// `transparency` effect. Calling this immediately after such a
+  /// `SetWindowPos` forces DWM to recomposite with the correct alpha
+  /// right away, closing that gap. No-op if the window isn't currently
+  /// layered.
+  pub fn reassert_transparency(&self) -> crate::Result<()> {
+    self.inner.reassert_transparency()
+  }
+
+  /// The window's layered-window alpha, or `None` when it has none, e.g.
+  /// when the `transparency` effect was never applied to it.
+  pub fn layered_alpha(&self) -> crate::Result<Option<u8>> {
+    self.inner.layered_alpha()
   }
 }
 
@@ -827,7 +467,7 @@ impl PartialEq for NativeWindow {
 
 impl Eq for NativeWindow {}
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
 mod tests {
   use super::{
     discard_bits_if_resized, Rect, SET_WINDOW_POS_FLAGS, SWP_NOCOPYBITS,

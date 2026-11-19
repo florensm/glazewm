@@ -35,6 +35,9 @@ const SPARK_SIZE: f32 = 9.0;
 /// How far a card swells as a window lands on it, relative to its size.
 const JELLY: f32 = 0.07;
 
+/// How far a closed window's ring draws in, of the way to its middle.
+const PUFF_DEPTH: f32 = 0.7;
+
 /// Size a spark is drawn at, in logical pixels: larger than it shows, so
 /// it stays round when scaled.
 const SPARK_DRAWN: f32 = 16.0;
@@ -243,6 +246,22 @@ impl Effects {
     self.next_ripple = index + 1;
   }
 
+  /// Puffs a closed window away from `rect`: a ring drawing in on it, and
+  /// sparks out of its middle.
+  fn puff(&mut self, rect: RectF, scale_factor: f32) {
+    // Stops short of where the ring's corners would meet.
+    let corners = RING_RADIUS * scale_factor;
+    let reach = (rect.w.min(rect.h) / 2.0 - corners).max(0.0) * PUFF_DEPTH;
+
+    let index = self.next_ripple % self.ripples.len().max(1);
+    if let Some((_, slot)) = self.ripples.get_mut(index) {
+      *slot = Some(Ripple::new(rect, -reach));
+    }
+    self.next_ripple = index + 1;
+
+    self.burst(rect.center(), scale_factor);
+  }
+
   /// Bursts as many sparks as were registered out of (`x`, `y`).
   fn burst(&mut self, center: (f32, f32), scale_factor: f32) {
     self.burst = (!self.sparks.is_empty()).then(|| {
@@ -297,6 +316,29 @@ impl Screen {
       effects.burst(rect.center(), scale_factor);
       self.is_dirty = true;
     }
+  }
+
+  /// Puffs a window closed from the overview away from `rect`, where it
+  /// showed.
+  pub(super) fn puff(&mut self, rect: RectF) {
+    if !self.enabled_effects().puff {
+      return;
+    }
+    let scale_factor = self.metrics.scale_factor;
+    if let Some(effects) = &mut self.effects {
+      effects.puff(rect, scale_factor);
+      self.is_dirty = true;
+    }
+  }
+
+  /// Where window `hwnd` shows now, if on one of its cards or its scene.
+  pub(super) fn shown_window_rect(&self, hwnd: isize) -> Option<RectF> {
+    let index = self.workspaces().iter().position(|workspace| {
+      workspace.windows.iter().any(|window| window.hwnd == hwnd)
+    })?;
+    let context = self.place_context();
+    let shift = self.top_shift(context.fade);
+    self.window_rect_in(index, hwnd, &context, shift)
   }
 
   /// Places the effects where they are now. Returns whether the glow

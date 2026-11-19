@@ -27,7 +27,6 @@ pub struct WindowDto {
   /// Kept out of `Debug`, and so out of logs: it can hold private text.
   #[debug(skip)]
   pub title: String,
-  #[cfg(target_os = "windows")]
   pub class_name: String,
   pub process_name: String,
   pub active_drag: Option<ActiveDrag>,

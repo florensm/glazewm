@@ -170,8 +170,6 @@ pub fn window_drop_on(
   })
 }
 
-// Only the drop indicator, which is Windows-only, previews a drop.
-#[cfg(target_os = "windows")]
 impl WindowDrop {
   /// The workspace the window is dropped on.
   pub fn workspace(&self) -> Option<Workspace> {
@@ -218,7 +216,6 @@ impl WindowDrop {
 }
 
 /// The half of `rect` on the side given by `position`.
-#[cfg(target_os = "windows")]
 fn half(rect: &Rect, position: DropPosition) -> Rect {
   let center = rect.center_point();
 
@@ -291,11 +288,8 @@ pub fn tab_bar_at(
 mod tests {
   use wm_platform::{Point, Rect};
 
-  #[cfg(target_os = "windows")]
-  use super::half;
-  use super::{drop_position, DropPosition};
+  use super::{drop_position, half, DropPosition};
 
-  #[cfg(target_os = "windows")]
   #[test]
   fn halves_a_rect_on_each_side() {
     let rect = Rect::from_xy(100, 50, 400, 200);

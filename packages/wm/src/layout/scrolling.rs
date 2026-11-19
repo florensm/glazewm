@@ -737,23 +737,71 @@ pub fn is_focusable_by_hover(
   };
 
   let strip = Strip::new(&workspace)?;
-  let Some(index) = strip.index_of(column.id()) else {
+  let Some(scroll) =
+    scroll_to_focus(&workspace, &strip, column.id(), &config)
+  else {
     return Ok(true);
   };
 
-  // The column the view follows, also while a window off the strip has
-  // focus. Focus moving within it leaves the view where it is.
-  let active = active_column(&workspace)
+  Ok(scroll <= max_scroll.to_px(workspace.to_rect()?.width(), None))
+}
+
+/// Windows of displayed scrolling layouts that a click only focuses (see
+/// `click_to_scroll`): those whose focusing would scroll the view, e.g.
+/// ones partly off screen.
+pub fn click_to_scroll_windows(
+  state: &WmState,
+) -> anyhow::Result<Vec<WindowContainer>> {
+  let mut windows = Vec::new();
+
+  for workspace in state.workspaces() {
+    let config = workspace.scrolling_config();
+
+    if workspace.layout() != Layout::Scrolling
+      || !workspace.is_displayed()
+      || !config.click_to_scroll
+    {
+      continue;
+    }
+
+    let strip = Strip::new(&workspace)?;
+
+    for column in workspace.tiling_children() {
+      if scroll_to_focus(&workspace, &strip, column.id(), &config)
+        .is_some_and(|scroll| scroll > 0)
+      {
+        windows.extend(
+          column
+            .self_and_descendants()
+            .filter_map(|container| container.as_window_container().ok()),
+        );
+      }
+    }
+  }
+
+  Ok(windows)
+}
+
+/// How far focusing `column` of `workspace` would scroll its view, or
+/// `None` if it isn't on the strip. Zero for the column the view
+/// follows, also while a window off the strip has focus: focus moving
+/// within it leaves the view where it is.
+fn scroll_to_focus(
+  workspace: &Workspace,
+  strip: &Strip,
+  column: Uuid,
+  config: &ScrollingLayoutConfig,
+) -> Option<i32> {
+  let index = strip.index_of(column)?;
+  let active = active_column(workspace)
     .and_then(|active| strip.index_of(active.id()));
+
   if active == Some(index) {
-    return Ok(true);
+    return Some(0);
   }
 
   let offset = workspace.scroll_offset();
-  let scroll =
-    (strip.offset_for(index, offset, active, &config) - offset).abs();
-
-  Ok(scroll <= max_scroll.to_px(workspace.to_rect()?.width(), None))
+  Some((strip.offset_for(index, offset, active, config) - offset).abs())
 }
 
 /// Keeps the right edge of `container`'s column where it is on screen
@@ -934,6 +982,23 @@ fn overflows_onto_other_monitor(rect: &Rect, monitor: &Monitor) -> bool {
     })
 }
 
+/// Has `click_to_scroll_windows` keep their clicks, which are then
+/// handled as focusing them. None do while the WM is paused or the
+/// overview, which takes its own clicks, is shown.
+pub fn sync_click_guard(state: &mut WmState) -> anyhow::Result<()> {
+  let windows = if state.is_paused || state.overview.is_shown() {
+    Vec::new()
+  } else {
+    click_to_scroll_windows(state)?
+  };
+
+  state
+    .click_guard
+    .guard(windows.iter().map(|window| window.native().id()));
+
+  Ok(())
+}
+
 /// Queues every scrolling workspace whose view has to move for a redraw.
 pub fn sync_scroll_offsets(state: &mut WmState) -> anyhow::Result<()> {
   for workspace in state.workspaces() {
@@ -955,9 +1020,10 @@ mod tests {
   use wm_platform::{LengthUnit, LengthValue, Rect};
 
   use super::{
-    focus_target_after_removal, is_focusable_by_hover, is_in_view,
-    min_width, real_window_rect, shows_real_window, sync_view, view_rect,
-    Strip, StripView, ViewRequest,
+    click_to_scroll_windows, focus_target_after_removal,
+    is_focusable_by_hover, is_in_view, min_width, real_window_rect,
+    shows_real_window, sync_view, view_rect, Strip, StripView,
+    ViewRequest,
   };
   use crate::{
     commands::container::{
@@ -1050,6 +1116,27 @@ mod tests {
 
     limit_to(0.5);
     assert!(is_focusable(&third));
+  }
+
+  #[test]
+  fn clicks_only_focus_columns_that_focusing_scrolls_to() {
+    let (state, workspace, [_, _, third]) = setup();
+    let guarded = |state: &WmState| {
+      click_to_scroll_windows(state)
+        .unwrap()
+        .iter()
+        .map(CommonGetters::id)
+        .collect::<Vec<_>>()
+    };
+
+    // The first is focused and the second fully on screen beside it.
+    assert_eq!(guarded(&state), vec![third.id()]);
+
+    workspace.set_scrolling_config(ScrollingLayoutConfig {
+      click_to_scroll: false,
+      ..workspace.scrolling_config()
+    });
+    assert!(guarded(&state).is_empty());
   }
 
   #[test]

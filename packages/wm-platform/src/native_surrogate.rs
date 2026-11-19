@@ -235,10 +235,6 @@ fn stretched_destination(size: (i32, i32), border_inset: RECT) -> RECT {
 /// falls back to individual `SetWindowPos` calls so no reposition is lost.
 ///
 /// [`commit`]: SurrogateBatch::commit
-///
-/// # Platform-specific
-///
-/// Only available on Windows.
 #[derive(Default)]
 pub struct SurrogateBatch {
   /// Queued repositions as `(surrogate hwnd, logical target rect)` pairs.
@@ -408,10 +404,8 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 /// surrogate is dropped, which unregisters the thumbnail and destroys the
 /// overlay window.
 ///
-/// # Platform-specific
-///
-/// Only available on Windows. The gap fill needs `Windows.UI.Composition`
-/// (Windows 10 1803+); without it the surrogate still shows its thumbnail.
+/// The gap fill needs `Windows.UI.Composition` (Windows 10 1803+);
+/// without it the surrogate still shows its thumbnail.
 pub struct NativeSurrogate {
   /// Handle to the overlay window.
   hwnd: isize,
@@ -812,16 +806,15 @@ impl NativeSurrogate {
     self.thumbnail.is_some()
   }
 
-  /// Whether the thumbnail samples the source window's companion, and
-  /// that companion is not on screen yet.
-  ///
-  /// Once the real window is uncloaked, its companion's owner only
-  /// learns of it from a window event and shows the companion some time
-  /// later. Until then the window shows as it really is, so the surrogate
-  /// should keep covering it.
-  #[must_use]
-  pub fn is_companion_off_screen(&self) -> bool {
-    self.companion.is_some_and(Companion::is_off_screen)
+  /// The source window's companion the thumbnail samples, if any.
+  pub(crate) fn companion(&self) -> Option<Companion> {
+    self.companion
+  }
+
+  /// Restacks the surrogate directly above `window`, so it covers the
+  /// window once uncloaked instead of sitting behind it.
+  pub fn raise_above(&self, window: HWND) -> crate::Result<()> {
+    window_class::place_above(self.hwnd(), window)
   }
 
   /// Returns the logical dimensions the main thumbnail currently samples.

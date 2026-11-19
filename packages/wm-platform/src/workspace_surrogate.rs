@@ -901,11 +901,11 @@ mod tests {
     (window.clone(), window.inset(-3))
   }
 
+  /// `(left, top, right, bottom)` of a `RECT`.
+  type Edges = (i32, i32, i32, i32);
+
   /// `(rcSource, rcDestination)` of the ring with its window at `frame`.
-  fn rects_at(
-    frame: &Rect,
-    scale: f32,
-  ) -> Option<((i32, i32, i32, i32), (i32, i32, i32, i32))> {
+  fn rects_at(frame: &Rect, scale: f32) -> Option<(Edges, Edges)> {
     let (window, ring) = window_and_ring();
     let panel = MONITOR.translate_to_coordinates(
       frame.left - window.left,

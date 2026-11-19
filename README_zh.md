@@ -75,7 +75,7 @@ scoop install extras/glazewm
 
 ## 配置文档
 
-[默认配置](https://github.com/glzr-io/glazewm/blob/main/resources/assets/sample-config.yaml) 文件生成在 `%userprofile%\.glzr\glazewm\config.yaml`。
+[默认配置](./resources/assets/sample-config) 文件生成在 `%userprofile%\.glzr\glazewm\config.yaml`。
 
 要使用不同的配置文件位置，您可以使用 CLI 参数 `--config="..."` 启动 GlazeWM 可执行文件，如下所示：
 

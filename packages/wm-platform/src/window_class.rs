@@ -10,7 +10,7 @@ use windows::{
       DeferWindowPos, EndDeferWindowPos, GetClassNameW, GetWindow,
       GetWindowLongPtrW, GetWindowRect, IsWindowVisible, LoadCursorW,
       RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV,
-      GW_OWNER, HDWP, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW,
+      GW_OWNER, HDWP, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IDC_ARROW,
       SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, WINDOW_EX_STYLE, WNDCLASSW,
       WS_EX_TOPMOST, WS_POPUP,
@@ -297,6 +297,40 @@ pub(crate) fn insert_after_point(anchor: HWND) -> HWND {
   }
 
   anchor
+}
+
+/// Restacks `window` directly above `anchor`, in `anchor`'s always-on-top
+/// band.
+pub(crate) fn place_above(
+  window: HWND,
+  anchor: HWND,
+) -> crate::Result<()> {
+  match_z_band(window, anchor);
+
+  // SAFETY: A stale `anchor` just makes `GetWindow` return `HWND(0)`.
+  let above = unsafe { GetWindow(anchor, GW_HWNDPREV) };
+  if above == window {
+    return Ok(());
+  }
+
+  // Nothing above `anchor`: it tops its band, and so will `window`.
+  let insert_after = if above.0 == 0 { HWND_TOP } else { above };
+
+  // SAFETY: Both handles are valid or fail the call; the flags leave
+  // position, size and activation untouched.
+  unsafe {
+    SetWindowPos(
+      window,
+      insert_after,
+      0,
+      0,
+      0,
+      0,
+      SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
+    )
+  }?;
+
+  Ok(())
 }
 
 fn next_in_z_order(hwnd: HWND) -> HWND {

@@ -14,23 +14,11 @@ use crate::{
 
 /// Modifier key groups, where each entry maps a generic key (e.g.
 /// `Key::Shift`) to all its variants (e.g. `Key::LShift`, `Key::RShift`).
-///
-/// `Cmd` and `Win` are treated as aliases within the same group.
 const MODIFIER_GROUPS: &[(Key, &[Key])] = &[
   (Key::Shift, &[Key::Shift, Key::LShift, Key::RShift]),
   (Key::Ctrl, &[Key::Ctrl, Key::LCtrl, Key::RCtrl]),
   (Key::Alt, &[Key::Alt, Key::LAlt, Key::RAlt]),
-  (
-    Key::Win,
-    &[
-      Key::Win,
-      Key::LWin,
-      Key::RWin,
-      Key::Cmd,
-      Key::LCmd,
-      Key::RCmd,
-    ],
-  ),
+  (Key::Win, &[Key::Win, Key::LWin, Key::RWin]),
 ];
 
 /// Turn of a mouse wheel that makes one notch.
@@ -80,15 +68,11 @@ impl Keybinding {
 /// Keybindings by their trigger key.
 ///
 /// The trigger key is the final key in a keybinding. For example, in the
-/// keybinding `[Key::Cmd, Key::Shift, Key::A]`, `Key::A` is the trigger
+/// keybinding `[Key::Win, Key::Shift, Key::A]`, `Key::A` is the trigger
 /// key.
 type KeybindingMap = Arc<Mutex<HashMap<Key, Vec<Keybinding>>>>;
 
 /// A listener for system-wide keybindings.
-///
-/// # Platform-specific
-///
-/// - **macOS**: Keybindings triggered by the mouse wheel never trigger.
 #[derive(Debug)]
 pub struct KeybindingListener {
   /// A receiver channel for outgoing keybinding events.
@@ -103,12 +87,10 @@ pub struct KeybindingListener {
   keyboard_hook: platform_impl::KeyboardHook,
 
   /// Sender of keybinding events, for a wheel hook created later.
-  #[cfg(target_os = "windows")]
   event_tx: mpsc::UnboundedSender<KeybindingEvent>,
 
   /// Hook for keybindings triggered by the mouse wheel, only while there
   /// are any, so the mouse isn't hooked for nothing.
-  #[cfg(target_os = "windows")]
   wheel_hook: Option<platform_impl::WheelHook>,
 }
 
@@ -132,19 +114,15 @@ impl KeybindingListener {
       dispatcher,
     )?;
 
-    #[allow(unused_mut)]
     let mut listener = Self {
       event_rx,
       keybinding_map,
       enabled,
       keyboard_hook,
-      #[cfg(target_os = "windows")]
       event_tx,
-      #[cfg(target_os = "windows")]
       wheel_hook: None,
     };
 
-    #[cfg(target_os = "windows")]
     listener.sync_wheel_hook(keybindings)?;
 
     Ok(listener)
@@ -156,7 +134,6 @@ impl KeybindingListener {
   pub async fn next_event(&mut self) -> Option<KeybindingEvent> {
     let event = self.event_rx.recv().await;
 
-    #[cfg(target_os = "windows")]
     if event.is_some() {
       crate::perf::record_event_dequeued(
         crate::perf::EventKind::Keybinding,
@@ -176,7 +153,6 @@ impl KeybindingListener {
   pub fn try_next_event(&mut self) -> Option<KeybindingEvent> {
     let event = self.event_rx.try_recv().ok();
 
-    #[cfg(target_os = "windows")]
     if event.is_some() {
       crate::perf::record_event_dequeued(
         crate::perf::EventKind::Keybinding,
@@ -195,7 +171,6 @@ impl KeybindingListener {
     *self.keybinding_map.lock().unwrap() =
       Self::create_keybinding_map(keybindings);
 
-    #[cfg(target_os = "windows")]
     if let Err(err) = self.sync_wheel_hook(keybindings) {
       tracing::warn!("Failed to hook the mouse wheel: {err}");
     }
@@ -208,7 +183,6 @@ impl KeybindingListener {
 
   /// Terminates the keybinding listener.
   pub fn terminate(&mut self) -> crate::Result<()> {
-    #[cfg(target_os = "windows")]
     if let Some(mut wheel_hook) = self.wheel_hook.take() {
       wheel_hook.terminate()?;
     }
@@ -247,7 +221,6 @@ impl KeybindingListener {
           return false;
         };
 
-        #[cfg(target_os = "windows")]
         crate::perf::mark_event_queued(crate::perf::EventKind::Keybinding);
 
         let _ = event_tx.send(KeybindingEvent::now(keybinding.clone()));
@@ -260,7 +233,6 @@ impl KeybindingListener {
 
   /// Hooks the mouse wheel while some keybinding is triggered by it, and
   /// unhooks it otherwise.
-  #[cfg(target_os = "windows")]
   fn sync_wheel_hook(
     &mut self,
     keybindings: &[Keybinding],
@@ -293,7 +265,6 @@ impl KeybindingListener {
   ///
   /// Turns towards a keybinding never reach the window under the cursor,
   /// not even those short of a notch.
-  #[cfg(target_os = "windows")]
   fn create_wheel_hook(
     keybinding_map: KeybindingMap,
     enabled: Arc<AtomicBool>,
@@ -415,13 +386,11 @@ fn matching_keybinding(
 /// Turns of a mouse wheel short of a notch, as fine-grained wheels and
 /// touchpads report them.
 #[derive(Clone, Copy, Debug, Default)]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct WheelTracker {
   total: i32,
   last: i16,
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 impl WheelTracker {
   /// Adds a turn of `delta`, in 120ths of a notch, and takes the whole
   /// notches it now adds up to: positive up (or right), negative down.

@@ -41,6 +41,10 @@ layouts:
     # workspace or in pixels. "0%" focuses only windows fully on screen.
     # Left out, there is no limit.
     # focus_follows_cursor_max_scroll: "0%"
+    # A click on a column partly off screen only focuses it, scrolling it
+    # into view, rather than also reaching its window (e.g. selecting text
+    # or pressing a button as it scrolls in).
+    click_to_scroll: true
     # Room kept free at the workspace's sides, as a percentage of the
     # workspace or in pixels. Columns are fitted between the struts, so
     # the columns beside them peek out over them.
@@ -148,6 +152,10 @@ The view follows focus:
   widths are percentages of the room between the struts, and the strip's
   first and last columns sit a strut in from the edge too.
 - The overview shows a scrolling workspace's whole strip in its card.
+- Clicking a column partly off screen focuses it and scrolls it into
+  view, without the click reaching its window, so it can't select text
+  or press a button as the column slides in. Set `click_to_scroll` to
+  `false` to let the click through.
 - With `focus_follows_cursor`, hovering a column partly off screen
   focuses and scrolls to it, unless `focus_follows_cursor_max_scroll`
   limits how far that may scroll.
@@ -161,7 +169,7 @@ While a tiling window is dragged, a highlight shows where it will land if
 dropped: the half of the window or column it goes beside, or all of an
 empty workspace. Any dragged window over a stack's tab bar highlights the
 stack it would join. The highlight glides from one spot to the next as
-the cursor moves. Only available on Windows.
+the cursor moves.
 
 ```yaml
 window_behavior:

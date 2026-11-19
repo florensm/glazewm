@@ -1,0 +1,84 @@
+window_rules:
+  # Mark a window urgent when its title changes (e.g. an unread count).
+  # - commands: ["set-urgency"]
+  #   on: ["title_change"]
+  #   match:
+  #     - window_process: { equals: "Discord" }
+  #       window_title: { regex: '^\(\d+\)' }
+
+  # Open an app on the special workspace. Not `move --special-workspace`,
+  # which toggles.
+  # - commands: ["move --workspace special"]
+  #   match:
+  #     - window_process: { equals: "Spotify" }
+  # Each rule can also set `on` (when it runs: 'manage', 'focus' and/or
+  # 'title_change'; default ['manage', 'title_change']) and `run_once`
+  # (default true: once per window).
+  - commands: ["ignore"]
+    match:
+      - window_process: { equals: "zebar" }
+
+      # Browser picture-in-picture.
+      - window_title: { regex: "[Pp]icture.in.[Pp]icture" }
+        window_class: { regex: "Chrome_WidgetWin_1|MozillaDialogClass" }
+
+      # Various 3rd-party apps.
+      - window_process: { equals: "PowerToys" }
+        window_class: { regex: 'HwndWrapper\[PowerToys\.PowerAccent.*?\]' }
+      - window_title: { equals: "Command Palette" }
+        window_class: { equals: "WinUIDesktopWin32WindowClass" }
+      - window_process: { equals: "PowerToys" }
+        window_title: { regex: ".*? - Peek" }
+      - window_process: { equals: "Lively" }
+        window_class: { regex: "HwndWrapper" }
+      - window_process: { equals: "EXCEL" }
+        window_class: { not_regex: "XLMAIN" }
+      - window_process: { equals: "WINWORD" }
+        window_class: { not_regex: "OpusApp" }
+      - window_process: { equals: "POWERPNT" }
+        window_class: { not_regex: "PPTFrameClass" }
+      - window_process: { equals: "CleanShot X" }
+
+  # Manage windows the WM would otherwise skip, e.g. tool windows.
+  - commands: ['force-manage']
+    match:
+      - window_process: { equals: 'Flow.Launcher' }
+        window_title: { equals: 'Flow.Launcher' }
+
+  # Keep an app's stacked windows usable while it shows a blocking popup.
+  # - commands: ["stay-interactive"]
+  #   match:
+  #     - window_process: { equals: "MyApp" }
+
+  # More examples. A rule runs its commands on each window it matches.
+  #
+  # Start an app floating, centered at a given size:
+  # - commands: ["set-floating --centered --width 1200px --height 800px"]
+  #   match:
+  #     - window_process: { equals: "Calculator" }
+  #
+  # Send apps to a workspace as they open:
+  # - commands: ["move --workspace 3"]
+  #   match:
+  #     - window_process: { regex: "Discord|Slack|Teams" }
+  #
+  # Start a window fullscreen:
+  # - commands: ["set-fullscreen"]
+  #   match:
+  #     - window_process: { equals: "mpv" }
+  #
+  # Make a window see-through whenever it gains focus:
+  # - commands: ["set-transparency --opacity 90%"]
+  #   on: ["focus"]
+  #   run_once: false
+  #   match:
+  #     - window_process: { equals: "WindowsTerminal" }
+  #
+  # Hide the title bar of every window but one app's:
+  # - commands: ["set-title-bar-visibility hidden"]
+  #   match:
+  #     - window_process: { not_equals: "explorer" }
+  #
+  # Match types: `equals`, `includes`, `regex`, `not_equals` and
+  # `not_regex`. Conditions in one entry must all match; any entry in
+  # `match` can.

@@ -7,7 +7,7 @@
 use anyhow::Context;
 use wm_common::{ClientResponseData, ContainerDto, WindowDto, WmEvent};
 use wm_ipc_client::IpcClient;
-use wm_platform::{NativeWindow, NativeWindowWindowsExt, OpacityValue};
+use wm_platform::{NativeWindow, OpacityValue};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

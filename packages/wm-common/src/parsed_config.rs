@@ -318,6 +318,11 @@ pub struct ScrollingLayoutConfig {
   /// hovering. Unset for no limit.
   pub focus_follows_cursor_max_scroll: Option<LengthValue>,
 
+  /// Whether a click on a column that focusing scrolls to (e.g. one
+  /// partly off screen) only focuses it, rather than also reaching its
+  /// window.
+  pub click_to_scroll: bool,
+
   /// Room kept free at the workspace's sides: columns are fitted between
   /// the struts, so the columns beside them always peek out there.
   pub struts: StrutsConfig,
@@ -458,6 +463,7 @@ impl Default for ScrollingLayoutConfig {
       always_center_single_column: false,
       default_column_display: ColumnDisplay::default(),
       focus_follows_cursor_max_scroll: None,
+      click_to_scroll: true,
       struts: StrutsConfig::default(),
     }
   }
@@ -537,10 +543,6 @@ pub struct GeneralConfig {
   /// Commands to run after the WM config has reloaded.
   pub config_reload_commands: Vec<InvokeCommand>,
 
-  /// How windows should be hidden when switching workspaces.
-  #[serde(deserialize_with = "deserialize_hide_method")]
-  pub hide_method: HideMethod,
-
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
 }
@@ -557,22 +559,12 @@ impl Default for GeneralConfig {
       startup_commands: vec![],
       shutdown_commands: vec![],
       config_reload_commands: vec![],
-      hide_method: {
-        #[cfg(target_os = "macos")]
-        {
-          HideMethod::PlaceInCorner
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-          HideMethod::Cloak
-        }
-      },
       show_all_in_taskbar: false,
     }
   }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct CursorJumpConfig {
   /// Whether to automatically move the cursor on the specified trigger.
@@ -580,6 +572,20 @@ pub struct CursorJumpConfig {
 
   /// Trigger for cursor jump.
   pub trigger: CursorJumpTrigger,
+
+  /// Whether switching workspaces jumps too. Off keeps the cursor where
+  /// it is, e.g. on a status bar's workspace button just clicked.
+  pub on_workspace_switch: bool,
+}
+
+impl Default for CursorJumpConfig {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      trigger: CursorJumpTrigger::default(),
+      on_workspace_switch: true,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -588,15 +594,6 @@ pub enum CursorJumpTrigger {
   #[default]
   MonitorFocus,
   WindowFocus,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HideMethod {
-  Hide,
-  #[default]
-  Cloak,
-  PlaceInCorner,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -619,10 +616,6 @@ pub struct KeybindingConfig {
 }
 
 /// Look of the window overview opened by `toggle-overview`.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewConfig {
@@ -810,10 +803,6 @@ impl Default for WindowBehaviorConfig {
 
 /// Highlight shown while dragging a window, over where it will land if
 /// dropped: the half of the window it goes beside, or the stack it joins.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct DropIndicatorConfig {
@@ -901,28 +890,60 @@ pub struct WindowEffectsConfig {
   /// Visual effects to apply to non-focused windows.
   pub other_windows: WindowEffectConfig,
 
+  /// Visual effects to apply to windows that requested attention, until
+  /// they are focused. Unset, they take `other_windows`' effects.
+  pub urgent_window: Option<WindowEffectConfig>,
+
   /// Whether to drop the border effect while a window is fullscreen.
   ///
   /// A fullscreen window has nothing beside it to be delimited from, so
   /// the ring reads as an inset frame around the screen -- and on a
   /// monitor-sized window it is drawn over content rather than beside
   /// it.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub hide_border_on_fullscreen: bool,
 }
 
-impl WindowEffectsConfig {
-  /// The effects for a window that is focused or not.
+/// Which of the `window_effects` sets a window takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectSet {
+  Focused,
+  Urgent,
+  Other,
+}
+
+impl EffectSet {
+  /// The set of a window that is focused or not, and urgent or not. A
+  /// focused window is never urgent.
   #[must_use]
-  pub fn for_focus(&self, is_focused: bool) -> &WindowEffectConfig {
-    if is_focused {
-      &self.focused_window
-    } else {
-      &self.other_windows
+  pub fn of(is_focused: bool, is_urgent: bool) -> Self {
+    match (is_focused, is_urgent) {
+      (true, _) => Self::Focused,
+      (false, true) => Self::Urgent,
+      (false, false) => Self::Other,
     }
+  }
+}
+
+impl WindowEffectsConfig {
+  /// The effects for a window taking `set`.
+  #[must_use]
+  pub fn for_set(&self, set: EffectSet) -> &WindowEffectConfig {
+    match set {
+      EffectSet::Focused => &self.focused_window,
+      EffectSet::Urgent => {
+        self.urgent_window.as_ref().unwrap_or(&self.other_windows)
+      }
+      EffectSet::Other => &self.other_windows,
+    }
+  }
+
+  /// Whether any set has `effect` on.
+  #[must_use]
+  pub fn any(&self, effect: impl Fn(&WindowEffectConfig) -> bool) -> bool {
+    [&self.focused_window, &self.other_windows]
+      .into_iter()
+      .chain(&self.urgent_window)
+      .any(effect)
   }
 }
 
@@ -960,10 +981,6 @@ pub struct WindowEffectConfig {
   ///
   /// When unset, falls back to the `corner_style` block. `border.radius`
   /// still overrides the ring on top of either.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub corner_radius: Option<LengthValue>,
 }
 
@@ -1482,60 +1499,13 @@ pub struct AnimationsConfig {
   /// Animation settings for operations that change window size.
   pub window_resize: WindowResizeConfig,
   /// Animation settings for when a new window appears.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub window_open: WindowOpenConfig,
   /// Animation settings for workspace-switch slide transitions.
   pub workspace_switch: WorkspaceSwitchAnimationConfig,
   /// Animation settings for when a window is closed.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub window_close: WindowCloseConfig,
   /// Animation settings for when a window is minimized or restored.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub window_minimize: WindowMinimizeConfig,
-
-  /// Which windows keep their effect overlays tracking during an
-  /// animation.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
-  pub overlay_tracking: OverlayTracking,
-}
-
-/// Which animating windows keep their backdrop and border overlays glued
-/// to them for the duration of an animation.
-///
-/// Every animating window is composited as three windows, not one: the
-/// surrogate thumbnail plus a backdrop overlay and a border overlay, each
-/// repositioned every frame. Since the animation is bound by how many
-/// surfaces DWM has to absorb, this is the largest lever available -- a
-/// measured 2.1x between borders on every window and borders on the
-/// focused window only.
-///
-/// Only affects windows *while they animate*; the static overlays are
-/// restored by the normal sync pass as soon as the animation ends, so the
-/// at-rest appearance is unchanged.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OverlayTracking {
-  /// Track every animating window's overlays. Smoothest at rest, most
-  /// expensive in motion.
-  #[default]
-  All,
-  /// Track only the focused window's overlays; other windows animate
-  /// without theirs.
-  FocusedOnly,
-  /// Track none of them; all overlays are hidden for the animation.
-  None,
 }
 
 impl Default for AnimationsConfig {
@@ -1552,7 +1522,6 @@ impl Default for AnimationsConfig {
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
       window_minimize: WindowMinimizeConfig::default(),
-      overlay_tracking: OverlayTracking::default(),
     }
   }
 }
@@ -1648,7 +1617,7 @@ impl WindowTransitionParams {
   }
 }
 
-/// Animation settings for when a new window appears (Windows only).
+/// Animation settings for when a new window appears.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowOpenConfig {
@@ -1685,10 +1654,6 @@ impl Default for WindowOpenConfig {
 }
 
 /// Animation settings for when a window is closed.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowCloseConfig {
@@ -1728,10 +1693,6 @@ impl Default for WindowCloseConfig {
 /// `slide_bottom` (exiting toward the bottom edge) restores by entering
 /// from that same edge. `opacity_to` is the minimize-out target, and is
 /// played in reverse as the restore-in starting opacity.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowMinimizeConfig {
@@ -2348,7 +2309,9 @@ fn deserialize_bindings<'de, D>(
 where
   D: serde::de::Deserializer<'de>,
 {
-  let s: Vec<&str> = serde::de::Deserialize::deserialize(deserializer)?;
+  // Owned, as a config merged from several files is deserialized from a
+  // `serde_yaml::Value`, which has no input to borrow from.
+  let s: Vec<String> = serde::de::Deserialize::deserialize(deserializer)?;
   s.iter()
     .map(|keybinding_str| {
       let keys: Vec<Key> = keybinding_str
@@ -2362,32 +2325,6 @@ where
       Keybinding::new(keys).map_err(serde::de::Error::custom)
     })
     .collect()
-}
-
-/// Helper function for deserializing [`HideMethod`].
-///
-/// On macOS, [`HideMethod::Hide`] and [`HideMethod::Cloak`] are not valid
-/// and are automatically converted to [`HideMethod::PlaceInCorner`].
-fn deserialize_hide_method<'de, D>(
-  deserializer: D,
-) -> Result<HideMethod, D::Error>
-where
-  D: serde::de::Deserializer<'de>,
-{
-  // LINT: The deserialized value is ignored on macOS, but we still want
-  // to produce an error for invalid values.
-  #[allow(unused_variables)]
-  let method = HideMethod::deserialize(deserializer)?;
-
-  #[cfg(target_os = "macos")]
-  {
-    Ok(HideMethod::PlaceInCorner)
-  }
-
-  #[cfg(not(target_os = "macos"))]
-  {
-    Ok(method)
-  }
 }
 
 #[cfg(test)]

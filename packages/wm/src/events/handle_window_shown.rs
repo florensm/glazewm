@@ -1,5 +1,5 @@
 use tracing::info;
-use wm_common::{DisplayState, HideMethod};
+use wm_common::DisplayState;
 use wm_platform::NativeWindow;
 
 use crate::{
@@ -17,21 +17,17 @@ pub fn handle_window_shown(
   if let Some(window) = found_window {
     info!("Window shown: {window}");
 
-    #[cfg(target_os = "windows")]
     if reconcile_shown_tab(&window, state, config)? {
       return Ok(());
     }
 
     // Update display state if window is already managed.
-    if config.value.general.hide_method != HideMethod::PlaceInCorner
-      && window.display_state() == DisplayState::Showing
-    {
+    if window.display_state() == DisplayState::Showing {
       window.set_display_state(DisplayState::Shown);
     } else {
       state.pending_sync.queue_container_to_redraw(window);
     }
   } else if !state.ignored_windows.contains(&native_window) {
-    #[cfg(target_os = "windows")]
     show_owner_tab(&native_window, state, config)?;
 
     // If the window is not managed and not explicitly ignored, manage it.
@@ -48,7 +44,6 @@ pub fn handle_window_shown(
 /// The tab becomes the active one if it is the foreground window, and is
 /// hidden again otherwise, so that the shown window always matches the
 /// active tab of the tab bar. Returns whether it was such a tab.
-#[cfg(target_os = "windows")]
 fn reconcile_shown_tab(
   window: &crate::models::WindowContainer,
   state: &mut WmState,
@@ -73,7 +68,7 @@ fn reconcile_shown_tab(
     || !is_hidden
     || !is_on_displayed_workspace
     || state.animation_manager.has_active_surrogate(&window.id())
-    || !window.native().is_visible().unwrap_or(false)
+    || !window.native().is_visible()
   {
     return Ok(false);
   }
@@ -83,10 +78,8 @@ fn reconcile_shown_tab(
     return Ok(false);
   };
 
-  let is_foreground = state
-    .dispatcher
-    .focused_window()
-    .is_ok_and(|foreground| foreground.id() == window.native().id());
+  let is_foreground =
+    state.dispatcher.focused_window().id() == window.native().id();
 
   if is_foreground {
     info!("Showing the tab of a window brought to the front: {window}");
@@ -111,14 +104,11 @@ fn reconcile_shown_tab(
 /// Windows hides a window along with its hidden (cloaked) owner, so a
 /// popup opened by a background tab would otherwise never appear, nor be
 /// managed. Its tab is shown with it instead, as the popup is about it.
-#[cfg(target_os = "windows")]
 fn show_owner_tab(
   native_window: &NativeWindow,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  use wm_platform::NativeWindowWindowsExt;
-
   use crate::{
     commands::{general::platform_sync, window::activate_stack_child},
     models::is_inactive_stack_child,

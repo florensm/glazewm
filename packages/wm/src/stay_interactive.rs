@@ -109,7 +109,6 @@ pub fn keep_stacked_windows_interactive(
   config: &mut crate::user_config::UserConfig,
 ) -> anyhow::Result<()> {
   use wm_common::{InvokeCommand, WindowState};
-  use wm_platform::NativeWindowWindowsExt;
 
   use crate::{
     traits::{CommonGetters, WindowGetters},

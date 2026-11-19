@@ -104,7 +104,6 @@ pub fn focus_workspace(
             monitor_y: bounds.y(),
             monitor_width: bounds.width(),
             monitor_height: bounds.height(),
-            #[cfg(target_os = "windows")]
             monitor_handle: props.handle,
             origin_x,
             origin_y,
@@ -166,7 +165,10 @@ pub fn focus_workspace(
     if !focused_workspace.is_special() {
       state.recent_workspace_name = Some(focused_workspace.config().name);
     }
-    state.pending_sync.queue_cursor_jump();
+
+    if config.value.general.cursor_jump.on_workspace_switch {
+      state.pending_sync.queue_cursor_jump();
+    }
   }
 
   Ok(())

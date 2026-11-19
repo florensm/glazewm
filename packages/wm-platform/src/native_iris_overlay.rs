@@ -168,10 +168,6 @@ fn capture_monitor(monitor: &Rect) -> crate::Result<HBITMAP> {
 /// The hole edge is hard (region-based); a soft/feathered edge would
 /// require a per-pixel composite pass and is intentionally out of scope
 /// here.
-///
-/// # Platform-specific
-///
-/// Windows only.
 pub struct NativeIrisOverlay {
   /// Handle to the overlay window.
   hwnd: isize,

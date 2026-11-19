@@ -19,9 +19,10 @@ const ALERT_DEBOUNCE: Duration = Duration::from_secs(3);
 
 /// Marks a window as urgent (or clears it), broadcasting the change.
 ///
-/// Urgency is purely advisory; the WM doesn't act on it itself. It's meant
-/// for status bars to highlight windows that asked for attention while
-/// they were in the background.
+/// Urgency is advisory: the WM only gives the window the
+/// `window_effects.urgent_window` effects, if set. It's meant for status
+/// bars to highlight windows that asked for attention while they were in
+/// the background.
 ///
 /// Marking an already-urgent window is *not* a no-op: each request is a
 /// fresh alert (e.g. a second chat message) that subscribers may want to
@@ -59,6 +60,10 @@ pub fn set_window_urgency(
     window.set_urgency_alert_at(None);
     info!("Window urgency cleared: {window}");
   }
+
+  // Swaps the window between the urgent and the other effects. Rare
+  // enough that refreshing every window's costs nothing noticeable.
+  state.pending_sync.queue_all_effects_update();
 
   // Highlights or clears the window's tab.
   if window

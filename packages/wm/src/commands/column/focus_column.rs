@@ -167,7 +167,7 @@ pub fn move_tab_in_direction(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{Layout, TilingDirection};
+  use wm_common::Layout;
   use wm_platform::Direction;
 
   use super::{
@@ -177,39 +177,11 @@ mod tests {
   use crate::{
     commands::container::set_focused_descendant,
     layout::scrolling::sync_view,
-    models::{
-      Monitor, SplitContainer, StackContainer, TilingWindow, Workspace,
-    },
-    test_utils::child_ids,
+    models::{Monitor, StackContainer, TilingWindow, Workspace},
+    test_utils::{child_ids, scrolling_column_setup},
     traits::CommonGetters,
     wm_state::WmState,
   };
-
-  /// Scrolling workspace of a window, a two-row column and a window, with
-  /// the column's `bottom` row focused.
-  fn setup() -> (WmState, Workspace, [TilingWindow; 4]) {
-    let windows = [
-      TilingWindow::mock().call(),
-      TilingWindow::mock().call(),
-      TilingWindow::mock().call(),
-      TilingWindow::mock().call(),
-    ];
-    let [first, top, bottom, last] = windows.clone();
-    let column = SplitContainer::mock()
-      .tiling_direction(TilingDirection::Vertical)
-      .tiling_containers(vec![top.into(), bottom.clone().into()])
-      .call();
-    let workspace = Workspace::mock()
-      .layout(Layout::Scrolling)
-      .tiling_containers(vec![first.into(), column.into(), last.into()])
-      .call();
-    let state = WmState::mock(vec![Monitor::mock()
-      .workspaces(vec![workspace.clone()])
-      .call()]);
-    set_focused_descendant(&bottom.into(), None);
-
-    (state, workspace, windows)
-  }
 
   fn focused_id(state: &WmState) -> Option<uuid::Uuid> {
     state.focused_container().map(|focused| focused.id())
@@ -217,7 +189,8 @@ mod tests {
 
   #[test]
   fn focuses_the_first_and_last_columns() {
-    let (mut state, workspace, [first, _, _, last]) = setup();
+    let (mut state, workspace, [first, _, _, last]) =
+      scrolling_column_setup();
 
     focus_column(&first.clone().into(), ColumnTarget::Last, &mut state);
     assert_eq!(focused_id(&state), Some(last.id()));
@@ -232,7 +205,7 @@ mod tests {
 
   #[test]
   fn goes_to_the_window_a_column_last_focused() {
-    let (mut state, _, [first, _, bottom, _]) = setup();
+    let (mut state, _, [first, _, bottom, _]) = scrolling_column_setup();
     set_focused_descendant(&first.clone().into(), None);
 
     focus_column(&first.into(), ColumnTarget::Index(2), &mut state);
@@ -241,7 +214,8 @@ mod tests {
 
   #[test]
   fn next_and_previous_wrap_around_the_strip() {
-    let (mut state, _, [first, _, bottom, last]) = setup();
+    let (mut state, _, [first, _, bottom, last]) =
+      scrolling_column_setup();
 
     focus_column(&bottom.clone().into(), ColumnTarget::Next, &mut state);
     assert_eq!(focused_id(&state), Some(last.id()));
@@ -261,7 +235,7 @@ mod tests {
 
   #[test]
   fn focuses_windows_within_the_column() {
-    let (mut state, _, [_, top, bottom, _]) = setup();
+    let (mut state, _, [_, top, bottom, _]) = scrolling_column_setup();
 
     focus_window_in_column(
       &bottom.clone().into(),

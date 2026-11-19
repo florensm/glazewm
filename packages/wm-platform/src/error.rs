@@ -4,22 +4,10 @@ pub enum Error {
   Io(#[from] std::io::Error),
 
   #[error(transparent)]
-  #[cfg(target_os = "windows")]
   Windows(#[from] windows::core::Error),
-
-  #[error("Accessibility operation failed for attribute {0} with error code: {1}")]
-  #[cfg(target_os = "macos")]
-  Accessibility(String, i32),
 
   #[error(transparent)]
   Parse(#[from] ParseError),
-
-  #[error("Invalid pointer: {0}")]
-  InvalidPointer(String),
-
-  #[error("AXValue creation failed: {0}")]
-  #[cfg(target_os = "macos")]
-  AXValueCreation(String),
 
   #[error(transparent)]
   ChannelRecv(#[from] std::sync::mpsc::RecvTimeoutError),
@@ -30,29 +18,11 @@ pub enum Error {
   #[error(transparent)]
   IntConversion(#[from] std::num::TryFromIntError),
 
-  #[error("Channel send error")]
-  ChannelSend,
-
-  #[error("Primary display not found")]
-  PrimaryDisplayNotFound,
-
-  #[error("Not main thread")]
-  NotMainThread,
-
   #[error("Display not found")]
   DisplayNotFound,
 
   #[error("Display device not found")]
   DisplayDeviceNotFound,
-
-  #[error("Hardware enumeration failed")]
-  HardwareEnumerationFailed,
-
-  #[error("Window enumeration failed")]
-  WindowEnumerationFailed,
-
-  #[error("Window not found")]
-  WindowNotFound,
 
   #[error("Thread error: {0}")]
   Thread(String),

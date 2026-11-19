@@ -7,13 +7,55 @@ use wm_common::{
 };
 
 use crate::{
+  config_files,
   models::{Monitor, NativeWindowProperties, WindowContainer, Workspace},
   traits::{CommonGetters, WindowGetters},
 };
 
-/// Resource string for the sample config file.
-const SAMPLE_CONFIG: &str =
-  include_str!("../../../resources/assets/sample-config.yaml");
+/// Sample config files by file name, the main one first. The main one's
+/// `include` lists the rest.
+const SAMPLE_FILES: [(&str, &str); 8] = [
+  (
+    "config.yaml",
+    include_str!("../../../resources/assets/sample-config/config.yaml"),
+  ),
+  (
+    "animations.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/animations.yaml"
+    ),
+  ),
+  (
+    "keybinds.yaml",
+    include_str!("../../../resources/assets/sample-config/keybinds.yaml"),
+  ),
+  (
+    "overview.yaml",
+    include_str!("../../../resources/assets/sample-config/overview.yaml"),
+  ),
+  (
+    "stack.yaml",
+    include_str!("../../../resources/assets/sample-config/stack.yaml"),
+  ),
+  (
+    "window_effects.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/window_effects.yaml"
+    ),
+  ),
+  (
+    "window_rules.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/window_rules.yaml"
+    ),
+  ),
+  (
+    "workspaces.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/workspaces.yaml"
+    ),
+  ),
+];
 
 #[derive(Debug)]
 pub struct UserConfig {
@@ -23,7 +65,8 @@ pub struct UserConfig {
   /// Parsed user config value.
   pub value: ParsedConfig,
 
-  /// Unparsed user config string.
+  /// Unparsed user config string. With `include`, the merged config as
+  /// YAML.
   pub value_str: String,
 
   /// Hashmap of window rule event types (e.g. `WindowRuleEvent::Manage`)
@@ -37,7 +80,7 @@ impl UserConfig {
   ///
   /// Creates a new config file from sample if it doesn't exist.
   pub fn new(config_path: Option<PathBuf>) -> anyhow::Result<Self> {
-    let default_config_path = home::home_dir()
+    let default_config_path = std::env::home_dir()
       .context("Unable to get home directory.")?
       .join(".glzr/glazewm/config.yaml");
 
@@ -57,9 +100,10 @@ impl UserConfig {
     })
   }
 
-  /// Reads and validates the user config from the given path.
+  /// Reads and validates the user config from the given path, along with
+  /// the files it includes.
   ///
-  /// Creates a new config file from sample if it doesn't exist.
+  /// Creates the sample config files if the main one doesn't exist.
   fn read(
     config_path: &PathBuf,
   ) -> anyhow::Result<(ParsedConfig, String)> {
@@ -67,15 +111,10 @@ impl UserConfig {
       Self::create_sample(config_path)?;
     }
 
-    let config_str = fs::read_to_string(config_path)
-      .context("Unable to read config file.")?;
+    let loaded = config_files::load(config_path)?;
+    Self::validate(&loaded.value)?;
 
-    // TODO: Improve error formatting of serde_yaml errors. Something
-    // similar to https://github.com/AlexanderThaller/format_serde_error
-    let config_value = serde_yaml::from_str(&config_str)?;
-    Self::validate(&config_value)?;
-
-    Ok((config_value, config_str))
+    Ok((loaded.value, loaded.value_str))
   }
 
   /// Checks what the config's types can't express.
@@ -101,18 +140,34 @@ impl UserConfig {
     Ok(())
   }
 
-  /// Initializes a new config file from the sample config resource.
+  /// Writes the sample config to `config_path`, and the files it includes
+  /// next to it. Included files that already exist are left as they are.
   fn create_sample(config_path: &PathBuf) -> Result<()> {
     let parent_dir =
       config_path.parent().context("Invalid config path.")?;
 
     fs::create_dir_all(parent_dir).with_context(|| {
-      format!("Unable to create directory {}.", config_path.display())
+      format!("Unable to create directory {}.", parent_dir.display())
     })?;
 
-    fs::write(config_path, SAMPLE_CONFIG).with_context(|| {
-      format!("Unable to write to {}.", config_path.display())
-    })?;
+    let [(_, main_contents), included @ ..] = &SAMPLE_FILES;
+
+    let files = std::iter::once((config_path.clone(), *main_contents))
+      .chain(
+        included
+          .iter()
+          .map(|(name, contents)| (parent_dir.join(name), *contents)),
+      );
+
+    for (path, contents) in files {
+      if path != *config_path && path.exists() {
+        continue;
+      }
+
+      fs::write(&path, contents).with_context(|| {
+        format!("Unable to write to {}.", path.display())
+      })?;
+    }
 
     Ok(())
   }
@@ -327,18 +382,10 @@ impl UserConfig {
         }
       });
 
-    let is_class_match = {
-      #[cfg(target_os = "windows")]
-      {
-        match_config.window_class.as_ref().is_none_or(|match_type| {
-          match_type.is_match(&properties.class_name)
-        })
-      }
-      #[cfg(not(target_os = "windows"))]
-      {
-        match_config.window_class.is_none()
-      }
-    };
+    let is_class_match =
+      match_config.window_class.as_ref().is_none_or(|match_type| {
+        match_type.is_match(&properties.class_name)
+      });
 
     let is_title_match = match_config
       .window_title
@@ -571,19 +618,53 @@ mod tests {
   use std::path::PathBuf;
 
   use wm_common::{
-    ParsedConfig, ResizeStyle, WindowTransitionStyle, WorkspaceSwitchStyle,
+    EffectSet, ParsedConfig, ResizeStyle, WindowTransitionStyle,
+    WorkspaceSwitchStyle,
   };
-  use wm_platform::Rect;
+  use wm_platform::{LengthValue, Rect};
 
   use super::*;
   use crate::{models::Workspace, test_utils::mock_workspace_configs};
 
-  /// The bundled sample config (which uses the `type` key for animation
-  /// transition types) must always parse.
+  /// The sample config, merged from its files.
+  fn sample_config() -> ParsedConfig {
+    let files = SAMPLE_FILES
+      .iter()
+      .map(|(name, contents)| config_files::ConfigFile {
+        path: PathBuf::from(name),
+        contents: (*contents).to_string(),
+      })
+      .collect::<Vec<_>>();
+
+    config_files::combine(&files)
+      .expect("sample config should parse")
+      .value
+  }
+
+  /// The main sample file includes exactly the other sample files.
+  #[test]
+  fn sample_config_includes_every_file() {
+    let main_path = PathBuf::from("config").join(SAMPLE_FILES[0].0);
+    let main_file = config_files::ConfigFile {
+      path: main_path.clone(),
+      contents: SAMPLE_FILES[0].1.to_string(),
+    };
+    let document = config_files::parse_document(&main_file).unwrap();
+
+    let included = config_files::include_paths(&document, &main_path)
+      .expect("sample includes should be valid");
+    let expected = SAMPLE_FILES[1..]
+      .iter()
+      .map(|(name, _)| PathBuf::from("config").join(name))
+      .collect::<Vec<_>>();
+
+    assert_eq!(included, expected);
+  }
+
+  /// The bundled sample config files must always parse together.
   #[test]
   fn sample_config_parses() {
-    let config: ParsedConfig = serde_yaml::from_str(SAMPLE_CONFIG)
-      .expect("sample config should parse");
+    let config = sample_config();
 
     assert_eq!(
       config.animations.window_open.style,
@@ -704,6 +785,38 @@ window_effects:
     assert!(config.window_effects.focused_window.backdrop.enabled);
   }
 
+  #[test]
+  fn urgent_windows_take_their_own_effects_or_else_the_others() {
+    let yaml = r"
+window_effects:
+  other_windows:
+    border:
+      enabled: true
+      width: '2px'
+";
+    let config: ParsedConfig =
+      serde_yaml::from_str(yaml).expect("config should parse");
+    let effects = &config.window_effects;
+    assert_eq!(
+      effects.for_set(EffectSet::Urgent).border.width,
+      effects.other_windows.border.width,
+      "unset"
+    );
+
+    let yaml =
+      format!("{yaml}  urgent_window:\n    border:\n      width: '6px'\n");
+    let config: ParsedConfig =
+      serde_yaml::from_str(&yaml).expect("config should parse");
+    let effects = &config.window_effects;
+    assert_eq!(
+      effects.for_set(EffectSet::Urgent).border.width,
+      LengthValue::from_px(6)
+    );
+    assert!(!effects.for_set(EffectSet::Urgent).border.enabled);
+    assert!(effects.any(|set| set.border.enabled));
+    assert_eq!(EffectSet::of(true, true), EffectSet::Focused);
+  }
+
   /// Creates `NativeWindowProperties` with the given process name and
   /// title for testing.
   fn test_properties(
@@ -712,14 +825,12 @@ window_effects:
   ) -> NativeWindowProperties {
     NativeWindowProperties {
       title: title.to_string(),
-      #[cfg(target_os = "windows")]
       class_name: "TestClass".to_string(),
       process_name: process_name.to_string(),
       frame: Rect::from_ltrb(0, 0, 100, 100),
       is_minimized: false,
       is_maximized: false,
       is_resizable: true,
-      #[cfg(target_os = "windows")]
       shadow_borders: wm_platform::RectDelta::zero(),
       min_width: 0,
     }

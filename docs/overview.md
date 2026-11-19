@@ -3,7 +3,7 @@
 A full-screen view of every monitor's workspaces and their windows, live:
 each monitor shows its own (see [Monitors](#monitors)). Switch to a
 workspace or window, move windows between workspaces and monitors, search
-them by title, or close them. Only available on Windows.
+them by title, or close them.
 
 On open, the windows each monitor shows fly from where they are into the
 overview, while the wallpaper behind them blurs; the names and
@@ -35,6 +35,8 @@ overview's own outline instead.
   its card in further.
 - **Grid**: every card at once, in up to `grid_columns` columns: fewer when
   that shows the cards larger.
+
+On the cards, each window shows its app's icon in its middle.
 
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
 goes through them while it is open. Cards are drawn at the size each layout
@@ -190,9 +192,6 @@ closes the overview. Focus-follows-cursor is paused while it is open.
 Workspaces and windows changing while it is open (a window opening,
 closing, or being moved) show up in it right away.
 
-Previews of other workspaces need `general.hide_method: "cloak"` (the
-default): with `"hide"`, their windows have nothing for DWM to show.
-
 ### Stacks
 
 A [stack](./stacks.md) shows on its card the way it does on screen: its
@@ -310,7 +309,12 @@ overview:
 
     # A ring spreading out of a card as it is clicked, or as a window
     # lands on it.
-    ripples: true
+    ripples: false
+
+    # Whether a window closed from the overview puffs away once it is
+    # gone: a ring drawing in on where it was, and sparks (as many as
+    # `sparks`) out of it.
+    puff: true
 
     # Sparks bursting out of where a dropped window lands; 0 for none, at
     # most 48.

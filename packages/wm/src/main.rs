@@ -2,17 +2,14 @@
 // whether a console window is spawned on launch, if not already ran
 // through a console. The following prevents this additional console window
 // in release mode.
-#![cfg_attr(
-  all(not(debug_assertions), target_os = "windows"),
-  windows_subsystem = "windows"
-)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![feature(iterator_try_collect)]
 
-#[cfg(target_os = "macos")]
-use std::io::IsTerminal;
 use std::{
-  path::PathBuf,
+  fs::{self, File, OpenOptions},
+  path::{Path, PathBuf},
   process,
+  sync::Mutex,
   time::{Duration, Instant},
 };
 
@@ -24,8 +21,6 @@ use tracing_subscriber::{
   layer::{Layer, SubscriberExt},
 };
 use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
-#[cfg(target_os = "macos")]
-use wm_platform::DispatcherExtMacOs;
 use wm_platform::{
   Dispatcher, DisplayListener, EventLoop, KeybindingListener,
   MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
@@ -42,27 +37,22 @@ use crate::{
 
 mod animation;
 mod auto_stack;
-#[cfg(target_os = "windows")]
 mod closing_windows;
 mod commands;
-#[cfg(target_os = "windows")]
+mod config_files;
 mod drop_indicator;
 mod error_notifier;
 mod events;
 mod ipc_server;
 mod layout;
 mod models;
-#[cfg(target_os = "windows")]
 mod overview;
 mod pending_sync;
-#[cfg(target_os = "windows")]
 mod stay_interactive;
 mod sys_tray;
-#[cfg(target_os = "windows")]
 mod tab_bars;
 mod traits;
 mod user_config;
-#[cfg(target_os = "windows")]
 mod window_overlays;
 mod wm;
 mod wm_state;
@@ -115,8 +105,7 @@ fn main() -> anyhow::Result<()> {
       })
     });
 
-    // Run event loop (blocks until shutdown). This must be on the main
-    // thread for macOS compatibility.
+    // Run event loop (blocks until shutdown).
     event_loop.run()?;
 
     // Wait for clean exit of the WM.
@@ -138,16 +127,6 @@ async fn start_wm(
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
 
-  #[cfg(target_os = "macos")]
-  {
-    if !dispatcher.has_ax_permission(true) {
-      anyhow::bail!(
-        "Accessibility permissions are not granted. In System Preferences, \
-         go to Privacy & Security > Accessibility and enable GlazeWM."
-      );
-    }
-  }
-
   // Parse and validate user config.
   let mut config = UserConfig::new(config_path)?;
 
@@ -158,9 +137,7 @@ async fn start_wm(
 
   let mut ipc_server = IpcServer::start().await?;
 
-  // On Windows, start watcher process for restoring hidden windows on
-  // crash. macOS' hidden windows are always accessible.
-  #[cfg(target_os = "windows")]
+  // Start watcher process for restoring hidden windows on crash.
   if let Err(err) = start_watcher_process() {
     tracing::warn!(
       "Failed to start watcher process: {err}{}",
@@ -168,14 +145,6 @@ async fn start_wm(
         .then_some(".\n Run `cargo build -p wm-watcher` to build it.")
         .unwrap_or_default()
     );
-  }
-
-  // On macOS, update the current process' PATH variable so that
-  // `shell-exec` can resolve programs defined in the shell's PATH. Skip if
-  // running via a terminal.
-  #[cfg(target_os = "macos")]
-  if !std::io::stdin().is_terminal() {
-    update_path_env();
   }
 
   // Start listening for platform events after populating initial state.
@@ -208,14 +177,11 @@ async fn start_wm(
   cleanup_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-  // Wakes the loop so that `process_sent_messages` runs while idle. Only
-  // needed on Windows.
-  let mut sent_message_interval = cfg!(target_os = "windows").then(|| {
-    let mut interval = tokio::time::interval(SENT_MESSAGE_INTERVAL);
-    interval
-      .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    interval
-  });
+  // Wakes the loop so that `process_sent_messages` runs while idle.
+  let mut sent_message_interval =
+    tokio::time::interval(SENT_MESSAGE_INTERVAL);
+  sent_message_interval
+    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
   loop {
     wm_platform::process_sent_messages();
@@ -242,10 +208,7 @@ async fn start_wm(
     let closing_check = wm.next_closing_check();
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
-    #[cfg(target_os = "windows")]
     let hot_corner = wm.state.overview.hot_corner_deadline();
-    #[cfg(not(target_os = "windows"))]
-    let hot_corner = None;
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -313,9 +276,12 @@ async fn start_wm(
         wm.process_closing_windows(&mut config)
       },
       () = sleep_until(hot_corner) => wm.process_hot_corner(&config),
-      () = tick_if_some(&mut sent_message_interval) => Ok(()),
+      _ = sent_message_interval.tick() => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
+      },
+      Some(window) = wm.guarded_click_rx.recv() => {
+        wm.process_guarded_click(&window, &config)
       },
       Some(wm_event) = wm.event_rx.recv() => {
         handle_wm_event(
@@ -515,6 +481,11 @@ fn catch_up_before_frame(
       continue;
     }
 
+    if let Ok(window) = wm.guarded_click_rx.try_recv() {
+      wm.process_guarded_click(&window, config)?;
+      continue;
+    }
+
     if let Ok((session, action)) = wm.overview_action_rx.try_recv() {
       wm.process_overview_action(session, action, config)?;
       continue;
@@ -532,7 +503,6 @@ fn catch_up_before_frame(
 
     // Re-checked every iteration: handling an item above can start or end
     // a slide, and the next one must be judged against that.
-    #[cfg(target_os = "windows")]
     if wm.state.animation_manager.is_workspace_switch_active() {
       break;
     }
@@ -593,12 +563,11 @@ fn catch_up_before_frame(
 /// running detached from a terminal, without needing `-v` for the full
 /// `DEBUG` firehose.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
-  let error_log_dir = home::home_dir()
+  let error_log_dir = std::env::home_dir()
     .context("Unable to get home directory.")?
     .join(".glzr/glazewm/");
 
-  let error_writer =
-    tracing_appender::rolling::never(&error_log_dir, "errors.log");
+  let error_writer = open_log_file(&error_log_dir, "errors.log")?;
 
   // The frame profiler reports at `INFO`, which otherwise only reaches
   // stdout -- and the release build is a `windows` subsystem binary, so a
@@ -606,37 +575,34 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   // only when) profiling is enabled, filtered to the profiler's target so
   // the file stays a clean run of frame reports rather than an `INFO`
   // firehose, and errors.log stays reserved for actual problems.
-  let perf_layer = wm_platform::perf::is_enabled().then(|| {
-    fmt::Layer::new()
-      .with_writer(tracing_appender::rolling::never(
-        &error_log_dir,
-        "perf.log",
-      ))
-      .with_filter(
+  let perf_layer = wm_platform::perf::is_enabled()
+    .then(|| open_log_file(&error_log_dir, "perf.log"))
+    .transpose()?
+    .map(|writer| {
+      fmt::Layer::new().with_writer(writer).with_filter(
         tracing_subscriber::filter::Targets::new()
           .with_target(wm_platform::perf::LOG_TARGET, Level::INFO),
       )
-  });
+    });
 
   // A few lines per pick, so always on: kept apart from the rest, as the
   // WM may be started without `--verbose`.
   let overview_layer = fmt::Layer::new()
     .with_ansi(false)
-    .with_writer(tracing_appender::rolling::never(
-      &error_log_dir,
-      "overview.log",
-    ))
+    .with_writer(open_log_file(&error_log_dir, "overview.log")?)
     .with_filter(
       tracing_subscriber::filter::Targets::new()
         .with_target(wm_platform::OVERVIEW_LOG_TARGET, Level::DEBUG),
     );
 
-  let debug_layer = (verbosity.level() == Level::DEBUG).then(|| {
-    fmt::Layer::new().with_ansi(false).with_writer(
-      tracing_appender::rolling::never(&error_log_dir, "debug.log")
-        .with_max_level(Level::DEBUG),
-    )
-  });
+  let debug_layer = (verbosity.level() == Level::DEBUG)
+    .then(|| open_log_file(&error_log_dir, "debug.log"))
+    .transpose()?
+    .map(|writer| {
+      fmt::Layer::new()
+        .with_ansi(false)
+        .with_writer(writer.with_max_level(Level::DEBUG))
+    });
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -663,13 +629,30 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   Ok(())
 }
 
-/// Launches watcher binary (Windows-only). This is a separate process that
+/// Opens `name` in `dir` for appending, creating either if missing.
+fn open_log_file(dir: &Path, name: &str) -> anyhow::Result<Mutex<File>> {
+  fs::create_dir_all(dir).with_context(|| {
+    format!("Unable to create log directory {}.", dir.display())
+  })?;
+
+  let path = dir.join(name);
+  let file = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(&path)
+    .with_context(|| {
+      format!("Unable to open log file {}.", path.display())
+    })?;
+
+  Ok(Mutex::new(file))
+}
+
+/// Launches watcher binary. This is a separate process that
 /// is responsible for restoring hidden windows in case the main WM process
 /// crashes.
 ///
 /// This assumes the watcher binary exists in the same directory as the
 /// WM binary.
-#[cfg(target_os = "windows")]
 fn start_watcher_process() -> anyhow::Result<tokio::process::Child> {
   let watcher_path = std::env::current_exe()?
     .parent()
@@ -679,50 +662,6 @@ fn start_watcher_process() -> anyhow::Result<tokio::process::Child> {
   tokio::process::Command::new(&watcher_path)
     .spawn()
     .context("Failed to start watcher process.")
-}
-
-/// Updates the current process' PATH by querying the login shell.
-///
-/// Apps launched outside a terminal (Spotlight, Finder, login items)
-/// inherit a PATH that only contains `/usr/bin:/bin:/usr/sbin:/sbin`. This
-/// causes `shell-exec` to fail for binaries that aren't in the system
-/// PATH.
-#[cfg(target_os = "macos")]
-fn update_path_env() {
-  let shell =
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-
-  // Use `-l` and `-i` (login + interactive) so that both profile and rc
-  // files are sourced.
-  let path_var = match std::process::Command::new(&shell)
-    .args(["-lic", "printf '%s' \"$PATH\""])
-    .output()
-  {
-    Ok(output) if output.status.success() => {
-      String::from_utf8(output.stdout)
-        .ok()
-        .filter(|path| !path.is_empty())
-    }
-    _ => None,
-  };
-
-  if let Some(path) = path_var {
-    std::env::set_var("PATH", path);
-  } else {
-    tracing::warn!(
-      "Failed to query login shell for PATH. Keeping existing PATH."
-    );
-  }
-}
-
-/// Waits for `interval`'s next tick, or forever when there is none.
-async fn tick_if_some(interval: &mut Option<tokio::time::Interval>) {
-  match interval {
-    Some(interval) => {
-      interval.tick().await;
-    }
-    None => std::future::pending().await,
-  }
 }
 
 /// Sleeps until `deadline`, or forever when there is none.

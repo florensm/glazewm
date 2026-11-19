@@ -53,6 +53,7 @@ fn main() {
   );
 
   res.set_manifest(&manifest_str);
+  // Also the tray icon, loaded by `APP_ICON_RESOURCE_ID` in `sys_tray.rs`.
   res.set_icon("../../resources/assets/icon.ico");
 
   // Set language to English (US).

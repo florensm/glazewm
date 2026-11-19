@@ -230,16 +230,7 @@ impl WindowContainer {
 /// messages), since this is what logs print for a window.
 impl std::fmt::Display for WindowContainer {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let class = {
-      #[cfg(target_os = "windows")]
-      {
-        self.native_properties().class_name
-      }
-      #[cfg(not(target_os = "windows"))]
-      {
-        String::new()
-      }
-    };
+    let class = self.native_properties().class_name;
 
     let process = self.native_properties().process_name;
 

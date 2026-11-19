@@ -27,7 +27,6 @@ impl DisplayListener {
   pub async fn next_event(&mut self) -> Option<()> {
     let event = self.event_rx.recv().await;
 
-    #[cfg(target_os = "windows")]
     if event.is_some() {
       crate::perf::record_event_dequeued(crate::perf::EventKind::Display);
     }
@@ -44,7 +43,6 @@ impl DisplayListener {
   pub fn try_next_event(&mut self) -> Option<()> {
     let event = self.event_rx.try_recv().ok();
 
-    #[cfg(target_os = "windows")]
     if event.is_some() {
       crate::perf::record_event_dequeued(crate::perf::EventKind::Display);
     }

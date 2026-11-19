@@ -1,0 +1,72 @@
+stack:
+  # 0px hides the tab bar.
+  tab_bar_height: "28px"
+  # 'top' or 'bottom'.
+  tab_bar_position: "top"
+
+  # Same values as a border's color.
+  tab_bar_background: "#1f1f1f"
+  tab_active_background: "#3a3a3a"
+  tab_hover_background: "#2c2c2c"
+  tab_urgent_background: "#8a5a00"
+  # Transparent shows the strip behind inactive tabs.
+  tab_inactive_background: "#00000000"
+  tab_text_color: "#ffffff"
+  tab_inactive_text_color: "#a0a0a0"
+
+  # Falls back to Segoe UI on Windows 10.
+  tab_font_family: "Segoe UI Variable Text"
+  tab_font_size: "12px"
+  tab_corner_radius: "8px"
+  # Below about 60px, tabs only show their icon.
+  tab_min_width: "48px"
+  # 0px lets tabs share the whole bar.
+  tab_max_width: "0px"
+  show_tab_icons: true
+  # Prefix titles with their position ("1. Title").
+  show_tab_numbers: false
+
+  # 'hover', 'always' or 'never'.
+  tab_close_button: "hover"
+
+  # Regex replacements for the titles shown on tabs, in order.
+  tab_title_overrides: []
+  # tab_title_overrides:
+  #   - regex: ' - Mozilla Firefox$'
+  #     replace: ""
+
+  # New windows opened from a stacked window join its stack.
+  new_windows_join_focused_stack: false
+
+  # 'end' or 'after_active'.
+  new_tab_position: "end"
+
+  # Popups of apps with stacked windows open floating.
+  float_owned_popups: true
+
+  # Put matching windows into a named stack as they open.
+  auto_stack: []
+  # auto_stack:
+  #   - name: "browsers"
+  #     match:
+  #       - window_process: { equals: "firefox" }
+  #         # Also `window_class` and `window_title`.
+  #     exclude:
+  #       - window_title: { includes: "Picture-in-Picture" }
+  #     # Where to create the stack if it doesn't exist yet. Defaults to
+  #     # where the window would open.
+  #     workspace: "2"
+  #     # Let owned windows (usually dialogs) join too.
+  #     allow_owned: false
+  #     # Keys sent to each window as it joins.
+  #     send_keys_on_join: ["ctrl+t"]
+  #     # Close older tabs with the joining window's title.
+  #     duplicates: "close_older"
+  #     # Let a still untitled window this big join right away.
+  #     join_untitled:
+  #       min_width: "800px"
+  #       min_height: "500px"
+
+  # How long a window that might still match an `auto_stack` rule is held
+  # back while it has no title, in ms.
+  auto_stack_title_timeout_ms: 1500

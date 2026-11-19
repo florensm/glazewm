@@ -13,7 +13,7 @@ use wm_common::{
 use wm_platform::{Display, LengthValue, NativeWindow, Rect, RectDelta};
 
 use crate::{
-  commands::container::attach_container,
+  commands::container::{attach_container, set_focused_descendant},
   models::{
     Monitor, NativeMonitorProperties, NativeWindowProperties,
     NonTilingWindow, SplitContainer, StackContainer, TilingContainer,
@@ -94,6 +94,34 @@ pub fn mock_gapped_column(rows: Vec<TilingContainer>) -> SplitContainer {
     .call()
 }
 
+/// Scrolling workspace of a window, a two-row column and a window, with
+/// the column's bottom row focused. Returns the windows left to right, top
+/// to bottom.
+pub fn scrolling_column_setup() -> (WmState, Workspace, [TilingWindow; 4])
+{
+  let windows = [
+    TilingWindow::mock().call(),
+    TilingWindow::mock().call(),
+    TilingWindow::mock().call(),
+    TilingWindow::mock().call(),
+  ];
+  let [first, top, bottom, last] = windows.clone();
+  let column = SplitContainer::mock()
+    .tiling_direction(TilingDirection::Vertical)
+    .tiling_containers(vec![top.into(), bottom.clone().into()])
+    .call();
+  let workspace = Workspace::mock()
+    .layout(Layout::Scrolling)
+    .tiling_containers(vec![first.into(), column.into(), last.into()])
+    .call();
+  let state = WmState::mock(vec![Monitor::mock()
+    .workspaces(vec![workspace.clone()])
+    .call()]);
+  set_focused_descendant(&bottom.into(), None);
+
+  (state, workspace, windows)
+}
+
 /// Ids of `container`'s children, in order.
 pub fn child_ids(container: &impl CommonGetters) -> Vec<Uuid> {
   container.children().iter().map(CommonGetters::id).collect()
@@ -146,13 +174,8 @@ impl NativeMonitorProperties {
       working_area,
       dpi,
       scale_factor,
-      #[cfg(target_os = "macos")]
-      device_uuid: String::new(),
-      #[cfg(target_os = "windows")]
       handle: 0,
-      #[cfg(target_os = "windows")]
       hardware_id: None,
-      #[cfg(target_os = "windows")]
       device_path: None,
     }
   }
@@ -176,9 +199,7 @@ impl NativeWindowProperties {
       is_minimized,
       is_maximized,
       is_resizable,
-      #[cfg(target_os = "windows")]
       class_name: String::new(),
-      #[cfg(target_os = "windows")]
       shadow_borders: mock_border_delta(),
       min_width: 0,
     }
@@ -357,6 +378,7 @@ impl WmState {
     let (animation_tick_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (overview_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (tab_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (guarded_click_tx, _) = tokio::sync::mpsc::unbounded_channel();
 
     let state = Self::new(
       wm_platform::Dispatcher::mock(),
@@ -365,6 +387,7 @@ impl WmState {
       animation_tick_tx,
       overview_action_tx,
       tab_action_tx,
+      guarded_click_tx,
     );
 
     for monitor in monitors {

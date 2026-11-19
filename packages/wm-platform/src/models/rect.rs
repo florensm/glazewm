@@ -318,7 +318,6 @@ impl Rect {
   }
 }
 
-#[cfg(target_os = "windows")]
 impl From<windows::Win32::Foundation::RECT> for Rect {
   fn from(rect: windows::Win32::Foundation::RECT) -> Self {
     Self::from_ltrb(rect.left, rect.top, rect.right, rect.bottom)

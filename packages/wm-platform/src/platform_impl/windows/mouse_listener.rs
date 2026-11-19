@@ -26,7 +26,7 @@ use super::FOREGROUND_INPUT_IDENTIFIER;
 use crate::{
   mouse_listener::MouseEventKind,
   platform_event::{MouseButton, MouseEvent, PressedButtons},
-  Dispatcher, DispatcherExtWindows, Point,
+  Dispatcher, Point,
 };
 
 /// Data shared with the window procedure callback.
@@ -259,7 +259,6 @@ impl MouseListener {
       MouseEventKind::Move => MouseEvent::Move {
         position: Self::cursor_pos()?,
         pressed_buttons: callback_data.pressed,
-        window_below_cursor: None,
       },
     };
 

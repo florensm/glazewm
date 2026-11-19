@@ -40,10 +40,7 @@ impl WindowListener {
     event
   }
 
-  // LINT: Only does anything on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   fn on_dequeued(event: Option<&WindowEvent>) {
-    #[cfg(target_os = "windows")]
     if let Some(event) = event {
       crate::perf::record_event_dequeued(crate::perf::EventKind::Window);
 

@@ -168,7 +168,6 @@ pub enum InvokeCommand {
   /// already-managed window is a no-op.
   ForceManage,
   Ignore,
-  MoveCursor(InvokeMoveCursorCommand),
   Move(InvokeMoveCommand),
   MoveWorkspace {
     #[clap(long)]
@@ -521,14 +520,6 @@ pub struct InvokeFocusCommand {
   /// Focus the bottom window of the focused column.
   #[clap(long)]
   pub column_bottom: bool,
-}
-
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
-#[group(required = true, multiple = false)]
-pub struct InvokeMoveCursorCommand {
-  /// Move the cursor to the center of the currently focused window.
-  #[clap(long)]
-  pub direction: Option<Direction>,
 }
 
 #[derive(Args, Clone, Debug, Default, PartialEq, Serialize)]

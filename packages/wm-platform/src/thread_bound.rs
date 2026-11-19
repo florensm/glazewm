@@ -2,17 +2,15 @@ use core::{
   fmt,
   mem::{self, ManuallyDrop},
 };
-use std::thread::ThreadId;
 
 use crate::Dispatcher;
 
 /// Binds a value to the current event loop thread.
 ///
-/// `ThreadBound<T>` wraps a value created on an event loop thread and
-/// guarantees that all access and destruction of that value happens on
-/// the same thread, using the provided [`Dispatcher`]. This allows the
-/// wrapper to be used across threads (`Send + Sync`) even when `T` itself
-/// is not thread-safe.
+/// `ThreadBound<T>` holds a value created on an event loop thread and
+/// drops it on that same thread, using the provided [`Dispatcher`]. This
+/// lets the wrapper be held across threads (`Send + Sync`) even when `T`
+/// itself is not thread-safe. It gives no access to the value.
 ///
 /// Inspired by:
 /// - `threadbound::ThreadBound` <https://github.com/dtolnay/threadbound>
@@ -22,39 +20,13 @@ use crate::Dispatcher;
 /// the event loop thread. If the event loop has already stopped, the drop
 /// is skipped to avoid running `T`'s destructor on the wrong thread,
 /// potentially leaking the value.
-///
-/// # Example usage
-///
-/// ```no_run
-/// use wm_platform::{EventLoop, Dispatcher, ThreadBound};
-///
-/// # fn main() -> wm_platform::Result<()> {
-/// let (event_loop, dispatcher) = EventLoop::new()?;
-///
-/// // Create the value on the event loop thread.
-/// let bound = dispatcher.dispatch_sync(|| {
-///   ThreadBound::new(String::from("hello"), dispatcher.clone())
-/// })?;
-///
-/// // Access from any thread via the dispatcher.
-/// let len = bound.with(|s| s.len())?;
-/// assert_eq!(len, 5);
-///
-/// // Direct access only works on the original thread.
-/// assert!(bound.get_ref().is_ok());
-///
-/// drop(bound); // Drop is scheduled on the event loop thread.
-/// # Ok(()) }
-/// ```
-#[derive(Clone)]
 pub struct ThreadBound<T> {
   value: ManuallyDrop<T>,
-  thread_id: ThreadId,
   dispatcher: Dispatcher,
 }
 
-// SAFETY: Access to the inner value is only exposed on the event loop
-// thread.
+// SAFETY: The inner value is never accessed, and only dropped on the
+// event loop thread it was created on.
 unsafe impl<T> Send for ThreadBound<T> {}
 unsafe impl<T> Sync for ThreadBound<T> {}
 
@@ -67,83 +39,12 @@ impl<T> ThreadBound<T> {
   /// current thread.
   #[inline]
   pub fn new(inner: T, dispatcher: Dispatcher) -> Self {
-    let thread_id = std::thread::current().id();
-
-    // Ensure the dispatcher is tied to the same thread.
-    assert_eq!(thread_id, dispatcher.thread_id());
+    assert_eq!(std::thread::current().id(), dispatcher.thread_id());
 
     Self {
       value: ManuallyDrop::new(inner),
-      thread_id,
       dispatcher,
     }
-  }
-
-  /// Returns `Ok(&T)` if called on the event loop thread.
-  ///
-  /// # Errors
-  ///
-  /// Returns `Error::NotMainThread` if called from a different thread.
-  #[inline]
-  pub fn get_ref(&self) -> crate::Result<&T> {
-    if self.is_event_loop_thread() {
-      Ok(&self.value)
-    } else {
-      Err(crate::Error::NotMainThread)
-    }
-  }
-
-  /// Returns `Ok(&mut T)` if called on the event loop thread.
-  ///
-  /// # Errors
-  ///
-  /// Returns `Error::NotMainThread` if called from a different thread.
-  #[inline]
-  pub fn get_mut(&mut self) -> crate::Result<&mut T> {
-    if self.is_event_loop_thread() {
-      Ok(&mut self.value)
-    } else {
-      Err(crate::Error::NotMainThread)
-    }
-  }
-
-  /// Consumes the wrapper and returns `Ok(T)` if called on the event loop
-  /// thread.
-  ///
-  /// # Errors
-  ///
-  /// Returns `Error::NotMainThread` if called from a different thread.
-  #[inline]
-  pub fn into_inner(self) -> crate::Result<T> {
-    if self.is_event_loop_thread() {
-      // Prevent `Drop` from running.
-      let mut this = ManuallyDrop::new(self);
-
-      // SAFETY: `self` is consumed by this function, and wrapped in
-      // `ManuallyDrop`, so the item's destructor is never run.
-      Ok(unsafe { ManuallyDrop::take(&mut this.value) })
-    } else {
-      Err(crate::Error::NotMainThread)
-    }
-  }
-
-  /// Execute a closure with `&T` on the event loop thread.
-  ///
-  /// Runs synchronously and returns the closure's result.
-  #[inline]
-  pub fn with<F, R>(&self, f: F) -> crate::Result<R>
-  where
-    F: Send + FnOnce(&T) -> R,
-    R: Send,
-  {
-    self.dispatcher.dispatch_sync(|| f(&self.value))
-  }
-
-  /// Returns `true` if called on the event loop thread.
-  #[inline]
-  #[must_use]
-  pub fn is_event_loop_thread(&self) -> bool {
-    std::thread::current().id() == self.thread_id
   }
 }
 
