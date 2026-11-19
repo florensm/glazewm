@@ -765,8 +765,12 @@ pub struct OverviewConfig {
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
 
-  /// Whether the row of miniatures over the scene hides until wanted.
+  /// Whether the activities and the exposé show their row of miniatures.
   pub workspace_row: OverviewWorkspaceRow,
+
+  /// Whether the search field shows along the bottom; without it, typing
+  /// still searches, and `F1` still shows the shortcuts.
+  pub search_hint: bool,
 }
 
 /// Look of the overview's `framed` backdrop.
@@ -877,6 +881,7 @@ impl Default for OverviewConfig {
       strip_view: OverviewStripView::default(),
       expose: OverviewExpose::default(),
       workspace_row: OverviewWorkspaceRow::default(),
+      search_hint: true,
     }
   }
 }

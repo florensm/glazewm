@@ -211,8 +211,12 @@ pub struct OverviewStyle {
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
 
-  /// Whether the row of miniatures over the scene hides until wanted.
+  /// Whether the activities and the exposé show their row of miniatures.
   pub workspace_row: OverviewWorkspaceRow,
+
+  /// Whether the search field shows along the bottom; without it, typing
+  /// still searches, and `F1` still shows the shortcuts.
+  pub search_hint: bool,
 
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
@@ -238,14 +242,13 @@ pub enum OverviewStripView {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OverviewWorkspaceRow {
-  /// Always over the scene, which starts below it.
+  /// Over the scene, which starts below it.
   #[default]
   Shown,
 
-  /// Tucked up off the top but for a sliver, the scene taking its room.
-  /// It slides down over the scene while the cursor is at the top edge,
-  /// a window is dragged there, or the keyboard is on the workspaces.
-  AutoHide,
+  /// Left out, the scene taking its room. Workspaces are still gone
+  /// through with the keyboard and the wheel.
+  Hidden,
 }
 
 /// How the exposé spreads the shown workspace's windows.
@@ -258,6 +261,9 @@ pub struct OverviewExpose {
 
   /// Space between windows, in logical pixels.
   pub gap: f32,
+
+  /// How the windows of a row are sized against each other.
+  pub arrangement: OverviewExposeArrangement,
 }
 
 impl Default for OverviewExpose {
@@ -265,8 +271,25 @@ impl Default for OverviewExpose {
     Self {
       max_per_row: 0,
       gap: 32.0,
+      arrangement: OverviewExposeArrangement::default(),
     }
   }
+}
+
+/// How the exposé sizes the windows of a row against each other; either
+/// way, each row is scaled to fill the room's width.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeArrangement {
+  /// Keeping their sizes relative to each other, centered on their row,
+  /// as macOS's Mission Control does.
+  #[default]
+  Natural,
+
+  /// All as tall, as a photo grid lays out pictures.
+  Grid,
 }
 
 /// What the overview shows behind its cards.

@@ -16,8 +16,7 @@ use crate::{
     LabelPicture, SliceLook, TagPicture, CLOSE_BUTTON,
   },
   overview_layout::{
-    chrome_opacity, CardMetrics, RectF, RowPlacement, SpringRect,
-    LABEL_GAP,
+    chrome_opacity, CardMetrics, RectF, SpringRect, LABEL_GAP,
   },
   overview_overlays::{Highlight, Tag},
   overview_state::{Mode, Toward},
@@ -673,13 +672,8 @@ impl Screen {
       .zip(&overlays.labels)
       .enumerate()
       .map(|(index, (card, label))| {
-        // Off the top with a hidden row.
-        if !layout.has_scene()
-          || matches!(
-            self.row_placement(),
-            RowPlacement::Hidden | RowPlacement::Near
-          )
-        {
+        // No names without their row.
+        if !layout.has_scene() || !self.scene_chrome().has_row {
           return None;
         }
         let rect =

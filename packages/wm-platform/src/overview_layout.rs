@@ -431,39 +431,32 @@ pub(crate) const LABEL_GAP: f32 = 6.0;
 /// Most normal card widths a miniature is widened to.
 const MINIATURE_WIDTHS: f32 = 2.0;
 
-/// Where the activities' row of miniatures sits.
+/// What the activities and the exposé show around their scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RowPlacement {
-  /// Above the scene, which starts below it.
-  Fixed,
+pub(crate) struct SceneChrome {
+  /// The row of miniatures over it.
+  pub has_row: bool,
 
-  /// Tucked up off the top but for a sliver, the scene taking its room.
-  Hidden,
-
-  /// As `Hidden`, but peeking further out as the cursor nears it.
-  Near,
-
-  /// Slid down over the top of a scene laid out as for `Hidden`.
-  Revealed,
+  /// The search field under it, while no search is on.
+  pub has_search_line: bool,
 }
 
-/// How much of a hidden row's miniatures still shows, and of one the
-/// cursor nears, in logical pixels.
-pub(crate) const ROW_PEEK: f32 = 10.0;
-const ROW_NEAR_PEEK: f32 = 26.0;
-
-/// How strongly a hidden row's miniatures show, and those of one the
-/// cursor nears.
-const ROW_HIDDEN_OPACITY: f32 = 0.55;
-const ROW_NEAR_OPACITY: f32 = 0.85;
+impl SceneChrome {
+  pub const FULL: Self = Self {
+    has_row: true,
+    has_search_line: true,
+  };
+}
 
 /// Every card in miniature in a row along the top, their names under
 /// them, and below them the scene: where the selected workspace shows
-/// large. Returns the cards' targets and the scene.
+/// large. Without the row or the search line in `chrome`, the scene takes
+/// their room, the cards waiting unseen above the top. Returns the cards'
+/// targets and the scene.
 pub(crate) fn activities(
   metrics: &CardMetrics,
   slots: &[CardSlot],
-  row: RowPlacement,
+  chrome: SceneChrome,
 ) -> (Targets, RectF) {
   let (view_width, view_height) = metrics.view;
   let (margin, gap, top) =
@@ -483,17 +476,10 @@ pub(crate) fn activities(
 
   let row_width = widths * scale + gaps;
   let card_height = metrics.height * scale;
-  let (cy, opacity) = match row {
-    RowPlacement::Hidden => {
-      (metrics.px(ROW_PEEK) - card_height / 2.0, ROW_HIDDEN_OPACITY)
-    }
-    RowPlacement::Near => (
-      metrics.px(ROW_NEAR_PEEK) - card_height / 2.0,
-      ROW_NEAR_OPACITY,
-    ),
-    RowPlacement::Fixed | RowPlacement::Revealed => {
-      (top + card_height / 2.0, 1.0)
-    }
+  let (cy, opacity) = if chrome.has_row {
+    (top + card_height / 2.0, 1.0)
+  } else {
+    (-card_height, 0.0)
   };
   let mut x = (view_width - row_width) / 2.0;
   let cards = slots
@@ -510,17 +496,21 @@ pub(crate) fn activities(
     .collect();
 
   let search_y = metrics.bottom_search_y();
-  let scene_top = match row {
-    RowPlacement::Fixed => top + card_height + label + metrics.px(22.0),
-    RowPlacement::Hidden | RowPlacement::Near | RowPlacement::Revealed => {
-      metrics.px(ROW_PEEK) + top + metrics.px(22.0)
-    }
+  let scene_top = if chrome.has_row {
+    top + card_height + label + metrics.px(22.0)
+  } else {
+    margin
+  };
+  let scene_bottom = if chrome.has_search_line {
+    search_y - metrics.px(16.0)
+  } else {
+    view_height - margin
   };
   let scene = RectF::new(
     margin,
     scene_top,
     view_width - 2.0 * margin,
-    (search_y - metrics.px(16.0) - scene_top).max(0.0),
+    (scene_bottom - scene_top).max(0.0),
   );
 
   let spotlight_y = scene_top + metrics.px(SPOTLIGHT_INSET);
@@ -1290,8 +1280,8 @@ mod tests {
   use super::{
     activities, chrome_opacity, cover_crop, ease_out_back, ease_out_cubic,
     stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
-    Placement, RectF, RowPlacement, Spring, SpringRect, Targets, Tile,
-    Zoom, ROW_PEEK, STACK_MAX_WIDTHS,
+    Placement, RectF, SceneChrome, Spring, SpringRect, Tile, Zoom,
+    STACK_MAX_WIDTHS,
   };
   use crate::{OverviewCurve, OverviewLayoutMode};
 
@@ -1817,8 +1807,7 @@ mod tests {
       CardSlot::new(&metrics),
     ];
 
-    let (targets, scene) =
-      activities(&metrics, &slots, RowPlacement::Fixed);
+    let (targets, scene) = activities(&metrics, &slots, SceneChrome::FULL);
     let rects = targets
       .cards
       .iter()
@@ -1840,34 +1829,27 @@ mod tests {
     assert!(scene.w > 1920.0 * 0.8);
   }
 
-  /// A row that hides gives its room to the scene, which stays put as
-  /// the row slides down over it; hidden, only a sliver of it shows.
+  /// Without its row or search line, the scene takes their room, as far
+  /// from every edge, and the cards wait unseen above the top.
   #[test]
-  fn a_hiding_row_gives_the_scene_its_room() {
+  fn a_bare_scene_takes_the_room_of_its_chrome() {
     let metrics = metrics_for(OverviewLayoutMode::Activities);
     let slots = slots(&metrics, 4);
-    let layout = |row| activities(&metrics, &slots, row);
+    let bare = SceneChrome {
+      has_row: false,
+      has_search_line: false,
+    };
 
-    let (_, fixed) = layout(RowPlacement::Fixed);
-    let (hidden, scene) = layout(RowPlacement::Hidden);
-    let (near, near_scene) = layout(RowPlacement::Near);
-    let (revealed, revealed_scene) = layout(RowPlacement::Revealed);
+    let (_, full) = activities(&metrics, &slots, SceneChrome::FULL);
+    let (targets, scene) = activities(&metrics, &slots, bare);
 
-    // The row peeks further, and shows stronger, the nearer it is wanted.
-    assert_eq!(scene, revealed_scene);
-    assert_eq!(scene, near_scene);
-    let bottom =
-      |targets: &Targets| targets.cards[0].rect(&metrics).bottom();
-    assert!(bottom(&hidden) < bottom(&near));
-    assert!(bottom(&near) < bottom(&revealed));
-    assert!(hidden.cards[0].opacity < near.cards[0].opacity);
-    assert!(near.cards[0].opacity < revealed.cards[0].opacity);
-    assert!(scene.y < fixed.y && scene.h > fixed.h);
-    assert_close(hidden.cards[0].rect(&metrics).bottom(), ROW_PEEK);
-    assert_close(
-      revealed.cards[0].rect(&metrics).y,
-      layout(RowPlacement::Fixed).0.cards[0].rect(&metrics).y,
-    );
+    assert!(scene.y < full.y && scene.bottom() > full.bottom());
+    assert_close(scene.y, 1040.0 - scene.bottom());
+    assert_close(scene.x, scene.y);
+    for card in &targets.cards {
+      assert!(card.rect(&metrics).bottom() <= 0.0);
+      assert_close(card.opacity, 0.0);
+    }
   }
 
   #[test]
@@ -1875,7 +1857,7 @@ mod tests {
     let metrics = metrics_for(OverviewLayoutMode::Activities);
     let slots = slots(&metrics, 20);
 
-    let (targets, _) = activities(&metrics, &slots, RowPlacement::Fixed);
+    let (targets, _) = activities(&metrics, &slots, SceneChrome::FULL);
     let first = targets.cards[0].rect(&metrics);
     let last = targets.cards[19].rect(&metrics);
 

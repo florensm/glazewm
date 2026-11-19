@@ -1,5 +1,5 @@
 # Edge to edge: the exposé with as little around the windows as can be,
-# so each one shows as large as it can.
+# each row as tall as it can be, so every window shows as large as it can.
 overview:
   layout: "expose"
   backdrop_style: "framed"
@@ -8,9 +8,11 @@ overview:
     corner_radius: 10
     padding: 8
     shadow: false
+  search_hint: false
   expose:
     max_per_row: 0
     gap: 10
+    arrangement: "grid"
   window_highlight:
     style: "ring"
     width: 2

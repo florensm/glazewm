@@ -39,10 +39,11 @@ overview's own outline instead.
   [Scrolling workspaces](#scrolling-workspaces)).
 - **Exposé**: the activities' row of miniatures, and below it the shown
   workspace's windows spread out side by side, as macOS's Mission
-  Control does, in justified rows like a photo grid's: every window of a
-  row as tall as the others, keeping its shape, and the row as wide as
-  the room, so they show as large as they can (but never larger than in
-  the activities). Every tab of its stacks shows too, each a window of
+  Control does, in rows each scaled to fill the room's width, so they
+  show as large as they can (but never larger than in the activities).
+  In a row, windows keep their sizes relative to each other, centered on
+  it (`expose.arrangement: "natural"`), or are all as tall, as a photo
+  grid lays out pictures (`"grid"`). Every tab of its stacks shows too, each a window of
   its own. Rows follow where the windows sit on screen, top to bottom and
   left to right, as many as cover the most room; `expose.max_per_row`
   caps how many go in a row, e.g. to wrap a scrolling workspace's
@@ -53,24 +54,11 @@ overview's own outline instead.
 
 On the cards, each window shows its app's icon in its middle.
 
-### Workspace row
-
-With `workspace_row: "auto_hide"`, the activities' and the exposé's row
-of miniatures tucks up off the top, a sliver of it still showing as a
-hint, and the shown workspace takes its room. It slides down over the
-top of the workspace, which stays where it is, while:
-
-- the cursor is at the top edge, or over the row once it is down;
-- a window is dragged up there, to drop it on another workspace;
-- the keyboard is on the workspaces, e.g. after `←` `→`, or carrying a
-  window (but not while a search is on, whose box it would cover).
-
-It slides back up once the cursor leaves it, or the keyboard goes in
-among the windows.
-
-As the cursor nears the top, the sliver peeks further out and brightens.
-Coming down, the miniatures arrive as a wave from under the cursor (or
-the selected one, by keyboard), those further away a moment later.
+With `workspace_row: "hidden"` and `search_hint: false`, the activities
+and the exposé show nothing but the shown workspace: its windows over its
+wallpaper (on its panel, with a framed backdrop), as far from every edge
+of the screen. Workspaces are still gone through with `←` `→`, the wheel
+and the digit chords, and typing still searches.
 
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
 goes through them while it is open (unless a search is on, which it then
@@ -498,16 +486,24 @@ overview:
   # (the columns on screen) or "whole" (the whole strip, scaled to fit).
   strip_view: "visible"
 
-  # Whether the activities' and exposé's row of miniatures stays: "shown"
-  # or "auto_hide" (see "Workspace row" above).
+  # Whether the activities and the exposé show their row of miniatures:
+  # "shown" or "hidden" (see "Layouts" above).
   workspace_row: "shown"
+
+  # Whether the "Type to search" field shows along the bottom. Without
+  # it, typing still searches and `F1` still shows the shortcuts.
+  search_hint: true
 
   # How the exposé spreads the windows: at most `max_per_row` side by side
   # before wrapping onto another row (0 for as many as shows them
   # largest), `gap` logical pixels apart.
+  #
+  # `arrangement` sizes the windows of a row: "natural" (as they are
+  # against each other, centered on the row) or "grid" (all as tall).
   expose:
     max_per_row: 0
     gap: 32
+    arrangement: "natural"
 
   effects:
     # Soft glow of the accent color around the selected workspace.

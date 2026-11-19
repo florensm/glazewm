@@ -532,6 +532,7 @@ fn overview_frame(
       strip_view: overview.strip_view,
       expose: overview.expose,
       workspace_row: overview.workspace_row,
+      search_hint: overview.search_hint,
       particles: config.value.animations.particles.look(),
     },
   }

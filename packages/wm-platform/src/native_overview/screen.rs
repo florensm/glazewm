@@ -30,11 +30,10 @@ use crate::{
   overview_effects::{lean_toward, Entrance},
   overview_layout::{
     activities, chrome_opacity, stack, Camera, CardMetrics, CardView,
-    Placement, RectF, RowPlacement, Spring, Zoom, LABEL_GAP, LABEL_HEIGHT,
-    ROW_PEEK, SEARCH_HEIGHT,
+    Placement, RectF, SceneChrome, Spring, Zoom, SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
-  overview_state::{Control, Hit, Mode, ScreenFocus, Toward},
+  overview_state::{Control, Hit, ScreenFocus, Toward},
   overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
@@ -77,21 +76,8 @@ const SEARCH_LIFT: f32 = 0.02;
 /// logical pixels.
 const NUDGE_DISTANCE: f32 = 18.0;
 
-/// How far below a hidden row's sliver the cursor reaches it, and below a
-/// revealed row's names it keeps it down, in logical pixels.
-const ROW_REACH: f32 = 14.0;
-
 /// Most the picked window grows by in the large view.
 const MAX_WINDOW_LIFT: f32 = 0.15;
-const ROW_KEEP: f32 = 24.0;
-
-/// How near the top the cursor draws a hidden row further out, in
-/// logical pixels.
-const ROW_NEAR: f32 = 140.0;
-
-/// How far back up a revealed row's card furthest from where it came
-/// down lags, in logical pixels.
-const ROW_WAVE: f32 = 40.0;
 
 /// How much larger everything is when the fade style starts opening or
 /// ends closing.
@@ -119,9 +105,6 @@ impl Screen {
       cards: Vec::new(),
       scenes: Vec::new(),
       scene_area: RectF::default(),
-      row: RowPlacement::Hidden,
-      row_wave: None,
-      row_follows_pointer: true,
       scene_shown: None,
       is_picked: false,
       scene_borders: SceneBorders::default(),
@@ -318,8 +301,6 @@ impl Screen {
     if self.frame.is_none() {
       return;
     }
-    self.sync_row();
-
     let is_redrawn = self.draw_for_layout();
     self.ensure_labels();
     self.retarget(false);
@@ -354,9 +335,6 @@ impl Screen {
     }
     self.scenes.clear();
     self.scene_shown = None;
-    self.row = RowPlacement::Hidden;
-    self.row_wave = None;
-    self.row_follows_pointer = true;
     self.is_picked = false;
     self.card_targets.clear();
     self.pointer = None;
@@ -589,7 +567,7 @@ impl Screen {
       }
       OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
         let (targets, area) =
-          activities(&self.metrics, &slots, self.row_placement());
+          activities(&self.metrics, &slots, self.scene_chrome());
         self.scene_area = area.inset(self.frame_padding());
         targets
       }
@@ -689,9 +667,6 @@ impl Screen {
         spring.aim(value, snap);
       }
     }
-    if !snap {
-      self.ripple_row();
-    }
     self.is_dirty = true;
   }
 
@@ -702,14 +677,6 @@ impl Screen {
       return;
     }
     self.pointer = pointer;
-    if pointer.is_some() {
-      self.row_follows_pointer = true;
-    }
-
-    if self.frame.is_some() && self.sync_row() {
-      self.retarget(false);
-      return;
-    }
 
     let leans = self.style().is_some_and(|style| style.effects.lean > 0.0);
     if leans && self.focus.hover.is_some() && self.frame.is_some() {
@@ -717,101 +684,13 @@ impl Screen {
     }
   }
 
-  /// Where the row of miniatures sits, as the style and the user have it.
-  pub(super) fn row_placement(&self) -> RowPlacement {
-    let hides = self.style().is_some_and(|style| {
-      style.workspace_row == OverviewWorkspaceRow::AutoHide
-    });
-    if hides {
-      self.row
-    } else {
-      RowPlacement::Fixed
-    }
-  }
-
-  /// Where a hiding row is wanted: down with the cursor at the top edge,
-  /// or over the row once it is down, peeking further as the cursor nears
-  /// it; or else down while the keyboard is on the workspaces, but not
-  /// while searching, whose box the row would cover.
-  fn wanted_row(&self) -> RowPlacement {
-    if !self.row_follows_pointer {
-      let wants = self.focus.is_active
-        && self.focus.query.is_empty()
-        && matches!(self.focus.mode, Mode::Spaces | Mode::Carrying);
-      return if wants {
-        RowPlacement::Revealed
-      } else {
-        RowPlacement::Hidden
-      };
-    }
-
-    let Some((_, y)) = self.pointer else {
-      return RowPlacement::Hidden;
-    };
-    let reach = if self.row == RowPlacement::Revealed {
-      let bottom = self
-        .card_targets
-        .iter()
-        .zip(&self.cards)
-        .map(|(target, card)| target.rect(&card.metrics).bottom())
-        .fold(0.0, f32::max);
-      bottom + self.metrics.px(LABEL_GAP + LABEL_HEIGHT + ROW_KEEP)
-    } else {
-      self.metrics.px(ROW_PEEK + ROW_REACH)
-    };
-
-    if y < reach {
-      RowPlacement::Revealed
-    } else if y < self.metrics.px(ROW_NEAR) {
-      RowPlacement::Near
-    } else {
-      RowPlacement::Hidden
-    }
-  }
-
-  /// Moves a hiding row as `wanted_row` has it, but not while zooming into
-  /// a pick, rippling it down from the cursor or the selection as it
-  /// comes down. Returns whether that changes the layout.
-  fn sync_row(&mut self) -> bool {
-    if !self.focus.layout.has_scene()
-      || self.row_placement() == RowPlacement::Fixed
-      || self.is_closing()
-    {
-      return false;
-    }
-
-    let wanted = self.wanted_row();
-    if wanted == self.row {
-      return false;
-    }
-
-    if wanted == RowPlacement::Revealed {
-      let selected = self
-        .card_targets
-        .get(self.focus.selected)
-        .map(|target| target.cx);
-      self.row_wave = self
-        .pointer
-        .filter(|_| self.row_follows_pointer)
-        .map(|(x, _)| x)
-        .or(selected);
-    }
-    self.row = wanted;
-    true
-  }
-
-  /// Sends a row just revealed down as a wave from `row_wave`: each card
-  /// is knocked back up the further it is from there, so it lands later.
-  fn ripple_row(&mut self) {
-    let Some(origin) = self.row_wave.take() else {
-      return;
-    };
-    let (width, lag) =
-      (self.metrics.view.0.max(1.0), self.metrics.px(ROW_WAVE));
-    for card in &mut self.cards {
-      let distance = ((card.cx.target - origin).abs() / width).min(1.0);
-      card.cy.kick(-lag * distance);
-    }
+  /// What the activities and the exposé show around their scene, as the
+  /// style has it.
+  pub(super) fn scene_chrome(&self) -> SceneChrome {
+    self.style().map_or(SceneChrome::FULL, |style| SceneChrome {
+      has_row: style.workspace_row == OverviewWorkspaceRow::Shown,
+      has_search_line: style.search_hint,
+    })
   }
 
   /// Bumps what the keyboard is on `toward` and lets it spring back, for
@@ -1363,7 +1242,8 @@ impl Screen {
       self.place_overlays(&context) | self.place_effects(&context);
 
     let search_height = SEARCH_HEIGHT * scale_factor;
-    let has_search = self.search_drawn.is_some();
+    let has_search =
+      self.search_drawn.is_some() && self.scene_chrome().has_search_line;
     if let Some(search) = &mut self.search {
       if has_search {
         search.place(
@@ -1572,7 +1452,7 @@ impl Screen {
   /// The control of the search line under (`x`, `y`), once the opening
   /// zoom ended and until the closing one starts.
   fn hit_control(&self, x: f32, y: f32) -> Option<Control> {
-    if self.zoom.is_some() {
+    if self.zoom.is_some() || !self.scene_chrome().has_search_line {
       return None;
     }
 

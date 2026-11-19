@@ -14,7 +14,8 @@ use crate::{
   overview_layout::{CardView, RectF, Tile},
   overview_scene::{Scene, SceneWindow},
   overview_state::ScreenFocus,
-  OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
+  OverviewExposeArrangement, OverviewStripView, OverviewSwitchStyle,
+  OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -73,6 +74,7 @@ struct Spread {
   gap: f32,
   max_scale: f32,
   max_per_row: usize,
+  arrangement: OverviewExposeArrangement,
 }
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
@@ -130,6 +132,7 @@ fn spread_windows(
     how.gap,
     how.max_scale,
     how.max_per_row,
+    how.arrangement,
   );
 
   let mut rects = vec![None; scene.windows.len()];
@@ -411,6 +414,7 @@ impl Screen {
       max_scale: (area.w / monitor.w).min(area.h / monitor.h).max(0.0),
       max_per_row: usize::try_from(expose.max_per_row)
         .unwrap_or(usize::MAX),
+      arrangement: expose.arrangement,
     }
   }
 

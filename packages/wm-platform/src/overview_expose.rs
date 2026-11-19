@@ -1,24 +1,26 @@
-//! Where the exposé spreads a workspace's windows: in justified rows, as
-//! a photo grid lays out pictures, in about the order they sit on screen.
+//! Where the exposé spreads a workspace's windows: in rows filling the
+//! room's width, in about the order they sit on screen.
 
-use crate::overview_layout::RectF;
+use crate::{overview_layout::RectF, OverviewExposeArrangement};
 
 /// Spreads windows whose screen rects are `windows` over `area`, `gap`
 /// apart and at most `max_per_row` to a row (`0` for any number), as
 /// large as fits.
 ///
-/// Every window of a row is as tall as the others, keeping its shape, and
-/// the row as wide as `area`, unless that would show a window larger than
-/// `max_scale` of its size or the rows wouldn't fit `area`'s height. Of
-/// the row counts, the one covering the most of `area` wins. Rows go top
-/// to bottom by where each window's middle sits on screen, and each row
-/// left to right. Returns a rect per window, in the order given.
+/// Each row is scaled to fill `area`'s width, unless that would show a
+/// window larger than `max_scale` of its size or the rows wouldn't fit
+/// `area`'s height. In it, windows keep their sizes relative to each
+/// other, centered on the row (`Natural`), or are all as tall (`Grid`).
+/// Of the row counts, the one covering the most of `area` wins. Rows go
+/// top to bottom by where each window's middle sits on screen, and each
+/// row left to right. Returns a rect per window, in the order given.
 pub(crate) fn spread(
   windows: &[RectF],
   area: &RectF,
   gap: f32,
   max_scale: f32,
   max_per_row: usize,
+  arrangement: OverviewExposeArrangement,
 ) -> Vec<RectF> {
   if windows.is_empty() {
     return Vec::new();
@@ -28,16 +30,21 @@ pub(crate) fn spread(
     max => max,
   };
 
-  // Each window's shape: one tall, as wide as it is for that.
+  // What a row scales: each window as it is, or one tall at its shape.
   let shapes = windows
     .iter()
-    .map(|window| {
-      let aspect = if window.h > 0.0 {
-        window.w / window.h
-      } else {
-        1.0
-      };
-      RectF::new(0.0, 0.0, aspect, 1.0)
+    .map(|window| match arrangement {
+      OverviewExposeArrangement::Natural => {
+        RectF::new(0.0, 0.0, window.w.max(1.0), window.h.max(1.0))
+      }
+      OverviewExposeArrangement::Grid => {
+        let aspect = if window.h > 0.0 {
+          window.w / window.h
+        } else {
+          1.0
+        };
+        RectF::new(0.0, 0.0, aspect, 1.0)
+      }
     })
     .collect::<Vec<_>>();
 
@@ -52,39 +59,49 @@ pub(crate) fn spread(
   for row_count in windows.len().div_ceil(max_per_row)..=windows.len() {
     let rows =
       partition(&shapes, &order, row_count, max_per_row, area.w, gap);
-    let heights =
-      row_heights(windows, &shapes, &rows, area, gap, max_scale);
+    let scales = row_scales(windows, &shapes, &rows, area, gap, max_scale);
     let coverage = rows
       .iter()
-      .zip(&heights)
-      .map(|(row, height)| row_width(&shapes, row) * height * height)
+      .zip(&scales)
+      .map(|(row, scale)| {
+        let shown = row
+          .iter()
+          .map(|&index| shapes[index].w * shapes[index].h)
+          .sum::<f32>();
+        shown * scale * scale
+      })
       .sum::<f32>();
     if best.as_ref().is_none_or(|(best, ..)| coverage > *best) {
-      best = Some((coverage, rows, heights));
+      best = Some((coverage, rows, scales));
     }
   }
-  let Some((_, mut rows, heights)) = best else {
+  let Some((_, mut rows, scales)) = best else {
     return Vec::new();
   };
 
+  let heights = rows
+    .iter()
+    .zip(&scales)
+    .map(|(row, scale)| row_height(&shapes, row) * scale)
+    .collect::<Vec<_>>();
   #[allow(clippy::cast_precision_loss)]
   let total_height = heights.iter().sum::<f32>()
     + gap * (rows.len().saturating_sub(1)) as f32;
 
   let mut rects = vec![RectF::default(); windows.len()];
   let mut y = area.y + (area.h - total_height) / 2.0;
-  for (row, height) in rows.iter_mut().zip(heights) {
+  for ((row, scale), height) in rows.iter_mut().zip(scales).zip(heights) {
     row.sort_by(|&a, &b| {
       windows[a].center().0.total_cmp(&windows[b].center().0)
     });
 
     #[allow(clippy::cast_precision_loss)]
-    let width = row_width(&shapes, row) * height
+    let width = row_width(&shapes, row) * scale
       + gap * (row.len().saturating_sub(1)) as f32;
     let mut x = area.x + (area.w - width) / 2.0;
     for &index in row.iter() {
-      let w = shapes[index].w * height;
-      rects[index] = RectF::new(x, y, w, height);
+      let (w, h) = (shapes[index].w * scale, shapes[index].h * scale);
+      rects[index] = RectF::new(x, y + (height - h) / 2.0, w, h);
       x += w + gap;
     }
     y += height + gap;
@@ -93,10 +110,10 @@ pub(crate) fn spread(
   rects
 }
 
-/// How tall each of `rows` is: as tall as fills `area`'s width with its
-/// windows' `shapes`, but showing none larger than `max_scale` of its
-/// size in `windows`, and all shrunk alike to fit `area`'s height.
-fn row_heights(
+/// The scale of each of `rows`' `shapes`: filling `area`'s width, but
+/// showing none of `windows` larger than `max_scale` of its size, and all
+/// shrunk alike to fit `area`'s height.
+fn row_scales(
   windows: &[RectF],
   shapes: &[RectF],
   rows: &[Vec<usize>],
@@ -104,13 +121,13 @@ fn row_heights(
   gap: f32,
   max_scale: f32,
 ) -> Vec<f32> {
-  let mut heights = rows
+  let mut scales = rows
     .iter()
     .map(|row| {
       let fills = row_scale(shapes, row, area.w, gap);
       let largest = row
         .iter()
-        .map(|&index| windows[index].h * max_scale)
+        .map(|&index| windows[index].h * max_scale / shapes[index].h)
         .fold(f32::INFINITY, f32::min);
       fills.min(largest).max(0.0)
     })
@@ -119,13 +136,17 @@ fn row_heights(
   #[allow(clippy::cast_precision_loss)]
   let free =
     (area.h - gap * (rows.len().saturating_sub(1)) as f32).max(0.0);
-  let total = heights.iter().sum::<f32>();
+  let total = rows
+    .iter()
+    .zip(&scales)
+    .map(|(row, scale)| row_height(shapes, row) * scale)
+    .sum::<f32>();
   if total > free && total > 0.0 {
-    for height in &mut heights {
-      *height *= free / total;
+    for scale in &mut scales {
+      *scale *= free / total;
     }
   }
-  heights
+  scales
 }
 
 /// Splits `order` into `row_count` runs of at most `max_per_row`,
@@ -189,6 +210,13 @@ fn row_scale(
   }
 }
 
+fn row_height(windows: &[RectF], row: &[usize]) -> f32 {
+  row
+    .iter()
+    .map(|&index| windows[index].h)
+    .fold(0.0, f32::max)
+}
+
 fn row_width(windows: &[RectF], row: &[usize]) -> f32 {
   row.iter().map(|&index| windows[index].w).sum()
 }
@@ -196,7 +224,11 @@ fn row_width(windows: &[RectF], row: &[usize]) -> f32 {
 #[cfg(test)]
 mod tests {
   use super::spread;
-  use crate::overview_layout::RectF;
+  use crate::{overview_layout::RectF, OverviewExposeArrangement};
+
+  const GRID: OverviewExposeArrangement = OverviewExposeArrangement::Grid;
+  const NATURAL: OverviewExposeArrangement =
+    OverviewExposeArrangement::Natural;
 
   const AREA: RectF = RectF::new(0.0, 0.0, 1600.0, 900.0);
 
@@ -220,7 +252,7 @@ mod tests {
   #[test]
   fn a_lone_window_is_centered_at_most_at_max_scale() {
     let window = RectF::new(0.0, 0.0, 1920.0, 1080.0);
-    let rects = spread(&[window], &AREA, 20.0, 0.5, 4);
+    let rects = spread(&[window], &AREA, 20.0, 0.5, 4, GRID);
 
     assert_eq!(rects, vec![RectF::new(320.0, 180.0, 960.0, 540.0)]);
   }
@@ -230,7 +262,7 @@ mod tests {
   fn side_by_side_windows_keep_their_order() {
     let right = RectF::new(960.0, 0.0, 960.0, 1080.0);
     let left = RectF::new(0.0, 0.0, 960.0, 1080.0);
-    let rects = spread(&[right, left], &AREA, 20.0, 1.0, 4);
+    let rects = spread(&[right, left], &AREA, 20.0, 1.0, 4, GRID);
 
     assert!(rects[1].right() < rects[0].x);
     assert!((rects[0].y - rects[1].y).abs() < f32::EPSILON);
@@ -242,7 +274,7 @@ mod tests {
   #[test]
   fn windows_on_one_spot_are_spread_apart() {
     let stack = RectF::new(0.0, 0.0, 1920.0, 1080.0);
-    let rects = spread(&[stack; 5], &AREA, 24.0, 1.0, 4);
+    let rects = spread(&[stack; 5], &AREA, 24.0, 1.0, 4, GRID);
 
     for (index, rect) in rects.iter().enumerate() {
       assert!(within(rect, &AREA), "{rect:?}");
@@ -265,7 +297,7 @@ mod tests {
         RectF::new(x, y, 640.0, 360.0)
       })
       .collect::<Vec<_>>();
-    let rects = spread(&windows, &AREA, 16.0, 1.0, 4);
+    let rects = spread(&windows, &AREA, 16.0, 1.0, 4, GRID);
 
     let mut rows =
       rects.iter().map(|rect| rect.y.round()).collect::<Vec<_>>();
@@ -289,7 +321,7 @@ mod tests {
       RectF::new(0.0, 0.0, 600.0, 1000.0),
       RectF::new(600.0, 0.0, 1300.0, 1000.0),
     ];
-    let rects = spread(&windows, &AREA, 20.0, 1.0, 0);
+    let rects = spread(&windows, &AREA, 20.0, 1.0, 0, GRID);
 
     assert!((rects[0].h - rects[1].h).abs() < 1e-3);
     assert!((rects[0].x - AREA.x).abs() < 1e-3);
@@ -297,9 +329,27 @@ mod tests {
     assert!((rects[0].w / rects[0].h - 0.6).abs() < 1e-3);
   }
 
+  /// Naturally, windows of a row keep their sizes relative to each
+  /// other, centered on it.
+  #[test]
+  fn natural_rows_keep_relative_sizes() {
+    let wide = RectF::new(0.0, 0.0, 4000.0, 500.0);
+    let windows = [
+      RectF::new(0.0, 0.0, 800.0, 400.0),
+      RectF::new(800.0, 100.0, 800.0, 200.0),
+    ];
+    let rects = spread(&windows, &wide, 20.0, 1.0, 0, NATURAL);
+
+    assert!((rects[0].h / rects[1].h - 2.0).abs() < 1e-3);
+    assert!((rects[0].w - rects[1].w).abs() < 1e-3);
+    let middle = |rect: &RectF| rect.y + rect.h / 2.0;
+    assert!((middle(&rects[0]) - middle(&rects[1])).abs() < 1e-3);
+    assert!(rects[1].x > rects[0].right());
+  }
+
   #[test]
   fn no_windows_spread_to_nothing() {
-    assert!(spread(&[], &AREA, 16.0, 1.0, 0).is_empty());
+    assert!(spread(&[], &AREA, 16.0, 1.0, 0, GRID).is_empty());
   }
 
   /// A scrolling strip's tall columns, which fit one row best, still wrap
@@ -313,7 +363,7 @@ mod tests {
         RectF::new(x, 0.0, 480.0, 1040.0)
       })
       .collect::<Vec<_>>();
-    let rects = spread(&columns, &AREA, 16.0, 1.0, 4);
+    let rects = spread(&columns, &AREA, 16.0, 1.0, 4, GRID);
 
     let top = rects[0].y;
     let on_top = rects.iter().filter(|rect| (rect.y - top).abs() < 0.5);

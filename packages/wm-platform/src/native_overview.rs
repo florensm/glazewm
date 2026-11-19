@@ -71,8 +71,7 @@ use crate::{
   overview_chrome::{picture_rect, CardPicture, SearchControls},
   overview_effects::Entrance,
   overview_layout::{
-    Camera, CardMetrics, CardView, Placement, RectF, RowPlacement, Spring,
-    Zoom,
+    Camera, CardMetrics, CardView, Placement, RectF, Spring, Zoom,
   },
   overview_scene::Scene,
   overview_state::{
@@ -657,16 +656,6 @@ struct Screen {
 
   /// Where the activities show the selected workspace large.
   scene_area: RectF,
-
-  /// Where a hiding row of miniatures is: hidden, near or revealed.
-  row: RowPlacement,
-
-  /// Where a row just revealed ripples down from, across: its cards
-  /// nearest it arrive first.
-  row_wave: Option<f32>,
-
-  /// Whether the cursor, rather than the keyboard, decides that.
-  row_follows_pointer: bool,
 
   /// Where the layout puts each card, before it lifts, leans or dims.
   card_targets: Vec<Placement>,
@@ -1483,23 +1472,13 @@ impl Overview {
   }
 
   fn on_key(&mut self, key: Key) {
-    self.follow_keyboard();
     let action = self.interaction.key(key, &self.workspaces);
     self.after_input(action);
   }
 
   fn on_input(&mut self, input: &OverviewInput) {
-    self.follow_keyboard();
     let action = self.interaction.input(input, &self.workspaces);
     self.after_input(action);
-  }
-
-  /// Lets the keyboard decide whether hiding rows show, until the cursor
-  /// moves again.
-  fn follow_keyboard(&mut self) {
-    for screen in &mut self.screens {
-      screen.row_follows_pointer = false;
-    }
   }
 
   fn on_toggle(&mut self, layout: OverviewLayoutMode) {
