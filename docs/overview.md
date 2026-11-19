@@ -37,6 +37,14 @@ overview's own outline instead.
   a window on a strip pans the strip to put that window in the middle,
   and the wheel turned sideways (or with `Shift`) pans it by hand (see
   [Scrolling workspaces](#scrolling-workspaces)).
+- **Exposé**: the activities' row of miniatures, and below it the shown
+  workspace's windows spread out side by side at one scale, as macOS's
+  Mission Control does: every tab of its stacks too, each a window of
+  its own. Rows follow where the windows sit on screen, top to bottom and
+  left to right. Opening, they fly out of where they are; closing, they
+  fly back as the zoom lands, the picked tab shown on its stack. A window
+  dropped on another lands beside it, on the side nearest the cursor, as
+  in the activities; dropped elsewhere it only moves.
 
 On the cards, each window shows its app's icon in its middle.
 
@@ -79,7 +87,7 @@ is nowhere to go.
 | Command | Behaviour |
 | --- | --- |
 | `toggle-overview` (`alt+w` in the sample config) | Open the overview on `overview.layout`. While open, switch back to that layout, or close it if already showing it. |
-| `toggle-overview --layout <layout>` | Open the overview on `activities` or `stack`. While open, switch to it, or close it if already showing it. |
+| `toggle-overview --layout <layout>` | Open the overview on `activities`, `stack` or `expose`. While open, switch to it, or close it if already showing it. |
 
 ### Mouse
 
@@ -135,7 +143,7 @@ An arrow goes to what lies that way on screen:
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `Delete` | | Close the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
-| `Tab` / `Shift`+`Tab` | Switch to the other layout. | Same. | Same. |
+| `Tab` / `Shift`+`Tab` | Switch to the next or previous layout. | Same. | Same. |
 | `F1` | Show the keyboard shortcuts. | Same. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
 | Any letter, digit or symbol | Start or extend a [search](#search). | Same. | Same. |
@@ -336,8 +344,9 @@ fades stay within their range.
 | `blur` (default) | The wallpaper over the whole screen, blurred by `backdrop_blur` and tinted by `backdrop_tint`. |
 | `framed` | The wallpaper, sharp, on a rounded panel over `backdrop_frame.color`: the desktop shrinks as a whole. |
 
-The framed panel sits where the shown workspace does: in the activities,
-behind the large workspace, sliding with it; in the stack, under the
+The framed panel sits where the shown workspace does: in the activities
+and the exposé, behind the large workspace, `backdrop_frame.padding`
+past its windows, sliding with it; in the stack, under the
 selected card, whose background then covers it. It starts out over the
 whole screen and shrinks with the zoom, its corners rounding off and its
 shadow fading in as it does, so opening and closing look the same as the
@@ -360,10 +369,12 @@ overview:
 
   # Look of the "framed" backdrop. `color` is around the panel, given
   # like `accent_color` ("accent" for the OS accent color).
-  # `corner_radius` is in logical pixels.
+  # `corner_radius` and `padding` (wallpaper around the shown
+  # workspace's windows) are in logical pixels.
   backdrop_frame:
     color: "#161418ff"
     corner_radius: 16
+    padding: 32
     shadow: true
 
   # Selection and highlights: a hex color, "accent" for the OS accent
@@ -393,7 +404,8 @@ overview:
   # family isn't installed (Segoe UI Variable is Windows 11's).
   font_family: "Segoe UI Variable Text"
 
-  # Layout `toggle-overview` opens on: "activities" or "stack".
+  # Layout `toggle-overview` opens on: "activities", "stack" or
+  # "expose".
   layout: "activities"
 
   # Corner of a monitor that opens the overview as the cursor rests in it:

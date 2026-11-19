@@ -119,7 +119,7 @@ impl Overlays {
     host: HWND,
     layout: OverviewLayoutMode,
   ) {
-    if layout == OverviewLayoutMode::Activities {
+    if layout.has_scene() {
       for label in &mut self.labels {
         label.picture.register(host);
       }
@@ -271,7 +271,7 @@ impl Screen {
     let scale_factor = metrics.scale_factor;
     let notify = self.notify;
 
-    let labels = if layout == OverviewLayoutMode::Activities {
+    let labels = if layout.has_scene() {
       self.label_pictures()
     } else {
       Vec::new()
@@ -429,7 +429,10 @@ impl Screen {
         .get(index)?
         .windows
         .iter()
-        .find(|window| window.preview.hwnd == hwnd)?;
+        // Not a stack's other tab, outside the exposé.
+        .find(|window| {
+          window.preview.hwnd == hwnd && window.alpha.target > 0.0
+        })?;
       let landing =
         (self.closing_card() == Some(index)).then_some(context.fade);
       let (rect, _) = scene_window_shown(window, landing);
@@ -614,7 +617,7 @@ impl Screen {
       .zip(&overlays.labels)
       .enumerate()
       .map(|(index, (card, label))| {
-        if layout != OverviewLayoutMode::Activities {
+        if !layout.has_scene() {
           return None;
         }
         let rect =

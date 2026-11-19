@@ -2468,17 +2468,20 @@ impl FramedPanel {
     Ok(())
   }
 
-  /// Puts the panel on `panel` (client pixels), showing `area` of
-  /// `monitor` as the overview window does, its corners rounded by
-  /// `corner_radius` and its shadow sized for `scale_factor`.
+  /// Puts the panel `padding` past `inner` (client pixels), where `area`
+  /// of `monitor` shows as the overview window does, its corners rounded
+  /// by `corner_radius` and its shadow sized for `scale_factor`.
+  #[allow(clippy::too_many_arguments)]
   fn place(
     &self,
-    panel: &crate::overview_layout::RectF,
+    inner: &crate::overview_layout::RectF,
+    padding: f32,
     area: &Rect,
     monitor: &Rect,
     corner_radius: f32,
     scale_factor: f32,
   ) -> windows::core::Result<()> {
+    let panel = inner.inset(-padding);
     let size = Vector2 {
       X: panel.w.max(0.0),
       Y: panel.h.max(0.0),
@@ -2496,7 +2499,7 @@ impl FramedPanel {
       Y: radius,
     })?;
 
-    let wallpaper = monitor_on_panel(panel, area, monitor);
+    let wallpaper = monitor_on_panel(inner, padding, area, monitor);
     self.sprite.SetOffset(Vector3 {
       X: wallpaper.x,
       Y: wallpaper.y,
@@ -2570,22 +2573,35 @@ fn cover_monitor(
   sprite.SetSize(rect_size(monitor))
 }
 
-/// Where `monitor` shows, relative to a `panel` showing `area` (both
-/// screen rects): `area` stretched over the panel, the rest of the
-/// monitor (e.g. under the taskbar) reaching past it.
+/// Where `monitor` shows on a panel reaching `padding` past `inner`,
+/// where `area` (both screen rects) shows: relative to the panel, `area`
+/// stretched over `inner`, and the whole grown evenly about its middle
+/// to cover the padding too.
 #[allow(clippy::cast_precision_loss)]
 fn monitor_on_panel(
-  panel: &crate::overview_layout::RectF,
+  inner: &crate::overview_layout::RectF,
+  padding: f32,
   area: &Rect,
   monitor: &Rect,
 ) -> crate::overview_layout::RectF {
-  let scale_x = panel.w / (area.width().max(1) as f32);
-  let scale_y = panel.h / (area.height().max(1) as f32);
+  let scale_x = inner.w / (area.width().max(1) as f32);
+  let scale_y = inner.h / (area.height().max(1) as f32);
+  let grow = if inner.w > 0.0 && inner.h > 0.0 {
+    ((inner.w + 2.0 * padding) / inner.w)
+      .max((inner.h + 2.0 * padding) / inner.h)
+  } else {
+    1.0
+  };
+  let (center_x, center_y) = (inner.w / 2.0, inner.h / 2.0);
+  let grown = |at: f32, center: f32| center + (at - center) * grow;
+
+  let x = (monitor.x() - area.x()) as f32 * scale_x;
+  let y = (monitor.y() - area.y()) as f32 * scale_y;
   crate::overview_layout::RectF::new(
-    (monitor.x() - area.x()) as f32 * scale_x,
-    (monitor.y() - area.y()) as f32 * scale_y,
-    monitor.width() as f32 * scale_x,
-    monitor.height() as f32 * scale_y,
+    grown(x, center_x) + padding,
+    grown(y, center_y) + padding,
+    monitor.width() as f32 * scale_x * grow,
+    monitor.height() as f32 * scale_y * grow,
   )
 }
 
@@ -2721,16 +2737,19 @@ impl OverviewBackdrop {
     self.framed.is_some()
   }
 
-  /// Puts the framed panel on `panel` (client pixels), its corners
-  /// rounded by `corner_radius` and its shadow sized for `scale_factor`.
+  /// Puts the framed panel `padding` past `inner` (client pixels), where
+  /// the overview window's area shows, its corners rounded by
+  /// `corner_radius` and its shadow sized for `scale_factor`.
   pub(crate) fn place_panel(
     &self,
-    panel: &crate::overview_layout::RectF,
+    inner: &crate::overview_layout::RectF,
+    padding: f32,
     corner_radius: f32,
     scale_factor: f32,
   ) -> crate::Result<()> {
     self.frame.place(
-      panel,
+      inner,
+      padding,
       &self.area,
       &self.monitor,
       corner_radius,
@@ -2833,13 +2852,28 @@ mod tests {
     let area = Rect::from_xy(0, 0, 2000, 900);
     let panel = RectF::new(100.0, 50.0, 1000.0, 450.0);
 
-    let shown = monitor_on_panel(&panel, &area, &monitor);
+    let shown = monitor_on_panel(&panel, 0.0, &area, &monitor);
     assert_eq!(shown, RectF::new(0.0, 0.0, 1000.0, 500.0));
 
     // A working area below a top taskbar starts the wallpaper above it.
     let area = Rect::from_xy(0, 100, 2000, 900);
-    let shown = monitor_on_panel(&panel, &area, &monitor);
+    let shown = monitor_on_panel(&panel, 0.0, &area, &monitor);
     assert_eq!(shown, RectF::new(0.0, -50.0, 1000.0, 500.0));
+  }
+
+  /// Padding grows the wallpaper evenly about the middle, enough to cover
+  /// the wider panel all round.
+  #[test]
+  fn padding_grows_the_wallpaper_to_cover_the_panel() {
+    let monitor = Rect::from_xy(0, 0, 2000, 1000);
+    let inner = RectF::new(0.0, 0.0, 1000.0, 500.0);
+
+    let shown = monitor_on_panel(&inner, 50.0, &monitor, &monitor);
+    let panel = RectF::new(0.0, 0.0, 1100.0, 600.0);
+    assert!((shown.w / shown.h - 2.0).abs() < 1e-4);
+    assert!(shown.x <= panel.x && shown.y <= panel.y);
+    assert!(shown.right() >= panel.right() - 1e-3);
+    assert!(shown.bottom() >= panel.bottom() - 1e-3);
   }
 
   /// A light blur still shows detail, which a smaller surface would

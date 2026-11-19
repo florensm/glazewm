@@ -418,6 +418,7 @@ pub fn to_layout_mode(layout: OverviewLayout) -> OverviewLayoutMode {
   match layout {
     OverviewLayout::Activities => OverviewLayoutMode::Activities,
     OverviewLayout::Stack => OverviewLayoutMode::Stack,
+    OverviewLayout::Expose => OverviewLayoutMode::Expose,
   }
 }
 
@@ -503,6 +504,7 @@ fn overview_frame(
       backdrop_frame: OverviewBackdropFrame {
         color: open.frame_color,
         corner_radius: overview.backdrop_frame.corner_radius,
+        padding: overview.backdrop_frame.padding,
         shadow: overview.backdrop_frame.shadow,
       },
       accent: open.accent,

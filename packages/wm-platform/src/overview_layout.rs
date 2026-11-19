@@ -187,7 +187,7 @@ const STACK_MAX_WIDTHS: f32 = 4.0;
 /// DWM only scales the drawing: shown much larger, its text would blur.
 fn drawn_size(layout: OverviewLayoutMode) -> DrawnSize {
   let (part, chrome, max_widths, min_width, look) = match layout {
-    OverviewLayoutMode::Activities => {
+    OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
       (0.12, 0.8, MINIATURE_WIDTHS, 120.0, CardLook::Clean)
     }
     OverviewLayoutMode::Stack => (

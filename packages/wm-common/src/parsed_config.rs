@@ -770,6 +770,10 @@ pub struct OverviewBackdropFrameConfig {
   /// Of the panel's corners once open, in logical pixels.
   pub corner_radius: f32,
 
+  /// Wallpaper showing around the shown workspace's windows, on the
+  /// panel, in logical pixels.
+  pub padding: f32,
+
   /// Whether the panel casts a soft shadow.
   pub shadow: bool,
 }
@@ -779,6 +783,7 @@ impl Default for OverviewBackdropFrameConfig {
     Self {
       color: BorderColorSource::Value("#161418ff".to_string()),
       corner_radius: 16.0,
+      padding: 32.0,
       shadow: true,
     }
   }
@@ -805,6 +810,9 @@ pub enum OverviewLayout {
   /// Every workspace at the same zoom, stacked top to bottom, each
   /// strip at its full length.
   Stack,
+  /// As the activities, but the shown workspace's windows, each tab of
+  /// its stacks included, spread out side by side.
+  Expose,
 }
 
 /// Corner of a monitor that opens the overview.

@@ -37,8 +37,8 @@ use crate::{
   overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
-  BorderOverlayParams, OverviewEffects, OverviewLayoutMode, OverviewStyle,
-  OverviewWorkspace, OverviewZoomStyle,
+  BorderOverlayParams, OverviewBackdropStyle, OverviewEffects,
+  OverviewLayoutMode, OverviewStyle, OverviewWorkspace, OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -407,31 +407,36 @@ impl Screen {
       return false;
     }
 
-    let widths = self
-      .cards
-      .iter()
-      .map(|card| card.metrics.width)
-      .collect::<Vec<_>>();
-
-    self.drawn_for = layout;
-    self.metrics = CardMetrics::new(
+    let metrics = CardMetrics::new(
       self.area.w,
       self.area.h,
       self.metrics.scale_factor,
       layout,
     );
-    self.remap_cards();
+    let is_redrawn = metrics != self.metrics;
+    self.drawn_for = layout;
 
-    // Each card stays the size it is on screen, in its new units.
-    for (card, width) in self.cards.iter_mut().zip(widths) {
-      card.scale.rescale(width / card.metrics.width.max(1.0));
+    // E.g. the activities and the exposé draw their cards alike.
+    if is_redrawn {
+      let widths = self
+        .cards
+        .iter()
+        .map(|card| card.metrics.width)
+        .collect::<Vec<_>>();
+      self.metrics = metrics;
+      self.remap_cards();
+
+      // Each card stays the size it is on screen, in its new units.
+      for (card, width) in self.cards.iter_mut().zip(widths) {
+        card.scale.rescale(width / card.metrics.width.max(1.0));
+      }
     }
 
     if layout.has_scene() && !previous.has_scene() {
       self.seed_scene_from_card(false);
     }
 
-    true
+    is_redrawn
   }
 
   /// Registers every thumbnail the layout shows again, bottom to top:
@@ -557,9 +562,9 @@ impl Screen {
         self.pan = Some((selected, pan));
         targets
       }
-      OverviewLayoutMode::Activities => {
+      OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
         let (targets, area) = activities(&self.metrics, &slots);
-        self.scene_area = area;
+        self.scene_area = area.inset(self.frame_padding());
         targets
       }
     };
@@ -976,7 +981,7 @@ impl Screen {
   /// past it. Follows its card if that is still moving.
   fn zoom_rect(&self, index: usize) -> Option<RectF> {
     match self.focus.layout {
-      OverviewLayoutMode::Activities => {
+      OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
         let workspace = self.workspaces().get(index)?;
         let content = RectF::from_rect(&workspace.content_rect);
         Some(CardView::fitted(&content, &self.scene_area).map(&self.area))
@@ -1029,6 +1034,10 @@ impl Screen {
     self.entrance = None;
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
+    // Spread windows head back to where they really are.
+    if self.focus.layout.spreads_windows() {
+      self.retarget_scenes(false);
+    }
     self.celebrate_exit(index, zoom.duration());
 
     let shown_windows = self.scenes.get(index).map(|scene| {
@@ -1267,11 +1276,26 @@ impl Screen {
     };
 
     let scale_factor = self.metrics.scale_factor;
-    let radius =
-      style.backdrop_frame.corner_radius * scale_factor * context.fade;
-    if let Err(err) = backdrop.place_panel(&panel, radius, scale_factor) {
+    let fade = context.fade.clamp(0.0, 1.0);
+    let radius = style.backdrop_frame.corner_radius * scale_factor * fade;
+    let padding = self.frame_padding() * fade;
+    if let Err(err) =
+      backdrop.place_panel(&panel, padding, radius, scale_factor)
+    {
       tracing::warn!("Failed to place the overview backdrop: {err}");
     }
+  }
+
+  /// Wallpaper the framed panel shows around the scene's windows, in
+  /// physical pixels; none without a scene or a framed backdrop.
+  fn frame_padding(&self) -> f32 {
+    self
+      .style()
+      .filter(|style| {
+        style.backdrop_style == OverviewBackdropStyle::Framed
+          && self.focus.layout.has_scene()
+      })
+      .map_or(0.0, |style| self.metrics.px(style.backdrop_frame.padding))
   }
 
   /// Where the framed backdrop's panel shows now: where the workspace
@@ -1280,7 +1304,10 @@ impl Screen {
   fn backdrop_panel(&self, camera: &Camera) -> Option<RectF> {
     let rect = match (self.zoom, self.focus.layout) {
       (Some((zoom, _)), _) => self.zoom_rect(zoom.card),
-      (None, OverviewLayoutMode::Activities) => self
+      (
+        None,
+        OverviewLayoutMode::Activities | OverviewLayoutMode::Expose,
+      ) => self
         .overlays
         .as_ref()
         .map(|overlays| overlays.workspace_rect.value())
@@ -1377,14 +1404,19 @@ impl Screen {
     let (x, y) = self.camera().unapply(x, y);
 
     match self.focus.layout {
-      OverviewLayoutMode::Activities => {
+      OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
         let hit = self.hit_cards(x, y);
         if hit.workspace.is_some() {
           // Too small to aim at: a window dropped on a miniature only
           // moves there, keeping its layout.
           Hit { point: None, ..hit }
         } else {
-          self.hit_scene(x, y, &self.scene_area)
+          // The framed panel's padding is the scene's too.
+          self.hit_scene(
+            x,
+            y,
+            &self.scene_area.inset(-self.frame_padding()),
+          )
         }
       }
       OverviewLayoutMode::Stack => self.hit_cards(x, y),
@@ -1451,27 +1483,38 @@ impl Screen {
   /// topmost of its windows there, or else `area` itself.
   fn hit_scene(&self, x: f32, y: f32, area: &RectF) -> Hit {
     let selected = self.focus.selected;
-    let window = self.scenes.get(selected).and_then(|scene| {
-      scene
-        .windows
-        .iter()
-        .rev()
-        .find(|window| {
-          window.alpha.target > 0.0 && window.rect().contains(x, y)
-        })
-        .map(|window| window.preview.hwnd)
+    let hovered = self.scenes.get(selected).and_then(|scene| {
+      scene.windows.iter().rev().find(|window| {
+        window.alpha.target > 0.0 && window.rect().contains(x, y)
+      })
     });
 
-    if window.is_some() || area.contains(x, y) {
-      // Where the scene shows the workspace's working area, as laid out.
-      let point = self.workspaces().get(selected).and_then(|workspace| {
-        let content = RectF::from_rect(&workspace.content_rect);
-        CardView::fitted(&content, &self.scene_area).unmap(x, y)
-      });
+    if hovered.is_some() || area.contains(x, y) {
+      let workspace = self.workspaces().get(selected);
+      let point = if self.focus.layout.spreads_windows() {
+        // The same spot on the window as it really is, so a drop lands
+        // beside it as one there would; nowhere off the windows.
+        hovered.zip(workspace).and_then(|(hovered, workspace)| {
+          let real = workspace.window(hovered.preview.hwnd)?;
+          spread_point(
+            &hovered.rect(),
+            &RectF::from_rect(&real.rect),
+            x,
+            y,
+          )
+        })
+      } else {
+        // Where the scene shows the workspace's working area, as laid
+        // out.
+        workspace.and_then(|workspace| {
+          let content = RectF::from_rect(&workspace.content_rect);
+          CardView::fitted(&content, &self.scene_area).unmap(x, y)
+        })
+      };
 
       Hit {
         workspace: Some(selected),
-        window,
+        window: hovered.map(|window| window.preview.hwnd),
         control: None,
         point,
       }
@@ -1479,4 +1522,26 @@ impl Screen {
       Hit::default()
     }
   }
+}
+
+/// The point of `real` (screen coordinates) at the spot (`x`, `y`) marks
+/// on `shown`, where the same window shows elsewhere.
+#[allow(clippy::cast_possible_truncation)]
+fn spread_point(
+  shown: &RectF,
+  real: &RectF,
+  x: f32,
+  y: f32,
+) -> Option<(i32, i32)> {
+  if shown.w <= 0.0 || shown.h <= 0.0 {
+    return None;
+  }
+  let (along, down) = ((x - shown.x) / shown.w, (y - shown.y) / shown.h);
+  Some((
+    // Short of the far edges, which the real rect doesn't contain.
+    (real.x + (real.w - 1.0).max(0.0) * along.clamp(0.0, 1.0)).round()
+      as i32,
+    (real.y + (real.h - 1.0).max(0.0) * down.clamp(0.0, 1.0)).round()
+      as i32,
+  ))
 }

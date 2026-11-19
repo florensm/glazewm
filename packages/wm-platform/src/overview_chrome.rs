@@ -1812,6 +1812,7 @@ mod tests {
       backdrop_frame: crate::OverviewBackdropFrame {
         color,
         corner_radius: 16.0,
+        padding: 32.0,
         shadow: true,
       },
       accent: color,

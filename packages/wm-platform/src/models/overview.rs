@@ -233,6 +233,10 @@ pub struct OverviewBackdropFrame {
   /// Of the panel's corners once open, in logical pixels.
   pub corner_radius: f32,
 
+  /// Wallpaper showing around the shown workspace's windows, on the
+  /// panel, in logical pixels.
+  pub padding: f32,
+
   /// Whether the panel casts a soft shadow.
   pub shadow: bool,
 }
@@ -469,11 +473,15 @@ pub enum OverviewLayoutMode {
   /// Every workspace at the same zoom, stacked top to bottom, each strip
   /// at its full length and panned to keep what is picked in view.
   Stack,
+
+  /// As the activities, but the shown workspace's windows, each tab of
+  /// its stacks included, spread out side by side at one scale.
+  Expose,
 }
 
 impl OverviewLayoutMode {
   /// Every layout, in the order `Tab` goes through them.
-  pub const ALL: [Self; 2] = [Self::Activities, Self::Stack];
+  pub const ALL: [Self; 3] = [Self::Activities, Self::Stack, Self::Expose];
 
   /// The layout `Tab` goes on to.
   #[must_use]
@@ -494,7 +502,14 @@ impl OverviewLayoutMode {
   /// rather than on its card.
   #[must_use]
   pub fn has_scene(self) -> bool {
-    self == Self::Activities
+    matches!(self, Self::Activities | Self::Expose)
+  }
+
+  /// Whether its scene spreads the windows out rather than showing them
+  /// as laid out.
+  #[must_use]
+  pub fn spreads_windows(self) -> bool {
+    self == Self::Expose
   }
 
   /// Name of the layout, as in the config.
@@ -503,6 +518,7 @@ impl OverviewLayoutMode {
     match self {
       Self::Activities => "activities",
       Self::Stack => "stack",
+      Self::Expose => "expose",
     }
   }
 }

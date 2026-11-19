@@ -1881,10 +1881,12 @@ impl Geometry {
 
 fn geometry(layout: OverviewLayoutMode) -> Geometry {
   match layout {
-    OverviewLayoutMode::Activities => Geometry {
-      forward: Toward::Right,
-      windows: Some(Toward::Down),
-    },
+    OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
+      Geometry {
+        forward: Toward::Right,
+        windows: Some(Toward::Down),
+      }
+    }
     OverviewLayoutMode::Stack => Geometry {
       forward: Toward::Down,
       windows: None,
@@ -2489,7 +2491,7 @@ mod tests {
   fn tab_goes_through_every_layout() {
     let mut state = interaction();
     let mut seen = vec![state.layout];
-    for key in [Key::Tab, Key::BackTab] {
+    for key in [Key::Tab, Key::Tab, Key::Tab, Key::BackTab] {
       press(&mut state, &[key]);
       seen.push(state.layout);
     }
@@ -2499,7 +2501,9 @@ mod tests {
       vec![
         OverviewLayoutMode::Activities,
         OverviewLayoutMode::Stack,
+        OverviewLayoutMode::Expose,
         OverviewLayoutMode::Activities,
+        OverviewLayoutMode::Expose,
       ]
     );
   }
@@ -2622,7 +2626,9 @@ mod tests {
       let workspaces = workspaces();
       let mut state = single(&workspaces, layout);
       let across = match layout {
-        OverviewLayoutMode::Activities => [Key::Up, Key::Up],
+        OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
+          [Key::Up, Key::Up]
+        }
         OverviewLayoutMode::Stack => [Key::Left, Key::Right],
       };
 

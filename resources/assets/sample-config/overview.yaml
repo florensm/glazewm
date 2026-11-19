@@ -9,6 +9,8 @@ overview:
   backdrop_frame:
     color: "#161418ff"
     corner_radius: 16
+    # Wallpaper around the windows on the panel.
+    padding: 32
     shadow: true
 
   # Defaults to the focused window's border color.
@@ -26,9 +28,11 @@ overview:
   # Falls back to Segoe UI on Windows 10.
   font_family: "Segoe UI Variable Text"
 
-  # 'activities' (a row of miniatures over the shown workspace) or 'stack'
+  # 'activities' (a row of miniatures over the shown workspace), 'stack'
   # (every workspace stacked top to bottom, each strip at full length; the
-  # wheel turned sideways, or with shift, pans it). Tab switches while open.
+  # wheel turned sideways, or with shift, pans it) or 'expose' (as the
+  # activities, but the shown workspace's windows, every stack tab
+  # included, spread out side by side). Tab switches while open.
   layout: "activities"
 
   # Corner that opens the overview as the cursor rests in it: 'none',

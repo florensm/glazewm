@@ -18,6 +18,10 @@ pub(crate) struct SceneWindow {
   /// How much larger than its rect it shows, as a fraction of its size,
   /// e.g. while it matches a search.
   pub lift: Spring,
+
+  /// A tab of a stack other than its shown one: only the exposé shows
+  /// it.
+  pub is_hidden_tab: bool,
 }
 
 impl SceneWindow {
@@ -38,6 +42,7 @@ impl SceneWindow {
       rect,
       alpha: Spring::new(0.0, settle_ms, 0.002),
       lift: Spring::new(0.0, settle_ms, 0.0005),
+      is_hidden_tab: false,
     }
   }
 
@@ -110,9 +115,10 @@ pub(crate) struct Scene {
 }
 
 impl Scene {
-  /// The scene of `workspace`'s shown windows, keeping the windows of
-  /// `old` that are still there, each settling within about `settle_ms`
-  /// with `bounce`, in coordinates starting at screen point `origin`.
+  /// The scene of `workspace`'s windows but its minimized ones, keeping
+  /// the windows of `old` that are still there, each settling within
+  /// about `settle_ms` with `bounce`, in coordinates starting at screen
+  /// point `origin`.
   /// `screen_rect` says where a window is on screen.
   ///
   /// Returns it, and whether its windows or their overlays changed, which
@@ -135,9 +141,15 @@ impl Scene {
     let windows = workspace
       .windows
       .iter()
-      .filter(|window| !window.is_minimized && !window.is_hidden_tab)
+      .filter(|window| !window.is_minimized)
       .map(|window| {
-        let rect = screen_rect(window);
+        // A hidden tab sits wherever it was put away: its stack's rect
+        // is where it would show.
+        let rect = if window.is_hidden_tab {
+          RectF::from_rect(&window.rect)
+        } else {
+          screen_rect(window)
+        };
         let reused = old
           .windows
           .iter()
@@ -162,6 +174,7 @@ impl Scene {
 
         scene_window.preview.screen_rect = rect;
         scene_window.preview.is_scrolled_off = window.is_scrolled_off;
+        scene_window.is_hidden_tab = window.is_hidden_tab;
         is_restyled |= scene_window.preview.restyle(window);
         scene_window
       })
