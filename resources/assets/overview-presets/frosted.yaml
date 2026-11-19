@@ -1,0 +1,17 @@
+# Frosted: the activities over a light blur, so the wallpaper's colors
+# still come through, with a soft glow around the picked window.
+overview:
+  layout: "activities"
+  workspace_row: "shown"
+  search_hint: true
+  backdrop_style: "blur"
+  backdrop_blur: 24
+  backdrop_tint: "#140a1e48"
+  accent_color: "accent"
+  window_highlight:
+    style: "glow"
+    width: 10
+    gap: 0
+  effects:
+    glow: true
+    pulse: true

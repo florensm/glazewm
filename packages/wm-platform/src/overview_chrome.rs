@@ -856,6 +856,51 @@ const NOTE_FONT: f32 = 15.0;
 const NOTE_PADDING: f32 = 16.0;
 
 /// Pixel size of the note `text`.
+/// Diameter of the close button on the picked window, in logical pixels.
+pub(crate) const CLOSE_BUTTON: f32 = 26.0;
+
+/// What the close button on the picked window looks like.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClosePicture {
+  pub fill: Color,
+  pub cross: Color,
+}
+
+impl ClosePicture {
+  pub fn new(style: &OverviewStyle) -> Self {
+    Self {
+      fill: with_alpha(style.card, 0.95),
+      cross: style.text,
+    }
+  }
+}
+
+/// Pixel size of the close button.
+pub(crate) fn close_size(scale_factor: f32) -> (i32, i32) {
+  let size = round(CLOSE_BUTTON * scale_factor).max(1);
+  (size, size)
+}
+
+/// Draws the close button into `surface`, `close_size` big: an `×` on a
+/// round chip.
+pub(crate) fn draw_close(
+  surface: &mut Surface,
+  look: ClosePicture,
+  scale_factor: f32,
+) {
+  surface.pixels().fill(0);
+  let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  let radius = surface.width / 2;
+  surface.canvas().fill_rounded_rect(&rect, radius, look.fill);
+
+  let size = to_f32(surface.width);
+  let (near, far) = (size * 0.36, size * 0.64);
+  let thickness = 1.8 * scale_factor;
+  let mut canvas = surface.canvas();
+  canvas.stroke_line((near, near), (far, far), thickness, look.cross);
+  canvas.stroke_line((far, near), (near, far), thickness, look.cross);
+}
+
 pub(crate) fn note_size(
   text: &str,
   style: &OverviewStyle,
@@ -1808,6 +1853,13 @@ mod tests {
     let style = OverviewStyle {
       backdrop_blur: 30.0,
       backdrop_tint: color,
+      backdrop_style: crate::OverviewBackdropStyle::default(),
+      backdrop_frame: crate::OverviewBackdropFrame {
+        color,
+        corner_radius: 16.0,
+        padding: 32.0,
+        shadow: true,
+      },
       accent: color,
       card: color,
       surface: color,
@@ -1826,6 +1878,10 @@ mod tests {
       bounce: 0.25,
       effects: crate::OverviewEffects::default(),
       window_highlight: crate::OverviewWindowHighlight::default(),
+      strip_view: crate::OverviewStripView::default(),
+      expose: crate::OverviewExpose::default(),
+      workspace_row: crate::OverviewWorkspaceRow::default(),
+      search_hint: true,
       particles: crate::ParticleLook::default(),
     };
     let searching = SearchField {

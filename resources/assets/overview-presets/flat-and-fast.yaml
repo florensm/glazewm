@@ -1,0 +1,27 @@
+# Flat and fast: no rounding, shadow or flourish, and nothing animates.
+overview:
+  layout: "expose"
+  backdrop_style: "framed"
+  backdrop_frame:
+    color: "#0e0f0eff"
+    corner_radius: 0
+    padding: 0
+    shadow: false
+  zoom_style: "none"
+  switch_duration_ms: 0
+  highlight_duration_ms: 0
+  expose:
+    gap: 8
+  window_highlight:
+    style: "ring"
+    width: 2
+    gap: 0
+  effects:
+    glow: false
+    jelly: false
+    stagger_ms: 0
+    lean: 0
+    squash: 0
+    window_lift: 0
+    drop_particles: "none"
+    close_particles: "none"

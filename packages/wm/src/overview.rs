@@ -20,9 +20,10 @@ use wm_common::{
 use wm_platform::{
   Color, MouseButton, MouseEvent, NativeBackdropOverlay,
   NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
-  OverviewCurve, OverviewFrame, OverviewInput, OverviewLayoutMode,
-  OverviewOverlay, OverviewOverlayKind, OverviewScreen, OverviewStyle,
-  OverviewWindow, OverviewWorkspace, Point, Rect, TabFrame,
+  OverviewBackdropFrame, OverviewCurve, OverviewFrame, OverviewInput,
+  OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
+  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
+  Rect, TabFrame,
 };
 
 use crate::{
@@ -79,9 +80,13 @@ enum CornerVisit {
   Spent,
 }
 
+/// Colors of an open overview, resolved once per open, since they can be
+/// read from a file.
 struct OpenOverview {
-  /// Resolved once per open, since it can be read from a file.
   accent: Color,
+
+  /// Around the `framed` backdrop's panel.
+  frame_color: Color,
 }
 
 impl Overview {
@@ -295,16 +300,16 @@ pub fn toggle_overview(
     return Ok(());
   }
 
+  let overview = &config.value.overview;
   let open = OpenOverview {
-    accent: config
-      .value
-      .overview
+    accent: overview
       .accent_color
       .as_ref()
       .unwrap_or(&config.value.window_effects.focused_window.border.color)
       .resolve(),
+    frame_color: overview.backdrop_frame.color.resolve(),
   };
-  let frame = overview_frame(state, open.accent, config);
+  let frame = overview_frame(state, &open, config);
   if frame.screens.is_empty() {
     anyhow::bail!("No monitors to show the overview on.");
   }
@@ -413,6 +418,7 @@ pub fn to_layout_mode(layout: OverviewLayout) -> OverviewLayoutMode {
   match layout {
     OverviewLayout::Activities => OverviewLayoutMode::Activities,
     OverviewLayout::Stack => OverviewLayoutMode::Stack,
+    OverviewLayout::Expose => OverviewLayoutMode::Expose,
   }
 }
 
@@ -430,7 +436,7 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
 
   // `None` once hidden, or once every monitor is gone.
   let frame = shown
-    .map(|shown| overview_frame(state, shown.accent, config))
+    .map(|shown| overview_frame(state, shown, config))
     .filter(|frame| !frame.screens.is_empty());
 
   let overview = &mut state.overview;
@@ -459,7 +465,7 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
 /// What the overview shows: a screen per monitor, left to right.
 fn overview_frame(
   state: &WmState,
-  accent: Color,
+  open: &OpenOverview,
   config: &UserConfig,
 ) -> OverviewFrame {
   let focused = state.focused_container();
@@ -494,7 +500,14 @@ fn overview_frame(
     style: OverviewStyle {
       backdrop_blur: overview.backdrop_blur,
       backdrop_tint: overview.backdrop_tint,
-      accent,
+      backdrop_style: overview.backdrop_style,
+      backdrop_frame: OverviewBackdropFrame {
+        color: open.frame_color,
+        corner_radius: overview.backdrop_frame.corner_radius,
+        padding: overview.backdrop_frame.padding,
+        shadow: overview.backdrop_frame.shadow,
+      },
+      accent: open.accent,
       card: overview.card_color,
       surface: overview.surface_color,
       caption: overview.caption_color,
@@ -516,6 +529,10 @@ fn overview_frame(
       bounce: overview.bounce,
       effects: overview.effects,
       window_highlight: overview.window_highlight,
+      strip_view: overview.strip_view,
+      expose: overview.expose,
+      workspace_row: overview.workspace_row,
+      search_hint: overview.search_hint,
       particles: config.value.animations.particles.look(),
     },
   }
@@ -566,6 +583,7 @@ fn overview_screen(
   OverviewScreen {
     id: monitor.id().as_u128(),
     rect: properties.working_area,
+    bounds: properties.bounds,
     scale_factor: properties.scale_factor,
     is_focused,
     workspaces,
@@ -1156,7 +1174,11 @@ mod tests {
     state: &crate::wm_state::WmState,
     config: &crate::user_config::UserConfig,
   ) -> wm_platform::OverviewFrame {
-    super::overview_frame(state, wm_platform::Color::from_abgr(0), config)
+    let open = super::OpenOverview {
+      accent: wm_platform::Color::from_abgr(0),
+      frame_color: wm_platform::Color::from_abgr(0),
+    };
+    super::overview_frame(state, &open, config)
   }
 
   #[test]
@@ -1565,6 +1587,71 @@ mod tests {
     assert_eq!(
       strip_bounds(&area, &workspace, [Rect::from_xy(10, 10, 900, 1020)]),
       area
+    );
+  }
+
+  /// With space reserved on every edge (app bars, the taskbar), the
+  /// overview covers the whole monitor, its cards show the working area,
+  /// and a tiled window shows where it really is in it.
+  #[test]
+  fn a_shrunk_working_area_is_shown_inside_the_covered_monitor() {
+    use wm_common::WindowState;
+
+    use crate::{
+      commands::container::set_focused_descendant,
+      layout::{attach, insertion_target},
+      models::Monitor,
+      test_utils::{MOCK_MONITOR_HEIGHT, MOCK_MONITOR_WIDTH},
+      traits::PositionGetters,
+      wm_state::WmState,
+    };
+
+    let config = config_with(|_| {});
+    let bounds =
+      Rect::from_xy(0, 0, MOCK_MONITOR_WIDTH, MOCK_MONITOR_HEIGHT);
+    let working_area = Rect::from_ltrb(
+      bounds.left + 14,
+      bounds.top + 42,
+      bounds.right - 14,
+      bounds.bottom - 14,
+    );
+    let workspace = Workspace::mock().name("1".to_string()).call();
+    let monitor = Monitor::mock()
+      .bounds(bounds.clone())
+      .working_area(working_area.clone())
+      .workspaces(vec![workspace.clone()])
+      .call();
+    let state = WmState::mock(vec![monitor]);
+
+    let window = tiling("a");
+    let insertion =
+      insertion_target(&WindowState::Tiling, false, &state).unwrap();
+    attach(&window.clone().into(), &insertion, &config).unwrap();
+    set_focused_descendant(&window.clone().into(), None);
+
+    let screens = frame(&state, &config).screens;
+    let screen = &screens[0];
+    assert_eq!(screen.bounds, bounds);
+    assert_eq!(screen.rect, working_area);
+
+    let card = screen
+      .workspaces
+      .iter()
+      .find(|card| card.name == "1")
+      .expect("card of workspace 1");
+    assert_eq!(card.content_rect, working_area);
+
+    // The window lies where the layout put it, inside the working area,
+    // the reserved space counted once.
+    let real = window.to_rect().unwrap();
+    let shown = &card.windows[0].rect;
+    assert_eq!(*shown, real);
+    assert!(
+      shown.left >= working_area.left
+        && shown.top >= working_area.top
+        && shown.right <= working_area.right
+        && shown.bottom <= working_area.bottom,
+      "{shown:?} not in {working_area:?}"
     );
   }
 

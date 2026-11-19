@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
   BorderOverlayParams, Color, Direction, ParticleEffects, ParticleLook,
-  ParticleStyle, Point, Rect, TabFrame,
+  Point, Rect, TabFrame,
 };
 
 /// What the window overview shows, sent by the WM as a whole.
@@ -27,8 +27,13 @@ pub struct OverviewScreen {
   /// The WM's ID of the monitor, which actions picked on it carry.
   pub id: u128,
 
-  /// Working area of the monitor.
+  /// Working area of the monitor: where its workspaces lay out their
+  /// windows, which the workspaces' cards show.
   pub rect: Rect,
+
+  /// Bounds of the monitor, all of which the overview covers, the space
+  /// reserved by app bars or the taskbar included.
+  pub bounds: Rect,
 
   pub scale_factor: f32,
 
@@ -147,6 +152,12 @@ pub struct OverviewStyle {
   /// Tint over the blurred wallpaper.
   pub backdrop_tint: Color,
 
+  /// What shows behind the cards.
+  pub backdrop_style: OverviewBackdropStyle,
+
+  /// Look of the `framed` backdrop.
+  pub backdrop_frame: OverviewBackdropFrame,
+
   /// Selection and highlights.
   pub accent: Color,
 
@@ -199,8 +210,128 @@ pub struct OverviewStyle {
   /// How the selected or hovered window is marked.
   pub window_highlight: OverviewWindowHighlight,
 
+  /// How much of a scrolling workspace's strip the activities show.
+  pub strip_view: OverviewStripView,
+
+  /// How the exposé spreads the windows.
+  pub expose: OverviewExpose,
+
+  /// Whether the activities and the exposé show their row of miniatures.
+  pub workspace_row: OverviewWorkspaceRow,
+
+  /// Whether the search field shows along the bottom; without it, typing
+  /// still searches, and `F1` still shows the shortcuts.
+  pub search_hint: bool,
+
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
+}
+
+/// How much of a scrolling workspace's strip the activities show large.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewStripView {
+  /// What its monitor shows; columns scrolled out of view are left out.
+  #[default]
+  Visible,
+
+  /// The whole strip, scaled to fit.
+  Whole,
+}
+
+/// Whether the activities' and the exposé's row of miniatures stays.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewWorkspaceRow {
+  /// Over the scene, which starts below it.
+  Shown,
+
+  /// A slim strip of small miniatures over the scene, as macOS's Spaces
+  /// bar and Windows' Task View show their desktops, leaving the scene
+  /// most of the room.
+  #[default]
+  Compact,
+
+  /// Left out, the scene taking its room. Workspaces are still gone
+  /// through with the keyboard and the wheel.
+  Hidden,
+}
+
+/// How the exposé spreads the shown workspace's windows.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewExpose {
+  /// Most windows side by side in a row, before they wrap onto more
+  /// rows; `0` for as many as shows them largest.
+  pub max_per_row: u32,
+
+  /// Space between windows, in logical pixels.
+  pub gap: f32,
+
+  /// How the windows of a row are sized against each other.
+  pub arrangement: OverviewExposeArrangement,
+}
+
+impl Default for OverviewExpose {
+  fn default() -> Self {
+    Self {
+      max_per_row: 0,
+      gap: 28.0,
+      arrangement: OverviewExposeArrangement::default(),
+    }
+  }
+}
+
+/// How the exposé sizes the windows of a row against each other; either
+/// way, each row is scaled to fill the room's width.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeArrangement {
+  /// Keeping their sizes relative to each other, centered on their row,
+  /// as macOS's Mission Control does.
+  #[default]
+  Natural,
+
+  /// All as tall, as a photo grid lays out pictures.
+  Grid,
+}
+
+/// What the overview shows behind its cards.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewBackdropStyle {
+  /// The wallpaper over the whole screen, blurred and tinted.
+  Blur,
+
+  /// The wallpaper kept sharp on a rounded panel where the shown
+  /// workspace sits, over a plain color: the desktop shrunk as a whole.
+  #[default]
+  Framed,
+}
+
+/// Look of the `framed` backdrop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverviewBackdropFrame {
+  /// Around the panel.
+  pub color: Color,
+
+  /// Of the panel's corners once open, in logical pixels.
+  pub corner_radius: f32,
+
+  /// Wallpaper showing around the shown workspace's windows, on the
+  /// panel, in logical pixels.
+  pub padding: f32,
+
+  /// Whether the panel casts a soft shadow.
+  pub shadow: bool,
 }
 
 /// How the overview opens and closes.
@@ -380,6 +511,10 @@ pub struct OverviewEffects {
   /// Fading copies of a dragged window's outline trailing it; `0` for
   /// none, at most `MAX_TRAIL`.
   pub trail: u32,
+
+  /// How much the picked window grows in the large view of the
+  /// activities and the exposé, as a fraction of its size.
+  pub window_lift: f32,
 }
 
 impl OverviewEffects {
@@ -401,25 +536,17 @@ impl OverviewEffects {
     dim: 0.0,
     squash: 0.0,
     trail: 0,
+    window_lift: 0.0,
   };
 }
 
 impl Default for OverviewEffects {
   fn default() -> Self {
+    // Calm, as an OS's own overview: nothing but the picked window
+    // growing a little. The rest is there to turn on.
     Self {
-      glow: true,
-      pulse: false,
-      ripples: false,
-      drop_particles: ParticleStyle::Sparks.into(),
-      close_particles: ParticleStyle::Dust.into(),
-      open_particles: ParticleEffects::NONE,
-      exit_particles: ParticleEffects::NONE,
-      jelly: true,
-      stagger_ms: 24,
-      lean: 8.0,
-      dim: 0.0,
-      squash: 0.5,
-      trail: 0,
+      window_lift: 0.025,
+      ..Self::NONE
     }
   }
 }
@@ -435,11 +562,15 @@ pub enum OverviewLayoutMode {
   /// Every workspace at the same zoom, stacked top to bottom, each strip
   /// at its full length and panned to keep what is picked in view.
   Stack,
+
+  /// As the activities, but the shown workspace's windows, each tab of
+  /// its stacks included, spread out side by side at one scale.
+  Expose,
 }
 
 impl OverviewLayoutMode {
   /// Every layout, in the order `Tab` goes through them.
-  pub const ALL: [Self; 2] = [Self::Activities, Self::Stack];
+  pub const ALL: [Self; 3] = [Self::Activities, Self::Stack, Self::Expose];
 
   /// The layout `Tab` goes on to.
   #[must_use]
@@ -460,7 +591,14 @@ impl OverviewLayoutMode {
   /// rather than on its card.
   #[must_use]
   pub fn has_scene(self) -> bool {
-    self == Self::Activities
+    matches!(self, Self::Activities | Self::Expose)
+  }
+
+  /// Whether its scene spreads the windows out rather than showing them
+  /// as laid out.
+  #[must_use]
+  pub fn spreads_windows(self) -> bool {
+    self == Self::Expose
   }
 
   /// Name of the layout, as in the config.
@@ -469,6 +607,7 @@ impl OverviewLayoutMode {
     match self {
       Self::Activities => "activities",
       Self::Stack => "stack",
+      Self::Expose => "expose",
     }
   }
 }

@@ -4,9 +4,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
-  OpacityValue, OverviewEffects, OverviewSwitchStyle,
-  OverviewWindowHighlight, OverviewZoomStyle, ParticleEffects,
-  ParticleLook, RectDelta,
+  OpacityValue, OverviewBackdropStyle, OverviewEffects, OverviewExpose,
+  OverviewStripView, OverviewSwitchStyle, OverviewWindowHighlight,
+  OverviewWorkspaceRow, OverviewZoomStyle, ParticleEffects, ParticleLook,
+  RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -678,6 +679,13 @@ pub struct OverviewConfig {
   /// Tint over the blurred wallpaper; its alpha is how dark it gets.
   pub backdrop_tint: Color,
 
+  /// What shows behind the cards: the blurred wallpaper, or the sharp
+  /// wallpaper framed on a panel.
+  pub backdrop_style: OverviewBackdropStyle,
+
+  /// Look of the `framed` backdrop.
+  pub backdrop_frame: OverviewBackdropFrameConfig,
+
   /// Selection and highlights, given like a border's color (see
   /// [`BorderColorSource`]). The focused window's border color when
   /// `None`.
@@ -750,6 +758,49 @@ pub struct OverviewConfig {
 
   /// How the selected or hovered window is marked.
   pub window_highlight: OverviewWindowHighlight,
+
+  /// How much of a scrolling workspace's strip the activities show.
+  pub strip_view: OverviewStripView,
+
+  /// How the exposé spreads the windows.
+  pub expose: OverviewExpose,
+
+  /// Whether the activities and the exposé show their row of miniatures.
+  pub workspace_row: OverviewWorkspaceRow,
+
+  /// Whether the search field shows along the bottom; without it, typing
+  /// still searches, and `F1` still shows the shortcuts.
+  pub search_hint: bool,
+}
+
+/// Look of the overview's `framed` backdrop.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewBackdropFrameConfig {
+  /// Around the panel, given like a border's color (see
+  /// [`BorderColorSource`]), e.g. `"accent"` for the OS accent color.
+  pub color: BorderColorSource,
+
+  /// Of the panel's corners once open, in logical pixels.
+  pub corner_radius: f32,
+
+  /// Wallpaper showing around the shown workspace's windows, on the
+  /// panel, in logical pixels.
+  pub padding: f32,
+
+  /// Whether the panel casts a soft shadow.
+  pub shadow: bool,
+}
+
+impl Default for OverviewBackdropFrameConfig {
+  fn default() -> Self {
+    Self {
+      color: BorderColorSource::Value("#141416ff".to_string()),
+      corner_radius: 14.0,
+      padding: 24.0,
+      shadow: true,
+    }
+  }
 }
 
 /// How the overview lays out the workspaces.
@@ -768,11 +819,14 @@ pub struct OverviewConfig {
 pub enum OverviewLayout {
   /// The shown workspace large and as laid out, under a row of every
   /// workspace in miniature.
-  #[default]
   Activities,
   /// Every workspace at the same zoom, stacked top to bottom, each
   /// strip at its full length.
   Stack,
+  /// As the activities, but the shown workspace's windows, each tab of
+  /// its stacks included, spread out side by side.
+  #[default]
+  Expose,
 }
 
 /// Corner of a monitor that opens the overview.
@@ -801,27 +855,33 @@ impl Default for OverviewConfig {
     OverviewConfig {
       backdrop_blur: 40.0,
       backdrop_tint: color(0x0000_0066),
+      backdrop_style: OverviewBackdropStyle::default(),
+      backdrop_frame: OverviewBackdropFrameConfig::default(),
       accent_color: None,
-      card_color: color(0x221e_24e6),
-      surface_color: color(0x2d29_2eff),
-      caption_color: color(0x1612_17c7),
-      text_color: color(0xe8e0_e8ff),
-      subtext_color: color(0xcdc3_ceff),
+      card_color: color(0x1c1c_20e6),
+      surface_color: color(0x2a2a_30ff),
+      caption_color: color(0x1414_18c7),
+      text_color: color(0xf2f2_f5ff),
+      subtext_color: color(0xb4b4_bcff),
       search_color: color(0x89b4_faff),
       font_family: "Segoe UI Variable Text".to_string(),
       layout: OverviewLayout::default(),
       hot_corner: HotCorner::default(),
       hot_corner_delay_ms: 300,
       zoom_style: OverviewZoomStyle::default(),
-      zoom_easing: EasingFunction::CubicBezier(0.25, 1.0, 0.5, 1.0),
-      open_duration_ms: 200,
-      close_duration_ms: 150,
+      zoom_easing: EasingFunction::CubicBezier(0.22, 1.0, 0.36, 1.0),
+      open_duration_ms: 280,
+      close_duration_ms: 220,
       switch_style: OverviewSwitchStyle::default(),
-      switch_duration_ms: 300,
-      highlight_duration_ms: 170,
-      bounce: 0.25,
+      switch_duration_ms: 260,
+      highlight_duration_ms: 140,
+      bounce: 0.0,
       effects: OverviewEffects::default(),
       window_highlight: OverviewWindowHighlight::default(),
+      strip_view: OverviewStripView::default(),
+      expose: OverviewExpose::default(),
+      workspace_row: OverviewWorkspaceRow::default(),
+      search_hint: false,
     }
   }
 }
@@ -2979,12 +3039,10 @@ mod tests {
 
     assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
     assert_eq!(layout("stack"), Some(OverviewLayout::Stack));
+    assert_eq!(layout("expose"), Some(OverviewLayout::Expose));
     assert_eq!(layout("grid"), None);
     assert_eq!(layout("nope"), None);
-    assert_eq!(
-      OverviewConfig::default().layout,
-      OverviewLayout::Activities
-    );
+    assert_eq!(OverviewConfig::default().layout, OverviewLayout::Expose);
   }
 
   #[test]
@@ -3003,7 +3061,7 @@ mod tests {
 
     // As the sample config and the docs write the default.
     assert_eq!(
-      easing("cubic_bezier(0.25, 1, 0.5, 1)").ok(),
+      easing("cubic_bezier(0.22, 1, 0.36, 1)").ok(),
       Some(OverviewConfig::default().zoom_easing)
     );
 

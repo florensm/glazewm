@@ -3,15 +3,19 @@
 
 use std::cmp::Ordering;
 
-use super::{cards::screen_rect, to_ms, Screen};
+use super::{cards::screen_rect, to_ms, Screen, ScreenFrame};
 
 /// Gap, in logical pixels, a sliding scene keeps from the one it slides
 /// past.
 const SLIDE_GAP: f32 = 48.0;
+
 use crate::{
-  overview_layout::{CardView, RectF},
+  overview_expose::spread,
+  overview_layout::{CardView, RectF, Tile},
   overview_scene::{Scene, SceneWindow},
-  OverviewLayoutMode, OverviewSwitchStyle,
+  overview_state::ScreenFocus,
+  OverviewExposeArrangement, OverviewStripView, OverviewSwitchStyle,
+  OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -49,6 +53,112 @@ pub(super) fn scene_window_shown(
     ),
     alpha,
   )
+}
+
+/// What of `workspace` a scene shows, in screen coordinates: its whole
+/// strip, or what its monitor shows, as `frame`'s style has it.
+pub(super) fn scene_content(
+  workspace: &OverviewWorkspace,
+  frame: &ScreenFrame,
+) -> RectF {
+  match frame.style.strip_view {
+    OverviewStripView::Visible => RectF::from_rect(&frame.rect),
+    OverviewStripView::Whole => RectF::from_rect(&workspace.content_rect),
+  }
+}
+
+/// How the exposé spreads a scene's windows.
+struct Spread {
+  area: RectF,
+  /// Space between windows, in physical pixels.
+  gap: f32,
+  max_scale: f32,
+  max_per_row: usize,
+  arrangement: OverviewExposeArrangement,
+}
+
+/// Where each window of `scene` settles, given its `tiles` as laid out:
+/// there, or spread as `spread` has it. `None` for a window not shown,
+/// e.g. a stack's other tab where it isn't spread. Crops each preview as
+/// it then shows.
+fn scene_rects(
+  scene: &mut Scene,
+  tiles: &[Option<Tile>],
+  spread_as: Option<&Spread>,
+  only: Option<&[isize]>,
+) -> Vec<Option<RectF>> {
+  if let Some(how) = spread_as {
+    for window in &mut scene.windows {
+      window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
+    }
+    return spread_windows(scene, how, only);
+  }
+
+  scene
+    .windows
+    .iter_mut()
+    .zip(tiles)
+    .map(|(window, tile)| {
+      let tile = tile.as_ref()?;
+      window.preview.tile.crop = tile.crop;
+      // Only the exposé shows a stack's other tabs.
+      (!window.is_hidden_tab).then_some(tile.rect)
+    })
+    .collect()
+}
+
+/// Where the exposé shows each window of `scene`, of those in `only` if
+/// given, every tab of a stack a window of its own. `None` for a window
+/// left out.
+fn spread_windows(
+  scene: &Scene,
+  how: &Spread,
+  only: Option<&[isize]>,
+) -> Vec<Option<RectF>> {
+  let shown = scene
+    .windows
+    .iter()
+    .enumerate()
+    .filter(|(_, window)| {
+      only.is_none_or(|only| only.contains(&window.preview.hwnd))
+    })
+    .map(|(index, window)| (index, window.preview.screen_rect))
+    .collect::<Vec<_>>();
+  let screen_rects =
+    shown.iter().map(|(_, rect)| *rect).collect::<Vec<_>>();
+  let slots = spread(
+    &screen_rects,
+    &how.area,
+    how.gap,
+    how.max_scale,
+    how.max_per_row,
+    how.arrangement,
+  );
+
+  let mut rects = vec![None; scene.windows.len()];
+  for ((index, _), slot) in shown.iter().zip(slots) {
+    rects[*index] = Some(slot);
+  }
+  rects
+}
+
+/// The windows of `workspace` a search matches, which the exposé
+/// spreads alone: `None` without a query, or with no match, which leaves
+/// every window spread.
+fn search_matches(
+  workspace: &OverviewWorkspace,
+  focus: &ScreenFocus,
+) -> Option<Vec<isize>> {
+  if focus.query.is_empty() {
+    return None;
+  }
+  let matches = workspace
+    .windows
+    .iter()
+    .filter(|window| focus.is_match(window))
+    .map(|window| window.hwnd)
+    .collect::<Vec<_>>();
+  (!matches.is_empty()).then_some(matches)
 }
 
 impl Screen {
@@ -211,10 +321,16 @@ impl Screen {
     let miniatures = (0..self.cards.len())
       .map(|index| self.miniature_rects(index))
       .collect::<Vec<_>>();
+    let closing = self.closing_card();
+    let spreads = self.focus.layout.spreads_windows();
+    // Opening, spread windows fly out of where they are on screen.
+    let flies_out =
+      spreads && snap && self.zoom.is_some() && closing.is_none();
     let Some(frame) = &self.frame else {
       return;
     };
     let scene_area = self.scene_area;
+    let spread_as = self.spread_as(frame);
 
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
@@ -226,19 +342,32 @@ impl Screen {
       };
       let alpha = if index == selected { 1.0 } else { 0.0 };
 
-      let content = RectF::from_rect(&workspace.content_rect);
+      let content = scene_content(workspace, frame);
       let view = CardView::fitted(&content, &scene_area);
-      let rects = scene
+      let tiles = scene
         .windows
-        .iter_mut()
-        .map(|window| {
-          let tile = view.tile(&window.preview.screen_rect)?;
-          window.preview.tile.crop = tile.crop;
-          Some(tile.rect)
-        })
+        .iter()
+        .map(|window| view.tile(&window.preview.screen_rect))
         .collect::<Vec<_>>();
 
-      for (window, rect) in scene.windows.iter_mut().zip(rects) {
+      // A scene being zoomed into lands as laid out, where the real
+      // windows are.
+      let spreading = spreads && closing != Some(index);
+      let matches = search_matches(workspace, &self.focus);
+      let rects = scene_rects(
+        scene,
+        &tiles,
+        spreading.then_some(&spread_as),
+        matches.as_deref(),
+      );
+
+      for ((window, rect), tile) in
+        scene.windows.iter_mut().zip(rects).zip(&tiles)
+      {
+        if let (true, Some(tile)) = (flies_out, tile) {
+          let shown = if window.is_hidden_tab { 0.0 } else { alpha };
+          window.retarget(&tile.rect.translate(offset, 0.0), shown, true);
+        }
         let miniature = miniatures.get(index).and_then(|rects| {
           rects
             .iter()
@@ -248,6 +377,7 @@ impl Screen {
         let into_miniature =
           style == OverviewSwitchStyle::Miniature && index != selected;
 
+        let snap = snap && !flies_out;
         match (rect, miniature) {
           (_, Some(miniature)) if into_miniature => {
             window.retarget(&miniature, alpha, snap);
@@ -269,21 +399,41 @@ impl Screen {
       self.seed_scene(style, previous, slide);
     }
 
-    // The shown workspace's working area, laid out as its windows are (a
-    // scrolling workspace's strip reaches past it), holding still for a
-    // zoom.
+    self.retarget_workspace_rect(snap);
+  }
+
+  /// How the exposé spreads a scene of `frame` over the scene area.
+  fn spread_as(&self, frame: &ScreenFrame) -> Spread {
+    let area = self.scene_area;
+    let monitor = RectF::from_rect(&frame.rect);
+    let expose = frame.style.expose;
+    Spread {
+      area,
+      gap: self.metrics.px(expose.gap.max(0.0)),
+      // Never larger than the activities show them.
+      max_scale: (area.w / monitor.w).min(area.h / monitor.h).max(0.0),
+      max_per_row: usize::try_from(expose.max_per_row)
+        .unwrap_or(usize::MAX),
+      arrangement: expose.arrangement,
+    }
+  }
+
+  /// Points the shown workspace's working area where the scene lays it
+  /// out (a scrolling workspace's whole strip reaches past it), holding
+  /// still for a zoom.
+  fn retarget_workspace_rect(&mut self, snap: bool) {
     let Some(frame) = &self.frame else {
       return;
     };
     let shown = frame
       .workspaces
-      .get(selected)
+      .get(self.focus.selected)
       .filter(|_| self.closing_card().is_none());
-    if let (OverviewLayoutMode::Activities, Some(overlays), Some(shown)) =
-      (self.focus.layout, &mut self.overlays, shown)
+    if let (true, Some(overlays), Some(shown)) =
+      (self.focus.layout.has_scene(), &mut self.overlays, shown)
     {
-      let content = RectF::from_rect(&shown.content_rect);
-      let area = CardView::fitted(&content, &scene_area)
+      let content = scene_content(shown, frame);
+      let area = CardView::fitted(&content, &self.scene_area)
         .map(&RectF::from_rect(&frame.rect));
       overlays.workspace_rect.retarget(&area, snap);
     }

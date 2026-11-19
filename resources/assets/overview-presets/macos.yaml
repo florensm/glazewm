@@ -1,0 +1,28 @@
+# macOS: Mission Control. The wallpaper stays sharp, only dimmed, with the
+# windows spread out over it at their own sizes and a slim strip of the
+# other workspaces along the top, like the Spaces bar.
+overview:
+  layout: "expose"
+  workspace_row: "compact"
+  search_hint: false
+  backdrop_style: "blur"
+  backdrop_blur: 0
+  backdrop_tint: "#00000047"
+  expose:
+    max_per_row: 0
+    gap: 40
+    arrangement: "natural"
+  accent_color: "#ffffffff"
+  window_highlight:
+    style: "ring"
+    width: 3
+    gap: 4
+  card_color: "#202024d9"
+  zoom_style: "zoom"
+  zoom_easing: "cubic_bezier(0.25, 1, 0.5, 1)"
+  open_duration_ms: 320
+  close_duration_ms: 260
+  switch_duration_ms: 300
+  bounce: 0
+  effects:
+    window_lift: 0.03

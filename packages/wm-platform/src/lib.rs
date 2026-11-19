@@ -34,6 +34,7 @@ mod overlay_copies;
 mod overlay_window;
 mod overview_chrome;
 mod overview_effects;
+mod overview_expose;
 mod overview_layout;
 mod overview_overlays;
 mod overview_scene;

@@ -1,0 +1,13 @@
+# Accent frame: the frame around the desktop takes your Windows accent
+# color, so it follows your theme.
+overview:
+  layout: "activities"
+  workspace_row: "shown"
+  backdrop_style: "framed"
+  backdrop_frame:
+    color: "accent"
+    corner_radius: 28
+    padding: 20
+    shadow: true
+  accent_color: "accent"
+  strip_view: "visible"

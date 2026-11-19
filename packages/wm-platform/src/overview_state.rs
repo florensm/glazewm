@@ -251,6 +251,9 @@ pub(crate) enum Control {
 
   /// A row of the search box's list: the match of this window.
   Result(isize),
+
+  /// The button closing this window.
+  Close(isize),
 }
 
 /// Keyboard shortcuts of one step, as the shortcut sheet lists them.
@@ -1413,6 +1416,9 @@ impl Interaction {
       }
       // Typing goes to the field as it is.
       Some(Control::Search) => return None,
+      Some(Control::Close(hwnd)) => {
+        return Some(OverviewAction::CloseWindow(hwnd));
+      }
       Some(Control::Result(hwnd)) => {
         let workspace = self
           .matches
@@ -1881,10 +1887,12 @@ impl Geometry {
 
 fn geometry(layout: OverviewLayoutMode) -> Geometry {
   match layout {
-    OverviewLayoutMode::Activities => Geometry {
-      forward: Toward::Right,
-      windows: Some(Toward::Down),
-    },
+    OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
+      Geometry {
+        forward: Toward::Right,
+        windows: Some(Toward::Down),
+      }
+    }
     OverviewLayoutMode::Stack => Geometry {
       forward: Toward::Down,
       windows: None,
@@ -2489,7 +2497,7 @@ mod tests {
   fn tab_goes_through_every_layout() {
     let mut state = interaction();
     let mut seen = vec![state.layout];
-    for key in [Key::Tab, Key::BackTab] {
+    for key in [Key::Tab, Key::Tab, Key::Tab, Key::BackTab] {
       press(&mut state, &[key]);
       seen.push(state.layout);
     }
@@ -2499,7 +2507,9 @@ mod tests {
       vec![
         OverviewLayoutMode::Activities,
         OverviewLayoutMode::Stack,
+        OverviewLayoutMode::Expose,
         OverviewLayoutMode::Activities,
+        OverviewLayoutMode::Expose,
       ]
     );
   }
@@ -2622,7 +2632,9 @@ mod tests {
       let workspaces = workspaces();
       let mut state = single(&workspaces, layout);
       let across = match layout {
-        OverviewLayoutMode::Activities => [Key::Up, Key::Up],
+        OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
+          [Key::Up, Key::Up]
+        }
         OverviewLayoutMode::Stack => [Key::Left, Key::Right],
       };
 
@@ -3870,6 +3882,25 @@ mod tests {
     assert_eq!(
       click(&mut state, Hit::default()),
       Some(OverviewAction::Cancel)
+    );
+  }
+
+  /// The close button on a window closes it, and nothing more: no drag
+  /// starts from it, and the overview stays open.
+  #[test]
+  fn clicking_a_close_button_closes_its_window() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+    let close = Hit {
+      control: Some(Control::Close(12)),
+      ..Hit::default()
+    };
+
+    state.mouse_down((0.0, 0.0), close);
+    assert!(!state.mouse_move((40.0, 40.0), close, true));
+    assert_eq!(
+      state.mouse_up(&workspaces),
+      Some(OverviewAction::CloseWindow(12))
     );
   }
 
