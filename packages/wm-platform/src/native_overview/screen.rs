@@ -18,7 +18,7 @@ use super::{
   overlays::Overlays,
   place_card,
   scene_borders::{SceneBorder, SceneBorders},
-  scenes::scene_window_shown,
+  scenes::{scene_content, scene_window_shown},
   to_ms, PlaceContext, Screen, ScreenFrame,
 };
 use crate::{
@@ -983,7 +983,7 @@ impl Screen {
     match self.focus.layout {
       OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
         let workspace = self.workspaces().get(index)?;
-        let content = RectF::from_rect(&workspace.content_rect);
+        let content = scene_content(workspace, self.frame.as_ref()?);
         Some(CardView::fitted(&content, &self.scene_area).map(&self.area))
       }
       OverviewLayoutMode::Stack => {
@@ -1506,10 +1506,12 @@ impl Screen {
       } else {
         // Where the scene shows the workspace's working area, as laid
         // out.
-        workspace.and_then(|workspace| {
-          let content = RectF::from_rect(&workspace.content_rect);
-          CardView::fitted(&content, &self.scene_area).unmap(x, y)
-        })
+        workspace.zip(self.frame.as_ref()).and_then(
+          |(workspace, frame)| {
+            let content = scene_content(workspace, frame);
+            CardView::fitted(&content, &self.scene_area).unmap(x, y)
+          },
+        )
       };
 
       Hit {

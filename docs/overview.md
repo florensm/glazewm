@@ -41,7 +41,9 @@ overview's own outline instead.
   workspace's windows spread out side by side at one scale, as macOS's
   Mission Control does: every tab of its stacks too, each a window of
   its own. Rows follow where the windows sit on screen, top to bottom and
-  left to right. Opening, they fly out of where they are; closing, they
+  left to right, at most `expose.max_per_row` to a row: a scrolling
+  workspace's columns, which fit one long row best, wrap onto more rows
+  instead, the left ones on top. Opening, they fly out of where they are; closing, they
   fly back as the zoom lands, the picked tab shown on its stack. A window
   dropped on another lands beside it, on the side nearest the cursor, as
   in the activities; dropped elsewhere it only moves.
@@ -291,9 +293,12 @@ shown window, with its tab bar drawn by the same code as the real one.
 
 ### Scrolling workspaces
 
-A workspace with the scrolling layout shows its whole strip, not just the
-part on screen. In the activities, the shown workspace's whole strip is
-scaled to fit, and its miniature grows up to twice as wide. In the stack,
+A workspace with the scrolling layout shows its whole strip on its card,
+not just the part on screen, and its miniature grows up to twice as
+wide. Large in the activities, it shows only the columns on screen, cut
+off at the monitor's edges as on the desktop; with `strip_view: "whole"`
+its whole strip is scaled to fit instead. The exposé spreads every
+column, on screen or not. In the stack,
 a strip shows at its full length, up to four monitors wide, reaching past
 the screen's sides. On a card, a lighter frame
 marks out the part on screen. A strip wider still is scaled to fit, with
@@ -307,8 +312,11 @@ at stays where it is, under the cursor. Selecting another workspace lets
 the strip slide back to what its monitor shows. The pan is the
 overview's alone: the workspace itself only scrolls once a window is
 picked with `Enter` or a click, which focuses it. A card no wider than
-its monitor doesn't pan. The activities fit the whole strip in view, so
-there is nothing to pan there.
+its monitor doesn't pan. Nothing pans in the activities.
+
+Columns scrolled out of view are left out of the activities' large view
+by default, so the mouse and arrows don't reach them there; search,
+their miniature, the stack and the exposé still do.
 
 The zoom on open and close starts and ends on the columns that are on
 screen, the others reaching off its sides as they do on the desktop.
@@ -460,6 +468,16 @@ overview:
     style: "ring"
     width: 2
     gap: 0
+
+  # How much of a scrolling workspace the activities show large: "visible"
+  # (the columns on screen) or "whole" (the whole strip, scaled to fit).
+  strip_view: "visible"
+
+  # How the exposé spreads the windows: at most `max_per_row` side by side
+  # before wrapping onto another row, `gap` logical pixels apart.
+  expose:
+    max_per_row: 4
+    gap: 32
 
   effects:
     # Soft glow of the accent color around the selected workspace.

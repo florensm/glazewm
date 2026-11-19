@@ -4,9 +4,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
-  OpacityValue, OverviewBackdropStyle, OverviewEffects,
-  OverviewSwitchStyle, OverviewWindowHighlight, OverviewZoomStyle,
-  ParticleEffects, ParticleLook, RectDelta,
+  OpacityValue, OverviewBackdropStyle, OverviewEffects, OverviewExpose,
+  OverviewStripView, OverviewSwitchStyle, OverviewWindowHighlight,
+  OverviewZoomStyle, ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -757,6 +757,12 @@ pub struct OverviewConfig {
 
   /// How the selected or hovered window is marked.
   pub window_highlight: OverviewWindowHighlight,
+
+  /// How much of a scrolling workspace's strip the activities show.
+  pub strip_view: OverviewStripView,
+
+  /// How the exposé spreads the windows.
+  pub expose: OverviewExpose,
 }
 
 /// Look of the overview's `framed` backdrop.
@@ -864,6 +870,8 @@ impl Default for OverviewConfig {
       bounce: 0.25,
       effects: OverviewEffects::default(),
       window_highlight: OverviewWindowHighlight::default(),
+      strip_view: OverviewStripView::default(),
+      expose: OverviewExpose::default(),
     }
   }
 }

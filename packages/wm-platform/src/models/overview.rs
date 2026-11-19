@@ -205,8 +205,49 @@ pub struct OverviewStyle {
   /// How the selected or hovered window is marked.
   pub window_highlight: OverviewWindowHighlight,
 
+  /// How much of a scrolling workspace's strip the activities show.
+  pub strip_view: OverviewStripView,
+
+  /// How the exposé spreads the windows.
+  pub expose: OverviewExpose,
+
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
+}
+
+/// How much of a scrolling workspace's strip the activities show large.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewStripView {
+  /// What its monitor shows; columns scrolled out of view are left out.
+  #[default]
+  Visible,
+
+  /// The whole strip, scaled to fit.
+  Whole,
+}
+
+/// How the exposé spreads the shown workspace's windows.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewExpose {
+  /// Most windows side by side in a row, before they wrap onto more
+  /// rows.
+  pub max_per_row: u32,
+
+  /// Space between windows, in logical pixels.
+  pub gap: f32,
+}
+
+impl Default for OverviewExpose {
+  fn default() -> Self {
+    Self {
+      max_per_row: 4,
+      gap: 32.0,
+    }
+  }
 }
 
 /// What the overview shows behind its cards.

@@ -1833,6 +1833,8 @@ mod tests {
       bounce: 0.25,
       effects: crate::OverviewEffects::default(),
       window_highlight: crate::OverviewWindowHighlight::default(),
+      strip_view: crate::OverviewStripView::default(),
+      expose: crate::OverviewExpose::default(),
       particles: crate::ParticleLook::default(),
     };
     let searching = SearchField {

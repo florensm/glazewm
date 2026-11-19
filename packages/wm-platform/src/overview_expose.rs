@@ -4,7 +4,8 @@
 use crate::overview_layout::RectF;
 
 /// Spreads windows whose screen rects are `windows` over `area`, `gap`
-/// apart, at one scale of at most `max_scale`, as large as fits.
+/// apart and at most `max_per_row` to a row, at one scale of at most
+/// `max_scale`, as large as fits.
 ///
 /// Rows go top to bottom by where each window's middle sits on screen,
 /// and each row left to right. Returns a rect per window, in the order
@@ -14,10 +15,12 @@ pub(crate) fn spread(
   area: &RectF,
   gap: f32,
   max_scale: f32,
+  max_per_row: usize,
 ) -> Vec<RectF> {
   if windows.is_empty() {
     return Vec::new();
   }
+  let max_per_row = max_per_row.max(1);
 
   let mut order = (0..windows.len()).collect::<Vec<_>>();
   order.sort_by(|&a, &b| {
@@ -27,8 +30,9 @@ pub(crate) fn spread(
 
   // The row count that shows them largest, the fewest rows on a tie.
   let mut best: Option<(f32, Vec<Vec<usize>>)> = None;
-  for row_count in 1..=windows.len() {
-    let rows = partition(windows, &order, row_count, area.w, gap);
+  for row_count in windows.len().div_ceil(max_per_row)..=windows.len() {
+    let rows =
+      partition(windows, &order, row_count, max_per_row, area.w, gap);
     let scale = rows_scale(windows, &rows, area, gap);
     if best.as_ref().is_none_or(|(best, _)| scale > *best) {
       best = Some((scale, rows));
@@ -69,12 +73,14 @@ pub(crate) fn spread(
   rects
 }
 
-/// Splits `order` into `row_count` runs, keeping it in order, so the
-/// narrowest fit of any row is as wide as can be.
+/// Splits `order` into `row_count` runs of at most `max_per_row`,
+/// keeping it in order, so the narrowest fit of any row is as wide as can
+/// be. `row_count` must leave room for every window.
 fn partition(
   windows: &[RectF],
   order: &[usize],
   row_count: usize,
+  max_per_row: usize,
   width: f32,
   gap: f32,
 ) -> Vec<Vec<usize>> {
@@ -87,11 +93,12 @@ fn partition(
 
   for rows in 1..=row_count {
     for end in rows..=count {
-      for start in (rows - 1)..end {
+      for start in (rows - 1).max(end.saturating_sub(max_per_row))..end {
         let before = fits[rows - 1][start].0;
         let row = &order[start..end];
         let scale = before.min(row_scale(windows, row, width, gap));
-        if scale > fits[rows][end].0 {
+        // On a tie, the later start: fuller rows on top.
+        if scale >= fits[rows][end].0 {
           fits[rows][end] = (scale, start);
         }
       }
@@ -189,7 +196,7 @@ mod tests {
   #[test]
   fn a_lone_window_is_centered_at_most_at_max_scale() {
     let window = RectF::new(0.0, 0.0, 1920.0, 1080.0);
-    let rects = spread(&[window], &AREA, 20.0, 0.5);
+    let rects = spread(&[window], &AREA, 20.0, 0.5, 4);
 
     assert_eq!(rects, vec![RectF::new(320.0, 180.0, 960.0, 540.0)]);
   }
@@ -199,7 +206,7 @@ mod tests {
   fn side_by_side_windows_keep_their_order() {
     let right = RectF::new(960.0, 0.0, 960.0, 1080.0);
     let left = RectF::new(0.0, 0.0, 960.0, 1080.0);
-    let rects = spread(&[right, left], &AREA, 20.0, 1.0);
+    let rects = spread(&[right, left], &AREA, 20.0, 1.0, 4);
 
     assert!(rects[1].right() < rects[0].x);
     assert!((rects[0].y - rects[1].y).abs() < f32::EPSILON);
@@ -211,7 +218,7 @@ mod tests {
   #[test]
   fn windows_on_one_spot_are_spread_apart() {
     let stack = RectF::new(0.0, 0.0, 1920.0, 1080.0);
-    let rects = spread(&[stack; 5], &AREA, 24.0, 1.0);
+    let rects = spread(&[stack; 5], &AREA, 24.0, 1.0, 4);
 
     for (index, rect) in rects.iter().enumerate() {
       assert!(within(rect, &AREA), "{rect:?}");
@@ -234,7 +241,7 @@ mod tests {
         RectF::new(x, y, 640.0, 360.0)
       })
       .collect::<Vec<_>>();
-    let rects = spread(&windows, &AREA, 16.0, 1.0);
+    let rects = spread(&windows, &AREA, 16.0, 1.0, 4);
 
     let scale = rects[0].w / 640.0;
     let mut rows =
@@ -253,6 +260,29 @@ mod tests {
 
   #[test]
   fn no_windows_spread_to_nothing() {
-    assert!(spread(&[], &AREA, 16.0, 1.0).is_empty());
+    assert!(spread(&[], &AREA, 16.0, 1.0, 4).is_empty());
+  }
+
+  /// A scrolling strip's tall columns, which fit one row best, still wrap
+  /// once a row is full, its left part going on top.
+  #[test]
+  fn a_full_row_wraps_onto_the_next() {
+    let columns = (0..7)
+      .map(|index| {
+        #[allow(clippy::cast_precision_loss)]
+        let x = index as f32 * 500.0;
+        RectF::new(x, 0.0, 480.0, 1040.0)
+      })
+      .collect::<Vec<_>>();
+    let rects = spread(&columns, &AREA, 16.0, 1.0, 4);
+
+    let top = rects[0].y;
+    let on_top = rects.iter().filter(|rect| (rect.y - top).abs() < 0.5);
+    assert_eq!(on_top.count(), 4);
+    assert!(rects[4].y > rects[3].bottom());
+    assert!(rects[0].x < rects[1].x && rects[4].x < rects[5].x);
+    for rect in &rects {
+      assert!(within(rect, &AREA), "{rect:?}");
+    }
   }
 }

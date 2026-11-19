@@ -68,6 +68,15 @@ overview:
     width: 2
     gap: 0
 
+  # A scrolling workspace large in the activities: 'visible' (the columns
+  # on screen) or 'whole' (the whole strip, scaled to fit).
+  strip_view: "visible"
+
+  # Exposé: windows per row before wrapping, and the gap between them.
+  expose:
+    max_per_row: 4
+    gap: 32
+
   effects:
     # Soft accent glow around the selected workspace.
     glow: true

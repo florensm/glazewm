@@ -3,19 +3,17 @@
 
 use std::cmp::Ordering;
 
-use super::{cards::screen_rect, to_ms, Screen};
+use super::{cards::screen_rect, to_ms, Screen, ScreenFrame};
 
 /// Gap, in logical pixels, a sliding scene keeps from the one it slides
 /// past.
 const SLIDE_GAP: f32 = 48.0;
 
-/// Gap, in logical pixels, between the exposé's windows.
-const SPREAD_GAP: f32 = 32.0;
 use crate::{
   overview_expose::spread,
   overview_layout::{CardView, RectF, Tile},
   overview_scene::{Scene, SceneWindow},
-  OverviewSwitchStyle,
+  OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -55,16 +53,37 @@ pub(super) fn scene_window_shown(
   )
 }
 
+/// What of `workspace` a scene shows, in screen coordinates: its whole
+/// strip, or what its monitor shows, as `frame`'s style has it.
+pub(super) fn scene_content(
+  workspace: &OverviewWorkspace,
+  frame: &ScreenFrame,
+) -> RectF {
+  match frame.style.strip_view {
+    OverviewStripView::Visible => RectF::from_rect(&frame.rect),
+    OverviewStripView::Whole => RectF::from_rect(&workspace.content_rect),
+  }
+}
+
+/// How the exposé spreads a scene's windows.
+struct Spread {
+  area: RectF,
+  /// Space between windows, in physical pixels.
+  gap: f32,
+  max_scale: f32,
+  max_per_row: usize,
+}
+
 /// Where each window of `scene` settles, given its `tiles` as laid out:
-/// there, or spread over an area `spread_over` names, `gap` apart and at
-/// most at a scale. `None` for a window not shown, e.g. a stack's other
-/// tab where it isn't spread. Crops each preview as it then shows.
+/// there, or spread as `spread` has it. `None` for a window not shown,
+/// e.g. a stack's other tab where it isn't spread. Crops each preview as
+/// it then shows.
 fn scene_rects(
   scene: &mut Scene,
   tiles: &[Option<Tile>],
-  spread_over: Option<(&RectF, f32, f32)>,
+  spread_as: Option<&Spread>,
 ) -> Vec<Option<RectF>> {
-  if let Some((area, gap, max_scale)) = spread_over {
+  if let Some(how) = spread_as {
     let screen_rects = scene
       .windows
       .iter()
@@ -73,10 +92,16 @@ fn scene_rects(
     for window in &mut scene.windows {
       window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
     }
-    return spread(&screen_rects, area, gap, max_scale)
-      .into_iter()
-      .map(Some)
-      .collect();
+    return spread(
+      &screen_rects,
+      &how.area,
+      how.gap,
+      how.max_scale,
+      how.max_per_row,
+    )
+    .into_iter()
+    .map(Some)
+    .collect();
   }
 
   scene
@@ -257,16 +282,22 @@ impl Screen {
     // Opening, spread windows fly out of where they are on screen.
     let flies_out =
       spreads && snap && self.zoom.is_some() && closing.is_none();
-    let spread_gap = self.metrics.px(SPREAD_GAP);
     let Some(frame) = &self.frame else {
       return;
     };
     let scene_area = self.scene_area;
     let monitor = RectF::from_rect(&frame.rect);
-    // Never larger than the activities show them.
-    let max_scale = (scene_area.w / monitor.w)
-      .min(scene_area.h / monitor.h)
-      .max(0.0);
+    let expose = frame.style.expose;
+    let spread_as = Spread {
+      area: scene_area,
+      gap: self.metrics.px(expose.gap.max(0.0)),
+      // Never larger than the activities show them.
+      max_scale: (scene_area.w / monitor.w)
+        .min(scene_area.h / monitor.h)
+        .max(0.0),
+      max_per_row: usize::try_from(expose.max_per_row)
+        .unwrap_or(usize::MAX),
+    };
 
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
@@ -278,7 +309,7 @@ impl Screen {
       };
       let alpha = if index == selected { 1.0 } else { 0.0 };
 
-      let content = RectF::from_rect(&workspace.content_rect);
+      let content = scene_content(workspace, frame);
       let view = CardView::fitted(&content, &scene_area);
       let tiles = scene
         .windows
@@ -288,12 +319,9 @@ impl Screen {
 
       // A scene being zoomed into lands as laid out, where the real
       // windows are.
-      let spread_over = (spreads && closing != Some(index)).then_some((
-        &scene_area,
-        spread_gap,
-        max_scale,
-      ));
-      let rects = scene_rects(scene, &tiles, spread_over);
+      let spreading = spreads && closing != Some(index);
+      let rects =
+        scene_rects(scene, &tiles, spreading.then_some(&spread_as));
 
       for ((window, rect), tile) in
         scene.windows.iter_mut().zip(rects).zip(&tiles)
@@ -337,8 +365,8 @@ impl Screen {
   }
 
   /// Points the shown workspace's working area where the scene lays it
-  /// out (a scrolling workspace's strip reaches past it), holding still
-  /// for a zoom.
+  /// out (a scrolling workspace's whole strip reaches past it), holding
+  /// still for a zoom.
   fn retarget_workspace_rect(&mut self, snap: bool) {
     let Some(frame) = &self.frame else {
       return;
@@ -350,7 +378,7 @@ impl Screen {
     if let (true, Some(overlays), Some(shown)) =
       (self.focus.layout.has_scene(), &mut self.overlays, shown)
     {
-      let content = RectF::from_rect(&shown.content_rect);
+      let content = scene_content(shown, frame);
       let area = CardView::fitted(&content, &self.scene_area)
         .map(&RectF::from_rect(&frame.rect));
       overlays.workspace_rect.retarget(&area, snap);

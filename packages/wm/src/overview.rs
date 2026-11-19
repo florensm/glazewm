@@ -529,6 +529,8 @@ fn overview_frame(
       bounce: overview.bounce,
       effects: overview.effects,
       window_highlight: overview.window_highlight,
+      strip_view: overview.strip_view,
+      expose: overview.expose,
       particles: config.value.animations.particles.look(),
     },
   }
