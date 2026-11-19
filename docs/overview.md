@@ -38,14 +38,17 @@ overview's own outline instead.
   and the wheel turned sideways (or with `Shift`) pans it by hand (see
   [Scrolling workspaces](#scrolling-workspaces)).
 - **Exposé**: the activities' row of miniatures, and below it the shown
-  workspace's windows spread out side by side at one scale, as macOS's
-  Mission Control does. A stack's tabs share one spot as a pile, its
+  workspace's windows spread out side by side, as macOS's Mission
+  Control does, in justified rows like a photo grid's: every window of a
+  row as tall as the others, keeping its shape, and the row as wide as
+  the room, so they show as large as they can (but never larger than in
+  the activities). A stack's tabs share one spot as a pile, its
   shown tab in front and each further one a step up and right behind it;
   the tab under the cursor, or picked with the keyboard, rises out of the
   pile. Rows follow where the windows sit on screen, top to bottom and
-  left to right, at most `expose.max_per_row` to a row: a scrolling
-  workspace's columns, which fit one long row best, wrap onto more rows
-  instead, the left ones on top. Opening, they fly out of where they are; closing, they
+  left to right, as many as cover the most room; `expose.max_per_row`
+  caps how many go in a row, e.g. to wrap a scrolling workspace's
+  columns onto rows, the left ones on top. Opening, they fly out of where they are; closing, they
   fly back as the zoom lands, the picked tab shown on its stack. A window
   dropped on another lands beside it, on the side nearest the cursor, as
   in the activities; dropped elsewhere it only moves.
@@ -502,9 +505,10 @@ overview:
   workspace_row: "shown"
 
   # How the exposé spreads the windows: at most `max_per_row` side by side
-  # before wrapping onto another row, `gap` logical pixels apart.
+  # before wrapping onto another row (0 for as many as shows them
+  # largest), `gap` logical pixels apart.
   expose:
-    max_per_row: 4
+    max_per_row: 0
     gap: 32
 
   effects:

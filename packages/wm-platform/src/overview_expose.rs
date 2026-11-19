@@ -1,15 +1,18 @@
-//! Where the exposé spreads a workspace's windows: side by side in rows,
-//! all at one scale, in about the order they sit on screen.
+//! Where the exposé spreads a workspace's windows: in justified rows, as
+//! a photo grid lays out pictures, in about the order they sit on screen.
 
 use crate::overview_layout::RectF;
 
 /// Spreads windows whose screen rects are `windows` over `area`, `gap`
-/// apart and at most `max_per_row` to a row, at one scale of at most
-/// `max_scale`, as large as fits.
+/// apart and at most `max_per_row` to a row (`0` for any number), as
+/// large as fits.
 ///
-/// Rows go top to bottom by where each window's middle sits on screen,
-/// and each row left to right. Returns a rect per window, in the order
-/// given.
+/// Every window of a row is as tall as the others, keeping its shape, and
+/// the row as wide as `area`, unless that would show a window larger than
+/// `max_scale` of its size or the rows wouldn't fit `area`'s height. Of
+/// the row counts, the one covering the most of `area` wins. Rows go top
+/// to bottom by where each window's middle sits on screen, and each row
+/// left to right. Returns a rect per window, in the order given.
 pub(crate) fn spread(
   windows: &[RectF],
   area: &RectF,
@@ -20,7 +23,23 @@ pub(crate) fn spread(
   if windows.is_empty() {
     return Vec::new();
   }
-  let max_per_row = max_per_row.max(1);
+  let max_per_row = match max_per_row {
+    0 => windows.len(),
+    max => max,
+  };
+
+  // Each window's shape: one tall, as wide as it is for that.
+  let shapes = windows
+    .iter()
+    .map(|window| {
+      let aspect = if window.h > 0.0 {
+        window.w / window.h
+      } else {
+        1.0
+      };
+      RectF::new(0.0, 0.0, aspect, 1.0)
+    })
+    .collect::<Vec<_>>();
 
   let mut order = (0..windows.len()).collect::<Vec<_>>();
   order.sort_by(|&a, &b| {
@@ -28,49 +47,85 @@ pub(crate) fn spread(
     ay.total_cmp(&by).then(ax.total_cmp(&bx)).then(a.cmp(&b))
   });
 
-  // The row count that shows them largest, the fewest rows on a tie.
-  let mut best: Option<(f32, Vec<Vec<usize>>)> = None;
+  // The row count covering the most, the fewest rows on a tie.
+  let mut best: Option<(f32, Vec<Vec<usize>>, Vec<f32>)> = None;
   for row_count in windows.len().div_ceil(max_per_row)..=windows.len() {
     let rows =
-      partition(windows, &order, row_count, max_per_row, area.w, gap);
-    let scale = rows_scale(windows, &rows, area, gap);
-    if best.as_ref().is_none_or(|(best, _)| scale > *best) {
-      best = Some((scale, rows));
+      partition(&shapes, &order, row_count, max_per_row, area.w, gap);
+    let heights =
+      row_heights(windows, &shapes, &rows, area, gap, max_scale);
+    let coverage = rows
+      .iter()
+      .zip(&heights)
+      .map(|(row, height)| row_width(&shapes, row) * height * height)
+      .sum::<f32>();
+    if best.as_ref().is_none_or(|(best, ..)| coverage > *best) {
+      best = Some((coverage, rows, heights));
     }
   }
-  let Some((scale, mut rows)) = best else {
+  let Some((_, mut rows, heights)) = best else {
     return Vec::new();
   };
-  let scale = scale.min(max_scale).max(0.0);
 
-  let row_heights = rows
-    .iter()
-    .map(|row| row_height(windows, row) * scale)
-    .collect::<Vec<_>>();
   #[allow(clippy::cast_precision_loss)]
-  let total_height = row_heights.iter().sum::<f32>()
+  let total_height = heights.iter().sum::<f32>()
     + gap * (rows.len().saturating_sub(1)) as f32;
 
   let mut rects = vec![RectF::default(); windows.len()];
   let mut y = area.y + (area.h - total_height) / 2.0;
-  for (row, height) in rows.iter_mut().zip(row_heights) {
+  for (row, height) in rows.iter_mut().zip(heights) {
     row.sort_by(|&a, &b| {
       windows[a].center().0.total_cmp(&windows[b].center().0)
     });
 
     #[allow(clippy::cast_precision_loss)]
-    let width = row_width(windows, row) * scale
+    let width = row_width(&shapes, row) * height
       + gap * (row.len().saturating_sub(1)) as f32;
     let mut x = area.x + (area.w - width) / 2.0;
     for &index in row.iter() {
-      let (w, h) = (windows[index].w * scale, windows[index].h * scale);
-      rects[index] = RectF::new(x, y + (height - h) / 2.0, w, h);
+      let w = shapes[index].w * height;
+      rects[index] = RectF::new(x, y, w, height);
       x += w + gap;
     }
     y += height + gap;
   }
 
   rects
+}
+
+/// How tall each of `rows` is: as tall as fills `area`'s width with its
+/// windows' `shapes`, but showing none larger than `max_scale` of its
+/// size in `windows`, and all shrunk alike to fit `area`'s height.
+fn row_heights(
+  windows: &[RectF],
+  shapes: &[RectF],
+  rows: &[Vec<usize>],
+  area: &RectF,
+  gap: f32,
+  max_scale: f32,
+) -> Vec<f32> {
+  let mut heights = rows
+    .iter()
+    .map(|row| {
+      let fills = row_scale(shapes, row, area.w, gap);
+      let largest = row
+        .iter()
+        .map(|&index| windows[index].h * max_scale)
+        .fold(f32::INFINITY, f32::min);
+      fills.min(largest).max(0.0)
+    })
+    .collect::<Vec<_>>();
+
+  #[allow(clippy::cast_precision_loss)]
+  let free =
+    (area.h - gap * (rows.len().saturating_sub(1)) as f32).max(0.0);
+  let total = heights.iter().sum::<f32>();
+  if total > free && total > 0.0 {
+    for height in &mut heights {
+      *height *= free / total;
+    }
+  }
+  heights
 }
 
 /// Step, as a fraction of a tab's size, between one tab of a pile and
@@ -135,8 +190,9 @@ pub(crate) fn pile_rects(
 }
 
 /// Splits `order` into `row_count` runs of at most `max_per_row`,
-/// keeping it in order, so the narrowest fit of any row is as wide as can
-/// be. `row_count` must leave room for every window.
+/// keeping it in order, so the row whose windows of `windows` fit
+/// `width` smallest fits them as large as can be. `row_count` must leave
+/// room for every window.
 fn partition(
   windows: &[RectF],
   order: &[usize],
@@ -177,31 +233,6 @@ fn partition(
   rows
 }
 
-/// Largest scale at which `rows` fit `area`, `gap` apart.
-fn rows_scale(
-  windows: &[RectF],
-  rows: &[Vec<usize>],
-  area: &RectF,
-  gap: f32,
-) -> f32 {
-  let across = rows
-    .iter()
-    .map(|row| row_scale(windows, row, area.w, gap))
-    .fold(f32::INFINITY, f32::min);
-
-  #[allow(clippy::cast_precision_loss)]
-  let free_height = area.h - gap * (rows.len().saturating_sub(1)) as f32;
-  let heights =
-    rows.iter().map(|row| row_height(windows, row)).sum::<f32>();
-  let down = if heights > 0.0 {
-    free_height / heights
-  } else {
-    0.0
-  };
-
-  across.min(down)
-}
-
 /// Largest scale at which `row` fits `width`, `gap` apart.
 fn row_scale(
   windows: &[RectF],
@@ -221,13 +252,6 @@ fn row_scale(
 
 fn row_width(windows: &[RectF], row: &[usize]) -> f32 {
   row.iter().map(|&index| windows[index].w).sum()
-}
-
-fn row_height(windows: &[RectF], row: &[usize]) -> f32 {
-  row
-    .iter()
-    .map(|&index| windows[index].h)
-    .fold(0.0, f32::max)
 }
 
 #[cfg(test)]
@@ -289,10 +313,10 @@ mod tests {
     }
   }
 
-  /// Many windows go on several rows, all at one scale, within the area
-  /// and apart from each other.
+  /// Many windows go on several rows, keeping their shape, within the
+  /// area and apart from each other.
   #[test]
-  fn many_windows_wrap_onto_rows_at_one_scale() {
+  fn many_windows_wrap_onto_rows() {
     let windows = (0..9)
       .map(|index| {
         #[allow(clippy::cast_precision_loss)]
@@ -304,19 +328,34 @@ mod tests {
       .collect::<Vec<_>>();
     let rects = spread(&windows, &AREA, 16.0, 1.0, 4);
 
-    let scale = rects[0].w / 640.0;
     let mut rows =
       rects.iter().map(|rect| rect.y.round()).collect::<Vec<_>>();
     rows.dedup();
     assert!(rows.len() > 1);
 
     for (index, rect) in rects.iter().enumerate() {
-      assert!((rect.w / 640.0 - scale).abs() < 1e-4);
+      assert!((rect.w / rect.h - 640.0 / 360.0).abs() < 1e-3);
       assert!(within(rect, &AREA), "{rect:?}");
       for other in &rects[index + 1..] {
         assert!(!overlaps(rect, other), "{rect:?} {other:?}");
       }
     }
+  }
+
+  /// Windows of different shapes in a row share its height, and the row
+  /// fills the area's width.
+  #[test]
+  fn a_row_is_justified_to_the_width() {
+    let windows = [
+      RectF::new(0.0, 0.0, 600.0, 1000.0),
+      RectF::new(600.0, 0.0, 1300.0, 1000.0),
+    ];
+    let rects = spread(&windows, &AREA, 20.0, 1.0, 0);
+
+    assert!((rects[0].h - rects[1].h).abs() < 1e-3);
+    assert!((rects[0].x - AREA.x).abs() < 1e-3);
+    assert!((rects[1].right() - AREA.right()).abs() < 1e-3);
+    assert!((rects[0].w / rects[0].h - 0.6).abs() < 1e-3);
   }
 
   /// A pile's tabs keep their size and shape, the front one in the
@@ -357,7 +396,7 @@ mod tests {
 
   #[test]
   fn no_windows_spread_to_nothing() {
-    assert!(spread(&[], &AREA, 16.0, 1.0, 4).is_empty());
+    assert!(spread(&[], &AREA, 16.0, 1.0, 0).is_empty());
   }
 
   /// A scrolling strip's tall columns, which fit one row best, still wrap

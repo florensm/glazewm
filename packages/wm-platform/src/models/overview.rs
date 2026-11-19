@@ -253,7 +253,7 @@ pub enum OverviewWorkspaceRow {
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewExpose {
   /// Most windows side by side in a row, before they wrap onto more
-  /// rows.
+  /// rows; `0` for as many as shows them largest.
   pub max_per_row: u32,
 
   /// Space between windows, in logical pixels.
@@ -263,7 +263,7 @@ pub struct OverviewExpose {
 impl Default for OverviewExpose {
   fn default() -> Self {
     Self {
-      max_per_row: 4,
+      max_per_row: 0,
       gap: 32.0,
     }
   }
