@@ -3,6 +3,13 @@ overview:
   backdrop_blur: 40
   # Its alpha sets how dark the backdrop gets.
   backdrop_tint: "#00000066"
+  # "blur", or "framed": the desktop shrinks onto a rounded panel of
+  # sharp wallpaper, over `backdrop_frame.color` ("accent" works too).
+  backdrop_style: "blur"
+  backdrop_frame:
+    color: "#161418ff"
+    corner_radius: 16
+    shadow: true
 
   # Defaults to the focused window's border color.
   # accent_color: "accent"

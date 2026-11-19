@@ -1808,6 +1808,12 @@ mod tests {
     let style = OverviewStyle {
       backdrop_blur: 30.0,
       backdrop_tint: color,
+      backdrop_style: crate::OverviewBackdropStyle::default(),
+      backdrop_frame: crate::OverviewBackdropFrame {
+        color,
+        corner_radius: 16.0,
+        shadow: true,
+      },
       accent: color,
       card: color,
       surface: color,

@@ -20,9 +20,10 @@ use wm_common::{
 use wm_platform::{
   Color, MouseButton, MouseEvent, NativeBackdropOverlay,
   NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
-  OverviewCurve, OverviewFrame, OverviewInput, OverviewLayoutMode,
-  OverviewOverlay, OverviewOverlayKind, OverviewScreen, OverviewStyle,
-  OverviewWindow, OverviewWorkspace, Point, Rect, TabFrame,
+  OverviewBackdropFrame, OverviewCurve, OverviewFrame, OverviewInput,
+  OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
+  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
+  Rect, TabFrame,
 };
 
 use crate::{
@@ -79,9 +80,13 @@ enum CornerVisit {
   Spent,
 }
 
+/// Colors of an open overview, resolved once per open, since they can be
+/// read from a file.
 struct OpenOverview {
-  /// Resolved once per open, since it can be read from a file.
   accent: Color,
+
+  /// Around the `framed` backdrop's panel.
+  frame_color: Color,
 }
 
 impl Overview {
@@ -295,16 +300,16 @@ pub fn toggle_overview(
     return Ok(());
   }
 
+  let overview = &config.value.overview;
   let open = OpenOverview {
-    accent: config
-      .value
-      .overview
+    accent: overview
       .accent_color
       .as_ref()
       .unwrap_or(&config.value.window_effects.focused_window.border.color)
       .resolve(),
+    frame_color: overview.backdrop_frame.color.resolve(),
   };
-  let frame = overview_frame(state, open.accent, config);
+  let frame = overview_frame(state, &open, config);
   if frame.screens.is_empty() {
     anyhow::bail!("No monitors to show the overview on.");
   }
@@ -430,7 +435,7 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
 
   // `None` once hidden, or once every monitor is gone.
   let frame = shown
-    .map(|shown| overview_frame(state, shown.accent, config))
+    .map(|shown| overview_frame(state, shown, config))
     .filter(|frame| !frame.screens.is_empty());
 
   let overview = &mut state.overview;
@@ -459,7 +464,7 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
 /// What the overview shows: a screen per monitor, left to right.
 fn overview_frame(
   state: &WmState,
-  accent: Color,
+  open: &OpenOverview,
   config: &UserConfig,
 ) -> OverviewFrame {
   let focused = state.focused_container();
@@ -494,7 +499,13 @@ fn overview_frame(
     style: OverviewStyle {
       backdrop_blur: overview.backdrop_blur,
       backdrop_tint: overview.backdrop_tint,
-      accent,
+      backdrop_style: overview.backdrop_style,
+      backdrop_frame: OverviewBackdropFrame {
+        color: open.frame_color,
+        corner_radius: overview.backdrop_frame.corner_radius,
+        shadow: overview.backdrop_frame.shadow,
+      },
+      accent: open.accent,
       card: overview.card_color,
       surface: overview.surface_color,
       caption: overview.caption_color,
@@ -1156,7 +1167,11 @@ mod tests {
     state: &crate::wm_state::WmState,
     config: &crate::user_config::UserConfig,
   ) -> wm_platform::OverviewFrame {
-    super::overview_frame(state, wm_platform::Color::from_abgr(0), config)
+    let open = super::OpenOverview {
+      accent: wm_platform::Color::from_abgr(0),
+      frame_color: wm_platform::Color::from_abgr(0),
+    };
+    super::overview_frame(state, &open, config)
   }
 
   #[test]

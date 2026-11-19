@@ -52,11 +52,11 @@ use windows::{
       CompositionColorGradientStopCollection,
       CompositionLinearGradientBrush, CompositionMappingMode,
       CompositionPropertySet, CompositionRadialGradientBrush,
-      CompositionRoundedRectangleGeometry, CompositionSpriteShape,
-      CompositionSurfaceBrush, Compositor, ContainerVisual,
-      Desktop::DesktopWindowTarget, InsetClip, KeyFrameAnimation,
-      ScalarKeyFrameAnimation, ShapeVisual, SpriteVisual,
-      Vector2KeyFrameAnimation,
+      CompositionRoundedRectangleGeometry, CompositionShadow,
+      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
+      ContainerVisual, Desktop::DesktopWindowTarget, DropShadow,
+      InsetClip, KeyFrameAnimation, LayerVisual, ScalarKeyFrameAnimation,
+      ShapeVisual, SpriteVisual, Vector2KeyFrameAnimation,
     },
   },
 };
@@ -2339,12 +2339,19 @@ fn build_particle_tree(
   })
 }
 
-/// The window overview's background: the monitor's wallpaper as it is,
-/// with a blurred, tinted copy of it fading in on top.
+/// The window overview's background, as `OverviewBackdropStyle` has it:
 ///
-/// The plain copy is what lets the overview cover the real windows from
-/// its first frame without anything visibly changing: their previews sit
-/// exactly over them, and around them is what the desktop shows anyway.
+/// - `Blur`: the monitor's wallpaper as it is, with a blurred, tinted copy
+///   of it fading in on top.
+/// - `Framed`: the wallpaper, kept sharp, on a rounded panel that the
+///   overview places on the shown workspace every frame, over a plain
+///   color.
+///
+/// Either starts out showing the plain wallpaper, which is what lets the
+/// overview cover the real windows from its first frame without anything
+/// visibly changing: their previews sit exactly over them, and around them
+/// is what the desktop shows anyway. A framed panel starts out over the
+/// whole screen for the same reason.
 pub(crate) struct OverviewBackdrop {
   /// Binds the visual tree to the overview's `HWND`. Kept alive but never
   /// touched again -- dropping it would unbind composition from the
@@ -2355,18 +2362,160 @@ pub(crate) struct OverviewBackdrop {
   /// Holds every layer, to fade the backdrop as a whole.
   root: ContainerVisual,
   sharp: CompositionSurfaceBrush,
+  sharp_sprite: SpriteVisual,
   blurred: CompositionSurfaceBrush,
   blurred_sprite: SpriteVisual,
   tint_brush: CompositionColorBrush,
   tint_sprite: SpriteVisual,
 
-  /// Bounds of the monitor whose wallpaper both brushes show.
+  frame: FramedPanel,
+
+  /// What `rect` covers: the overview window's own bounds.
+  area: Rect,
+
+  /// Bounds of the monitor whose wallpaper the brushes show.
   monitor: Rect,
 
   /// `wallpaper_surface`'s generation counter as of the last bind.
   generation: u64,
 
   blur: f32,
+  framed: Option<crate::OverviewBackdropFrame>,
+}
+
+/// The `framed` backdrop's layers: a plain color, and over it the
+/// wallpaper on a rounded panel.
+struct FramedPanel {
+  surround_brush: CompositionColorBrush,
+  surround_sprite: SpriteVisual,
+  /// A layer, so its shadow follows its rounded clip.
+  panel: LayerVisual,
+  shadow: DropShadow,
+  geometry: CompositionRoundedRectangleGeometry,
+  /// The whole monitor's wallpaper, scaled as the panel shows it.
+  wallpaper: CompositionSurfaceBrush,
+  sprite: SpriteVisual,
+}
+
+impl FramedPanel {
+  /// Builds it, hidden, showing the wallpaper of the monitor `rect` is
+  /// on. Must be called on the composition thread.
+  fn create(
+    compositor: &Compositor,
+    rect: &Rect,
+  ) -> windows::core::Result<Self> {
+    // The same surface as the sharp copy's, from the cache.
+    let (wallpaper, _) = wallpaper_surface::fill_brush(
+      compositor,
+      rect,
+      overview_wallpaper_knobs(0.0),
+      wallpaper_surface::FULL_SCALE,
+    )?;
+    let surround_brush = compositor.CreateColorBrush()?;
+    let surround_sprite = compositor.CreateSpriteVisual()?;
+    surround_sprite.SetBrush(&surround_brush)?;
+    surround_sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    surround_sprite.SetIsVisible(false)?;
+
+    let sprite = compositor.CreateSpriteVisual()?;
+    sprite.SetBrush(&wallpaper)?;
+    let geometry = compositor.CreateRoundedRectangleGeometry()?;
+    let body = compositor.CreateContainerVisual()?;
+    body.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    body
+      .SetClip(&compositor.CreateGeometricClipWithGeometry(&geometry)?)?;
+    body.Children()?.InsertAtTop(&sprite)?;
+
+    let shadow = compositor.CreateDropShadow()?;
+    shadow.SetColor(Color {
+      A: 255,
+      R: 0,
+      G: 0,
+      B: 0,
+    })?;
+    shadow.SetOpacity(0.0)?;
+    let panel = compositor.CreateLayerVisual()?;
+    panel.Children()?.InsertAtTop(&body)?;
+    panel.SetIsVisible(false)?;
+
+    Ok(Self {
+      surround_brush,
+      surround_sprite,
+      panel,
+      shadow,
+      geometry,
+      wallpaper,
+      sprite,
+    })
+  }
+
+  /// Shows it styled by `frame`, or hides it for `None`.
+  fn show(
+    &self,
+    frame: Option<crate::OverviewBackdropFrame>,
+  ) -> windows::core::Result<()> {
+    self.surround_sprite.SetIsVisible(frame.is_some())?;
+    self.panel.SetIsVisible(frame.is_some())?;
+
+    if let Some(frame) = frame {
+      self.surround_brush.SetColor(to_ui_color(frame.color))?;
+      if frame.shadow {
+        self.panel.SetShadow(&self.shadow)?;
+      } else {
+        self.panel.SetShadow(None::<&CompositionShadow>)?;
+      }
+    }
+    Ok(())
+  }
+
+  /// Puts the panel on `panel` (client pixels), showing `area` of
+  /// `monitor` as the overview window does, its corners rounded by
+  /// `corner_radius` and its shadow sized for `scale_factor`.
+  fn place(
+    &self,
+    panel: &crate::overview_layout::RectF,
+    area: &Rect,
+    monitor: &Rect,
+    corner_radius: f32,
+    scale_factor: f32,
+  ) -> windows::core::Result<()> {
+    let size = Vector2 {
+      X: panel.w.max(0.0),
+      Y: panel.h.max(0.0),
+    };
+    self.panel.SetOffset(Vector3 {
+      X: panel.x,
+      Y: panel.y,
+      Z: 0.0,
+    })?;
+    self.panel.SetSize(size)?;
+    self.geometry.SetSize(size)?;
+    let radius = corner_radius.clamp(0.0, size.X.min(size.Y) / 2.0);
+    self.geometry.SetCornerRadius(Vector2 {
+      X: radius,
+      Y: radius,
+    })?;
+
+    let wallpaper = monitor_on_panel(panel, area, monitor);
+    self.sprite.SetOffset(Vector3 {
+      X: wallpaper.x,
+      Y: wallpaper.y,
+      Z: 0.0,
+    })?;
+    self.sprite.SetSize(Vector2 {
+      X: wallpaper.w,
+      Y: wallpaper.h,
+    })?;
+
+    self
+      .shadow
+      .SetBlurRadius(PANEL_SHADOW_BLUR * scale_factor)?;
+    self.shadow.SetOffset(Vector3 {
+      X: 0.0,
+      Y: PANEL_SHADOW_DROP * scale_factor,
+      Z: 0.0,
+    })
+  }
 }
 
 /// Bake knobs of the overview's wallpaper copies: blurred by `blur`, and
@@ -2389,6 +2538,13 @@ const BLURRED_SCALED_FROM: f32 = 8.0;
 
 /// A quarter of the pixels, and so of the memory held while the WM runs.
 const BLURRED_BAKE_SCALE: f32 = 0.5;
+
+/// Strength of the framed panel's shadow once open.
+const PANEL_SHADOW_OPACITY: f32 = 0.55;
+
+/// Blur and drop of the framed panel's shadow, in logical pixels.
+const PANEL_SHADOW_BLUR: f32 = 40.0;
+const PANEL_SHADOW_DROP: f32 = 10.0;
 
 /// Bake scale of the overview's wallpaper copy blurred by `blur`.
 fn blurred_bake_scale(blur: f32) -> f32 {
@@ -2414,85 +2570,142 @@ fn cover_monitor(
   sprite.SetSize(rect_size(monitor))
 }
 
+/// Where `monitor` shows, relative to a `panel` showing `area` (both
+/// screen rects): `area` stretched over the panel, the rest of the
+/// monitor (e.g. under the taskbar) reaching past it.
+#[allow(clippy::cast_precision_loss)]
+fn monitor_on_panel(
+  panel: &crate::overview_layout::RectF,
+  area: &Rect,
+  monitor: &Rect,
+) -> crate::overview_layout::RectF {
+  let scale_x = panel.w / (area.width().max(1) as f32);
+  let scale_y = panel.h / (area.height().max(1) as f32);
+  crate::overview_layout::RectF::new(
+    (monitor.x() - area.x()) as f32 * scale_x,
+    (monitor.y() - area.y()) as f32 * scale_y,
+    monitor.width() as f32 * scale_x,
+    monitor.height() as f32 * scale_y,
+  )
+}
+
 impl OverviewBackdrop {
   /// Builds the background for the overview `hwnd`, which covers `rect`
-  /// and was created with `WS_EX_NOREDIRECTIONBITMAP`. Starts out showing
-  /// the plain wallpaper.
+  /// and was created with `WS_EX_NOREDIRECTIONBITMAP`, styled by `style`.
+  /// Starts out showing the plain wallpaper.
   pub(crate) fn create(
     hwnd: HWND,
     rect: &Rect,
-    blur: f32,
-    tint: crate::Color,
+    style: &crate::OverviewStyle,
   ) -> crate::Result<Self> {
     let hwnd_raw = hwnd.0;
     let rect = rect.clone();
+    let blur = style.backdrop_blur;
+    let tint = style.backdrop_tint;
+    let framed = (style.backdrop_style
+      == crate::OverviewBackdropStyle::Framed)
+      .then_some(style.backdrop_frame);
 
-    with_composition_thread(move |compositor, queue| {
-      // SAFETY: `hwnd` is a valid, already-created top-level window.
-      let target = unsafe {
-        compositor
-          .cast::<ICompositorDesktopInterop>()?
-          .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
-      };
+    let mut backdrop =
+      with_composition_thread(move |compositor, queue| {
+        // SAFETY: `hwnd` is a valid, already-created top-level window.
+        let target = unsafe {
+          compositor
+            .cast::<ICompositorDesktopInterop>()?
+            .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
+        };
 
-      // Parallax 1: the image stays put against the desktop.
-      let (sharp, monitor) = wallpaper_surface::crop_brush(
-        &compositor,
-        &rect,
-        overview_wallpaper_knobs(0.0),
-        1.0,
-      )?;
-      let (blurred, _) = wallpaper_surface::fill_brush(
-        &compositor,
-        &rect,
-        overview_wallpaper_knobs(blur),
-        blurred_bake_scale(blur),
-      )?;
-      let tint_brush =
-        compositor.CreateColorBrushWithColor(to_ui_color(tint))?;
+        // Parallax 1: the image stays put against the desktop.
+        let (sharp, monitor) = wallpaper_surface::crop_brush(
+          &compositor,
+          &rect,
+          overview_wallpaper_knobs(0.0),
+          1.0,
+        )?;
+        let (blurred, _) = wallpaper_surface::fill_brush(
+          &compositor,
+          &rect,
+          overview_wallpaper_knobs(blur),
+          blurred_bake_scale(blur),
+        )?;
+        let tint_brush =
+          compositor.CreateColorBrushWithColor(to_ui_color(tint))?;
+        let frame = FramedPanel::create(&compositor, &rect)?;
 
-      let sharp_sprite = compositor.CreateSpriteVisual()?;
-      sharp_sprite.SetBrush(&sharp)?;
-      let blurred_sprite = compositor.CreateSpriteVisual()?;
-      blurred_sprite.SetBrush(&blurred)?;
-      blurred_sprite.SetOpacity(0.0)?;
-      cover_monitor(&blurred_sprite, &rect, &monitor)?;
-      let tint_sprite = compositor.CreateSpriteVisual()?;
-      tint_sprite.SetBrush(&tint_brush)?;
-      tint_sprite.SetOpacity(0.0)?;
+        let sharp_sprite = compositor.CreateSpriteVisual()?;
+        sharp_sprite.SetBrush(&sharp)?;
+        let blurred_sprite = compositor.CreateSpriteVisual()?;
+        blurred_sprite.SetBrush(&blurred)?;
+        blurred_sprite.SetOpacity(0.0)?;
+        cover_monitor(&blurred_sprite, &rect, &monitor)?;
+        let tint_sprite = compositor.CreateSpriteVisual()?;
+        tint_sprite.SetBrush(&tint_brush)?;
+        tint_sprite.SetOpacity(0.0)?;
+        let root = compositor.CreateContainerVisual()?;
+        root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+        for sprite in [&sharp_sprite, &tint_sprite] {
+          sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+        }
+        for sprite in [
+          &sharp_sprite,
+          &blurred_sprite,
+          &tint_sprite,
+          &frame.surround_sprite,
+        ] {
+          root.Children()?.InsertAtTop(sprite)?;
+        }
+        root.Children()?.InsertAtTop(&frame.panel)?;
+        target.SetRoot(&root)?;
 
-      let root = compositor.CreateContainerVisual()?;
-      root.SetRelativeSizeAdjustment(FILL_PARENT)?;
-      for sprite in [&sharp_sprite, &tint_sprite] {
-        sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
-      }
-      for sprite in [&sharp_sprite, &blurred_sprite, &tint_sprite] {
-        root.Children()?.InsertAtTop(sprite)?;
-      }
-      target.SetRoot(&root)?;
+        Ok(Self {
+          _target: target,
+          compositor: compositor.clone(),
+          queue: queue.clone(),
+          root,
+          sharp,
+          sharp_sprite,
+          blurred,
+          blurred_sprite,
+          tint_brush,
+          tint_sprite,
+          frame,
+          area: rect,
+          monitor,
+          generation: wallpaper_surface::generation(),
+          blur,
+          framed: None,
+        })
+      })?;
 
-      Ok(Self {
-        _target: target,
-        compositor: compositor.clone(),
-        queue: queue.clone(),
-        root,
-        sharp,
-        blurred,
-        blurred_sprite,
-        tint_brush,
-        tint_sprite,
-        monitor,
-        generation: wallpaper_surface::generation(),
-        blur,
-      })
-    })
+    backdrop.set_framed(framed)?;
+    Ok(backdrop)
   }
 
-  /// Fades the blurred, tinted copy in, from 0 (plain wallpaper) to 1.
+  /// Shows the blurred backdrop's layers or the framed one's.
+  fn set_framed(
+    &mut self,
+    framed: Option<crate::OverviewBackdropFrame>,
+  ) -> crate::Result<()> {
+    for sprite in
+      [&self.sharp_sprite, &self.blurred_sprite, &self.tint_sprite]
+    {
+      sprite.SetIsVisible(framed.is_none())?;
+    }
+    self.frame.show(framed)?;
+    self.framed = framed;
+    Ok(())
+  }
+
+  /// Fades the blurred, tinted copy in, or the framed panel's shadow,
+  /// from 0 (plain wallpaper) to 1.
   pub(crate) fn set_progress(&self, progress: f32) -> crate::Result<()> {
     let progress = progress.clamp(0.0, 1.0);
     self.blurred_sprite.SetOpacity(progress)?;
     self.tint_sprite.SetOpacity(progress)?;
+    self
+      .frame
+      .shadow
+      .SetOpacity(PANEL_SHADOW_OPACITY * progress)?;
     Ok(())
   }
 
@@ -2503,16 +2716,46 @@ impl OverviewBackdrop {
     Ok(())
   }
 
-  /// Shows the wallpaper under `rect` with the given blur and tint,
-  /// re-baking only when the monitor, the wallpaper or the blur changed.
+  /// Whether it shows the framed panel, which then needs `place_panel`.
+  pub(crate) fn is_framed(&self) -> bool {
+    self.framed.is_some()
+  }
+
+  /// Puts the framed panel on `panel` (client pixels), its corners
+  /// rounded by `corner_radius` and its shadow sized for `scale_factor`.
+  pub(crate) fn place_panel(
+    &self,
+    panel: &crate::overview_layout::RectF,
+    corner_radius: f32,
+    scale_factor: f32,
+  ) -> crate::Result<()> {
+    self.frame.place(
+      panel,
+      &self.area,
+      &self.monitor,
+      corner_radius,
+      scale_factor,
+    )?;
+    Ok(())
+  }
+
+  /// Shows the wallpaper under `rect` styled by `style`, re-baking only
+  /// when the monitor, the wallpaper or the blur changed.
   #[allow(clippy::float_cmp)]
   pub(crate) fn update(
     &mut self,
     rect: &Rect,
-    blur: f32,
-    tint: crate::Color,
+    style: &crate::OverviewStyle,
   ) -> crate::Result<()> {
-    self.tint_brush.SetColor(to_ui_color(tint))?;
+    let blur = style.backdrop_blur;
+    let framed = (style.backdrop_style
+      == crate::OverviewBackdropStyle::Framed)
+      .then_some(style.backdrop_frame);
+
+    self.tint_brush.SetColor(to_ui_color(style.backdrop_tint))?;
+    if framed != self.framed {
+      self.set_framed(framed)?;
+    }
     wallpaper_surface::poll_for_changes();
 
     let current = wallpaper_surface::generation();
@@ -2523,28 +2766,36 @@ impl OverviewBackdrop {
       || blur != self.blur
     {
       let compositor = self.compositor.clone();
-      let (sharp, blurred) = (self.sharp.clone(), self.blurred.clone());
+      let (sharp, blurred, panel_wallpaper) = (
+        self.sharp.clone(),
+        self.blurred.clone(),
+        self.frame.wallpaper.clone(),
+      );
       let target = monitor.clone();
 
       // Queued, not awaited: the new image showing a frame later beats
       // blocking the overview until it is baked.
       dispatch_on_composition_thread(&self.queue, move || {
-        let rebound = wallpaper_surface::rebind(
-          &compositor,
-          &sharp,
-          &target,
-          overview_wallpaper_knobs(0.0),
-          wallpaper_surface::FULL_SCALE,
-        )
-        .and_then(|()| {
-          wallpaper_surface::rebind(
-            &compositor,
-            &blurred,
-            &target,
-            overview_wallpaper_knobs(blur),
-            blurred_bake_scale(blur),
-          )
-        });
+        let rebound = [&sharp, &panel_wallpaper]
+          .into_iter()
+          .try_for_each(|brush| {
+            wallpaper_surface::rebind(
+              &compositor,
+              brush,
+              &target,
+              overview_wallpaper_knobs(0.0),
+              wallpaper_surface::FULL_SCALE,
+            )
+          })
+          .and_then(|()| {
+            wallpaper_surface::rebind(
+              &compositor,
+              &blurred,
+              &target,
+              overview_wallpaper_knobs(blur),
+              blurred_bake_scale(blur),
+            )
+          });
 
         if let Err(err) = rebound {
           tracing::warn!("Overview backdrop re-bind failed: {err}.");
@@ -2556,6 +2807,7 @@ impl OverviewBackdrop {
       self.blur = blur;
     }
 
+    self.area = rect.clone();
     wallpaper_surface::set_crop(&self.sharp, rect, &self.monitor, 1.0);
     cover_monitor(&self.blurred_sprite, rect, &self.monitor)?;
     Ok(())
@@ -2568,9 +2820,27 @@ mod tests {
 
   use super::{
     blurred_bake_scale, glow_pieces, glow_stop_count, glow_stops,
-    rim_geometry, ring_geometry, wallpaper_surface::FULL_SCALE, GlowPiece,
-    Ring, BLURRED_BAKE_SCALE,
+    monitor_on_panel, rim_geometry, ring_geometry,
+    wallpaper_surface::FULL_SCALE, GlowPiece, Ring, BLURRED_BAKE_SCALE,
   };
+  use crate::{overview_layout::RectF, Rect};
+
+  /// The working area fills the panel, and the taskbar's strip of the
+  /// monitor reaches past it, scaled alike.
+  #[test]
+  fn panel_shows_the_working_area_of_its_monitor() {
+    let monitor = Rect::from_xy(0, 0, 2000, 1000);
+    let area = Rect::from_xy(0, 0, 2000, 900);
+    let panel = RectF::new(100.0, 50.0, 1000.0, 450.0);
+
+    let shown = monitor_on_panel(&panel, &area, &monitor);
+    assert_eq!(shown, RectF::new(0.0, 0.0, 1000.0, 500.0));
+
+    // A working area below a top taskbar starts the wallpaper above it.
+    let area = Rect::from_xy(0, 100, 2000, 900);
+    let shown = monitor_on_panel(&panel, &area, &monitor);
+    assert_eq!(shown, RectF::new(0.0, -50.0, 1000.0, 500.0));
+  }
 
   /// A light blur still shows detail, which a smaller surface would
   /// soften further.

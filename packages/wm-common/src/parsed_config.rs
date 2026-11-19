@@ -4,9 +4,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
-  OpacityValue, OverviewEffects, OverviewSwitchStyle,
-  OverviewWindowHighlight, OverviewZoomStyle, ParticleEffects,
-  ParticleLook, RectDelta,
+  OpacityValue, OverviewBackdropStyle, OverviewEffects,
+  OverviewSwitchStyle, OverviewWindowHighlight, OverviewZoomStyle,
+  ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -678,6 +678,13 @@ pub struct OverviewConfig {
   /// Tint over the blurred wallpaper; its alpha is how dark it gets.
   pub backdrop_tint: Color,
 
+  /// What shows behind the cards: the blurred wallpaper, or the sharp
+  /// wallpaper framed on a panel.
+  pub backdrop_style: OverviewBackdropStyle,
+
+  /// Look of the `framed` backdrop.
+  pub backdrop_frame: OverviewBackdropFrameConfig,
+
   /// Selection and highlights, given like a border's color (see
   /// [`BorderColorSource`]). The focused window's border color when
   /// `None`.
@@ -752,6 +759,31 @@ pub struct OverviewConfig {
   pub window_highlight: OverviewWindowHighlight,
 }
 
+/// Look of the overview's `framed` backdrop.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewBackdropFrameConfig {
+  /// Around the panel, given like a border's color (see
+  /// [`BorderColorSource`]), e.g. `"accent"` for the OS accent color.
+  pub color: BorderColorSource,
+
+  /// Of the panel's corners once open, in logical pixels.
+  pub corner_radius: f32,
+
+  /// Whether the panel casts a soft shadow.
+  pub shadow: bool,
+}
+
+impl Default for OverviewBackdropFrameConfig {
+  fn default() -> Self {
+    Self {
+      color: BorderColorSource::Value("#161418ff".to_string()),
+      corner_radius: 16.0,
+      shadow: true,
+    }
+  }
+}
+
 /// How the overview lays out the workspaces.
 #[derive(
   Clone,
@@ -801,6 +833,8 @@ impl Default for OverviewConfig {
     OverviewConfig {
       backdrop_blur: 40.0,
       backdrop_tint: color(0x0000_0066),
+      backdrop_style: OverviewBackdropStyle::default(),
+      backdrop_frame: OverviewBackdropFrameConfig::default(),
       accent_color: None,
       card_color: color(0x221e_24e6),
       surface_color: color(0x2d29_2eff),

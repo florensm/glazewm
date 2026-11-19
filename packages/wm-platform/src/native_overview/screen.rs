@@ -354,22 +354,15 @@ impl Screen {
   }
 
   fn sync_backdrop(&mut self, frame: &ScreenFrame, progress: f32) {
-    let style = &frame.style;
     let result = match &mut self.backdrop {
-      Some(backdrop) => backdrop.update(
-        &frame.rect,
-        style.backdrop_blur,
-        style.backdrop_tint,
-      ),
-      None => OverviewBackdrop::create(
-        self.hwnd,
-        &frame.rect,
-        style.backdrop_blur,
-        style.backdrop_tint,
-      )
-      .map(|backdrop| {
-        self.backdrop = Some(backdrop);
-      }),
+      Some(backdrop) => backdrop.update(&frame.rect, &frame.style),
+      None => {
+        OverviewBackdrop::create(self.hwnd, &frame.rect, &frame.style).map(
+          |backdrop| {
+            self.backdrop = Some(backdrop);
+          },
+        )
+      }
     };
 
     if let Err(err) = result {
@@ -1159,6 +1152,7 @@ impl Screen {
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
     let fade = context.fade;
     let layout = self.focus.layout;
+    self.place_backdrop(&context);
 
     // The activities' miniatures are too small to zoom out of: what the
     // zoom sets off from is the scene.
@@ -1256,6 +1250,46 @@ impl Screen {
     self.retired.clear();
 
     is_gliding
+  }
+
+  /// Puts the framed backdrop's panel where `backdrop_panel` has it, its
+  /// corners rounding off as it shrinks out of the full screen.
+  fn place_backdrop(&self, context: &PlaceContext) {
+    let (Some(backdrop), Some(style)) = (&self.backdrop, self.style())
+    else {
+      return;
+    };
+    if !backdrop.is_framed() {
+      return;
+    }
+    let Some(panel) = self.backdrop_panel(&context.camera) else {
+      return;
+    };
+
+    let scale_factor = self.metrics.scale_factor;
+    let radius =
+      style.backdrop_frame.corner_radius * scale_factor * context.fade;
+    if let Err(err) = backdrop.place_panel(&panel, radius, scale_factor) {
+      tracing::warn!("Failed to place the overview backdrop: {err}");
+    }
+  }
+
+  /// Where the framed backdrop's panel shows now: where the workspace
+  /// zoomed out of or into shows its monitor, else the shown one (in the
+  /// activities, the large one; in the stack, the selected card).
+  fn backdrop_panel(&self, camera: &Camera) -> Option<RectF> {
+    let rect = match (self.zoom, self.focus.layout) {
+      (Some((zoom, _)), _) => self.zoom_rect(zoom.card),
+      (None, OverviewLayoutMode::Activities) => self
+        .overlays
+        .as_ref()
+        .map(|overlays| overlays.workspace_rect.value())
+        .or_else(|| self.zoom_rect(self.focus.selected)),
+      (None, OverviewLayoutMode::Stack) => {
+        self.zoom_rect(self.focus.selected)
+      }
+    }?;
+    Some(camera.apply(&rect))
   }
 
   /// Where the search box's picture shows, its shadow included.

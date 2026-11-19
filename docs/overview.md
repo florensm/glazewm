@@ -8,7 +8,8 @@ them by title, or close them.
 On open, each monitor's overview zooms out of the workspace it shows, as
 one piece, as hyprexpo and niri do: the windows start exactly where they
 are on screen and shrink into the layout, while the wallpaper behind them
-blurs; the names and highlights only fade in as it settles, and fade out
+blurs (or, with `backdrop_style: "framed"`, shrinks with them; see
+[Backdrop](#backdrop)); the names and highlights only fade in as it settles, and fade out
 as soon as it closes. On close, it zooms back into the workspace you
 picked, by keyboard or mouse alike, and on the other monitors (or all of
 them, when cancelled) into the workspace they show, until the windows sit
@@ -327,6 +328,21 @@ fades stay within their range.
 | `fade` | Fades in in place as the last one fades out. |
 | `miniature` | Its windows fly out of its miniature, the last one's back into theirs. |
 
+
+### Backdrop
+
+| `backdrop_style` | Behind the overview |
+| --- | --- |
+| `blur` (default) | The wallpaper over the whole screen, blurred by `backdrop_blur` and tinted by `backdrop_tint`. |
+| `framed` | The wallpaper, sharp, on a rounded panel over `backdrop_frame.color`: the desktop shrinks as a whole. |
+
+The framed panel sits where the shown workspace does: in the activities,
+behind the large workspace, sliding with it; in the stack, under the
+selected card, whose background then covers it. It starts out over the
+whole screen and shrinks with the zoom, its corners rounding off and its
+shadow fading in as it does, so opening and closing look the same as the
+`blur` style's until the panel is in place.
+
 ## Config
 
 ```yaml
@@ -336,6 +352,19 @@ overview:
 
   # Tint over the blurred wallpaper; its alpha is how dark it gets.
   backdrop_tint: "#00000066"
+
+  # What shows behind the cards: "blur" (the wallpaper blurred and tinted,
+  # over the whole screen) or "framed" (the wallpaper, sharp, on a rounded
+  # panel where the shown workspace is; see "Backdrop" above).
+  backdrop_style: "blur"
+
+  # Look of the "framed" backdrop. `color` is around the panel, given
+  # like `accent_color` ("accent" for the OS accent color).
+  # `corner_radius` is in logical pixels.
+  backdrop_frame:
+    color: "#161418ff"
+    corner_radius: 16
+    shadow: true
 
   # Selection and highlights: a hex color, "accent" for the OS accent
   # color, or a `{ file, key }` mapping, as for border colors. Left out, it
@@ -512,7 +541,9 @@ moves things around and never redraws pixels:
   until their replacements are placed, so nothing blinks out in between.
 - The backdrop is a composition visual of the wallpaper, baked as for the
   window backdrops: sharp at first, with a blurred copy and the tint
-  fading in over it.
+  fading in over it. A framed backdrop instead moves and scales a sharp
+  copy, clipped to a rounded rect, on every frame of the zoom, as the
+  thumbnails are; its shadow is a `LayerVisual`'s drop shadow.
 
 Nothing animates behind the overview: a window moved while it is on screen
 lands at once, and its preview follows it there.

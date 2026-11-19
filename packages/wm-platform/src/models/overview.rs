@@ -147,6 +147,12 @@ pub struct OverviewStyle {
   /// Tint over the blurred wallpaper.
   pub backdrop_tint: Color,
 
+  /// What shows behind the cards.
+  pub backdrop_style: OverviewBackdropStyle,
+
+  /// Look of the `framed` backdrop.
+  pub backdrop_frame: OverviewBackdropFrame,
+
   /// Selection and highlights.
   pub accent: Color,
 
@@ -201,6 +207,34 @@ pub struct OverviewStyle {
 
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
+}
+
+/// What the overview shows behind its cards.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewBackdropStyle {
+  /// The wallpaper over the whole screen, blurred and tinted.
+  #[default]
+  Blur,
+
+  /// The wallpaper kept sharp on a rounded panel where the shown
+  /// workspace sits, over a plain color: the desktop shrunk as a whole.
+  Framed,
+}
+
+/// Look of the `framed` backdrop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverviewBackdropFrame {
+  /// Around the panel.
+  pub color: Color,
+
+  /// Of the panel's corners once open, in logical pixels.
+  pub corner_radius: f32,
+
+  /// Whether the panel casts a soft shadow.
+  pub shadow: bool,
 }
 
 /// How the overview opens and closes.
