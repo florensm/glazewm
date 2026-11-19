@@ -9,6 +9,7 @@ use super::{
   scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
 };
 use crate::{
+  dwm_thumbnail::Thumbnail,
   overview_chrome::{
     card_radius, draw_label, draw_note, draw_tag, label_size, note_size,
     tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
@@ -17,14 +18,14 @@ use crate::{
     chrome_opacity, Camera, CardMetrics, RectF, SpringRect, LABEL_GAP,
   },
   overview_overlays::{Highlight, Tag},
-  overview_state::Mode,
-  overview_thumbnails::{Picture, Thumbnail},
+  overview_state::{Mode, Toward},
+  overview_thumbnails::Picture,
   OverviewLayoutMode, OverviewStyle,
 };
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
 /// what it highlights, in logical pixels.
-const RING_RADIUS: f32 = 16.0;
+pub(super) const RING_RADIUS: f32 = 16.0;
 const RING_GAP: f32 = 5.0;
 
 /// Corner radius a window's highlight is drawn with, in logical pixels.
@@ -55,6 +56,9 @@ pub(super) struct Overlays {
   /// Around the picked window.
   pub(super) window_ring: Highlight<isize>,
 
+  /// Around the half of a window a dragged window would land in.
+  pub(super) drop_ring: Highlight<(isize, Toward)>,
+
   /// The picked window's title, under it.
   pub(super) tag: Tag<TagPicture>,
 
@@ -78,6 +82,7 @@ impl Overlays {
       workspace_ring: Highlight::new(highlight_ms)?,
       hover_ring: Highlight::new(highlight_ms)?,
       window_ring: Highlight::new(highlight_ms)?,
+      drop_ring: Highlight::new(highlight_ms)?,
       tag: Tag::new(highlight_ms)?,
       note: Tag::new(highlight_ms)?,
       workspace_rect: SpringRect::new(RectF::default(), switch_ms),
@@ -86,15 +91,22 @@ impl Overlays {
   }
 
   /// Glides the highlights and tags over `highlight_ms`, and changes the
-  /// shown workspace's area over `switch_ms`, from now on.
-  pub(super) fn retune(&mut self, switch_ms: f32, highlight_ms: f32) {
-    self.screen_ring.glide.retune(highlight_ms);
-    self.workspace_ring.glide.retune(highlight_ms);
-    self.hover_ring.glide.retune(highlight_ms);
-    self.window_ring.glide.retune(highlight_ms);
-    self.tag.glide.retune(highlight_ms);
-    self.note.glide.retune(highlight_ms);
-    self.workspace_rect.retune(switch_ms);
+  /// shown workspace's area over `switch_ms`, overshooting by `bounce`,
+  /// from now on.
+  pub(super) fn retune(
+    &mut self,
+    switch_ms: f32,
+    highlight_ms: f32,
+    bounce: f32,
+  ) {
+    self.screen_ring.glide.retune(highlight_ms, bounce);
+    self.workspace_ring.glide.retune(highlight_ms, bounce);
+    self.hover_ring.glide.retune(highlight_ms, bounce);
+    self.window_ring.glide.retune(highlight_ms, bounce);
+    self.drop_ring.glide.retune(highlight_ms, bounce);
+    self.tag.glide.retune(highlight_ms, bounce);
+    self.note.glide.retune(highlight_ms, bounce);
+    self.workspace_rect.retune(switch_ms, bounce);
   }
 
   /// Registers what `layout` shows of them on `host`, bottom to top.
@@ -117,6 +129,7 @@ impl Overlays {
     self.hover_ring.slices.register(host);
     self.workspace_ring.slices.register(host);
     self.window_ring.slices.register(host);
+    self.drop_ring.slices.register(host);
     self.tag.picture.thumbnail =
       Thumbnail::register(host, self.tag.picture.window);
 
@@ -136,6 +149,7 @@ impl Overlays {
       &mut self.hover_ring.slices,
       &mut self.workspace_ring.slices,
       &mut self.window_ring.slices,
+      &mut self.drop_ring.slices,
     ] {
       slices.retire(retired);
     }
@@ -169,6 +183,11 @@ impl Overlays {
       px(3.0).max(1),
       accent,
     ));
+    self.drop_ring.slices.draw(SliceLook::ring(
+      px(WINDOW_RING_RADIUS),
+      px(3.0).max(1),
+      accent,
+    ));
   }
 
   /// Hides every highlight at once, e.g. for a new open.
@@ -177,6 +196,7 @@ impl Overlays {
     self.workspace_ring.glide.reset();
     self.hover_ring.glide.reset();
     self.window_ring.glide.reset();
+    self.drop_ring.glide.reset();
     self.tag.glide.reset();
     self.note.glide.reset();
   }
@@ -198,6 +218,7 @@ impl Overlays {
       self.workspace_ring.glide.step(dt),
       self.hover_ring.glide.step(dt),
       self.window_ring.glide.step(dt),
+      self.drop_ring.glide.step(dt),
       self.tag.glide.step(dt),
       self.note.glide.step(dt),
       self.workspace_rect.step(dt),
@@ -305,7 +326,8 @@ impl Screen {
   /// cards.
   pub(super) fn tag_picture(&self) -> Option<TagPicture> {
     let focus = &self.focus;
-    if !focus.layout.shows_before_going() || focus.mode != Mode::Windows {
+    if !focus.layout.shows_selected_large() || focus.mode != Mode::Windows
+    {
       return None;
     }
 
@@ -393,30 +415,64 @@ impl Screen {
     hwnd: isize,
     context: &PlaceContext,
   ) -> Option<RectF> {
-    let selected = self.focus.selected;
+    self.window_rect_in(self.focus.selected, hwnd, context, 0.0)
+  }
 
-    if self.focus.layout.has_scene() {
+  /// Where window `hwnd` of workspace `index` shows now: in the scene for
+  /// the activities' shown workspace, or else on its card, shifted by
+  /// `shift` in the activities.
+  pub(super) fn window_rect_in(
+    &self,
+    index: usize,
+    hwnd: isize,
+    context: &PlaceContext,
+    shift: f32,
+  ) -> Option<RectF> {
+    let layout = self.focus.layout;
+
+    if layout.has_scene() && index == self.focus.selected {
       let window = self
         .scenes
-        .get(selected)?
+        .get(index)?
         .windows
         .iter()
         .find(|window| window.preview.hwnd == hwnd)?;
       return Some(scene_window_rect(
         window,
-        context.zoom_card == Some(selected),
-        context.fade,
+        context.zoom_card == Some(index),
+        context.reach,
+        &self.area,
       ));
     }
 
-    let card = self.cards.get(selected)?;
+    let camera = if layout == OverviewLayoutMode::Activities {
+      Camera::shifted(0.0, shift)
+    } else {
+      context.camera
+    };
+    let card = self.cards.get(index)?;
     let preview =
       card.previews.iter().find(|preview| preview.hwnd == hwnd)?;
     Some(
-      context
-        .camera
+      camera
         .apply(&card.placement().map(&card.metrics, &preview.tile.rect)),
     )
+  }
+
+  /// Workspace the selection's ring is around: where a window would drop
+  /// (on what it is dragged over, or where it is carried to), or else the
+  /// selection, on the screen with the keyboard and but for the stage,
+  /// whose selection is the workspace shown large.
+  pub(super) fn ringed(&self) -> Option<usize> {
+    let focus = &self.focus;
+    if focus.layout == OverviewLayoutMode::Stage
+      || focus.is_dragging
+      || !focus.is_active
+    {
+      focus.drop
+    } else {
+      focus.drop.or(Some(focus.selected))
+    }
   }
 
   /// Glides the highlights to what they highlight now and places them,
@@ -436,18 +492,8 @@ impl Screen {
     let chrome = chrome_opacity(fade);
     let px = |length: f32| length * self.metrics.scale_factor;
 
-    // Where a window would drop: on what it is dragged over, or where it
-    // is carried to. The selection shows on the screen with the keyboard,
-    // and in the stage as the workspace shown large.
-    let drop = focus.drop;
-    let ringed = if layout == OverviewLayoutMode::Stage
-      || focus.is_dragging
-      || !focus.is_active
-    {
-      drop
-    } else {
-      drop.or(Some(selected))
-    };
+    let ringed = self.ringed();
+    let jumps = focus.is_dragging || self.was_dragging;
     let ring_target = ringed.and_then(|index| {
       self
         .workspace_rect(index, context, shift)
@@ -476,8 +522,16 @@ impl Screen {
     let window_target = picked_rect
       .map(|(hwnd, rect)| (hwnd, rect.inset(-px(RING_GAP)), 1.0));
 
+    // The half of the window a dragged window would land beside.
+    let drop_target = focus.drop.zip(focus.drop_beside).and_then(
+      |(index, (hwnd, side))| {
+        let rect = self.window_rect_in(index, hwnd, context, shift)?;
+        Some(((hwnd, side), half(&rect, side).inset(px(2.0)), 1.0))
+      },
+    );
+
     let tag_target = picked_rect
-      .filter(|_| layout.shows_before_going())
+      .filter(|_| layout.shows_selected_large())
       .zip(self.overlays.as_ref())
       .map(|((hwnd, rect), overlays)| {
         let (width, height) = to_f32_size(overlays.tag.picture.size());
@@ -524,12 +578,24 @@ impl Screen {
 
     is_gliding |= overlays.screen_ring.glide.follow(screen_target, now);
     overlays.screen_ring.place(&view, chrome);
-    is_gliding |= overlays.workspace_ring.glide.follow(ring_target, now);
+    // While a window is dragged, and as it is let go of, the ring shows
+    // on where it would drop rather than chasing the cursor around.
+    is_gliding |= if jumps {
+      overlays
+        .workspace_ring
+        .glide
+        .follow_in_place(ring_target, now)
+    } else {
+      overlays.workspace_ring.glide.follow(ring_target, now)
+    };
     overlays.workspace_ring.place(&view, chrome);
     is_gliding |= overlays.hover_ring.glide.follow(hover_target, now);
     overlays.hover_ring.place(&view, chrome);
     is_gliding |= overlays.window_ring.glide.follow(window_target, now);
     overlays.window_ring.place(&view, chrome);
+    is_gliding |=
+      overlays.drop_ring.glide.follow_in_place(drop_target, now);
+    overlays.drop_ring.place(&view, chrome);
 
     for (label, rect) in overlays.labels.iter_mut().zip(&label_rects) {
       if let Some((rect, opacity)) = rect {
@@ -583,11 +649,27 @@ impl Screen {
           (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap)
         };
 
+        // In with its card as it pops in.
+        let appear =
+          context.entrance.map_or(1.0, |(entrance, elapsed)| {
+            entrance.appear(index, elapsed).0
+          });
         Some((
           RectF::new(x, y, width, height),
-          chrome_opacity(context.fade) * card.alpha.value,
+          chrome_opacity(context.fade) * card.alpha.value * appear,
         ))
       })
       .collect()
+  }
+}
+
+/// The half of `rect` on `side`.
+fn half(rect: &RectF, side: Toward) -> RectF {
+  let (w, h) = (rect.w / 2.0, rect.h / 2.0);
+  match side {
+    Toward::Left => RectF::new(rect.x, rect.y, w, rect.h),
+    Toward::Right => RectF::new(rect.x + w, rect.y, w, rect.h),
+    Toward::Up => RectF::new(rect.x, rect.y, rect.w, h),
+    Toward::Down => RectF::new(rect.x, rect.y + h, rect.w, h),
   }
 }

@@ -62,6 +62,8 @@ mod sys_tray;
 mod tab_bars;
 mod traits;
 mod user_config;
+#[cfg(target_os = "windows")]
+mod window_overlays;
 mod wm;
 mod wm_state;
 
@@ -240,6 +242,10 @@ async fn start_wm(
     let closing_check = wm.next_closing_check();
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
+    #[cfg(target_os = "windows")]
+    let hot_corner = wm.state.overview.hot_corner_deadline();
+    #[cfg(not(target_os = "windows"))]
+    let hot_corner = None;
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -306,6 +312,7 @@ async fn start_wm(
       () = sleep_until(closing_check) => {
         wm.process_closing_windows(&mut config)
       },
+      () = sleep_until(hot_corner) => wm.process_hot_corner(&config),
       () = tick_if_some(&mut sent_message_interval) => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
@@ -351,9 +358,12 @@ struct Listeners {
   display: DisplayListener,
 }
 
-/// Mouse events to listen for under `config`.
+/// Mouse events to listen for under `config`: moves only for focus
+/// following the cursor, or a hot corner opening the overview.
 fn mouse_event_kinds(config: &UserConfig) -> &'static [MouseEventKind] {
-  if config.value.general.focus_follows_cursor {
+  if config.value.general.focus_follows_cursor
+    || config.value.overview.hot_corner != wm_common::HotCorner::None
+  {
     &[MouseEventKind::Move, MouseEventKind::LeftButtonUp]
   } else {
     &[MouseEventKind::LeftButtonUp]
@@ -571,7 +581,13 @@ fn catch_up_before_frame(
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`.
+/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`, the
+/// overview's trace of picks to `~/.glzr/glazewm/overview.log`, and with
+/// `--verbose` every log to `~/.glzr/glazewm/debug.log`.
+///
+/// The latter is the only way to read verbose logs of a release build:
+/// `glazewm start` launches the WM detached, and the release WM has no
+/// console, so its stdout can't be redirected.
 /// `WARN` is included (not just `ERROR`) so perf-diagnostic warnings (e.g.
 /// slow synchronous window repositions) are captured even when the WM is
 /// running detached from a terminal, without needing `-v` for the full
@@ -602,6 +618,26 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       )
   });
 
+  // A few lines per pick, so always on: kept apart from the rest, as the
+  // WM may be started without `--verbose`.
+  let overview_layer = fmt::Layer::new()
+    .with_ansi(false)
+    .with_writer(tracing_appender::rolling::never(
+      &error_log_dir,
+      "overview.log",
+    ))
+    .with_filter(
+      tracing_subscriber::filter::Targets::new()
+        .with_target(wm_platform::OVERVIEW_LOG_TARGET, Level::DEBUG),
+    );
+
+  let debug_layer = (verbosity.level() == Level::DEBUG).then(|| {
+    fmt::Layer::new().with_ansi(false).with_writer(
+      tracing_appender::rolling::never(&error_log_dir, "debug.log")
+        .with_max_level(Level::DEBUG),
+    )
+  });
+
   let subscriber = tracing_subscriber::registry()
     .with(
       // Output to stdout with specified verbosity level.
@@ -613,7 +649,9 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       fmt::Layer::new()
         .with_writer(error_writer.with_max_level(Level::WARN)),
     )
-    .with(perf_layer);
+    .with(perf_layer)
+    .with(overview_layer)
+    .with(debug_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;
 

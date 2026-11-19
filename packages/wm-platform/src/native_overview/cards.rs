@@ -5,7 +5,7 @@ use windows::Win32::Foundation::HWND;
 
 use super::{to_ms, Card, Screen};
 use crate::{
-  overview_chrome::{with_alpha, CardPicture, TilePicture},
+  overview_chrome::{fade, with_alpha, CardPicture, TilePicture},
   overview_layout::{
     CardLook, CardSlot, CardView, GridCells, RectF, Spring,
   },
@@ -14,6 +14,10 @@ use crate::{
   overview_thumbnails::{visible_frame_on_screen, Picture, Preview},
   OverviewStyle, OverviewWindow, OverviewWorkspace, TabFrame,
 };
+
+/// Width, in logical pixels, a window's own border is drawn at on a card,
+/// where at scale it would be too thin to see.
+const CARD_BORDER_WIDTH: f32 = 1.5;
 
 /// Where window `hwnd` of `workspace` is on screen: measured for the
 /// displayed workspace's windows in view, so a zoom starts and ends
@@ -44,6 +48,7 @@ impl Screen {
     let mut spare = std::mem::take(&mut self.spare);
     let mut is_changed = cards.len() != frame.workspaces.len();
     let settle_ms = to_ms(frame.style.switch_duration_ms);
+    let bounce = frame.style.bounce;
 
     for (index, workspace) in frame.workspaces.iter().enumerate() {
       let content = RectF::from_rect(&workspace.content_rect);
@@ -103,7 +108,7 @@ impl Screen {
         tab_bars.iter().map(|bar| bar.frame.anchor).ne(old_anchors);
 
       if let Some(card) = cards.get_mut(index) {
-        card.retune(settle_ms);
+        card.retune(settle_ms, bounce);
         card.metrics = metrics;
         card.view = view;
         card.previews = previews;
@@ -117,9 +122,9 @@ impl Screen {
       };
 
       cards.push(Card {
-        cx: Spring::new(0.0, settle_ms, 0.25),
-        cy: Spring::new(0.0, settle_ms, 0.25),
-        scale: Spring::new(1.0, settle_ms, 0.001),
+        cx: Spring::new(0.0, settle_ms, 0.25).with_bounce(bounce),
+        cy: Spring::new(0.0, settle_ms, 0.25).with_bounce(bounce),
+        scale: Spring::new(1.0, settle_ms, 0.001).with_bounce(bounce),
         alpha: Spring::new(1.0, settle_ms, 0.002),
         metrics,
         view,
@@ -303,14 +308,20 @@ impl Screen {
           let is_picked = focus.floating == Some(preview.hwnd);
           let is_focused = focused_window == Some(preview.hwnd);
 
-          // A window with a border of its own shows that one, but for
-          // the overview's marks.
+          // A window with a border of its own on screen shows that one,
+          // and one whose border the WM hides (e.g. on a workspace not
+          // displayed) shows it drawn, but for the overview's marks.
+          let drawn_border = window
+            .and_then(|window| window.border)
+            .filter(|_| !preview.has_border());
           let (border_width, border) = if is_match {
             (3.0, search)
           } else if is_picked {
             (2.0, accent)
           } else if preview.has_border() {
             (0.0, caption)
+          } else if let Some(params) = drawn_border {
+            (CARD_BORDER_WIDTH, fade(params.color, params.opacity))
           } else if is_focused {
             (2.0, accent)
           } else if look == CardLook::Clean {

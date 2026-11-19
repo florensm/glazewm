@@ -59,13 +59,13 @@ use windows::{
 };
 
 use super::{
-  com::{IApplicationView, COM_INIT},
+  com::{ComInit, IApplicationView, COM_INIT},
   SENT_KEY_MARKER,
 };
 use crate::{
-  window_class, Color, CornerStyle, Delta, Dispatcher, Key, KeyCode,
-  LengthValue, OpacityValue, Point, Rect, RectDelta, WindowId,
-  WindowZOrder,
+  discard_bits_if_resized, window_class, Color, CornerStyle, Delta,
+  Dispatcher, Key, KeyCode, LengthValue, OpacityValue, Point, Rect,
+  RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -227,6 +227,8 @@ impl NativeWindow {
 
   /// Implements [`NativeWindow::set_frame`].
   pub(crate) fn set_frame(&self, rect: &Rect) -> crate::Result<()> {
+    let current = self.frame_with_shadows().ok();
+
     unsafe {
       SetWindowPos(
         self.hwnd(),
@@ -239,7 +241,8 @@ impl NativeWindow {
           | SWP_NOZORDER
           | SWP_NOSENDCHANGING
           | SWP_ASYNCWINDOWPOS
-          | SWP_FRAMECHANGED,
+          | SWP_FRAMECHANGED
+          | discard_bits_if_resized(current.as_ref(), rect),
       )
     }?;
 
@@ -260,9 +263,12 @@ impl NativeWindow {
         0,
         width,
         height,
+        // The old pixels are at the old size; see
+        // `discard_bits_if_resized`.
         SWP_NOACTIVATE
           | SWP_NOZORDER
           | SWP_NOMOVE
+          | SWP_NOCOPYBITS
           | SWP_NOSENDCHANGING
           | SWP_ASYNCWINDOWPOS
           | SWP_FRAMECHANGED,
@@ -706,29 +712,24 @@ impl NativeWindow {
     }
   }
 
+  /// Implements [`NativeWindowWindowsExt::can_be_cloaked`].
+  pub(crate) fn can_be_cloaked(&self) -> bool {
+    COM_INIT
+      .with(|com_init| {
+        com_init.borrow_mut().with_retry(|com| {
+          Ok(application_view(com, self.hwnd())?.is_some())
+        })
+      })
+      .unwrap_or(false)
+  }
+
   /// Cloaks or uncloaks the window through its shell application view.
   ///
-  /// Returns `false` if it has none: the shell keeps views of app windows
-  /// only, not e.g. of the windows an app's main window owns.
+  /// Returns `false` if it has none (see [`application_view`]).
   fn set_view_cloaked(&self, cloaked: bool) -> crate::Result<bool> {
     COM_INIT.with(|com_init| -> crate::Result<bool> {
       com_init.borrow_mut().with_retry(|com| {
-        let view_collection = com.application_view_collection()?;
-
-        let mut view: Option<IApplicationView> = None;
-        // SAFETY: `view` outlives the call, which only writes to it.
-        let found = unsafe {
-          view_collection.get_view_for_hwnd(self.hwnd().0, &raw mut view)
-        };
-
-        // A window without a view, rather than stale interfaces, so not
-        // worth the retry's refresh.
-        if found == TYPE_E_ELEMENTNOTFOUND {
-          return Ok(false);
-        }
-        found.ok()?;
-
-        let Some(view) = view else {
+        let Some(view) = application_view(com, self.hwnd())? else {
           return Ok(false);
         };
 
@@ -1266,6 +1267,30 @@ fn desktop_window() -> NativeWindow {
   };
 
   NativeWindow::new(handle.0)
+}
+
+/// `hwnd`'s shell application view, or `None` if it has none: the shell
+/// keeps views of app windows only, not e.g. of the windows an app's main
+/// window owns.
+fn application_view(
+  com: &ComInit,
+  hwnd: HWND,
+) -> crate::Result<Option<IApplicationView>> {
+  let view_collection = com.application_view_collection()?;
+
+  let mut view: Option<IApplicationView> = None;
+  // SAFETY: `view` outlives the call, which only writes to it.
+  let found =
+    unsafe { view_collection.get_view_for_hwnd(hwnd.0, &raw mut view) };
+
+  // A window without a view, rather than stale interfaces, so not worth
+  // the retry's refresh.
+  if found == TYPE_E_ELEMENTNOTFOUND {
+    return Ok(None);
+  }
+  found.ok()?;
+
+  Ok(view)
 }
 
 /// Reads the OS's current accent/colorization color via

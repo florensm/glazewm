@@ -190,6 +190,23 @@ pub struct NativeBorderOverlay {
   ///
   /// [`behind_surrogate`]: NativeBorderOverlay::behind_surrogate
   classified_anchor: (isize, bool),
+
+  /// Whether the ring is parked for a workspace switch. See [`park`].
+  ///
+  /// [`park`]: NativeBorderOverlay::park
+  parking: Parking,
+}
+
+/// How a ring is parked for a workspace switch (see
+/// [`NativeBorderOverlay::park`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Parking {
+  /// Tracks its window as usual.
+  Off,
+  /// Parked and still shown, until a copy of it takes over.
+  Shown,
+  /// Parked at alpha 0: only copies of it show it.
+  Concealed,
 }
 
 impl NativeBorderOverlay {
@@ -308,8 +325,11 @@ impl NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) {
-    // A slide is ended by `track`, outside the batch.
-    if !self.window.is_placed_behind(anchor) || self.is_sliding {
+    // A slide or parking is ended by `track`, outside the batch.
+    if !self.window.is_placed_behind(anchor)
+      || self.is_sliding
+      || self.parking != Parking::Off
+    {
       self.track(window_rect, anchor);
       return;
     }
@@ -363,7 +383,142 @@ impl NativeBorderOverlay {
   }
 
   /// [`set_rect`](Self::set_rect), keeping the ring cut at its `bounds`.
+  /// Ends any parking, revealing a concealed ring once it is in place.
   fn track(&mut self, window_rect: &Rect, anchor: HWND) {
+    self.place_ring(window_rect, anchor);
+    self.unpark();
+  }
+
+  /// Parks the ring for a workspace switch at `window_rect`, where its
+  /// window rests, behind `anchor`: a surrogate carries a copy of it (a
+  /// thumbnail of this overlay's window) with the window instead, and the
+  /// ring itself stays put. With `conceal`, it is concealed at once (see
+  /// [`conceal`]); a ring already concealed stays so either way.
+  ///
+  /// The ring a switch ends on is then already in place, under an
+  /// identical copy, so revealing it and dropping the copy can't blink
+  /// whichever lands first. Any later placement (which reveals it) or
+  /// `hide` ends the parking.
+  ///
+  /// [`conceal`]: NativeBorderOverlay::conceal
+  pub fn park(&mut self, window_rect: &Rect, anchor: HWND, conceal: bool) {
+    if self.parking == Parking::Off {
+      self.parking = Parking::Shown;
+    }
+    if conceal {
+      self.conceal();
+    }
+
+    self.set_bounds(None);
+    self.place_ring(window_rect, anchor);
+  }
+
+  /// Hides a parked ring on screen by its alpha, which copies of it leave
+  /// out, so they go on showing it. No-op unless parked and shown.
+  pub fn conceal(&mut self) {
+    if self.parking == Parking::Shown {
+      self.set_parking(Parking::Concealed);
+    }
+  }
+
+  /// Whether the ring is parked for a workspace switch.
+  #[must_use]
+  pub fn is_parked(&self) -> bool {
+    self.parking != Parking::Off
+  }
+
+  /// The rect its window covers: the tracked window's, outset by the
+  /// border width.
+  #[must_use]
+  pub fn outer_rect(&self) -> Rect {
+    outer_rect(&self.rect, self.params.width)
+  }
+
+  /// Creates a ring parked at `window_rect` (see [`park`]), concealed
+  /// before it is ever shown with `conceal`.
+  ///
+  /// [`park`]: NativeBorderOverlay::park
+  pub fn create_parked(
+    window_rect: &Rect,
+    params: BorderOverlayParams,
+    anchor: HWND,
+    conceal: bool,
+  ) -> crate::Result<Self> {
+    let parking = if conceal {
+      Parking::Concealed
+    } else {
+      Parking::Shown
+    };
+
+    Self::build(window_rect, params, anchor, parking)
+  }
+
+  /// Creates the overlay, starting out in `parking`.
+  fn build(
+    window_rect: &Rect,
+    params: BorderOverlayParams,
+    anchor: HWND,
+    parking: Parking,
+  ) -> crate::Result<Self> {
+    let outer = outer_rect(window_rect, params.width);
+
+    let mut window =
+      OverlayWindow::create(OverlayKind::Border, &outer, anchor)?;
+    if parking == Parking::Concealed {
+      window.set_alpha(0)?;
+    }
+    let composition = BorderVisual::create(window.hwnd(), &outer, params)?;
+
+    if let Err(err) = window.place(&outer, anchor) {
+      tracing::warn!("{err}");
+    }
+
+    let mut overlay = Self {
+      composition,
+      window,
+      params,
+      rect: window_rect.clone(),
+      hole_shape: None,
+      bounds: None,
+      clip_insets: [0; 4],
+      slide: None,
+      is_sliding: false,
+      classified_anchor: (0, false),
+      parking,
+    };
+    overlay.refresh_hole(&outer);
+
+    Ok(overlay)
+  }
+
+  /// Moves into `parking`, setting the window's alpha to match.
+  fn set_parking(&mut self, parking: Parking) {
+    let alpha = if parking == Parking::Concealed {
+      0
+    } else {
+      u8::MAX
+    };
+
+    if let Err(err) = self.window.set_alpha(alpha) {
+      tracing::warn!("{err}");
+    }
+    self.parking = parking;
+  }
+
+  /// Ends any parking, giving a concealed ring its alpha back. Called once
+  /// the ring is placed or hidden, so the alpha never reveals it where it
+  /// was parked.
+  fn unpark(&mut self) {
+    match self.parking {
+      Parking::Off => {}
+      Parking::Shown => self.parking = Parking::Off,
+      Parking::Concealed => self.set_parking(Parking::Off),
+    }
+  }
+
+  /// Places the ring's window at `window_rect` behind `anchor`, leaving
+  /// any parking as it is.
+  fn place_ring(&mut self, window_rect: &Rect, anchor: HWND) {
     if self.is_sliding {
       self.end_slide(window_rect, anchor);
       return;
@@ -458,10 +613,11 @@ impl NativeBorderOverlay {
       return;
     }
 
+    // In place, so a parked ring stays parked.
     let anchor = self.window.anchor();
     let rect = self.rect.clone();
     self.window.mark_stale();
-    self.track(&rect, anchor);
+    self.place_ring(&rect, anchor);
   }
 
   /// Updates the ring's corner radius; re-applies only when the value
@@ -530,6 +686,11 @@ impl NativeBorderOverlay {
     panel: &Rect,
     anchor: HWND,
   ) -> bool {
+    // The slide ring takes over from a parked one, whose copy is gone.
+    if self.parking != Parking::Off {
+      self.hide();
+    }
+
     // A slide on another monitor needs a window covering that one.
     if self
       .slide
@@ -713,31 +874,7 @@ impl Overlay for NativeBorderOverlay {
     params: BorderOverlayParams,
     anchor: HWND,
   ) -> crate::Result<Self> {
-    let outer = outer_rect(window_rect, params.width);
-
-    let mut window =
-      OverlayWindow::create(OverlayKind::Border, &outer, anchor)?;
-    let composition = BorderVisual::create(window.hwnd(), &outer, params)?;
-
-    if let Err(err) = window.place(&outer, anchor) {
-      tracing::warn!("{err}");
-    }
-
-    let mut overlay = Self {
-      composition,
-      window,
-      params,
-      rect: window_rect.clone(),
-      hole_shape: None,
-      bounds: None,
-      clip_insets: [0; 4],
-      slide: None,
-      is_sliding: false,
-      classified_anchor: (0, false),
-    };
-    overlay.refresh_hole(&outer);
-
-    Ok(overlay)
+    Self::build(window_rect, params, anchor, Parking::Off)
   }
 
   fn apply_blend(&mut self, blend: StyleBlend<BorderOverlayParams>) {
@@ -790,8 +927,10 @@ impl Overlay for NativeBorderOverlay {
     }
   }
 
+  /// A concealed ring is shown, but not seen.
   fn is_visible(&self) -> bool {
-    self.is_sliding || self.window.is_visible()
+    self.is_sliding
+      || (self.window.is_visible() && self.parking != Parking::Concealed)
   }
 
   fn hide(&mut self) {
@@ -803,6 +942,7 @@ impl Overlay for NativeBorderOverlay {
     }
     self.is_sliding = false;
     self.window.hide();
+    self.unpark();
   }
 
   fn hwnd(&self) -> HWND {

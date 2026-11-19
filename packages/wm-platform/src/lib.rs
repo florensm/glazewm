@@ -12,6 +12,10 @@ mod models;
 mod mouse_listener;
 mod native_window;
 pub mod perf;
+
+/// `tracing` target of the overview's trace of picks through to its
+/// closing zoom, which the WM writes to a file of its own.
+pub const OVERVIEW_LOG_TARGET: &str = "glazewm::overview";
 mod platform_event;
 mod platform_impl;
 mod single_instance;
@@ -49,6 +53,8 @@ pub use native_drop_indicator::NativeDropIndicator;
 #[cfg(target_os = "windows")]
 mod companion;
 #[cfg(target_os = "windows")]
+mod dwm_thumbnail;
+#[cfg(target_os = "windows")]
 mod native_surrogate;
 #[cfg(target_os = "windows")]
 mod overlay_window;
@@ -82,6 +88,8 @@ pub use native_overview::NativeOverview;
 mod native_stack_tab_bar;
 #[cfg(target_os = "windows")]
 mod overview_chrome;
+#[cfg(target_os = "windows")]
+mod overview_effects;
 #[cfg(target_os = "windows")]
 mod overview_layout;
 #[cfg(target_os = "windows")]

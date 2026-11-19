@@ -7,6 +7,8 @@ extern crate libtest_mimic_collect;
 mod companion;
 mod dispatcher;
 mod display;
+#[cfg(target_os = "windows")]
+mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;

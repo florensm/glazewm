@@ -130,7 +130,8 @@ stack:
   tab_inactive_background: "#00000000"
   tab_text_color: "#ffffff"
   tab_inactive_text_color: "#a0a0a0"
-  tab_font_family: "Segoe UI"
+  # Falls back to Segoe UI on Windows 10.
+  tab_font_family: "Segoe UI Variable Text"
   tab_font_size: "12px"
   tab_corner_radius: "8px"
   # Tabs share the bar; they scroll once narrower than `tab_min_width`, and

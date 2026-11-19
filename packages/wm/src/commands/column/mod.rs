@@ -6,6 +6,7 @@ mod column_width;
 mod consume_or_expel;
 mod focus_column;
 mod move_column;
+mod presets;
 mod swap_window;
 mod window_height;
 

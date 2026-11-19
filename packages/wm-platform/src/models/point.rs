@@ -1,5 +1,5 @@
 /// Represents an x-y coordinate.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point {
   pub x: i32,
   pub y: i32,

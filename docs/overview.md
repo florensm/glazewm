@@ -41,9 +41,16 @@ goes through them while it is open. Cards are drawn at the size each layout
 shows them, so their text stays sharp.
 
 Selection and hover show as highlights that glide from one workspace or
-window to the next. In the activities and the stage, a workspace clicked
-with the mouse is shown first, and gone to once clicked again; clicking one
-of its windows goes straight to that window.
+window to the next. A card lifts under the cursor and sinks while held
+down, and an arrow or wheel step with nowhere to go bumps the selection
+that way. A dragged window pops up under the cursor and trails it, and
+once let go of flies into the card it lands on, or back home if it moved
+nowhere; landing sends a ripple and a burst of sparks out of the card. A
+soft glow follows the selection (see `overview.effects`). In the activities, a newly shown workspace's windows fly out of
+its miniature while the last one's shrink back into theirs. A click on a
+workspace goes there at once, zooming into it as `Enter` does: in the
+activities, its windows fly out of its miniature to where they are on
+screen.
 
 In the carousel and the grid, the special workspace's card is docked below
 the others (see [Special workspace](#special-workspace)); in the other
@@ -72,10 +79,9 @@ is nowhere to go.
 | --- | --- |
 | Point at a window | Pick it (activities, stage): it is highlighted and its title shows. |
 | Click a window | Focus it, switching to its workspace, and close. |
-| Click another workspace | Show it (activities, stage), or switch to it and close (carousel, grid). |
-| Click the shown workspace | Switch to it and close. |
+| Click a workspace | Switch to it and close, zooming into it. |
 | Click the background | Close without changing anything. |
-| Drag a window onto another workspace | Move it to that workspace. The overview stays open. |
+| Drag a window onto a workspace | Move it there, laid out where dropping it there on screen would put it: beside the window under the cursor, on the side nearest the cursor, which a highlight shows; or into the column there in a scrolling layout. Works within a workspace too, to rearrange it. A window that isn't tiling, or dropped on the special workspace or on a miniature in the activities, only moves. The overview stays open. |
 | Middle-click a window | Close the window. |
 | Click the search field | Type into the [search](#search), keeping its query. |
 | Click **? Shortcuts** | Show or hide the keyboard shortcuts. |
@@ -143,11 +149,13 @@ A search field sits at the bottom of every monitor. `/`, or a click on
 it, starts a search: type to match window titles and process names, on
 every monitor; matches are outlined in `search_color` and the rest fade,
 and the field shows the query and its matches, ringed in the accent while
-typing goes to it. `Enter` ends typing and
-selects the best match, after which `n` / `N` step through the matches,
-moving the keyboard to the monitor of each. While typing, `Escape` clears
-the search and `Backspace` on an empty query ends it. While carrying a
-window, a search picks the workspace to drop it on.
+typing goes to it. `Enter` goes straight to
+the best match. `↓` / `↑` instead end typing on the next or previous
+match, after which `n` / `N` step through the matches, moving the
+keyboard to the monitor of each. While typing, `Escape` clears the
+search and `Backspace` on an empty query ends it. While carrying a
+window, a search picks the workspace to drop it on, and `Enter` drops it
+there.
 
 ### Special workspace
 
@@ -257,6 +265,15 @@ overview:
   # or "grid".
   layout: "activities"
 
+  # Corner of a monitor that opens the overview as the cursor rests in it:
+  # 'none', 'top_left', 'top_right', 'bottom_left' or 'bottom_right'. It
+  # opens once per visit, and not while a mouse button is held.
+  hot_corner: "none"
+
+  # How long the cursor rests in the hot corner before the overview
+  # opens, in milliseconds; 0 opens it at once.
+  hot_corner_delay_ms: 300
+
   # Most columns of the grid of every workspace; it takes fewer when that
   # shows the cards larger.
   grid_columns: 5
@@ -277,6 +294,47 @@ overview:
   # they mark next and to fade in or out, as the shortcut sheet does; 0
   # snaps them.
   highlight_duration_ms: 170
+
+  # How far cards, windows and highlights overshoot where they head before
+  # settling back, from 0 (not at all) to 0.8 (wobbly). The opening zoom
+  # overshoots by it too.
+  bounce: 0.25
+
+  effects:
+    # Soft glow of the accent color around the selected workspace.
+    glow: true
+
+    # Whether the glow slowly breathes. Keeps the overview animating on
+    # every frame while it is open, so it costs a little more.
+    pulse: false
+
+    # A ring spreading out of a card as it is clicked, or as a window
+    # lands on it.
+    ripples: true
+
+    # Sparks bursting out of where a dropped window lands; 0 for none, at
+    # most 48.
+    sparks: 14
+
+    # Whether a card wobbles as a window lands on it.
+    jelly: true
+
+    # Delay between one card and the next as they pop in on open, in
+    # milliseconds; 0 brings them in together.
+    stagger_ms: 24
+
+    # How far a hovered card leans toward the cursor, in logical pixels.
+    lean: 8
+
+    # How much the cards dim while another is hovered, from 0 to 1.
+    dim: 0
+
+    # How much a dragged window stretches with its speed, and squashes as
+    # it stops, from 0 to 1.
+    squash: 0.5
+
+    # Fading outlines trailing a dragged window; 0 for none, at most 8.
+    trail: 0
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
@@ -327,11 +385,13 @@ Nothing animates behind the overview: a window moved while it is on screen
 lands at once, and its preview follows it there.
 
 Animations step once per refresh of the focused monitor, and the loop
-sleeps while nothing moves. Cards and windows move on critically
-damped springs, so a key press mid-animation retargets them smoothly.
-Each step follows the spring's exact motion over the frame, so it moves
-alike at any refresh rate, and even a short `switch_duration_ms` can't
-overshoot.
+sleeps while nothing moves. Cards and windows move on springs, damped
+by `bounce` (critically at `0`), so a key press mid-animation retargets
+them smoothly. Each step follows the spring's exact motion over the
+frame, so it moves alike at any refresh rate, and even a short
+`switch_duration_ms` can't blow up; a bouncier spring dies away as fast,
+only swinging past its target on the way. None of it draws anything: it
+moves and scales the same thumbnails as before.
 
 The focused monitor's window takes the foreground while open, so keys go
 to the overview rather than to the window behind it; if Windows refuses it

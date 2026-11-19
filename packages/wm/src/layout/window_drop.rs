@@ -84,11 +84,23 @@ pub fn window_drop(
     return Ok(None);
   };
 
+  window_drop_on(window, workspace, point, state).map(Some)
+}
+
+/// Gets where `window`, being dragged as a temporary floating window,
+/// goes when dropped at `point` on `workspace`, displayed or not: its
+/// containers are where its layout puts them either way.
+pub fn window_drop_on(
+  window: &NonTilingWindow,
+  workspace: Workspace,
+  point: &Point,
+  state: &WmState,
+) -> anyhow::Result<WindowDrop> {
   // Decided on the columns as shown during the drag, before the window is
   // put back into the tree.
   if workspace.layout() == Layout::Scrolling {
     if let Some(drop) = drop_target(&workspace, point)? {
-      return Ok(Some(WindowDrop::Column { workspace, drop }));
+      return Ok(WindowDrop::Column { workspace, drop });
     }
   }
 
@@ -118,7 +130,7 @@ pub fn window_drop(
     });
 
   if parent.tiling_children().count() == 0 {
-    return Ok(Some(WindowDrop::Into(parent)));
+    return Ok(WindowDrop::Into(parent));
   }
 
   let target = parent
@@ -150,12 +162,12 @@ pub fn window_drop(
       }
     };
 
-  Ok(Some(WindowDrop::Beside {
+  Ok(WindowDrop::Beside {
     parent,
     target,
     position,
     should_split,
-  }))
+  })
 }
 
 // Only the drop indicator, which is Windows-only, previews a drop.

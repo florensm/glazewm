@@ -594,6 +594,11 @@ mod tests {
       WorkspaceSwitchStyle::Slide
     );
     assert_eq!(config.overview.font_family, "Segoe UI Variable Text");
+    assert_eq!(config.stack.tab_font_family, config.overview.font_family);
+    assert_eq!(
+      config.overview.effects,
+      wm_platform::OverviewEffects::default()
+    );
     assert!(config.keybindings.iter().any(|keybinding| {
       keybinding.commands.iter().any(|command| {
         matches!(command, InvokeCommand::ToggleOverview { .. })

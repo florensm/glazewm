@@ -1,4 +1,6 @@
-use crate::{Color, Rect, TabFrame};
+use serde::{Deserialize, Serialize};
+
+use crate::{BorderOverlayParams, Color, Point, Rect, TabFrame};
 
 /// What the window overview shows, sent by the WM as a whole.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,7 +71,7 @@ pub struct OverviewWorkspace {
 }
 
 /// A window shown in the overview.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OverviewWindow {
   /// Handle of the window, whose live thumbnail is shown.
   pub hwnd: isize,
@@ -98,6 +100,11 @@ pub struct OverviewWindow {
   /// Its backdrop and border, bottom to top, which show under its preview
   /// as the WM stacks them under the window.
   pub overlays: Vec<OverviewOverlay>,
+
+  /// The border the WM gives it, if any, which the overview draws itself
+  /// where `overlays` has none on screen to show, e.g. on a workspace not
+  /// displayed.
+  pub border: Option<BorderOverlayParams>,
 }
 
 /// A window's backdrop or border, as the WM draws it around and behind
@@ -166,6 +173,95 @@ pub struct OverviewStyle {
   /// How long highlights take to glide to what they mark next and to
   /// fade, as the shortcut sheet does; 0 snaps them.
   pub highlight_duration_ms: u32,
+
+  /// How far what moves overshoots where it heads before settling, from
+  /// 0 (not at all) to 0.8.
+  pub bounce: f32,
+
+  pub effects: OverviewEffects,
+}
+
+/// Extra flourishes of the overview, each of which can be turned off.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewEffects {
+  /// Soft glow of the accent color around the selected workspace.
+  pub glow: bool,
+
+  /// Whether the glow slowly breathes. Keeps the overview animating on
+  /// every frame while it is open.
+  pub pulse: bool,
+
+  /// A ring spreading out of a card as it is clicked, or as a window
+  /// lands on it.
+  pub ripples: bool,
+
+  /// Sparks bursting out of where a dropped window lands; `0` for none,
+  /// at most `MAX_SPARKS`.
+  pub sparks: u32,
+
+  /// Whether a card wobbles as a window lands on it.
+  pub jelly: bool,
+
+  /// Delay between one card and the next as they pop in on open, in
+  /// milliseconds; `0` brings them in together.
+  pub stagger_ms: u32,
+
+  /// How far a hovered card leans toward the cursor, in logical pixels;
+  /// `0` keeps it still.
+  pub lean: f32,
+
+  /// How much the cards dim while another is hovered, from `0` (not at
+  /// all) to `1`.
+  pub dim: f32,
+
+  /// How much a dragged window stretches with its speed, and squashes as
+  /// it stops, from `0` (not at all) to `1`.
+  pub squash: f32,
+
+  /// Fading copies of a dragged window's outline trailing it; `0` for
+  /// none, at most `MAX_TRAIL`.
+  pub trail: u32,
+}
+
+impl OverviewEffects {
+  /// Most sparks a landing bursts into.
+  pub const MAX_SPARKS: u32 = 48;
+
+  /// Most copies trailing a dragged window.
+  pub const MAX_TRAIL: u32 = 8;
+
+  /// Every effect off.
+  pub const NONE: Self = Self {
+    glow: false,
+    pulse: false,
+    ripples: false,
+    sparks: 0,
+    jelly: false,
+    stagger_ms: 0,
+    lean: 0.0,
+    dim: 0.0,
+    squash: 0.0,
+    trail: 0,
+  };
+}
+
+impl Default for OverviewEffects {
+  fn default() -> Self {
+    Self {
+      glow: true,
+      pulse: false,
+      ripples: true,
+      sparks: 14,
+      jelly: true,
+      stagger_ms: 24,
+      lean: 8.0,
+      dim: 0.0,
+      squash: 0.5,
+      trail: 0,
+    }
+  }
 }
 
 /// How the overview lays out the workspaces.
@@ -214,11 +310,10 @@ impl OverviewLayoutMode {
     self == Self::Activities
   }
 
-  /// Whether a workspace clicked with the mouse is shown first, and only
-  /// gone to once clicked again. A window clicked on it is gone to right
-  /// away.
+  /// Whether the selected workspace shows large, its windows big enough
+  /// to point at and to tag with their titles.
   #[must_use]
-  pub fn shows_before_going(self) -> bool {
+  pub fn shows_selected_large(self) -> bool {
     matches!(self, Self::Activities | Self::Stage)
   }
 
@@ -252,6 +347,18 @@ pub enum OverviewAction {
     hwnd: isize,
     workspace: String,
     monitor: u128,
+  },
+
+  /// Move the window with this handle to where dragging it to `point` on
+  /// the named workspace and letting go would put it, in the screen
+  /// coordinates its windows sit at, displayed or not: e.g. beside the
+  /// window there. A window that isn't tiling only moves there. The
+  /// overview stays open.
+  PlaceWindow {
+    hwnd: isize,
+    workspace: String,
+    monitor: u128,
+    point: Point,
   },
 
   /// Close the window with this handle. The overview stays open.

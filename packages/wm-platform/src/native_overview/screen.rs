@@ -12,28 +12,63 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-  create_screen_window, elapsed_ms, overlays::Overlays, place_card,
-  scenes::scene_window_rect, to_ms, PlaceContext, Screen, ScreenFrame,
+  create_screen_window,
+  effects::Effects,
+  elapsed_ms,
+  overlays::Overlays,
+  place_card,
+  scene_borders::{SceneBorder, SceneBorders},
+  scenes::scene_window_rect,
+  to_ms, PlaceContext, Screen, ScreenFrame,
 };
 use crate::{
+  dwm_thumbnail::Thumbnail,
   overview_chrome::{
     draw_card, draw_search, draw_sheet, picture_size, sheet_size,
   },
+  overview_effects::{lean_toward, Entrance},
   overview_layout::{
     activities, carousel, chrome_opacity, grid, stage as stage_layout,
-    Camera, CardMetrics, GridCells, Placement, RectF, Spring, Zoom,
-    SEARCH_HEIGHT,
+    Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
+    Zoom, SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
-  overview_state::{Control, Hit, Mode, ScreenFocus},
-  overview_thumbnails::{Picture, Thumbnail},
+  overview_state::{Control, Hit, Mode, ScreenFocus, Toward},
+  overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
-  OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
+  BorderOverlayParams, OverviewEffects, OverviewLayoutMode, OverviewStyle,
+  OverviewWorkspace,
 };
+
+/// The border to draw around scene `window` of `workspace`: the one the
+/// WM gives it, unless it shows its own.
+fn drawn_border(
+  workspace: &OverviewWorkspace,
+  window: &SceneWindow,
+) -> Option<BorderOverlayParams> {
+  if window.preview.has_border() {
+    return None;
+  }
+  workspace
+    .windows
+    .iter()
+    .find(|candidate| candidate.hwnd == window.preview.hwnd)
+    .and_then(|candidate| candidate.border)
+}
 
 /// ID of the next registration of a screen's thumbnails.
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
+
+/// How much a card grows under the cursor, shrinks while held down, and
+/// grows as where a window would drop.
+const HOVER_LIFT: f32 = 1.03;
+const PRESS_SINK: f32 = 0.96;
+const DROP_LIFT: f32 = 1.06;
+
+/// How far what the keyboard is on bumps toward where it can't go, in
+/// logical pixels.
+const NUDGE_DISTANCE: f32 = 18.0;
 
 impl Screen {
   /// A screen with its window hidden, whose pictures post to `notify`
@@ -57,8 +92,15 @@ impl Screen {
       cards: Vec::new(),
       scenes: Vec::new(),
       scene_area: RectF::default(),
+      scene_shown: None,
+      is_picked: false,
+      scene_borders: SceneBorders::default(),
+      card_targets: Vec::new(),
+      pointer: None,
+      entrance: None,
       spare: Vec::new(),
       overlays: Overlays::new(0.0, 0.0),
+      effects: Effects::new(0.0),
       search: None,
       search_drawn: None,
       search_controls: None,
@@ -74,6 +116,7 @@ impl Screen {
       is_dirty: false,
       is_gliding: false,
       is_tracking_leave: false,
+      was_dragging: false,
       icons: 0,
       notify,
     })
@@ -120,7 +163,11 @@ impl Screen {
     );
     self.focus = focus;
 
-    let open_duration = frame.style.open_duration_ms;
+    let (open_duration, bounce, stagger_ms) = (
+      frame.style.open_duration_ms,
+      frame.style.bounce,
+      frame.style.effects.stagger_ms,
+    );
     self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
 
     self.frame = Some(frame);
@@ -131,12 +178,24 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       overlays.reset();
     }
+    if let Some(effects) = &mut self.effects {
+      effects.reset();
+    }
 
     self.zoom = animate.then(|| {
       (
-        Zoom::open(self.focus.selected, open_duration),
+        Zoom::open(self.focus.selected, open_duration, bounce),
         Instant::now(),
       )
+    });
+    self.entrance = (animate && stagger_ms > 0).then(|| {
+      let entrance = Entrance::new(
+        self.focus.selected,
+        to_ms(stagger_ms),
+        to_ms(open_duration),
+        bounce,
+      );
+      (entrance, Instant::now())
     });
 
     self.retarget(true);
@@ -247,6 +306,11 @@ impl Screen {
       self.spare.extend(card.into_pictures());
     }
     self.scenes.clear();
+    self.scene_shown = None;
+    self.is_picked = false;
+    self.card_targets.clear();
+    self.pointer = None;
+    self.entrance = None;
     self.registered_for = None;
     self.nav.clear();
     self.zoom = None;
@@ -291,11 +355,15 @@ impl Screen {
     };
     let switch_ms = to_ms(style.switch_duration_ms);
     let highlight_ms = to_ms(style.highlight_duration_ms);
+    let bounce = style.bounce;
 
     self.search_y.retune(switch_ms);
     self.sheet_alpha.retune(highlight_ms);
     if let Some(overlays) = &mut self.overlays {
-      overlays.retune(switch_ms, highlight_ms);
+      overlays.retune(switch_ms, highlight_ms, bounce);
+    }
+    if let Some(effects) = &mut self.effects {
+      effects.retune(highlight_ms, bounce);
     }
   }
 
@@ -331,7 +399,7 @@ impl Screen {
     }
 
     if layout.has_scene() && !previous.has_scene() {
-      self.seed_scene_from_card();
+      self.seed_scene_from_card(false);
     }
 
     true
@@ -356,6 +424,18 @@ impl Screen {
       {
         window.preview.register(host);
       }
+      let bordered = self
+        .workspaces()
+        .iter()
+        .zip(&self.scenes)
+        .flat_map(|(workspace, scene)| {
+          scene
+            .windows
+            .iter()
+            .filter(|window| drawn_border(workspace, window).is_some())
+        })
+        .count();
+      self.scene_borders.register(host, bordered);
     }
 
     for card in &mut self.cards {
@@ -371,6 +451,8 @@ impl Screen {
         Thumbnail::register(host, card.picture.window);
     }
 
+    // Over the cards, under the highlights.
+    self.register_effects();
     if let Some(overlays) = &mut self.overlays {
       overlays.register(host, layout);
     }
@@ -411,6 +493,10 @@ impl Screen {
       self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
     {
       window.preview.retire(&mut retired);
+    }
+    self.scene_borders.retire(&mut retired);
+    if let Some(effects) = &mut self.effects {
+      effects.retire(&mut retired);
     }
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
@@ -458,10 +544,7 @@ impl Screen {
     };
     self.dock = targets.dock;
 
-    // A closing screen's cards hold still for its zoom.
-    if !self.is_closing() {
-      self.retarget_cards(&targets.cards, snap);
-    }
+    self.retarget_cards(&targets.cards, snap);
 
     if snap {
       self.search_y.snap(targets.search_y);
@@ -479,20 +562,75 @@ impl Screen {
   /// Points each card at its target in `targets`; there at once if
   /// `snap`.
   fn retarget_cards(&mut self, targets: &[Placement], snap: bool) {
-    for (index, (card, target)) in
-      self.cards.iter_mut().zip(targets).enumerate()
-    {
-      let bump = if self.focus.drop == Some(index) {
-        1.06
+    self.card_targets = targets.to_vec();
+    self.aim_cards(snap);
+  }
+
+  /// Points each card at where the layout puts it, lifted under the
+  /// cursor, sunk while held down or grown as a drop target, leaning
+  /// toward the cursor and dimmed while another is hovered, as the style
+  /// has it; there at once if `snap`.
+  fn aim_cards(&mut self, snap: bool) {
+    // A closing screen's cards hold still for its zoom.
+    if self.is_closing() {
+      return;
+    }
+
+    let effects = self
+      .style()
+      .map_or(OverviewEffects::NONE, |style| style.effects);
+    let lean = self.metrics.px(effects.lean.max(0.0));
+    let dim = 1.0 - effects.dim.clamp(0.0, 1.0);
+    let focus = &self.focus;
+    let pointer = self.pointer;
+
+    let lift = |index: usize| {
+      // The activities show the selected workspace in the scene, which
+      // its miniature doesn't answer to the mouse for.
+      let is_still = focus.is_dragging
+        || (focus.layout.has_scene() && index == focus.selected);
+
+      if focus.drop == Some(index) {
+        DROP_LIFT
+      } else if is_still {
+        1.0
+      } else if focus.pressed == Some(index) {
+        PRESS_SINK
+      } else if focus.hover == Some(index) && index != focus.selected {
+        HOVER_LIFT
       } else {
         1.0
+      }
+    };
+    let dims = |index: usize| {
+      focus.hover.is_some_and(|hovered| {
+        hovered != index && index != focus.selected && !focus.is_dragging
+      })
+    };
+
+    for (index, (card, target)) in
+      self.cards.iter_mut().zip(&self.card_targets).enumerate()
+    {
+      let lift = lift(index);
+      let scale = target.scale * lift;
+      let (dx, dy) = pointer
+        .filter(|_| lift == HOVER_LIFT && lean > 0.0)
+        .map_or((0.0, 0.0), |pointer| {
+          let size =
+            (card.metrics.width * scale, card.metrics.height * scale);
+          lean_toward((target.cx, target.cy), size, pointer, lean)
+        });
+      let opacity = if dims(index) {
+        target.opacity * dim
+      } else {
+        target.opacity
       };
 
       for (spring, value) in [
-        (&mut card.cx, target.cx),
-        (&mut card.cy, target.cy),
-        (&mut card.scale, target.scale * bump),
-        (&mut card.alpha, target.opacity),
+        (&mut card.cx, target.cx + dx),
+        (&mut card.cy, target.cy + dy),
+        (&mut card.scale, scale),
+        (&mut card.alpha, opacity),
       ] {
         if snap {
           spring.snap(value);
@@ -501,6 +639,51 @@ impl Screen {
         }
       }
     }
+    self.is_dirty = true;
+  }
+
+  /// Notes where the cursor is over it, if it is, and leans the hovered
+  /// card toward it.
+  pub(super) fn point_at(&mut self, pointer: Option<(f32, f32)>) {
+    if self.pointer == pointer {
+      return;
+    }
+    self.pointer = pointer;
+
+    let leans = self.style().is_some_and(|style| style.effects.lean > 0.0);
+    if leans && self.focus.hover.is_some() && self.frame.is_some() {
+      self.aim_cards(false);
+    }
+  }
+
+  /// Bumps what the keyboard is on `toward` and lets it spring back, for
+  /// an arrow or the wheel finding nowhere to go that way.
+  pub(super) fn nudge(&mut self, toward: Toward) {
+    if self.frame.is_none() || self.zoom.is_some() {
+      return;
+    }
+
+    let distance = self.metrics.px(NUDGE_DISTANCE);
+    let (dx, dy) = match toward {
+      Toward::Left => (-distance, 0.0),
+      Toward::Right => (distance, 0.0),
+      Toward::Up => (0.0, -distance),
+      Toward::Down => (0.0, distance),
+    };
+
+    let selected = self.focus.selected;
+    if let Some(card) = self.cards.get_mut(selected) {
+      card.cx.kick(dx);
+      card.cy.kick(dy);
+    }
+    if self.focus.layout.has_scene() {
+      if let Some(scene) = self.scenes.get_mut(selected) {
+        for window in &mut scene.windows {
+          window.kick(dx, dy);
+        }
+      }
+    }
+    self.is_dirty = true;
   }
 
   /// Notes where the shown workspace's windows show once settled, first
@@ -611,6 +794,9 @@ impl Screen {
     }
 
     self.refresh_overlays(&style, force);
+    if let Some(effects) = &mut self.effects {
+      effects.draw_looks(&style, &self.metrics);
+    }
 
     self.refresh_search(&style, force);
     self.refresh_sheet(&style, force);
@@ -675,6 +861,14 @@ impl Screen {
       .map_or(1.0, |(zoom, started)| zoom.openness(elapsed_ms(started)))
   }
 
+  /// How far its zoom has moved things: the openness, or past it for a
+  /// moment as an open overshoots.
+  pub(super) fn reach(&self) -> f32 {
+    self
+      .zoom
+      .map_or(1.0, |(zoom, started)| zoom.reach(elapsed_ms(started)))
+  }
+
   /// Whether it is zooming into the workspace it closes on.
   pub(super) fn is_closing(&self) -> bool {
     self.zoom.is_some_and(|(zoom, _)| zoom.is_closing)
@@ -705,7 +899,7 @@ impl Screen {
     let screen = card
       .placement()
       .map(&card.metrics, &card.view.map(&self.area));
-    Camera::zoom(&screen, &self.view(), self.openness())
+    Camera::zoom(&screen, &self.view(), self.reach())
   }
 
   /// Zooms into card `index` until its windows fill the screen, over
@@ -720,23 +914,41 @@ impl Screen {
     focus: ScreenFocus,
     duration_ms: u32,
   ) {
-    // The scenes zoom into the picked workspace's own windows, which set
-    // off from where its miniature shows them.
+    // The scenes zoom into the picked workspace's own windows. One not
+    // shown yet shows in its scene at once, as if shown before it was
+    // picked, for the zoom to set off from there; the one shown until now
+    // fades out.
     let is_switching =
       focus.layout.has_scene() && index != self.focus.selected;
     self.focus = focus;
     if is_switching {
-      self.seed_scene_from_card();
+      self.retarget(false);
     }
 
     self.hold(index);
+    self.entrance = None;
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
 
-    // The scene shown until now fades out.
-    if is_switching {
-      self.retarget(false);
-    }
+    let shown_windows = self.scenes.get(index).map(|scene| {
+      scene
+        .windows
+        .iter()
+        .filter(|window| window.alpha.value > 0.01)
+        .count()
+    });
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview screen zooming into card {index} ({:?}, switching: \
+       {is_switching}) from openness {:.2}; card on screen at {:?}, \
+       scene windows shown: {shown_windows:?}.",
+      self.focus.layout,
+      self.openness(),
+      self
+        .cards
+        .get(index)
+        .map(|card| card.placement().rect(&card.metrics)),
+    );
     self.is_dirty = true;
   }
 
@@ -768,6 +980,10 @@ impl Screen {
     PlaceContext {
       camera: self.camera(),
       fade: self.openness(),
+      reach: self.reach(),
+      entrance: self
+        .entrance
+        .map(|(entrance, started)| (entrance, elapsed_ms(started))),
       view: self.view(),
       zoom_card: self.zoom.map(|(zoom, _)| zoom.card),
     }
@@ -793,7 +1009,19 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       is_moving |= overlays.step(dt);
     }
+    if let Some(effects) = &mut self.effects {
+      is_moving |= effects.step(dt);
+    }
     is_moving |= self.search_y.step(dt);
+
+    if let Some((entrance, started)) = self.entrance {
+      if elapsed_ms(started) < entrance.length_ms(self.cards.len()) {
+        is_moving = true;
+      } else {
+        self.entrance = None;
+        self.is_dirty = true;
+      }
+    }
     is_moving |= self.sheet_alpha.step(dt);
 
     if let Some((zoom, started)) = self.zoom {
@@ -826,7 +1054,7 @@ impl Screen {
   fn place(&mut self) -> bool {
     let context = self.place_context();
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
-    let fade = context.fade;
+    let (fade, reach) = (context.fade, context.reach);
     let layout = self.focus.layout;
     let shift = self.top_shift(fade);
 
@@ -835,8 +1063,10 @@ impl Screen {
         let miniatures = PlaceContext {
           camera: Camera::shifted(0.0, shift),
           fade,
+          reach,
           view,
           zoom_card: None,
+          entrance: context.entrance,
         };
         for (index, card) in self.cards.iter_mut().enumerate() {
           place_card(card, index, &miniatures);
@@ -850,23 +1080,52 @@ impl Screen {
     }
 
     if layout.has_scene() {
+      let area = self.area;
       let zoom_card = context.zoom_card;
+      let workspaces = self
+        .frame
+        .as_ref()
+        .map_or(&[][..], |frame| &frame.workspaces);
+      let mut borders = Vec::new();
+
       for (index, scene) in self.scenes.iter_mut().enumerate() {
         for window in &mut scene.windows {
-          let rect =
-            scene_window_rect(window, zoom_card == Some(index), fade);
+          let rect = scene_window_rect(
+            window,
+            zoom_card == Some(index),
+            reach,
+            &area,
+          );
           let opacity = window.alpha.value * window.preview.opacity;
 
           if opacity > 0.002 {
             window.preview.place(&rect, &view, opacity);
           } else {
             window.preview.hide();
+            continue;
+          }
+
+          let params = workspaces
+            .get(index)
+            .and_then(|workspace| drawn_border(workspace, window));
+          let width = window.preview.screen_rect.w;
+          if let (Some(params), true) = (params, width > 0.0) {
+            borders.push(SceneBorder {
+              rect,
+              params,
+              scale: rect.w / width,
+              opacity,
+            });
           }
         }
       }
+
+      self.scene_borders.place(&borders, &view);
     }
 
-    let is_gliding = self.place_overlays(&context, shift);
+    let is_gliding = self.place_overlays(&context, shift)
+      | self.place_effects(fade, shift);
+    self.was_dragging = self.focus.is_dragging;
 
     let search_height = SEARCH_HEIGHT * scale_factor;
     let has_search = self.search_drawn.is_some();
@@ -918,6 +1177,19 @@ impl Screen {
     })
   }
 
+  /// Where a window let go of over card `index` lands: the scene, for
+  /// the activities' shown workspace, or else the card.
+  pub(super) fn landing_rect(&self, index: usize) -> Option<RectF> {
+    if self.focus.layout.has_scene() && index == self.focus.selected {
+      return Some(self.scene_area);
+    }
+
+    let context = self.place_context();
+    self
+      .workspace_rect(index, &context, self.top_shift(context.fade))
+      .map(|(rect, _)| rect)
+  }
+
   /// What is under the point (`x`, `y`) of the screen.
   pub(super) fn hit(&self, x: f32, y: f32) -> Hit {
     // The open shortcut sheet covers what is under it.
@@ -938,7 +1210,9 @@ impl Screen {
       OverviewLayoutMode::Activities => {
         let hit = self.hit_cards(x, y, &Camera::IDENTITY);
         if hit.workspace.is_some() {
-          hit
+          // Too small to aim at: a window dropped on a miniature only
+          // moves there, keeping its layout.
+          Hit { point: None, ..hit }
         } else {
           self.hit_scene(x, y, &self.scene_area)
         }
@@ -999,6 +1273,7 @@ impl Screen {
         workspace: Some(index),
         window,
         control: None,
+        point: card.view.unmap(local_x, local_y),
       };
     }
 
@@ -1021,10 +1296,17 @@ impl Screen {
     });
 
     if window.is_some() || area.contains(x, y) {
+      // Where the scene shows the workspace's working area, as laid out.
+      let point = self.workspaces().get(selected).and_then(|workspace| {
+        let content = RectF::from_rect(&workspace.content_rect);
+        CardView::fitted(&content, &self.scene_area).unmap(x, y)
+      });
+
       Hit {
         workspace: Some(selected),
         window,
         control: None,
+        point,
       }
     } else {
       Hit::default()

@@ -210,13 +210,10 @@ pub fn with_tab_bar_of(
   window_id: uuid::Uuid,
   frame: &Rect,
 ) -> Rect {
-  state
-    .container_by_id(window_id)
-    .and_then(|container| container.as_window_container().ok())
-    .map_or_else(
-      || frame.clone(),
-      |window| window_with_tab_bar(&window, frame),
-    )
+  state.window_by_id(window_id).map_or_else(
+    || frame.clone(),
+    |window| window_with_tab_bar(&window, frame),
+  )
 }
 
 /// [`with_tab_bar_of`] for a window a surrogate draws at `frame` mid
@@ -321,11 +318,7 @@ fn tab_frame_at(
   let anchor = active_window.native().id().0;
   let is_focused = focused_id == Some(active_window.id());
   let border = border_overlay_params_for(is_focused, config);
-  let window_effects = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+  let window_effects = config.value.window_effects.for_focus(is_focused);
 
   let tabs = windows
     .iter()

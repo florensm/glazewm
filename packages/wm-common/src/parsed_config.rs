@@ -3,7 +3,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
-  Keybinding, LengthUnit, LengthValue, OpacityValue, RectDelta,
+  Keybinding, LengthUnit, LengthValue, OpacityValue, OverviewEffects,
+  RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -81,7 +82,7 @@ pub struct StackConfig {
   /// Text color of inactive tabs.
   pub tab_inactive_text_color: BorderColorSource,
 
-  /// Font family of tab titles.
+  /// Font family of tab titles; Segoe UI when it isn't installed.
   pub tab_font_family: String,
 
   /// Font size of tab titles.
@@ -144,7 +145,7 @@ impl Default for StackConfig {
       tab_inactive_background: color("#00000000"),
       tab_text_color: color("#ffffff"),
       tab_inactive_text_color: color("#a0a0a0"),
-      tab_font_family: "Segoe UI".to_string(),
+      tab_font_family: "Segoe UI Variable Text".to_string(),
       tab_font_size: LengthValue::from_px(12),
       tab_corner_radius: LengthValue::from_px(8),
       tab_min_width: LengthValue::from_px(48),
@@ -662,6 +663,14 @@ pub struct OverviewConfig {
   /// Layout `toggle-overview` opens on, unless it names one.
   pub layout: OverviewLayout,
 
+  /// Corner of a monitor that opens the overview as the cursor rests in
+  /// it, as `toggle-overview` does.
+  pub hot_corner: HotCorner,
+
+  /// How long the cursor rests in the hot corner before it opens the
+  /// overview; `0` opens it at once.
+  pub hot_corner_delay_ms: u32,
+
   /// Length of the zoom out when the overview opens; `0` opens it
   /// instantly.
   pub open_duration_ms: u32,
@@ -679,6 +688,14 @@ pub struct OverviewConfig {
   /// they mark next and to fade in or out, as the shortcut sheet does;
   /// `0` snaps them.
   pub highlight_duration_ms: u32,
+
+  /// How far cards, windows and highlights overshoot where they head
+  /// before settling back, from `0` (not at all) to `0.8` (wobbly). The
+  /// opening zoom overshoots by it too.
+  pub bounce: f32,
+
+  /// Glow, ripples and sparks, each of which can be turned off.
+  pub effects: OverviewEffects,
 }
 
 /// How the overview lays out the workspaces.
@@ -709,6 +726,21 @@ pub enum OverviewLayout {
   Grid,
 }
 
+/// Corner of a monitor that opens the overview.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum HotCorner {
+  /// No corner opens it.
+  #[default]
+  None,
+  TopLeft,
+  TopRight,
+  BottomLeft,
+  BottomRight,
+}
+
 impl Default for OverviewConfig {
   fn default() -> Self {
     // `0xRRGGBBAA`, as in the config.
@@ -730,10 +762,14 @@ impl Default for OverviewConfig {
       font_family: "Segoe UI Variable Text".to_string(),
       grid_columns: 5,
       layout: OverviewLayout::default(),
+      hot_corner: HotCorner::default(),
+      hot_corner_delay_ms: 300,
       open_duration_ms: 250,
       close_duration_ms: 200,
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
+      bounce: 0.25,
+      effects: OverviewEffects::default(),
     }
   }
 }
@@ -876,6 +912,18 @@ pub struct WindowEffectsConfig {
   ///
   /// Only has an effect on Windows.
   pub hide_border_on_fullscreen: bool,
+}
+
+impl WindowEffectsConfig {
+  /// The effects for a window that is focused or not.
+  #[must_use]
+  pub fn for_focus(&self, is_focused: bool) -> &WindowEffectConfig {
+    if is_focused {
+      &self.focused_window
+    } else {
+      &self.other_windows
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

@@ -25,8 +25,8 @@ use std::{
 use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
-  NativeWindowWindowsExt, Overlay, Point, Rect, StyleBlend,
-  SurrogateBatch, WindowPeek, HWND,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
+  Overlay, Point, Rect, StyleBlend, SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{
@@ -270,7 +270,7 @@ impl ScrollView {
       ),
     };
     // The window's own transparency and corners, as it is focused or not.
-    let (opacity, corner_style, _, _) =
+    let (opacity, corner_style, _) =
       surrogate_effects_for(is_focused, config);
     if !is_moving {
       motion.start_clock(Instant::now());
@@ -445,10 +445,8 @@ pub fn sync_scroll_view(
   }
 
   for (id, entry) in gone {
-    if let Some(window) = state
-      .container_by_id(id)
-      .and_then(|container| container.as_window_container().ok())
-      .filter(|_| entry.role != Role::Peek)
+    if let Some(window) =
+      state.window_by_id(id).filter(|_| entry.role != Role::Peek)
     {
       state.pending_sync.queue_container_to_redraw(window);
     }
@@ -535,21 +533,27 @@ pub fn track_overlays(
     .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, HWND)>>();
 
   for (id, frame, clip, is_moving, anchor) in tracked {
-    let (_, _, backdrop, border) =
+    let (_, _, overlays) =
       surrogate_effects_for(focused_id == Some(id), config);
 
-    match (backdrop, &frame) {
-      (Some(params), Some(frame)) => upsert_clipped_overlay(
-        &mut state.backdrop_overlays,
-        id,
-        params,
-        frame,
-        &clip,
-        anchor,
-        &mut batch,
-      ),
+    match (overlays.backdrop, &frame) {
+      (Some(params), Some(frame)) => {
+        upsert_clipped_overlay::<NativeBackdropOverlay>(
+          &mut state.window_overlays,
+          id,
+          params,
+          frame,
+          &clip,
+          anchor,
+          &mut batch,
+        );
+      }
       _ => {
-        if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
+        if let Some(overlay) = state
+          .window_overlays
+          .get_mut(&id)
+          .and_then(|overlays| overlays.backdrop.as_mut())
+        {
           overlay.hide();
         }
       }
@@ -559,10 +563,10 @@ pub fn track_overlays(
     let border_frame = frame
       .map(|frame| crate::tab_bars::with_tab_bar_of(state, id, &frame));
 
-    match (border, border_frame) {
+    match (overlays.border, border_frame) {
       (Some(params), Some(frame)) if is_moving => {
         upsert_pinned_border_overlay(
-          &mut state.border_overlays,
+          &mut state.window_overlays,
           id,
           StyleBlend::settled(params),
           &frame,
@@ -571,17 +575,23 @@ pub fn track_overlays(
           anchor,
         );
       }
-      (Some(params), Some(frame)) => upsert_clipped_overlay(
-        &mut state.border_overlays,
-        id,
-        params,
-        &frame,
-        &clip,
-        anchor,
-        &mut batch,
-      ),
+      (Some(params), Some(frame)) => {
+        upsert_clipped_overlay::<NativeBorderOverlay>(
+          &mut state.window_overlays,
+          id,
+          params,
+          &frame,
+          &clip,
+          anchor,
+          &mut batch,
+        );
+      }
       _ => {
-        if let Some(overlay) = state.border_overlays.get_mut(&id) {
+        if let Some(overlay) = state
+          .window_overlays
+          .get_mut(&id)
+          .and_then(|overlays| overlays.border.as_mut())
+        {
           overlay.hide();
         }
       }

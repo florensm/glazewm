@@ -12,11 +12,11 @@ use windows::{
       RGN_DIFF, SRCCOPY,
     },
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-      GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWLP_USERDATA,
-      HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-      SWP_SHOWWINDOW, WM_ERASEBKGND, WM_PAINT, WS_EX_NOACTIVATE,
-      WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+      DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
+      SetWindowLongPtrW, SetWindowPos, GWLP_USERDATA, HWND_TOPMOST,
+      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+      WM_ERASEBKGND, WM_PAINT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+      WS_EX_TOPMOST, WS_EX_TRANSPARENT,
     },
   },
 };
@@ -198,36 +198,24 @@ impl NativeIrisOverlay {
 
     let bitmap = capture_monitor(monitor)?;
 
-    // SAFETY: the class is registered above with a static class name.
-    let hwnd = unsafe {
-      CreateWindowExW(
-        WS_EX_TOOLWINDOW
-          | WS_EX_NOACTIVATE
-          | WS_EX_TRANSPARENT
-          | WS_EX_TOPMOST,
-        w!("GlazeWM_Iris"),
-        w!(""),
-        WS_POPUP,
-        monitor.x(),
-        monitor.y(),
-        monitor.width(),
-        monitor.height(),
-        None,
-        None,
-        None,
-        None,
-      )
-    };
-
-    if hwnd.0 == 0 {
-      // SAFETY: `bitmap` is a valid GDI object that never got attached.
-      unsafe {
-        let _ = DeleteObject(HGDIOBJ(bitmap.0));
+    let hwnd = match window_class::create_popup(
+      w!("GlazeWM_Iris"),
+      WS_EX_TOOLWINDOW
+        | WS_EX_NOACTIVATE
+        | WS_EX_TRANSPARENT
+        | WS_EX_TOPMOST,
+      monitor,
+      "iris overlay",
+    ) {
+      Ok(hwnd) => hwnd,
+      Err(err) => {
+        // SAFETY: `bitmap` is a valid GDI object that never got attached.
+        unsafe {
+          let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        }
+        return Err(err);
       }
-      return Err(crate::Error::Platform(
-        "Failed to create iris overlay window.".to_string(),
-      ));
-    }
+    };
 
     // Stash the snapshot so the window procedure can blit it on
     // `WM_PAINT`. SAFETY: `hwnd` is valid; the stored value is an

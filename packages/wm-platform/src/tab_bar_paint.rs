@@ -1,26 +1,15 @@
 //! Draws a stack's tab bar into a bitmap: for the bar's own window, and
 //! for the overview, which shows the same bar on its cards.
 
-use windows::{
-  core::PCWSTR,
-  Win32::{
-    Foundation::{COLORREF, HWND, RECT},
-    Graphics::Gdi::{
-      CreateFontW, DeleteObject, DrawTextW, SelectObject, SetBkMode,
-      SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
-      DEFAULT_CHARSET, DT_CALCRECT, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-      DT_SINGLELINE, DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HDC, HFONT,
-      OUT_DEFAULT_PRECIS, TRANSPARENT,
-    },
-    UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL},
-  },
-};
+use windows::Win32::Foundation::HWND;
 
 use crate::{
   paint::Canvas,
   surface::Surface,
   tab_layout::{TabHit, TabLayout, TabRect},
-  window_icons, Rect, TabBarStyle, TabFrame,
+  text::{draw_text, text_width, Align, Fonts},
+  window_icons::draw_window_icon,
+  Rect, TabFrame,
 };
 
 /// How a bar is shown besides its frame: its layout, and what the cursor
@@ -53,19 +42,7 @@ pub(crate) fn paint_tab_bar(
 ) -> Vec<bool> {
   let (width, height) = (surface.width, surface.height);
   paint_shapes(surface.pixels(), width, height, view, frame);
-
-  // GDI zeroes the alpha of every pixel it draws, so it is restored after
-  // drawing text and icons, which only ever land on opaque parts.
-  let alpha = surface.pixels().iter().map(|p| p >> 24).collect::<Vec<_>>();
-
-  // SAFETY: The surface's DC has its bitmap selected.
-  let truncated =
-    unsafe { paint_text_and_icons(surface.dc, view, frame, notify) };
-
-  for (pixel, alpha) in surface.pixels().iter_mut().zip(alpha) {
-    *pixel = (*pixel & 0x00ff_ffff) | (alpha << 24);
-  }
-
+  let truncated = paint_text_and_icons(surface, view, frame, notify);
   paint_close_buttons(surface.pixels(), width, height, view, frame);
   truncated
 }
@@ -140,23 +117,19 @@ fn paint_shapes(
   }
 }
 
-/// Draws titles and icons with GDI.
-///
-/// # Safety
-///
-/// `dc` must have the bar's bitmap selected.
-unsafe fn paint_text_and_icons(
-  dc: HDC,
+/// Draws titles and icons.
+fn paint_text_and_icons(
+  surface: &mut Surface,
   view: &TabBarView,
   frame: &TabFrame,
   notify: (HWND, u32),
 ) -> Vec<bool> {
   let mut truncated = vec![false; frame.tabs.len()];
   let style = &frame.style;
-  let regular = create_font(style, false);
-  let bold = create_font(style, true);
-  let old_font = SelectObject(dc, regular);
-  SetBkMode(dc, TRANSPARENT);
+  let mut fonts = Fonts::new(&style.font_family);
+
+  #[allow(clippy::cast_precision_loss)]
+  let font_size = style.font_size as f32;
 
   for (position, index) in view.order.iter().copied().enumerate() {
     let (Some(slot), Some(tab)) =
@@ -168,21 +141,7 @@ unsafe fn paint_text_and_icons(
     let is_active = index == frame.active_index;
 
     if let Some(icon_rect) = slot.icon {
-      if let Some(icon) =
-        window_icons::icon_for(tab.hwnd, notify.0, notify.1)
-      {
-        let _ = DrawIconEx(
-          dc,
-          icon_rect.left,
-          icon_rect.top,
-          icon,
-          icon_rect.width(),
-          icon_rect.height(),
-          0,
-          None,
-          DI_NORMAL,
-        );
-      }
+      draw_window_icon(surface, tab.hwnd, &icon_rect.into(), 1.0, notify);
     }
 
     if slot.text.width() <= 0 {
@@ -199,10 +158,9 @@ unsafe fn paint_text_and_icons(
       tab.title.clone()
     };
 
-    // An empty slice's dangling pointer must never reach `DrawTextW`,
-    // which reads through it on some systems (e.g. Wine).
-    if title.is_empty() {
-      continue;
+    let font = fonts.get(font_size, is_active);
+    if let Some(is_truncated) = truncated.get_mut(index) {
+      *is_truncated = text_width(&font, &title) > slot.text.width();
     }
 
     let color = if is_active {
@@ -210,74 +168,17 @@ unsafe fn paint_text_and_icons(
     } else {
       style.inactive_text
     };
-
-    SelectObject(dc, if is_active { bold } else { regular });
-    SetTextColor(dc, COLORREF(color.to_bgr()));
-
-    let mut text = title.encode_utf16().collect::<Vec<_>>();
-    let mut rect = RECT {
-      left: slot.text.left,
-      top: slot.text.top,
-      right: slot.text.right,
-      bottom: slot.text.bottom,
-    };
-
-    let mut needed = rect;
-    DrawTextW(
-      dc,
-      &mut text.clone(),
-      &raw mut needed,
-      DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT,
-    );
-    if let Some(is_truncated) = truncated.get_mut(index) {
-      *is_truncated = needed.right > rect.right;
-    }
-
-    DrawTextW(
-      dc,
-      &mut text,
-      &raw mut rect,
-      DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+    draw_text(
+      surface,
+      &font,
+      &title,
+      &slot.text.into(),
+      color,
+      Align::Left,
     );
   }
 
-  SelectObject(dc, old_font);
-  let _ = DeleteObject(regular);
-  let _ = DeleteObject(bold);
   truncated
-}
-
-/// Creates the tab title font, bold for the active tab.
-///
-/// # Safety
-///
-/// The returned font must be deleted by the caller.
-unsafe fn create_font(style: &TabBarStyle, is_bold: bool) -> HFONT {
-  let family = style
-    .font_family
-    .encode_utf16()
-    .chain(std::iter::once(0))
-    .collect::<Vec<_>>();
-
-  let weight = if is_bold { FW_SEMIBOLD } else { FW_NORMAL };
-
-  CreateFontW(
-    // Negative: character height rather than cell height.
-    -style.font_size.max(1),
-    0,
-    0,
-    0,
-    i32::try_from(weight.0).unwrap_or(400),
-    0,
-    0,
-    0,
-    u32::from(DEFAULT_CHARSET.0),
-    u32::from(OUT_DEFAULT_PRECIS.0),
-    u32::from(CLIP_DEFAULT_PRECIS.0),
-    u32::from(CLEARTYPE_QUALITY.0),
-    0,
-    PCWSTR(family.as_ptr()),
-  )
 }
 
 /// Draws the close buttons' crosses, anti-aliased.
@@ -341,5 +242,73 @@ fn paint_close_buttons(
       thickness,
       color,
     );
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use windows::Win32::Foundation::HWND;
+
+  use super::{paint_tab_bar, TabBarView};
+  use crate::{
+    surface::Surface,
+    tab_layout::{TabHit, TabLayout},
+    Color, CornerRadii, Rect, TabBarStyle, TabCloseMode, TabFrame,
+    TabInfo,
+  };
+
+  #[test]
+  fn flags_titles_cut_off() {
+    let color = Color {
+      r: 255,
+      g: 255,
+      b: 255,
+      a: 255,
+    };
+    let tab = |title: String| TabInfo {
+      title,
+      hwnd: 0,
+      is_urgent: false,
+    };
+    let frame = TabFrame {
+      rect: Rect::from_ltrb(0, 0, 300, 28),
+      outer_rect: Rect::from_ltrb(0, 0, 300, 28),
+      clip: None,
+      tabs: vec![tab("Notes".to_string()), tab("Long title ".repeat(10))],
+      active_index: 0,
+      anchor: 0,
+      style: TabBarStyle {
+        background: color,
+        active_background: color,
+        hover_background: color,
+        inactive_background: color,
+        urgent_background: color,
+        text: color,
+        inactive_text: color,
+        font_family: "Segoe UI".to_string(),
+        font_size: 12,
+        corner_radius: 0,
+        strip_radii: CornerRadii::default(),
+        min_tab_width: 0,
+        max_tab_width: 0,
+        show_icons: false,
+        show_numbers: false,
+        close_button: TabCloseMode::Never,
+        scale_factor: 1.0,
+      },
+    };
+    let layout = TabLayout::for_frame(&frame);
+    let view = TabBarView {
+      layout: &layout,
+      order: &[0, 1],
+      hover: TabHit::Empty,
+      dragged: None,
+      close_visible: &[false, false],
+    };
+
+    let mut surface = Surface::new(300, 28).expect("surface");
+    let truncated =
+      paint_tab_bar(&mut surface, &frame, &view, (HWND::default(), 0));
+    assert_eq!(truncated, [false, true]);
   }
 }

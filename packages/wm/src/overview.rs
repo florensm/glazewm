@@ -5,17 +5,23 @@
 //! The overview is drawn and driven by `NativeOverview` on a thread of its
 //! own; the WM decides what it shows and carries out what is picked.
 
-use std::collections::HashMap;
+use std::{
+  collections::HashMap,
+  time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use wm_common::{Layout, WindowState, WorkspaceConfig};
+use wm_common::{
+  HotCorner, Layout, OverviewLayout, WindowState, WorkspaceConfig,
+};
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, Color, NativeOverview,
-  OverviewAction, OverviewFrame, OverviewLayoutMode, OverviewOverlay,
-  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
-  OverviewWorkspace, Rect, TabFrame,
+  Color, MouseButton, MouseEvent, NativeBackdropOverlay,
+  NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
+  OverviewFrame, OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
+  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
+  Rect, TabFrame,
 };
 
 use crate::{
@@ -31,6 +37,7 @@ use crate::{
   tab_bars::{tab_frame, TabBarSettings},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
+  window_overlays::WindowOverlays,
   wm_state::WmState,
 };
 
@@ -49,8 +56,25 @@ pub struct Overview {
   /// says it hid, which can be a zoom after its close.
   is_shown: bool,
 
+  /// The cursor's visit to the hot corner, which opens the overview once
+  /// per visit.
+  hot_corner: CornerVisit,
+
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
+}
+
+/// Where the cursor is with respect to the hot corner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CornerVisit {
+  /// Out of it.
+  Away,
+
+  /// In it, and opening the overview at the instant given if it stays.
+  Resting(Instant),
+
+  /// In it, the overview opened or not to be opened on this visit.
+  Spent,
 }
 
 struct OpenOverview {
@@ -67,6 +91,7 @@ impl Overview {
       open: None,
       closing: None,
       is_shown: false,
+      hot_corner: CornerVisit::Away,
       action_tx,
     }
   }
@@ -79,6 +104,15 @@ impl Overview {
   /// after its close, zooming into the pick.
   pub fn is_shown(&self) -> bool {
     self.is_shown
+  }
+
+  /// When the cursor resting in the hot corner opens the overview, while
+  /// it does.
+  pub fn hot_corner_deadline(&self) -> Option<Instant> {
+    match self.hot_corner {
+      CornerVisit::Resting(due) => Some(due),
+      CornerVisit::Away | CornerVisit::Spent => None,
+    }
   }
 
   /// Takes in that the native overview of `session` hid. Returns whether
@@ -166,6 +200,105 @@ pub fn toggle_overview(
   Ok(())
 }
 
+/// Pixels from a monitor's corner, either way, that count as in it.
+const HOT_CORNER_SIZE: i32 = 2;
+
+/// Notes the cursor moving into or out of the hot corner of a monitor,
+/// opening the overview once it rests there for `hot_corner_delay_ms`.
+pub fn check_hot_corner(
+  event: &MouseEvent,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let MouseEvent::Move { position, .. } = event else {
+    return Ok(());
+  };
+
+  let corner = config.value.overview.hot_corner;
+  let is_in = corner != HotCorner::None
+    && !state.is_paused
+    && state.monitors().iter().any(|monitor| {
+      is_in_corner(&monitor.native_properties().bounds, corner, position)
+    });
+
+  let visit = &mut state.overview.hot_corner;
+  match (*visit, is_in) {
+    (_, false) => *visit = CornerVisit::Away,
+    (CornerVisit::Away, true) => {
+      let delay = u64::from(config.value.overview.hot_corner_delay_ms);
+      *visit = CornerVisit::Resting(
+        Instant::now() + Duration::from_millis(delay),
+      );
+    }
+    _ => {}
+  }
+
+  process_hot_corner(state, config)
+}
+
+/// Opens the overview once the cursor has rested in the hot corner long
+/// enough, unless a mouse button is held, e.g. dragging a window there.
+pub fn process_hot_corner(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let CornerVisit::Resting(due) = state.overview.hot_corner else {
+    return Ok(());
+  };
+  if Instant::now() < due {
+    return Ok(());
+  }
+  state.overview.hot_corner = CornerVisit::Spent;
+
+  let is_button_held = [MouseButton::Left, MouseButton::Right]
+    .iter()
+    .any(|button| state.dispatcher.is_mouse_down(button));
+  if is_button_held || state.overview.is_shown() {
+    return Ok(());
+  }
+
+  let layout = to_layout_mode(config.value.overview.layout);
+  toggle_overview(state, config, layout)
+}
+
+/// Whether `position` is in `corner` of `bounds`.
+fn is_in_corner(
+  bounds: &Rect,
+  corner: HotCorner,
+  position: &Point,
+) -> bool {
+  let near = |edge: i32, at: i32| (at - edge).abs() < HOT_CORNER_SIZE;
+  let (left, top) = (bounds.left, bounds.top);
+  let (right, bottom) = (bounds.right - 1, bounds.bottom - 1);
+
+  bounds.contains_point(position)
+    && match corner {
+      HotCorner::None => false,
+      HotCorner::TopLeft => {
+        near(left, position.x) && near(top, position.y)
+      }
+      HotCorner::TopRight => {
+        near(right, position.x) && near(top, position.y)
+      }
+      HotCorner::BottomLeft => {
+        near(left, position.x) && near(bottom, position.y)
+      }
+      HotCorner::BottomRight => {
+        near(right, position.x) && near(bottom, position.y)
+      }
+    }
+}
+
+/// The native overview's layout for the config's `layout`.
+pub fn to_layout_mode(layout: OverviewLayout) -> OverviewLayoutMode {
+  match layout {
+    OverviewLayout::Activities => OverviewLayoutMode::Activities,
+    OverviewLayout::Stage => OverviewLayoutMode::Stage,
+    OverviewLayout::Carousel => OverviewLayoutMode::Carousel,
+    OverviewLayout::Grid => OverviewLayoutMode::Grid,
+  }
+}
+
 /// Brings the native overview in line with the WM's state: hides it once
 /// closed, and shows workspaces and windows as they change while open.
 ///
@@ -195,7 +328,13 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
     Some(frame) if is_open => native.update(frame),
     // Its zoom into the picked workspace lands on what the pick brought
     // on screen.
-    Some(frame) => native.hide_on(frame),
+    Some(frame) => {
+      tracing::debug!(
+        target: wm_platform::OVERVIEW_LOG_TARGET,
+        "Hiding the overview on the pick's frame."
+      );
+      native.hide_on(frame);
+    }
     None => {
       overview.open = None;
       native.hide();
@@ -254,6 +393,8 @@ fn overview_frame(
       close_duration_ms: overview.close_duration_ms,
       switch_duration_ms: overview.switch_duration_ms,
       highlight_duration_ms: overview.highlight_duration_ms,
+      bounce: overview.bounce,
+      effects: overview.effects,
     },
   }
 }
@@ -475,20 +616,15 @@ struct WindowLooks {
 /// The effects the WM gives a window.
 struct WindowLook {
   opacity: u8,
-  backdrop: Option<BackdropOverlayParams>,
-  border: Option<BorderOverlayParams>,
+  overlays: OverlayParams,
 }
 
 impl WindowLooks {
   fn new(state: &WmState, config: &UserConfig) -> Self {
     let look = |is_focused| {
-      let (opacity, _, backdrop, border) =
+      let (opacity, _, overlays) =
         surrogate_effects_for(is_focused, config);
-      WindowLook {
-        opacity,
-        backdrop,
-        border,
-      }
+      WindowLook { opacity, overlays }
     };
 
     Self {
@@ -520,17 +656,17 @@ fn overview_window(
 
   let overlays = if shows_overlays(window) {
     [
-      window_overlay(
-        &state.backdrop_overlays,
+      window_overlay::<NativeBackdropOverlay>(
+        &state.window_overlays,
         window,
-        look.backdrop,
+        look.overlays.backdrop,
         OverviewOverlayKind::Backdrop,
         config,
       ),
-      window_overlay(
-        &state.border_overlays,
+      window_overlay::<NativeBorderOverlay>(
+        &state.window_overlays,
         window,
-        look.border,
+        look.overlays.border,
         OverviewOverlayKind::Border,
         config,
       ),
@@ -554,6 +690,10 @@ fn overview_window(
     is_scrolled_off: !scrolling::is_in_view(&window.as_container()),
     opacity: look.opacity,
     overlays,
+    border: look.overlays.border.filter(|params| {
+      params.opacity > 0.0
+        && !NativeBorderOverlay::suppressed_for(window, config)
+    }),
   }
 }
 
@@ -573,14 +713,14 @@ fn shows_overlays(window: &WindowContainer) -> bool {
 /// `window`'s overlay among `overlays`, while the WM draws one with
 /// `params` for it, and how far it reaches past the window.
 fn window_overlay<O: SyncableOverlay>(
-  overlays: &HashMap<Uuid, O>,
+  overlays: &HashMap<Uuid, WindowOverlays>,
   window: &WindowContainer,
   params: Option<O::Params>,
   kind: OverviewOverlayKind,
   config: &UserConfig,
 ) -> Option<OverviewOverlay> {
   let params = params.filter(|_| !O::suppressed_for(window, config))?;
-  let overlay = overlays.get(&window.id())?;
+  let overlay = overlays.get(&window.id()).and_then(O::get)?;
 
   // Any rect does: an overlay reaches past its window by the same amount
   // wherever the window is.
@@ -1017,6 +1157,69 @@ mod tests {
       windows.iter().all(|window| window.overlays.is_empty()),
       "the WM draws no overlays for them"
     );
+  }
+
+  #[test]
+  fn hot_corners_are_the_monitors_own_corners() {
+    use wm_common::HotCorner;
+    use wm_platform::Point;
+
+    use super::is_in_corner;
+
+    let bounds = Rect::from_xy(1920, 0, 1920, 1080);
+    let at = |x, y| Point { x, y };
+
+    assert!(is_in_corner(&bounds, HotCorner::TopLeft, &at(1920, 0)));
+    assert!(is_in_corner(&bounds, HotCorner::TopLeft, &at(1921, 1)));
+    assert!(!is_in_corner(&bounds, HotCorner::TopLeft, &at(1925, 0)));
+    assert!(!is_in_corner(&bounds, HotCorner::TopLeft, &at(1919, 0)));
+    assert!(is_in_corner(
+      &bounds,
+      HotCorner::BottomRight,
+      &at(3839, 1079)
+    ));
+    assert!(!is_in_corner(
+      &bounds,
+      HotCorner::BottomRight,
+      &at(3840, 1079)
+    ));
+    assert!(!is_in_corner(&bounds, HotCorner::None, &at(1920, 0)));
+  }
+
+  #[test]
+  fn windows_on_hidden_workspaces_still_carry_their_border() {
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      wm_state::WmState,
+    };
+
+    let config = config_with(|value| {
+      value.window_effects.other_windows.border.enabled = true;
+    });
+    let (shown, hidden) = (tiling("shown"), tiling("hidden"));
+    let first = Workspace::mock()
+      .name("1".to_string())
+      .tiling_containers(vec![shown.clone().into()])
+      .call();
+    let second = Workspace::mock()
+      .name("2".to_string())
+      .tiling_containers(vec![hidden.into()])
+      .call();
+    let state = WmState::mock(vec![Monitor::mock()
+      .workspaces(vec![first, second])
+      .call()]);
+    set_focused_descendant(&shown.into(), None);
+
+    let screens = frame(&state, &config).screens;
+    let hidden = screens[0]
+      .workspaces
+      .iter()
+      .flat_map(|workspace| &workspace.windows)
+      .find(|window| window.title == "hidden")
+      .expect("hidden window");
+
+    assert!(hidden.overlays.is_empty(), "its overlay is hidden");
+    assert!(hidden.border.is_some(), "for the overview to draw it");
   }
 
   #[test]

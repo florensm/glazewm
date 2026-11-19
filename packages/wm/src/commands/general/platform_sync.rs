@@ -24,8 +24,8 @@ use wm_platform::{
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, CornerStyle, LiveFrame,
   NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
-  OpacityValue, Overlay, StyleBlend, SurrogateBatch, WorkspaceSurrogate,
-  HWND,
+  OpacityValue, Overlay, OverlayParams, StyleBlend, SurrogateBatch,
+  WorkspaceSurrogate, HWND,
 };
 
 use crate::{
@@ -42,7 +42,9 @@ use crate::{
 };
 #[cfg(target_os = "windows")]
 use crate::{
-  commands::window::unmanage_if_embedded, pending_sync::IrisSwitchRequest,
+  commands::window::unmanage_if_embedded,
+  pending_sync::IrisSwitchRequest,
+  window_overlays::{OverlayPlacement, WindowOverlays},
 };
 
 /// Returns the smallest iris radius that fully covers the monitor from the
@@ -454,21 +456,19 @@ struct PendingCloak {
 /// Cloaks and pre-positions every window [`redraw_containers`] queued this
 /// pass, behind one shared `DwmFlush`.
 ///
-/// `backdrop_batch`/`border_batch` hold the overlay repositions that must
-/// be visible in the flushed frame; they are committed first so the flush
-/// covers them too. See `pending_cloaks`' declaration in
-/// [`redraw_containers`] for why the flush is hoisted out of the
-/// per-window loop.
+/// `overlay_batch` holds the overlay repositions that must be visible in
+/// the flushed frame; it is committed first so the flush covers them too.
+/// See `pending_cloaks`' declaration in [`redraw_containers`] for why the
+/// flush is hoisted out of the per-window loop.
 #[cfg(target_os = "windows")]
 fn commit_pending_cloaks(
   state: &mut WmState,
   pending: Vec<PendingCloak>,
-  backdrop_batch: SurrogateBatch,
-  border_batch: SurrogateBatch,
+  overlay_batch: SurrogateBatch,
 ) {
   use wm_platform::{
-    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOSENDCHANGING, SWP_NOZORDER,
+    discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
   };
 
   if pending.is_empty() {
@@ -477,8 +477,7 @@ fn commit_pending_cloaks(
 
   let _scope = perf::scope(Stage::Cloak);
 
-  backdrop_batch.commit();
-  border_batch.commit();
+  overlay_batch.commit();
 
   // Flush before cloaking so DWM renders one frame with every queued
   // surrogate (and its now-correctly-anchored overlays) visible and its
@@ -549,10 +548,13 @@ fn commit_pending_cloaks(
     };
 
     if let Some(swp_flags) = swp_flags {
-      let _ =
-        window
-          .native()
-          .set_window_pos(&z_order, &target_rect, swp_flags);
+      let current = window.native().frame_with_shadows().ok();
+      let _ = window.native().set_window_pos(
+        &z_order,
+        &target_rect,
+        swp_flags
+          | discard_bits_if_resized(current.as_ref(), &target_rect),
+      );
     }
 
     // Mark the session cloaked so subsequent Frozen ticks skip the
@@ -763,9 +765,9 @@ fn redraw_containers(
             .prev_effects_window
             .as_ref()
             .is_some_and(|w| w.id() == id);
-          let (opacity, _, from_backdrop, _) =
+          let (opacity, _, from) =
             surrogate_effects_for(was_focused, config);
-          let (_, corner_style, to_backdrop, _) =
+          let (_, corner_style, to) =
             surrogate_effects_for(id == focused_container.id(), config);
 
           // A backdrop on either side switches the surrogate to `Live`
@@ -773,7 +775,7 @@ fn redraw_containers(
           // onto its footprint each tick and the frosted-glass effect
           // stays visible (and can fade) while the workspace slides.
           let overlay_tint =
-            from_backdrop.or(to_backdrop).map(|p| p.tint.to_abgr());
+            from.backdrop.or(to.backdrop).map(|p| p.tint.to_abgr());
 
           if is_incoming {
             let surrogate = window
@@ -888,15 +890,33 @@ fn redraw_containers(
         if (has_outgoing || has_incoming)
           && (direction != 0 || is_no_slide)
         {
+          park_switch_borders(
+            state,
+            &mut ws_windows,
+            focused_container.id(),
+            config,
+          );
+
           // Show outgoing surrogates before flushing: real windows are
           // still active so their DWM thumbnails are immediately
           // warm. For stationary (non-slide) styles, also show
           // incoming surrogates at their start opacity so DWM
           // warms their thumbnails before the loop.
-          for (_, entry) in &mut ws_windows {
+          for (id, entry) in &mut ws_windows {
             if let Some(s) = &mut entry.surrogate {
               if !entry.is_incoming {
                 s.show_initial();
+
+                // Covered for the flush below, so the take-over only has
+                // to conceal the real ring.
+                if state
+                  .window_overlays
+                  .get(id)
+                  .and_then(|overlays| overlays.border.as_ref())
+                  .is_some_and(|o| o.is_parked() && o.is_visible())
+                {
+                  s.cover_ring();
+                }
               } else if ws_config.style != WorkspaceSwitchStyle::Slide {
                 s.show_incoming();
               }
@@ -911,6 +931,18 @@ fn redraw_containers(
           // start off-screen, so DWM warms their thumbnails over the
           // first few frames of the slide without a visible gap.
           wm_platform::dwm_flush();
+
+          // The flush showed each parked ring's copy over it, so the ring
+          // itself can go.
+          for (id, _) in &ws_windows {
+            if let Some(overlay) = state
+              .window_overlays
+              .get_mut(id)
+              .and_then(|overlays| overlays.border.as_mut())
+            {
+              overlay.conceal();
+            }
+          }
 
           // Windows still sliding on a switch this one cuts short are
           // drawn by that one's surrogates, which go as this one
@@ -973,9 +1005,7 @@ fn redraw_containers(
   #[cfg(target_os = "windows")]
   let mut pending_cloaks: Vec<PendingCloak> = Vec::new();
   #[cfg(target_os = "windows")]
-  let mut cloak_backdrop_batch = SurrogateBatch::new();
-  #[cfg(target_os = "windows")]
-  let mut cloak_border_batch = SurrogateBatch::new();
+  let mut cloak_overlay_batch = SurrogateBatch::new();
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
@@ -1183,27 +1213,14 @@ fn redraw_containers(
     // Compute effect opacity and corner style unconditionally — needed for
     // both the movement surrogate path and the fade-in path.
     #[cfg(target_os = "windows")]
-    let (effect_opacity, corner_style, backdrop_overlay, border_overlay) = {
-      let effect_cfg = if window.id() == focused_container.id() {
-        &config.value.window_effects.focused_window
-      } else {
-        &config.value.window_effects.other_windows
-      };
-      let opacity = if effect_cfg.transparency.enabled {
-        effect_cfg.transparency.opacity.to_alpha()
-      } else {
-        u8::MAX
-      };
-      let style = effect_cfg.resolved_corner_style();
-      // Snapshotted onto the `ResizeSession` (rather than re-read live
-      // from config at tracking time) since the close animation's
-      // direct-drive loop runs after the window is detached from the
-      // container tree, where `effect_cfg` can no longer be
-      // recomputed.
-      let corner_radius = effect_cfg.window_corner_radius_px();
+    let (effect_opacity, corner_style, overlays) = {
+      let is_focused = window.id() == focused_container.id();
+      let (opacity, style, overlays) =
+        surrogate_effects_for(is_focused, config);
+
       // Decided here rather than in the tracking loop so the session is
       // built knowing it has no live overlay. `ResizeSession::begin` skips
-      // the sampled backdrop color whenever `backdrop_overlay` is `Some`,
+      // the sampled backdrop color whenever `overlays.backdrop` is `Some`,
       // on the grounds that the tracked backdrop will show through the gap
       // between the animated rect and the thumbnail -- so an overlay that
       // is declared but never tracked leaves that gap fully transparent,
@@ -1211,28 +1228,18 @@ fn redraw_containers(
       // `None` restores the sampled, app-matched fill instead.
       let is_tracked = match config.value.animations.overlay_tracking {
         OverlayTracking::All => true,
-        OverlayTracking::FocusedOnly => {
-          window.id() == focused_container.id()
-        }
+        OverlayTracking::FocusedOnly => is_focused,
         OverlayTracking::None => false,
       };
 
-      let backdrop_overlay = effect_cfg
-        .backdrop
-        .overlay_tint()
-        .filter(|_| is_tracked)
-        .map(|tint| {
-          effect_cfg.backdrop.to_overlay_params(tint, corner_radius)
-        });
-      let border_overlay = effect_cfg
-        .border
-        .abgr_color()
-        .filter(|_| is_tracked)
-        .filter(|_| !border_hidden_for_fullscreen(window, config))
-        .map(|color| {
-          effect_cfg.border.to_overlay_params(color, corner_radius)
-        });
-      (opacity, style, backdrop_overlay, border_overlay)
+      let overlays = OverlayParams {
+        backdrop: overlays.backdrop.filter(|_| is_tracked),
+        border: overlays.border.filter(|_| {
+          is_tracked && !border_hidden_for_fullscreen(window, config)
+        }),
+      };
+
+      (opacity, style, overlays)
     };
 
     // Pick this window's entry animation, if it gets one: `window_open`
@@ -1284,8 +1291,7 @@ fn redraw_containers(
         monitor_rect,
         effect_opacity,
         corner_style,
-        backdrop_overlay,
-        border_overlay,
+        overlays,
         &params,
         &native_ref,
       );
@@ -1347,8 +1353,7 @@ fn redraw_containers(
           &native_ref,
           effect_opacity,
           corner_style,
-          backdrop_overlay,
-          border_overlay,
+          overlays,
           config,
         )
       }
@@ -1431,41 +1436,20 @@ fn redraw_containers(
           if let Some(session) =
             state.animation_manager.resize_sessions.get(&window.id())
           {
-            if let (Some(params), Some(anchor), Some(rect)) = (
-              session.backdrop_overlay_params(),
+            let placement = session_overlay_placement(
+              state,
+              window.id(),
               session.surrogate_hwnd(),
               session.current_rect(),
-            ) {
-              upsert_overlay(
-                &mut state.backdrop_overlays,
-                window.id(),
-                params,
-                &rect,
-                anchor,
-                &mut cloak_backdrop_batch,
-              );
-            }
-            // Framed with its stack's tab bar, which goes along with it.
-            if let (Some(params), Some(anchor), Some(rect)) = (
-              session.border_overlay_params(),
-              session.surrogate_hwnd(),
-              session.current_rect().map(|rect| {
-                crate::tab_bars::animated_with_tab_bar(
-                  state,
-                  window.id(),
-                  &rect,
-                )
-              }),
-            ) {
-              upsert_overlay(
-                &mut state.border_overlays,
-                window.id(),
-                params,
-                &rect,
-                anchor,
-                &mut cloak_border_batch,
-              );
-            }
+            );
+
+            track_overlays(
+              &mut state.window_overlays,
+              window.id(),
+              session.overlay_params(),
+              placement.as_ref(),
+              &mut cloak_overlay_batch,
+            );
           }
           if let Some(session) = state
             .animation_manager
@@ -1711,12 +1695,7 @@ fn redraw_containers(
   // Cloak every window that entered its first `Frozen` frame this pass,
   // behind a single shared `DwmFlush` barrier. See `pending_cloaks`.
   #[cfg(target_os = "windows")]
-  commit_pending_cloaks(
-    state,
-    pending_cloaks,
-    cloak_backdrop_batch,
-    cloak_border_batch,
-  );
+  commit_pending_cloaks(state, pending_cloaks, cloak_overlay_batch);
 
   // Every surrogate and overlay reposition queued during this pass goes
   // into one `DeferWindowPos` transaction, committed at the end of this
@@ -1760,12 +1739,13 @@ fn redraw_containers(
         continue;
       }
 
-      let anchor = session.surrogate_hwnd();
-      let rect = session.current_rect();
-      // Framed with its stack's tab bar, which goes along with it.
-      let border_rect = rect.as_ref().map(|rect| {
-        crate::tab_bars::animated_with_tab_bar(state, *id, rect)
-      });
+      let params = session.overlay_params();
+      let placement = session_overlay_placement(
+        state,
+        *id,
+        session.surrogate_hwnd(),
+        session.current_rect(),
+      );
 
       // A session that carries no params for an overlay kind has no
       // tracker for it, and `sync_overlays` will not step in: it
@@ -1774,59 +1754,18 @@ fn redraw_containers(
       // Left alone, the overlay stays visible at the window's
       // pre-animation rect for the whole animation -- a border
       // outline, or a filled backdrop rect, stranded at the old position
-      // until the session ends. So hide it here, once, guarded on
-      // `is_visible` because `hide` issues a `ShowWindow` unconditionally.
-      if session.backdrop_overlay_params().is_none() {
-        if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
-          if overlay.is_visible() {
-            overlay.hide();
-          }
-        }
+      // until the session ends. So hide it here, once.
+      if let Some(overlays) = state.window_overlays.get_mut(id) {
+        overlays.hide_untracked(&params);
       }
 
-      if session.border_overlay_params().is_none() {
-        if let Some(overlay) = state.border_overlays.get_mut(id) {
-          if overlay.is_visible() {
-            overlay.hide();
-          }
-        }
-      }
-
-      if let Some(params) = session.backdrop_overlay_params() {
-        match (anchor, rect.clone()) {
-          (Some(anchor), Some(rect)) => upsert_overlay(
-            &mut state.backdrop_overlays,
-            *id,
-            params,
-            &rect,
-            anchor,
-            &mut batch,
-          ),
-          _ => {
-            if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
-              overlay.hide();
-            }
-          }
-        }
-      }
-
-      if let Some(params) = session.border_overlay_params() {
-        match (anchor, border_rect) {
-          (Some(anchor), Some(rect)) => upsert_overlay(
-            &mut state.border_overlays,
-            *id,
-            params,
-            &rect,
-            anchor,
-            &mut batch,
-          ),
-          _ => {
-            if let Some(overlay) = state.border_overlays.get_mut(id) {
-              overlay.hide();
-            }
-          }
-        }
-      }
+      track_overlays(
+        &mut state.window_overlays,
+        *id,
+        params,
+        placement.as_ref(),
+        &mut batch,
+      );
     }
     drop(overlay_scope);
 
@@ -1973,8 +1912,9 @@ fn reposition_window(
     #[cfg(target_os = "windows")]
     {
       use wm_platform::{
-        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
+        discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
+        WS_MAXIMIZEBOX,
       };
 
       // Restore window if it's minimized/maximized and shouldn't be. This
@@ -2018,13 +1958,17 @@ fn reposition_window(
       // needs no call at all. That also spares it the `SWP_FRAMECHANGED`
       // below, which can show a semi-transparent window solid for a frame
       // right before it disappears, e.g. as a workspace switch begins.
-      let already_at_rect = (is_visible
-        || config.value.general.hide_method == HideMethod::Cloak)
-        && !window.has_pending_dpi_adjustment()
-        && window
-          .native()
-          .frame_with_shadows()
-          .is_ok_and(|frame| &frame == rect);
+      //
+      // Not one the shell can't cloak, which is hidden outright instead:
+      // its app may stop drawing while hidden (WPF does), and without the
+      // call a stack's hidden WPF tabs came back partly unpainted. Checked
+      // last, as it asks the shell.
+      let current_frame = window.native().frame_with_shadows().ok();
+      let already_at_rect = !window.has_pending_dpi_adjustment()
+        && current_frame.as_ref() == Some(rect)
+        && (is_visible
+          || (config.value.general.hide_method == HideMethod::Cloak
+            && window.native().can_be_cloaked()));
 
       // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that
       // adjacent windows are repositioned synchronously. This keeps
@@ -2034,21 +1978,19 @@ fn reposition_window(
       // appears when async repositioning lags one frame behind the
       // surrogate.
       //
-      // `SWP_NOCOPYBITS` is only added for that same surrogate case:
+      // `SWP_NOCOPYBITS` is always added for that same surrogate case:
       // without it, DWM can briefly show the window's old bitmap
       // stretched/offset over the new rect for one frame while it
-      // catches up to the surrogate. Applying it unconditionally
-      // would force a full repaint on every reposition -- including
-      // live interactive drag-resizing and plain sibling-window
-      // reflows that never had a surrogate or a gap to
-      // close -- which is needless repaint cost on the target app's own
-      // thread and a real source of resize/move lag.
+      // catches up to the surrogate. Otherwise only when the size
+      // changes (see `discard_bits_if_resized`): a pure move keeps its
+      // still-correct pixels and spares the app a repaint.
       let mut swp_flags = SWP_NOACTIVATE
         | SWP_NOSENDCHANGING
         | if has_surrogate {
           SWP_NOCOPYBITS
         } else {
           SWP_ASYNCWINDOWPOS
+            | discard_bits_if_resized(current_frame.as_ref(), rect)
         };
       let sync_reposition_start = has_surrogate.then(Instant::now);
       let swp_scope = perf::scope(Stage::RepositionSwp);
@@ -2219,11 +2161,7 @@ fn apply_window_effects(
 
   // LINT: `effect_config` is only used on Windows.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-  let effect_config = if is_focused {
-    &window_effects.focused_window
-  } else {
-    &window_effects.other_windows
-  };
+  let effect_config = window_effects.for_focus(is_focused);
 
   #[cfg(target_os = "windows")]
   if window_effects.focused_window.hide_title_bar.enabled
@@ -2321,28 +2259,21 @@ fn apply_transparency_effect(
 /// Creates or updates `window_id`'s overlay of kind `O`, applying `params`
 /// and moving it to `rect`.
 ///
-/// Used by the workspace-switch live-tracking driver in
-/// `AnimationManager::update_internal`, which always has a definite
-/// up-to-date rect from the surrogate it's following each tick and so
-/// needs no conditional re-query -- unlike [`sync_overlays`] below, which
-/// only re-queries `frame()` (a cross-process call) when the window is
-/// actually being redrawn this tick.
-///
-/// Takes the overlay map directly (rather than `&mut WmState`) so callers
-/// already holding an unrelated borrow into other `WmState` fields -- e.g.
-/// the workspace-switch driver, which calls this while still borrowing
-/// `state.animation_manager.workspace_switch` for `rect` itself -- can
-/// pass `&mut state.backdrop_overlays` without a borrow-checker conflict.
+/// For callers with a definite up-to-date rect, e.g. from a surrogate
+/// they're following, so no conditional re-query is needed -- unlike
+/// [`sync_overlays`] below, which only re-queries `frame()` (a
+/// cross-process call) when the window is actually being redrawn this
+/// tick.
 #[cfg(target_os = "windows")]
-pub(crate) fn upsert_overlay<O: SyncableOverlay>(
-  overlays: &mut std::collections::HashMap<uuid::Uuid, O>,
+fn upsert_overlay<O: SyncableOverlay>(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   params: O::Params,
   rect: &Rect,
   anchor: HWND,
   batch: &mut SurrogateBatch,
 ) {
-  upsert_blended_overlay(
+  upsert_blended_overlay::<O>(
     overlays,
     window_id,
     StyleBlend::settled(params),
@@ -2352,11 +2283,103 @@ pub(crate) fn upsert_overlay<O: SyncableOverlay>(
   );
 }
 
+/// Shows `window_id`'s overlays with `params` at `placement`, tracking an
+/// animation's surrogate, or hides them while the surrogate has nowhere
+/// to be. Leaves an overlay alone that `params` has no params for.
+///
+/// Takes the overlay map directly (rather than `&mut WmState`) so callers
+/// still borrowing other `WmState` fields, e.g. the session they track,
+/// can pass `&mut state.window_overlays`.
+#[cfg(target_os = "windows")]
+pub(crate) fn track_overlays(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
+  window_id: uuid::Uuid,
+  params: OverlayParams,
+  placement: Option<&OverlayPlacement>,
+  batch: &mut SurrogateBatch,
+) {
+  track_overlay::<NativeBackdropOverlay>(
+    overlays,
+    window_id,
+    params.backdrop,
+    placement.map(|placement| (placement.anchor, &placement.rect)),
+    batch,
+  );
+  track_overlay::<NativeBorderOverlay>(
+    overlays,
+    window_id,
+    params.border,
+    placement.map(|placement| (placement.anchor, &placement.border_rect)),
+    batch,
+  );
+}
+
+/// [`track_overlays`] for the overlay of kind `O`.
+#[cfg(target_os = "windows")]
+fn track_overlay<O: SyncableOverlay>(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
+  window_id: uuid::Uuid,
+  params: Option<O::Params>,
+  placement: Option<(HWND, &Rect)>,
+  batch: &mut SurrogateBatch,
+) {
+  let Some(params) = params else {
+    return;
+  };
+
+  match placement {
+    Some((anchor, rect)) => {
+      upsert_overlay::<O>(
+        overlays, window_id, params, rect, anchor, batch,
+      );
+    }
+    None => {
+      if let Some(overlay) = overlay_mut::<O>(overlays, window_id) {
+        overlay.hide();
+      }
+    }
+  }
+}
+
+/// Where the overlays of `window_id` go while its resize session's
+/// surrogate, `anchor`, draws it at `rect`, or `None` while the surrogate
+/// has nowhere to be.
+#[cfg(target_os = "windows")]
+fn session_overlay_placement(
+  state: &WmState,
+  window_id: uuid::Uuid,
+  anchor: Option<HWND>,
+  rect: Option<Rect>,
+) -> Option<OverlayPlacement> {
+  let (anchor, rect) = anchor.zip(rect)?;
+
+  // Framed with its stack's tab bar, which goes along with it.
+  let border_rect =
+    crate::tab_bars::animated_with_tab_bar(state, window_id, &rect);
+
+  Some(OverlayPlacement {
+    anchor,
+    rect,
+    border_rect,
+  })
+}
+
+/// `window_id`'s overlay of kind `O`, if it has one.
+#[cfg(target_os = "windows")]
+fn overlay_mut<O: SyncableOverlay>(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
+  window_id: uuid::Uuid,
+) -> Option<&mut O> {
+  overlays
+    .get_mut(&window_id)
+    .and_then(|overlays| O::slot(overlays).as_mut())
+}
+
 /// [`upsert_overlay`] for a window cut off at the edges of `clip`, e.g. a
 /// scrolling layout's column reaching onto another monitor.
 #[cfg(target_os = "windows")]
 pub(crate) fn upsert_clipped_overlay<O: SyncableOverlay>(
-  overlays: &mut std::collections::HashMap<uuid::Uuid, O>,
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   params: O::Params,
   rect: &Rect,
@@ -2365,7 +2388,7 @@ pub(crate) fn upsert_clipped_overlay<O: SyncableOverlay>(
   batch: &mut SurrogateBatch,
 ) {
   if let Some(overlay) =
-    overlay_entry(overlays, window_id, params, rect, anchor)
+    overlay_entry::<O>(overlays, window_id, params, rect, anchor)
   {
     overlay.apply(params);
     overlay.defer_clipped_rect(batch, rect, clip, anchor);
@@ -2374,8 +2397,8 @@ pub(crate) fn upsert_clipped_overlay<O: SyncableOverlay>(
 
 /// [`upsert_overlay`] for a style mid-transition.
 #[cfg(target_os = "windows")]
-pub(crate) fn upsert_blended_overlay<O: SyncableOverlay>(
-  overlays: &mut std::collections::HashMap<uuid::Uuid, O>,
+fn upsert_blended_overlay<O: SyncableOverlay>(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   blend: StyleBlend<O::Params>,
   rect: &Rect,
@@ -2383,7 +2406,7 @@ pub(crate) fn upsert_blended_overlay<O: SyncableOverlay>(
   batch: &mut SurrogateBatch,
 ) {
   if let Some(overlay) =
-    overlay_entry(overlays, window_id, blend.from, rect, anchor)
+    overlay_entry::<O>(overlays, window_id, blend.from, rect, anchor)
   {
     overlay.apply_blend(blend);
     overlay.defer_rect(batch, rect, anchor);
@@ -2432,8 +2455,8 @@ fn follow_frame<O: SyncableOverlay>(
     .filter(|_| !O::suppressed_for(window, config));
 
   if let Some(params) = params {
-    upsert_overlay(
-      O::overlays(state),
+    upsert_overlay::<O>(
+      &mut state.window_overlays,
       window.id(),
       params,
       &O::overlay_rect(window, frame),
@@ -2478,7 +2501,9 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
       .peek_hwnd(&window.id())
       .unwrap_or_else(|| overlay_z_anchor(&window));
 
-    let Some(overlay) = O::overlays(state).get_mut(&window.id()) else {
+    let Some(overlay) =
+      overlay_mut::<O>(&mut state.window_overlays, window.id())
+    else {
       continue;
     };
 
@@ -2492,6 +2517,83 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
         O::LABEL,
         window.id()
       );
+    }
+  }
+}
+
+/// Parks the border ring of each window in a starting workspace switch
+/// where the window rests, for its surrogate to carry a copy of it (see
+/// `NativeBorderOverlay::park`). A window sliding in has its ring
+/// concealed until the switch ends; one sliding out shows its own until
+/// its copy has been composited over it.
+///
+/// A surrogate in `Live` mode (with a backdrop) can't carry the ring, so
+/// it slides on its own instead (see `NativeBorderOverlay::pin_or_slide`),
+/// as it also does when a copy can't be made.
+#[cfg(target_os = "windows")]
+fn park_switch_borders(
+  state: &mut WmState,
+  ws_windows: &mut [(uuid::Uuid, WorkspaceSwitchEntry)],
+  focused_id: uuid::Uuid,
+  config: &UserConfig,
+) {
+  for (id, entry) in ws_windows {
+    let Some(surrogate) = entry
+      .surrogate
+      .as_mut()
+      .filter(|surrogate| !surrogate.is_live())
+    else {
+      continue;
+    };
+
+    let Some(window) = state.window_by_id(*id) else {
+      continue;
+    };
+
+    if border_hidden_for_fullscreen(&window, config) {
+      continue;
+    }
+
+    let (_, _, from) = surrogate_effects_for(entry.was_focused, config);
+    let (_, _, to) = surrogate_effects_for(*id == focused_id, config);
+    let Some(blend) = StyleBlend::between(
+      from.border,
+      to.border,
+      0.0,
+      NativeBorderOverlay::transparent,
+    ) else {
+      continue;
+    };
+
+    let rest = surrogate.rest_frame();
+    let anchor = overlay_z_anchor(&window);
+    let conceal = entry.is_incoming;
+
+    let slot = &mut state.window_overlays.entry(*id).or_default().border;
+    let overlay = match slot {
+      Some(overlay) => {
+        overlay.apply_blend(blend);
+        overlay.park(&rest, anchor, conceal);
+        overlay
+      }
+      None => match NativeBorderOverlay::create_parked(
+        &rest, blend.from, anchor, conceal,
+      ) {
+        Ok(overlay) => slot.insert(overlay),
+        Err(err) => {
+          debug!("Border overlay creation failed for {id}: {err}.");
+          continue;
+        }
+      },
+    };
+
+    if !surrogate.carry_ring(overlay.hwnd(), &overlay.outer_rect()) {
+      // Back to where it was: shown at rest, or hidden for one sliding in.
+      if conceal {
+        overlay.hide();
+      } else {
+        overlay.set_rect(&rest, anchor);
+      }
     }
   }
 }
@@ -2516,11 +2618,20 @@ fn hand_over_cut_short_slide(
 
   let mut batch = SurrogateBatch::new();
   for (id, is_incoming) in handed_over {
+    let Some(overlays) = state.window_overlays.get_mut(&id) else {
+      continue;
+    };
+
     if is_incoming {
-      if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
+      if let Some(overlay) = &mut overlays.backdrop {
         overlay.hide();
       }
-      if let Some(overlay) = state.border_overlays.get_mut(&id) {
+      // A parked ring stays for the new surrogate's copy of it.
+      if let Some(overlay) = overlays
+        .border
+        .as_mut()
+        .filter(|overlay| !overlay.is_parked())
+      {
         overlay.hide();
       }
       continue;
@@ -2532,7 +2643,7 @@ fn hand_over_cut_short_slide(
       .and_then(|(_, entry)| entry.surrogate.as_ref());
 
     if let (Some(surrogate), Some(overlay)) =
-      (surrogate, state.backdrop_overlays.get_mut(&id))
+      (surrogate, &mut overlays.backdrop)
     {
       if let Some(live) = surrogate.live_frame() {
         overlay.defer_cut_rect(
@@ -2556,19 +2667,20 @@ fn hand_over_cut_short_slide(
 /// focus change turning it on) cannot show past the monitor for a frame.
 #[cfg(target_os = "windows")]
 pub(crate) fn upsert_live_backdrop_overlay(
-  overlays: &mut std::collections::HashMap<
-    uuid::Uuid,
-    NativeBackdropOverlay,
-  >,
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   blend: StyleBlend<BackdropOverlayParams>,
   live: &LiveFrame,
   anchor: HWND,
   batch: &mut SurrogateBatch,
 ) {
-  if let Some(overlay) =
-    overlay_entry(overlays, window_id, blend.from, &live.visible, anchor)
-  {
+  if let Some(overlay) = overlay_entry::<NativeBackdropOverlay>(
+    overlays,
+    window_id,
+    blend.from,
+    &live.visible,
+    anchor,
+  ) {
     overlay.apply_blend(blend);
     overlay.defer_cut_rect(
       batch,
@@ -2592,10 +2704,7 @@ pub(crate) fn upsert_live_backdrop_overlay(
 /// than moved.
 #[cfg(target_os = "windows")]
 pub(crate) fn upsert_pinned_border_overlay(
-  overlays: &mut std::collections::HashMap<
-    uuid::Uuid,
-    NativeBorderOverlay,
-  >,
+  overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   blend: StyleBlend<BorderOverlayParams>,
   rect: &Rect,
@@ -2603,9 +2712,9 @@ pub(crate) fn upsert_pinned_border_overlay(
   panel: &Rect,
   anchor: HWND,
 ) {
-  let Some(overlay) =
-    overlay_entry(overlays, window_id, blend.from, rect, anchor)
-  else {
+  let Some(overlay) = overlay_entry::<NativeBorderOverlay>(
+    overlays, window_id, blend.from, rect, anchor,
+  ) else {
     return;
   };
 
@@ -2623,34 +2732,34 @@ pub(crate) fn upsert_pinned_border_overlay(
 /// `params` when absent. `None` when creation failed, which is logged.
 #[cfg(target_os = "windows")]
 fn overlay_entry<'a, O: SyncableOverlay>(
-  overlays: &'a mut std::collections::HashMap<uuid::Uuid, O>,
+  overlays: &'a mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   params: O::Params,
   rect: &Rect,
   anchor: HWND,
 ) -> Option<&'a mut O> {
-  match overlays.entry(window_id) {
-    std::collections::hash_map::Entry::Occupied(e) => Some(e.into_mut()),
-    std::collections::hash_map::Entry::Vacant(e) => {
-      match O::create(rect, params, anchor) {
-        Ok(overlay) => {
-          debug!("{} overlay created for {window_id}.", O::LABEL);
-          Some(e.insert(overlay))
-        }
-        Err(err) => {
-          debug!(
-            "{} overlay creation failed for {window_id}: {err}.",
-            O::LABEL
-          );
-          None
-        }
+  let slot = O::slot(overlays.entry(window_id).or_default());
+
+  match slot {
+    Some(overlay) => Some(overlay),
+    None => match O::create(rect, params, anchor) {
+      Ok(overlay) => {
+        debug!("{} overlay created for {window_id}.", O::LABEL);
+        Some(slot.insert(overlay))
       }
-    }
+      Err(err) => {
+        debug!(
+          "{} overlay creation failed for {window_id}: {err}.",
+          O::LABEL
+        );
+        None
+      }
+    },
   }
 }
 
 /// Resolves the effects a surrogate needs to stand in for a window:
-/// `(effect_opacity, corner_style, backdrop_overlay, border_overlay)`.
+/// `(effect_opacity, corner_style, overlay_params)`.
 ///
 /// Snapshotted onto the `ResizeSession` rather than re-read live, because
 /// the close and minimize direct-drive loops run once the window is
@@ -2661,17 +2770,8 @@ fn overlay_entry<'a, O: SyncableOverlay>(
 pub(crate) fn surrogate_effects_for(
   is_focused: bool,
   config: &UserConfig,
-) -> (
-  u8,
-  CornerStyle,
-  Option<BackdropOverlayParams>,
-  Option<BorderOverlayParams>,
-) {
-  let effect_cfg = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+) -> (u8, CornerStyle, OverlayParams) {
+  let effect_cfg = config.value.window_effects.for_focus(is_focused);
 
   let effect_opacity = if effect_cfg.transparency.enabled {
     effect_cfg.transparency.opacity.to_alpha()
@@ -2684,9 +2784,21 @@ pub(crate) fn surrogate_effects_for(
   (
     effect_opacity,
     corner_style,
-    backdrop_overlay_params_for(is_focused, config),
-    border_overlay_params_for(is_focused, config),
+    overlay_params_for(is_focused, config),
   )
+}
+
+/// Resolves a window's backdrop and border overlay params from its
+/// focused/other-window effects config.
+#[cfg(target_os = "windows")]
+pub(crate) fn overlay_params_for(
+  is_focused: bool,
+  config: &UserConfig,
+) -> OverlayParams {
+  OverlayParams {
+    backdrop: backdrop_overlay_params_for(is_focused, config),
+    border: border_overlay_params_for(is_focused, config),
+  }
 }
 
 /// Whether `window`'s border ring is suppressed because it is fullscreen
@@ -2712,11 +2824,7 @@ pub(crate) fn border_overlay_params_for(
   is_focused: bool,
   config: &UserConfig,
 ) -> Option<BorderOverlayParams> {
-  let effect_cfg = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+  let effect_cfg = config.value.window_effects.for_focus(is_focused);
 
   let target_color = effect_cfg.border.abgr_color()?;
 
@@ -2741,15 +2849,11 @@ pub(crate) fn border_overlay_params_for(
 /// needs the same params to keep the overlay live while the OS drags the
 /// window outside of `GlazeWM`'s own redraw pipeline.
 #[cfg(target_os = "windows")]
-pub(crate) fn backdrop_overlay_params_for(
+fn backdrop_overlay_params_for(
   is_focused: bool,
   config: &UserConfig,
 ) -> Option<BackdropOverlayParams> {
-  let effect_cfg = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+  let effect_cfg = config.value.window_effects.for_focus(is_focused);
 
   let tint = effect_cfg.backdrop.overlay_tint()?;
 
@@ -2800,10 +2904,11 @@ pub(crate) trait SyncableOverlay: Overlay {
   /// Profiler stage this overlay kind's [`sync_overlays`] pass reports as.
   const PERF_STAGE: Stage;
 
-  /// Borrows this overlay kind's tracked-overlay map out of `state`.
-  fn overlays(
-    state: &mut WmState,
-  ) -> &mut std::collections::HashMap<uuid::Uuid, Self>;
+  /// This overlay kind's slot among a window's overlays.
+  fn slot(overlays: &mut WindowOverlays) -> &mut Option<Self>;
+
+  /// This overlay kind's overlay among a window's overlays, if it has one.
+  fn get(overlays: &WindowOverlays) -> Option<&Self>;
 
   /// Resolves the focused/other-window params, or `None` when this effect
   /// isn't enabled for that focus class. Depends only on its arguments,
@@ -2839,10 +2944,12 @@ impl SyncableOverlay for NativeBackdropOverlay {
   const LABEL: &'static str = "Backdrop";
   const PERF_STAGE: Stage = Stage::BackdropSync;
 
-  fn overlays(
-    state: &mut WmState,
-  ) -> &mut std::collections::HashMap<uuid::Uuid, Self> {
-    &mut state.backdrop_overlays
+  fn slot(overlays: &mut WindowOverlays) -> &mut Option<Self> {
+    &mut overlays.backdrop
+  }
+
+  fn get(overlays: &WindowOverlays) -> Option<&Self> {
+    overlays.backdrop.as_ref()
   }
 
   fn params_for(
@@ -2865,10 +2972,12 @@ impl SyncableOverlay for NativeBorderOverlay {
   const LABEL: &'static str = "Border";
   const PERF_STAGE: Stage = Stage::BorderSync;
 
-  fn overlays(
-    state: &mut WmState,
-  ) -> &mut std::collections::HashMap<uuid::Uuid, Self> {
-    &mut state.border_overlays
+  fn slot(overlays: &mut WindowOverlays) -> &mut Option<Self> {
+    &mut overlays.border
+  }
+
+  fn get(overlays: &WindowOverlays) -> Option<&Self> {
+    overlays.border.as_ref()
   }
 
   fn params_for(
@@ -3045,7 +3154,9 @@ fn sync_overlays<O: SyncableOverlay>(
       // for this particular window: hide rather than destroy.
       // Guarded on `is_visible` because `hide` issues a `ShowWindow`
       // unconditionally.
-      if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
+      if let Some(overlay) =
+        overlay_mut::<O>(&mut state.window_overlays, window.id())
+      {
         if overlay.is_visible() {
           overlay.hide();
         }
@@ -3059,103 +3170,100 @@ fn sync_overlays<O: SyncableOverlay>(
         || is_hidden_in_layout(window);
 
     if should_hide {
-      if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
+      if let Some(overlay) =
+        overlay_mut::<O>(&mut state.window_overlays, window.id())
+      {
         overlay.hide();
       }
       continue;
     }
 
     let is_redrawing = redrawing_ids.contains(&window.id());
-    let had_overlay = O::overlays(state).contains_key(&window.id());
     let anchor = overlay_z_anchor(window);
+    let slot =
+      O::slot(state.window_overlays.entry(window.id()).or_default());
 
-    match O::overlays(state).entry(window.id()) {
-      std::collections::hash_map::Entry::Occupied(e) => {
-        let overlay = e.into_mut();
-        overlay.apply(params);
+    if let Some(overlay) = slot {
+      overlay.apply(params);
 
-        // Always re-query and re-show when the overlay isn't currently
-        // visible, even if this window isn't part of this tick's redraw --
-        // otherwise an overlay hidden on some earlier tick (e.g. while a
-        // surrogate was active) stays hidden indefinitely once
-        // `should_hide` clears, unless this exact window happens
-        // to be redrawn again for an unrelated reason (see
-        // `is_visible` doc comment).
-        let repositioned = is_redrawing || !overlay.is_visible();
+      // Always re-query and re-show when the overlay isn't currently
+      // visible, even if this window isn't part of this tick's redraw --
+      // otherwise an overlay hidden on some earlier tick (e.g. while a
+      // surrogate was active) stays hidden indefinitely once
+      // `should_hide` clears, unless this exact window happens
+      // to be redrawn again for an unrelated reason (see
+      // `is_visible` doc comment).
+      let repositioned = is_redrawing || !overlay.is_visible();
 
-        if repositioned {
-          // Use the DWM extended frame bounds so the overlay sits flush
-          // with the window's visible edge, clipping the invisible resize
-          // border.
-          match window.native().frame() {
-            Ok(rect) => overlay.defer_rect(
-              &mut batch,
-              &O::overlay_rect(window, &rect),
-              anchor,
-            ),
-            Err(err) => debug!(
-              "{} overlay frame() query failed for {}: {err}.",
-              O::LABEL,
-              window.id()
-            ),
-          }
-        }
-
-        // Overlays that moved this tick, plus every overlay while any
-        // surrogate is alive.
-        //
-        // `defer_rect` batches through `DeferWindowPos` with
-        // `SWP_NOZORDER`, so it moves an overlay without restoring
-        // where it sits in the stack -- that part still has to be
-        // re-asserted. But an overlay nobody moved has nothing to
-        // re-assert, and running the check on every overlay on
-        // every tick was three USER32 calls per window per
-        // frame in exchange for nothing.
-        //
-        // The surrogate case is not that. Surrogates are created at
-        // `HWND_TOP`, which displaces *other* windows' overlays out of
-        // their slot -- a window nobody moved can still need
-        // putting back. So the check runs for everyone while any
-        // surrogate is alive, which is exactly the window in which
-        // a workspace switch or resize is on screen, and for
-        // nobody once they are gone.
-        //
-        // Neither covers a window whose z-order was changed *without*
-        // being repositioned -- `redraw_containers`' bare `set_z_order`
-        // and `sync_focus`' `SetForegroundWindow`. Those leave the
-        // overlay behind with nothing in the overlay's own state to show
-        // for it, which is what `z_order_touched`/`full_z_order_resync`
-        // report. They force the re-assert rather than letting
-        // `sync_z_order` decide: the window's move is issued with
-        // `SWP_ASYNCWINDOWPOS` and may not have landed yet, so the
-        // `GW_HWNDPREV` check can still see the stale (correct-looking)
-        // ordering and skip. See `sync_z_order`'s doc comment.
-        let forced =
-          full_z_order_resync || z_order_touched.contains(&window.id());
-
-        if repositioned || surrogates_alive || forced {
-          z_order_resyncs.push((window.id(), anchor, forced));
+      if repositioned {
+        // Use the DWM extended frame bounds so the overlay sits flush
+        // with the window's visible edge, clipping the invisible resize
+        // border.
+        match window.native().frame() {
+          Ok(rect) => overlay.defer_rect(
+            &mut batch,
+            &O::overlay_rect(window, &rect),
+            anchor,
+          ),
+          Err(err) => debug!(
+            "{} overlay frame() query failed for {}: {err}.",
+            O::LABEL,
+            window.id()
+          ),
         }
       }
-      std::collections::hash_map::Entry::Vacant(e) => {
-        debug_assert!(!had_overlay);
 
-        let Ok(rect) = window.native().frame() else {
-          continue;
-        };
+      // Overlays that moved this tick, plus every overlay while any
+      // surrogate is alive.
+      //
+      // `defer_rect` batches through `DeferWindowPos` with
+      // `SWP_NOZORDER`, so it moves an overlay without restoring
+      // where it sits in the stack -- that part still has to be
+      // re-asserted. But an overlay nobody moved has nothing to
+      // re-assert, and running the check on every overlay on
+      // every tick was three USER32 calls per window per
+      // frame in exchange for nothing.
+      //
+      // The surrogate case is not that. Surrogates are created at
+      // `HWND_TOP`, which displaces *other* windows' overlays out of
+      // their slot -- a window nobody moved can still need
+      // putting back. So the check runs for everyone while any
+      // surrogate is alive, which is exactly the window in which
+      // a workspace switch or resize is on screen, and for
+      // nobody once they are gone.
+      //
+      // Neither covers a window whose z-order was changed *without*
+      // being repositioned -- `redraw_containers`' bare `set_z_order`
+      // and `sync_focus`' `SetForegroundWindow`. Those leave the
+      // overlay behind with nothing in the overlay's own state to show
+      // for it, which is what `z_order_touched`/`full_z_order_resync`
+      // report. They force the re-assert rather than letting
+      // `sync_z_order` decide: the window's move is issued with
+      // `SWP_ASYNCWINDOWPOS` and may not have landed yet, so the
+      // `GW_HWNDPREV` check can still see the stale (correct-looking)
+      // ordering and skip. See `sync_z_order`'s doc comment.
+      let forced =
+        full_z_order_resync || z_order_touched.contains(&window.id());
 
-        match O::create(&O::overlay_rect(window, &rect), params, anchor) {
-          Ok(overlay) => {
-            debug!("{} overlay created for {}.", O::LABEL, window.id());
-            e.insert(overlay);
-          }
-          Err(err) => {
-            debug!(
-              "{} overlay creation failed for {}: {err}.",
-              O::LABEL,
-              window.id()
-            );
-          }
+      if repositioned || surrogates_alive || forced {
+        z_order_resyncs.push((window.id(), anchor, forced));
+      }
+    } else {
+      let Ok(rect) = window.native().frame() else {
+        continue;
+      };
+
+      match O::create(&O::overlay_rect(window, &rect), params, anchor) {
+        Ok(overlay) => {
+          debug!("{} overlay created for {}.", O::LABEL, window.id());
+          *slot = Some(overlay);
+        }
+        Err(err) => {
+          debug!(
+            "{} overlay creation failed for {}: {err}.",
+            O::LABEL,
+            window.id()
+          );
         }
       }
     }
@@ -3164,7 +3272,13 @@ fn sync_overlays<O: SyncableOverlay>(
   // Destroy overlays for windows that are gone, or for every window once
   // the effect is switched off entirely -- `wanted_ids` is empty in that
   // case. A window that merely lost focus keeps its (hidden) overlay.
-  O::overlays(state).retain(|id, _| wanted_ids.contains(id));
+  // Entries left with neither overlay go too.
+  state.window_overlays.retain(|id, overlays| {
+    if !wanted_ids.contains(id) {
+      *O::slot(overlays) = None;
+    }
+    !overlays.is_empty()
+  });
 
   // A second, still-open cause of "the window went blank" -- distinct
   // from the z-order drift the resync below repairs, and not addressed
@@ -3195,7 +3309,8 @@ fn sync_overlays<O: SyncableOverlay>(
   // a reposition that lands after a z-order fix is invisible, whereas a
   // z-order fix that lands before the reposition is a visible flash.
   for (id, anchor, forced) in z_order_resyncs {
-    if let Some(overlay) = O::overlays(state).get_mut(&id) {
+    if let Some(overlay) = overlay_mut::<O>(&mut state.window_overlays, id)
+    {
       if let Err(err) = overlay.sync_z_order(anchor, forced) {
         debug!(
           "{} overlay z-order sync failed for {id}: {err}.",
@@ -3240,10 +3355,7 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
       continue;
     }
 
-    let Some(window) = state
-      .container_by_id(id)
-      .and_then(|container| container.as_window_container().ok())
-    else {
+    let Some(window) = state.window_by_id(id) else {
       continue;
     };
 

@@ -60,8 +60,7 @@ pub fn unmanage_window(
   // `AnimationManager::update_internal`).
   #[cfg(target_os = "windows")]
   {
-    state.backdrop_overlays.remove(&window.id());
-    state.border_overlays.remove(&window.id());
+    state.window_overlays.remove(&window.id());
 
     // A window closed mid-drag never ends its drag.
     if window.active_drag().is_some() {

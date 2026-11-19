@@ -8,20 +8,17 @@
 //! edges. GDI can't draw onto translucent pixels, so text and icons are
 //! drawn opaquely into scratch bitmaps first and blended in.
 
-use windows::Win32::{
-  Foundation::HWND,
-  UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
-};
+use windows::Win32::Foundation::HWND;
 
 use crate::{
   overview_layout::{
     CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT,
   },
   overview_state::{SearchField, ShortcutGroup},
-  paint,
   surface::Surface,
   text::{draw_text, is_installed, text_width, Align, Font, Fonts},
-  window_icons, Color, CornerRadii, OverviewStyle, Rect,
+  window_icons::draw_window_icon,
+  Color, CornerRadii, OverviewStyle, Rect,
 };
 
 /// Height and font size of the title strip under a window on a card.
@@ -216,7 +213,7 @@ pub(crate) fn with_alpha(color: Color, alpha: f32) -> Color {
 }
 
 /// `color` with its alpha multiplied by `opacity`.
-fn fade(color: Color, opacity: f32) -> Color {
+pub(crate) fn fade(color: Color, opacity: f32) -> Color {
   with_alpha(color, f32::from(color.a) / 255.0 * opacity)
 }
 
@@ -602,6 +599,10 @@ pub(crate) struct SliceLook {
   pub radius: i32,
   pub border: Color,
   pub border_width: i32,
+
+  /// How far, in pixels, a soft glow of `border` reaches out of the
+  /// rounded rect, which is left empty; `0` draws the ring instead.
+  pub glow: i32,
 }
 
 impl SliceLook {
@@ -611,13 +612,25 @@ impl SliceLook {
       radius,
       border: color,
       border_width: width,
+      glow: 0,
     }
   }
 
-  /// Pixels of each corner of its picture: room for the rounding and the
-  /// border.
+  /// A glow of `color` fading out over `reach` pixels around a rect
+  /// rounded by `radius`.
+  pub fn glow(radius: i32, reach: i32, color: Color) -> Self {
+    Self {
+      radius,
+      border: color,
+      border_width: 0,
+      glow: reach.max(1),
+    }
+  }
+
+  /// Pixels of each corner of its picture: room for the rounding, the
+  /// border and the glow.
   pub fn corner(&self) -> i32 {
-    self.radius.max(self.border_width).max(1) + 1
+    self.radius.max(self.border_width).max(1) + 1 + self.glow
   }
 }
 
@@ -627,7 +640,22 @@ pub(crate) fn draw_slices(surface: &mut Surface, look: &SliceLook) {
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
   let mut canvas = surface.canvas();
 
-  if look.border.a > 0 && look.border_width > 0 {
+  if look.glow > 0 {
+    let inner = Rect::from_xy(
+      look.glow,
+      look.glow,
+      rect.width() - 2 * look.glow,
+      rect.height() - 2 * look.glow,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    canvas.fill_shadow_around(
+      &inner,
+      &inner,
+      look.radius,
+      look.glow as f32,
+      look.border,
+    );
+  } else if look.border.a > 0 && look.border_width > 0 {
     canvas.stroke_rounded_rect(
       &rect,
       look.radius,
@@ -1349,51 +1377,6 @@ fn to_f32(pixels: i32) -> f32 {
   pixels as f32
 }
 
-/// Blends the icon of window `hwnd` into `rect` of `surface`.
-fn draw_window_icon(
-  surface: &mut Surface,
-  hwnd: isize,
-  rect: &Rect,
-  opacity: f32,
-  (notify, notify_msg): (HWND, u32),
-) {
-  let size = rect.width().min(rect.height());
-  let Some(icon) = window_icons::icon_for(hwnd, notify, notify_msg) else {
-    return;
-  };
-  let Some(pixels) = draw_icon(icon, size) else {
-    return;
-  };
-
-  surface
-    .canvas()
-    .draw_premultiplied(rect.left, rect.top, &pixels, size, opacity);
-}
-
-/// Premultiplied pixels of `icon` drawn at `size` x `size`.
-///
-/// Icons carry their transparency in a mask GDI won't hand over, so the
-/// icon is drawn onto black and onto white and the difference recovered.
-fn draw_icon(icon: HICON, size: i32) -> Option<Vec<u32>> {
-  let draw_on = |background: u32| -> Option<Vec<u32>> {
-    let mut scratch = Surface::new(size, size)?;
-    scratch.pixels().fill(background);
-
-    // SAFETY: `scratch` owns a valid DC and `icon` is a cached copy that
-    // outlives the call.
-    unsafe {
-      DrawIconEx(scratch.dc, 0, 0, icon, size, size, 0, None, DI_NORMAL)
-        .ok()?;
-    }
-
-    Some(scratch.pixels().to_vec())
-  };
-
-  let on_black = draw_on(0)?;
-  let on_white = draw_on(0x00ff_ffff)?;
-  Some(paint::matte_from_backgrounds(&on_black, &on_white))
-}
-
 #[cfg(test)]
 mod tests {
   use super::draw_search;
@@ -1427,6 +1410,8 @@ mod tests {
       close_duration_ms: 200,
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
+      bounce: 0.25,
+      effects: crate::OverviewEffects::default(),
     };
     let search = SearchField {
       query: String::new(),

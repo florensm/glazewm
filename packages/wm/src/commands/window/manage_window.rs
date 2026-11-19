@@ -691,8 +691,7 @@ fn exit_fullscreen_for_new_window(
     // Looked up again: exiting fullscreen for a stacked window does so for
     // its whole stack, replacing the containers of the other tabs.
     let Some(fullscreen_window) = state
-      .container_by_id(id)
-      .and_then(|container| container.as_window_container().ok())
+      .window_by_id(id)
       .filter(|other| matches!(other.state(), WindowState::Fullscreen(_)))
     else {
       continue;

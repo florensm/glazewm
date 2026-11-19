@@ -14,8 +14,10 @@
 //! `Screen` draws its own part of it.
 
 mod cards;
+mod effects;
 mod ghost;
 mod overlays;
+mod scene_borders;
 mod scenes;
 mod screen;
 
@@ -50,15 +52,19 @@ use windows::{
         WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
         WM_SETCURSOR, WM_SYSCOMMAND, WS_EX_NOACTIVATE,
         WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-        WS_POPUP,
       },
     },
   },
 };
 
-use self::{ghost::Ghost, overlays::Overlays};
+use self::{
+  effects::Effects, ghost::Ghost, overlays::Overlays,
+  scene_borders::SceneBorders,
+};
 use crate::{
+  dwm_thumbnail::Thumbnail,
   overview_chrome::{picture_rect, CardPicture, SearchControls},
+  overview_effects::Entrance,
   overview_layout::{
     Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
     Zoom,
@@ -69,7 +75,7 @@ use crate::{
     ShortcutGroup,
   },
   overview_tab_bars::CardTabBar,
-  overview_thumbnails::{Picture, Preview, Thumbnail},
+  overview_thumbnails::{Picture, Preview},
   platform_impl::{self, composition::OverviewBackdrop},
   window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
@@ -394,34 +400,15 @@ fn create_screen_window() -> crate::Result<HWND> {
   // the keyboard, on the one the overview opened with; each still takes
   // the foreground when asked to.
   //
-  // SAFETY: The class is registered above.
-  let hwnd = unsafe {
-    CreateWindowExW(
-      WS_EX_TOPMOST
-        | WS_EX_TOOLWINDOW
-        | WS_EX_NOREDIRECTIONBITMAP
-        | WS_EX_NOACTIVATE,
-      w!("GlazeWM_Overview"),
-      w!(""),
-      WS_POPUP,
-      0,
-      0,
-      0,
-      0,
-      None,
-      None,
-      None,
-      None,
-    )
-  };
-
-  if hwnd.0 == 0 {
-    return Err(crate::Error::Platform(
-      "Failed to create overview window.".to_string(),
-    ));
-  }
-
-  Ok(hwnd)
+  window_class::create_popup(
+    w!("GlazeWM_Overview"),
+    WS_EX_TOPMOST
+      | WS_EX_TOOLWINDOW
+      | WS_EX_NOREDIRECTIONBITMAP
+      | WS_EX_NOACTIVATE,
+    &Rect::from_xy(0, 0, 0, 0),
+    "overview",
+  )
 }
 
 /// A workspace's card.
@@ -449,13 +436,13 @@ struct Card {
 }
 
 impl Card {
-  /// Settles within about `settle_ms` from now on.
-  fn retune(&mut self, settle_ms: f32) {
-    for spring in
-      [&mut self.cx, &mut self.cy, &mut self.scale, &mut self.alpha]
-    {
+  /// Settles within about `settle_ms` from now on, moving with `bounce`.
+  fn retune(&mut self, settle_ms: f32, bounce: f32) {
+    for spring in [&mut self.cx, &mut self.cy, &mut self.scale] {
       spring.retune(settle_ms);
+      spring.set_bounce(bounce);
     }
+    self.alpha.retune(settle_ms);
   }
 
   /// Its pictures, unregistered, for reuse.
@@ -483,10 +470,15 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
+  /// How far its zoom has moved things: `fade`, or past it for a moment
+  /// as an open overshoots.
+  reach: f32,
   /// The screen's own rect.
   view: RectF,
   /// Card the screen zooms out of or into.
   zoom_card: Option<usize>,
+  /// Cards popping in on open, and how long ago it opened, while they do.
+  entrance: Option<(Entrance, f32)>,
 }
 
 /// Places card `index`'s thumbnails where its animation has it now.
@@ -496,8 +488,16 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
     fade,
     view,
     zoom_card,
+    entrance,
+    ..
   } = context;
-  let placement = card.placement();
+  let (appear, pop) = entrance
+    .map_or((1.0, 1.0), |(entrance, elapsed)| {
+      entrance.appear(index, elapsed)
+    });
+  let mut placement = card.placement();
+  placement.scale *= pop;
+  placement.opacity *= appear;
   let metrics = card.metrics;
   let rect = camera.apply(&placement.rect(&metrics));
   let is_visible = rect.intersect(view).is_some();
@@ -577,6 +577,7 @@ impl ScreenFrame {
 
 /// One monitor's overview: a full-screen window of its own, showing the
 /// monitor's workspaces.
+#[allow(clippy::struct_excessive_bools)]
 struct Screen {
   hwnd: HWND,
 
@@ -609,14 +610,40 @@ struct Screen {
   /// Each workspace's windows shown on their own, in the activities.
   scenes: Vec<Scene>,
 
+  /// Borders drawn around the scenes' windows that show none of their
+  /// own.
+  scene_borders: SceneBorders,
+
   /// Where the activities show the selected workspace large.
   scene_area: RectF,
+
+  /// Where the layout puts each card, before it lifts, leans or dims.
+  card_targets: Vec<Placement>,
+
+  /// Cursor position over it, in its client coordinates.
+  pointer: Option<(f32, f32)>,
+
+  /// Cards popping in on open, and when it opened, while they do.
+  entrance: Option<(Entrance, Instant)>,
+
+  /// Workspace whose scene its windows were last pointed at, to fly a
+  /// newly selected one's out of its card.
+  scene_shown: Option<usize>,
+
+  /// Whether a pick was sent, after which a workspace shown anew shows in
+  /// its scene at once rather than flying out of its card, for the zoom
+  /// into it to set off from there.
+  is_picked: bool,
 
   /// Pictures of cards no longer shown, kept for reuse.
   spare: Vec<Picture>,
 
   /// `None` if their pictures couldn't be created.
   overlays: Option<Overlays>,
+
+  /// The selection's glow, ripples and sparks; `None` if their pictures
+  /// couldn't be created.
+  effects: Option<Effects>,
 
   /// The search line, what it was drawn as (with the shortcuts chip
   /// ringed or not), and where its controls are in it.
@@ -656,6 +683,11 @@ struct Screen {
   is_gliding: bool,
 
   is_tracking_leave: bool,
+
+  /// Whether a window was dragged when last placed, so the highlights
+  /// that followed where it would drop show back on the selection in
+  /// place as it is let go of.
+  was_dragging: bool,
 
   /// Bumped as window icons arrive.
   icons: u64,
@@ -700,6 +732,10 @@ struct Overview {
 
   ghost: Option<Ghost>,
 
+  /// Ghosts let go of, flying into their cards, each with the screen it
+  /// shows on.
+  landing: Vec<(Ghost, usize)>,
+
   /// Cursor position at open, in screen coordinates. Windows sends a
   /// mouse move when a window appears under a still cursor, which must
   /// not count as hovering.
@@ -735,6 +771,7 @@ impl Overview {
       ),
       screens: Vec::new(),
       ghost: None,
+      landing: Vec::new(),
       open_cursor: (0, 0),
       last_tick: Instant::now(),
       is_done: false,
@@ -750,6 +787,10 @@ impl Overview {
     frame: OverviewFrame,
     layout: OverviewLayoutMode,
   ) {
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview opening, session {session}."
+    );
     self.close();
     self.session = session;
     self.is_done = false;
@@ -884,9 +925,22 @@ impl Overview {
   /// Hides the overview, keeping its screens for the next open, and tells
   /// the WM it did.
   fn close(&mut self) {
-    if self.frame.take().is_none() {
+    if self.frame.is_none() {
       return;
     }
+    let openness = self
+      .screens
+      .iter()
+      .filter(|screen| screen.is_closing())
+      .map(Screen::openness)
+      .fold(None, |lowest: Option<f32>, openness| {
+        Some(lowest.map_or(openness, |lowest| lowest.min(openness)))
+      });
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview closed; zoom into the pick at openness {openness:?}."
+    );
+    self.frame = None;
 
     for screen in &mut self.screens {
       screen.close();
@@ -898,6 +952,7 @@ impl Overview {
     }
 
     self.ghost = None;
+    self.landing.clear();
     self.pending_pick = None;
     self.vsync = None;
     (self.on_action)(self.session, OverviewAction::Hidden);
@@ -943,9 +998,10 @@ impl Overview {
     let host = self.ghost_host();
 
     if self.ghost.as_ref().map(|ghost| ghost.hwnd) != floating {
-      self.ghost = floating
-        .zip(host)
-        .and_then(|(hwnd, host)| Ghost::new(hwnd, &self.screens[host]));
+      self.ghost = floating.zip(host).and_then(|(hwnd, host)| {
+        let grabbed = self.interaction.drag.map(|drag| drag.position);
+        Ghost::new(hwnd, grabbed, &self.screens[host])
+      });
     }
 
     let (Some(ghost), Some(host)) = (&mut self.ghost, host) else {
@@ -955,7 +1011,7 @@ impl Overview {
     ghost.host_on(screen);
 
     match self.interaction.drag {
-      Some(drag) => ghost.follow(drag.position, screen),
+      Some(drag) => ghost.follow(drag.position),
       None => ghost.park(screen),
     }
 
@@ -968,6 +1024,66 @@ impl Overview {
     });
     if let (Some(title), Some(style)) = (title, screen.style()) {
       ghost.draw(&title, screen.metrics.scale_factor, style);
+    }
+  }
+
+  /// Flies `ghost`, let go of, into the card its window lands on: where
+  /// `action` moves or places it, or else back where it came from.
+  fn land(&mut self, mut ghost: Ghost, action: Option<&OverviewAction>) {
+    let moved_to = match action {
+      Some(
+        OverviewAction::MoveWindow {
+          hwnd,
+          workspace,
+          monitor,
+        }
+        | OverviewAction::PlaceWindow {
+          hwnd,
+          workspace,
+          monitor,
+          ..
+        },
+      ) if *hwnd == ghost.hwnd => self
+        .screens
+        .iter()
+        .position(|screen| screen.id() == Some(*monitor))
+        .and_then(|index| {
+          self.screens[index]
+            .workspaces()
+            .iter()
+            .position(|candidate| candidate.name == *workspace)
+            .map(|card| (index, card))
+        }),
+      _ => None,
+    };
+    let came_from = || {
+      self.screens.iter().enumerate().find_map(|(index, screen)| {
+        screen
+          .workspaces()
+          .iter()
+          .position(|workspace| {
+            workspace
+              .windows
+              .iter()
+              .any(|window| window.hwnd == ghost.hwnd)
+          })
+          .map(|card| (index, card))
+      })
+    };
+
+    let Some((index, card)) = moved_to.or_else(came_from) else {
+      return;
+    };
+    let screen = &self.screens[index];
+    let Some(rect) = screen.landing_rect(card) else {
+      return;
+    };
+
+    ghost.host_on(screen);
+    ghost.land(&rect.translate(screen.area.x, screen.area.y), screen);
+    self.landing.push((ghost, index));
+    if moved_to.is_some() {
+      self.screens[index].celebrate(card);
     }
   }
 
@@ -1004,12 +1120,21 @@ impl Overview {
       .as_ref()
       .map_or(0, |frame| frame.style.close_duration_ms);
     if duration == 0 {
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview closing without a zoom for {action:?}."
+      );
       return;
     }
 
     let cards = (0..self.screens.len())
       .map(|index| self.closing_card(index, action))
       .collect::<Vec<_>>();
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview zooming into cards {cards:?} over {duration}ms for \
+       {action:?}."
+    );
 
     // The scenes zoom into the picked workspace's own windows, so they
     // show it first.
@@ -1085,6 +1210,10 @@ impl Overview {
       .pending_pick
       .take_if(|(_, picked)| picked.elapsed() >= PICK_TIMEOUT);
     if let Some((action, _)) = overdue {
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview pick timed out waiting for the WM."
+      );
       self.start_closing(&action);
       self.after_input(None);
     }
@@ -1101,6 +1230,10 @@ impl Overview {
         .iter()
         .all(|screen| !screen.is_closing() || screen.is_zoomed_in())
     {
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview zoom ended; hiding."
+      );
       self.close();
       return false;
     }
@@ -1110,6 +1243,20 @@ impl Overview {
       is_moving |= ghost.step(dt);
       ghost.place(&self.screens[host]);
     }
+
+    for (ghost, host) in &mut self.landing {
+      if let Some(screen) = self.screens.get(*host) {
+        // Kept above the screen's thumbnails as the move registers them
+        // anew.
+        ghost.host_on(screen);
+        is_moving |= ghost.step(dt);
+        ghost.place(screen);
+      }
+    }
+    let screens = self.screens.len();
+    self
+      .landing
+      .retain(|(ghost, host)| !ghost.has_landed() && *host < screens);
 
     is_moving
   }
@@ -1169,6 +1316,12 @@ impl Overview {
 
   /// Acts on what the user did, after the interaction state took it in.
   fn after_input(&mut self, action: Option<OverviewAction>) {
+    let floating = self.interaction.floating();
+    let let_go = self.ghost.take_if(|ghost| Some(ghost.hwnd) != floating);
+    if let Some(ghost) = let_go {
+      self.land(ghost, action.as_ref());
+    }
+
     if let Some(action) = action {
       let is_final = matches!(
         action,
@@ -1178,10 +1331,18 @@ impl Overview {
       );
 
       if is_final && !self.is_done {
-        match action {
-          // Nothing moves for a cancel.
-          OverviewAction::Cancel => self.start_closing(&action),
-          _ => self.pending_pick = Some((action.clone(), Instant::now())),
+        // Nothing moves for a cancel.
+        if action == OverviewAction::Cancel {
+          self.start_closing(&action);
+        } else {
+          tracing::debug!(
+            target: crate::OVERVIEW_LOG_TARGET,
+            "Overview picked {action:?}; waiting for the WM."
+          );
+          self.pending_pick = Some((action.clone(), Instant::now()));
+          for screen in &mut self.screens {
+            screen.is_picked = true;
+          }
         }
       }
       self.send(action);
@@ -1191,6 +1352,11 @@ impl Overview {
     self.refocus();
     for screen in &mut self.screens {
       screen.after_input();
+    }
+    if let Some(toward) = self.interaction.take_nudge() {
+      if let Some(screen) = self.screens.get_mut(self.interaction.active) {
+        screen.nudge(toward);
+      }
     }
     self.after_layout();
   }
@@ -1237,6 +1403,7 @@ impl Overview {
     }
 
     let (screen, hit) = self.hit(point);
+    self.point_at(point);
     // The keyboard goes where the mouse is.
     let is_activated = screen.is_some_and(|screen| {
       self.interaction.activate(screen, &self.workspaces)
@@ -1249,6 +1416,18 @@ impl Overview {
       self.after_input(None);
     } else if was_dragging {
       self.sync_ghost();
+    }
+  }
+
+  /// Tells each screen where the cursor is over it, at screen point
+  /// `point`, for its hovered card to lean toward.
+  fn point_at(&mut self, point: (f32, f32)) {
+    let located = self.locate(point);
+    for (index, screen) in self.screens.iter_mut().enumerate() {
+      let pointer = located
+        .filter(|(over, _)| *over == index)
+        .map(|(_, local)| local);
+      screen.point_at(pointer);
     }
   }
 
@@ -1276,6 +1455,7 @@ impl Overview {
       return;
     };
     self.screens[index].is_tracking_leave = false;
+    self.screens[index].point_at(None);
 
     // The cursor may already be over another screen.
     let cards =
@@ -1296,8 +1476,19 @@ impl Overview {
     let Some(point) = self.to_screen(hwnd, position) else {
       return;
     };
-    let (_, hit) = self.hit(point);
+    let (screen, hit) = self.hit(point);
     self.interaction.mouse_down(point, hit);
+    self.after_input(None);
+
+    let card = screen.zip(hit.workspace).filter(|_| hit.control.is_none());
+    if let Some((screen, workspace)) = card {
+      let start = self
+        .interaction
+        .screens
+        .get(screen)
+        .map_or(0, |cursor| cursor.cards.start);
+      self.screens[screen].ripple(workspace - start);
+    }
 
     // SAFETY: `hwnd` is one of the overview's windows, on this thread.
     unsafe {
@@ -1333,6 +1524,64 @@ impl Overview {
 
     self.interaction.wheel(is_down, &self.workspaces);
     self.after_input(None);
+  }
+
+  /// Closes as the WM asks: zooming into the pick it carried out, whose
+  /// windows the frame before shows where they landed, or else at once.
+  fn on_hide(&mut self) {
+    let pending = self.pending_pick.take();
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview hide requested, {:?} after the pick.",
+      pending.as_ref().map(|(_, picked)| picked.elapsed())
+    );
+    if let Some((action, _)) = pending {
+      self.start_closing(&action);
+      self.after_input(None);
+    }
+
+    // A closing overview hides itself once its zoom ends.
+    if !self.is_closing() {
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview hiding at once, without a zoom."
+      );
+      self.close();
+    }
+  }
+
+  /// Closes on losing the foreground to another window, unless it is
+  /// closing on a pick, or waiting for the WM to carry one out.
+  fn on_activate(&mut self, wparam: WPARAM, lparam: LPARAM) {
+    // The low word of `wparam` is the activation state, and `lparam`
+    // the window being activated. After a pick, the window it zooms
+    // into has just been focused.
+    let is_to_own = self.screen_of(HWND(lparam.0)).is_some();
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview activation {:#x} (to own: {is_to_own}, closing: {}, \
+       pick pending: {}).",
+      wparam.0 & 0xffff,
+      self.is_closing(),
+      self.pending_pick.is_some()
+    );
+
+    if (wparam.0 & 0xffff) == WA_INACTIVE as usize
+      && !is_to_own
+      && self.frame.is_some()
+      && !self.is_closing()
+      && self.pending_pick.is_none()
+    {
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview lost the foreground; closing."
+      );
+      let was_done = self.is_done;
+      self.close();
+      if !was_done {
+        self.send(OverviewAction::Deactivated);
+      }
+    }
   }
 
   fn cursor(&self) -> windows::core::PCWSTR {
@@ -1376,19 +1625,7 @@ impl Overview {
           .copied()
           .unwrap_or_default(),
       ),
-      WM_HIDE_OVERVIEW => {
-        // The WM carried out the pick, and the frame before this shows
-        // where its windows landed, so the zoom goes there.
-        if let Some((action, _)) = self.pending_pick.take() {
-          self.start_closing(&action);
-          self.after_input(None);
-        }
-
-        // A closing overview hides itself once its zoom ends.
-        if !self.is_closing() {
-          self.close();
-        }
-      }
+      WM_HIDE_OVERVIEW => self.on_hide(),
       WM_ICON_READY => {
         for screen in &mut self.screens {
           screen.icons += 1;
@@ -1396,24 +1633,7 @@ impl Overview {
         }
       }
       WM_ACTIVATE => {
-        // The low word of `wparam` is the activation state, and `lparam`
-        // the window being activated. After a pick, the window it zooms
-        // into has just been focused.
-        let is_to_own = self.screen_of(HWND(lparam.0)).is_some();
-
-        if (wparam.0 & 0xffff) == WA_INACTIVE as usize
-          && !is_to_own
-          && self.frame.is_some()
-          && !self.is_closing()
-          && self.pending_pick.is_none()
-        {
-          let was_done = self.is_done;
-          self.close();
-          if !was_done {
-            self.send(OverviewAction::Deactivated);
-          }
-        }
-
+        self.on_activate(wparam, lparam);
         // Gives the window keyboard focus on activation.
         return None;
       }
