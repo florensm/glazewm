@@ -751,6 +751,8 @@ impl WindowManager {
     let result =
       AnimationManager::update_internal(&mut self.state, config);
     crate::animation::motion_clicks::sync_motion_guard(&mut self.state);
+    // A frame can hand a window back, uncloaking it, outside a sync.
+    crate::commands::general::recloak_owned_windows(&self.state);
     result
   }
 

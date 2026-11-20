@@ -215,9 +215,70 @@ pub fn platform_sync(
     .peeks
     .schedule_prewarm(std::time::Instant::now());
 
+  recloak_owned_windows(state);
+
   state.pending_sync.clear();
 
   Ok(())
+}
+
+/// Hides again each owned window the layout hides on a shown workspace
+/// that the shell brought back on screen with its owner, e.g. a stack's
+/// hidden tab whose owner, another of its app's windows, was just
+/// uncloaked.
+///
+/// The shell uncloaks an owned window along with its owner, without an
+/// uncloak event for it, so nothing else notices: it showed over the
+/// stack's active tab until something redrew it. Not the foreground
+/// window, which its app brought to the front: that one is shown as the
+/// active tab instead (see `reconcile_shown_tab`).
+///
+/// Only windows hidden in the layout, which one the shell can't cloak is
+/// hidden outright, as `reposition_window` does: one left on screen would
+/// be tried again on every call.
+pub(crate) fn recloak_owned_windows(state: &WmState) {
+  let mut foreground = None;
+
+  for window in state.windows() {
+    let is_hidden = matches!(
+      window.display_state(),
+      DisplayState::Hidden | DisplayState::Hiding
+    );
+    if !is_hidden
+      || !is_hidden_in_layout(&window)
+      || !window.workspace().is_some_and(|ws| ws.is_displayed())
+      || window.state() == WindowState::Minimized
+      || state.animation_manager.stands_in_for(&window.id())
+    {
+      continue;
+    }
+
+    let native = window.native();
+    if !native.has_owner_window()
+      || !native.is_visible()
+      || native.is_cloaked().unwrap_or(true)
+    {
+      continue;
+    }
+
+    let foreground =
+      foreground.get_or_insert_with(|| state.dispatcher.focused_window());
+    if native.id() == foreground.id() {
+      continue;
+    }
+
+    tracing::info!("Hiding {window} again, shown with its owner.");
+    let result = native.cloak_if_viewed().and_then(|is_cloaked| {
+      if is_cloaked {
+        Ok(())
+      } else {
+        native.hide()
+      }
+    });
+    if let Err(err) = result {
+      tracing::warn!("Failed to hide {window} again: {err}");
+    }
+  }
 }
 
 /// Applies the focused-window effects to `focused_container` and the
