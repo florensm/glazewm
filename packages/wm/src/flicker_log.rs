@@ -1,5 +1,6 @@
 //! Opt-in log of windows shown without their companion over them, e.g.
-//! shades' recolored copy, which is seen as a flicker.
+//! shades' recolored copy, which is seen as a flicker, and of hidden
+//! stack tabs that something other than the WM showed.
 //!
 //! Enabled by setting `GLAZEWM_FLICKER_LOG` to anything but `0`. Writes to
 //! `~/.glzr/glazewm/flicker.log`. It reads window state only, never the
@@ -15,12 +16,14 @@ use std::{
   time::{Duration, Instant},
 };
 
-use wm_common::InvokeCommand;
-use wm_platform::{CompanionCoverage, PlatformEvent, WindowEvent};
+use wm_common::{DisplayState, InvokeCommand};
+use wm_platform::{
+  CompanionCoverage, NativeWindow, PlatformEvent, WindowEvent,
+};
 
 use crate::{
   layout::is_hidden_in_layout,
-  models::WindowContainer,
+  models::{is_inactive_stack_child, WindowContainer},
   traits::{CommonGetters, WindowGetters},
   wm_state::WmState,
 };
@@ -241,6 +244,44 @@ impl FlickerLog {
     });
   }
 
+  /// Logs a hidden stack tab that something other than the WM showed,
+  /// e.g. its app, which shows it over the stack's active tab until the
+  /// WM, taking `handled_in`, hides it again or switches to it.
+  ///
+  /// Logged here rather than sampled: the WM answers within the same
+  /// event, before the next sample.
+  pub fn note_hidden_tab_shown(
+    &mut self,
+    window: &WindowContainer,
+    handled_in: Duration,
+  ) {
+    let native = window.native();
+
+    let answer = if is_inactive_stack_child(window) {
+      "hid it again"
+    } else {
+      "switched to it, as it came to the front"
+    };
+
+    // How the shown window is hidden now tells how it was hidden before:
+    // its app can't undo a cloak, but can show one hidden outright.
+    let hidden_by = if native.is_cloaked().unwrap_or(false) {
+      "cloaked"
+    } else if !native.is_visible() {
+      "hidden outright, as the shell can't cloak it"
+    } else {
+      "on screen"
+    };
+
+    tracing::info!(
+      target: LOG_TARGET,
+      "hidden tab shown by something else; WM {answer} in {}ms, now \
+       {hidden_by}: {}",
+      handled_in.as_millis(),
+      describe(window, &self.triggers, Instant::now()),
+    );
+  }
+
   /// When the next sample is due.
   pub fn next_sample(&self) -> Instant {
     let Some(last) = self.tracker.last_sample else {
@@ -438,6 +479,22 @@ fn describe(
   }
 
   text
+}
+
+/// The hidden tab of a stack on a shown workspace that `native` is, if
+/// it is one (see [`FlickerLog::note_hidden_tab_shown`]).
+pub fn hidden_tab(
+  state: &WmState,
+  native: &NativeWindow,
+) -> Option<WindowContainer> {
+  state.window_from_native(native).filter(|window| {
+    is_inactive_stack_child(window)
+      && matches!(
+        window.display_state(),
+        DisplayState::Hidden | DisplayState::Hiding
+      )
+      && window.workspace().is_some_and(|ws| ws.is_displayed())
+  })
 }
 
 fn window_event_label(event: &WindowEvent) -> String {

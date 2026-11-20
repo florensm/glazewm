@@ -657,8 +657,20 @@ impl WindowManager {
         }
         WindowEvent::Shown { window, .. } => {
           let shown = window.clone();
+          let hidden_tab = self
+            .flicker_log
+            .as_ref()
+            .and_then(|_| crate::flicker_log::hidden_tab(state, &window));
+          let handling_start = Instant::now();
 
           handle_window_shown(window, state, config)?;
+
+          if let (Some(flicker_log), Some(tab)) =
+            (&mut self.flicker_log, hidden_tab)
+          {
+            flicker_log
+              .note_hidden_tab_shown(&tab, handling_start.elapsed());
+          }
           crate::stay_interactive::keep_stacked_windows_interactive(
             &shown, state, config,
           )?;
