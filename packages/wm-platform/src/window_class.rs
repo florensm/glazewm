@@ -11,14 +11,18 @@ use windows::{
       GetWindowLongPtrW, GetWindowRect, IsWindowVisible, LoadCursorW,
       RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV,
       GW_OWNER, HDWP, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IDC_ARROW,
-      SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, WINDOW_EX_STYLE, WNDCLASSW,
-      WS_EX_TOPMOST, WS_POPUP,
+      SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+      SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, WINDOW_EX_STYLE,
+      WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
     },
   },
 };
 
-use crate::Rect;
+use crate::{overlay_window::OverlayKind, Rect};
+
+/// Most windows of the WM's own [`keep_behind`] walks past below an
+/// anchor: its backdrop, border and tab bar, with room to spare.
+const MAX_CHROME_WALK: usize = 8;
 
 /// Creates a hidden popup of the registered class `class_name` at `rect`,
 /// with no owner, menu or creation data. Errors call it a `label` window.
@@ -306,6 +310,72 @@ pub(crate) fn insert_after_point(anchor: HWND) -> HWND {
   }
 
   anchor
+}
+
+/// Restacks `window` below `anchor` and the WM's overlays and tab bar
+/// right behind it, unless it already is anywhere below `anchor`. Returns
+/// whether it restacked it.
+///
+/// Never shows `window`, unlike `set_z_order`: it is for a window kept
+/// hidden, e.g. a stack's background tab, so that once something else
+/// shows it again, it shows behind `anchor`.
+pub(crate) fn keep_behind(
+  window: HWND,
+  anchor: HWND,
+) -> crate::Result<bool> {
+  if crate::companion::is_above(anchor, window) {
+    return Ok(false);
+  }
+
+  let is_anchor_topmost = is_topmost(anchor);
+  let mut insert_after = insert_after_point(anchor);
+  for _ in 0..MAX_CHROME_WALK {
+    let next = next_in_z_order(insert_after);
+    if next.0 == 0
+      || next == window
+      || !is_wm_chrome(next)
+      || is_topmost(next) != is_anchor_topmost
+    {
+      break;
+    }
+    insert_after = next;
+  }
+
+  // SAFETY: Both handles are valid or fail the call; the flags leave
+  // position, size, visibility and activation untouched. Posted, so a
+  // hung app doesn't block the WM.
+  unsafe {
+    SetWindowPos(
+      window,
+      insert_after,
+      0,
+      0,
+      0,
+      0,
+      SWP_NOACTIVATE
+        | SWP_NOMOVE
+        | SWP_NOSIZE
+        | SWP_NOSENDCHANGING
+        | SWP_ASYNCWINDOWPOS,
+    )
+  }?;
+
+  Ok(true)
+}
+
+/// Whether `hwnd` is a window the WM keeps behind another: a backdrop or
+/// border overlay, or a stack's tab bar.
+fn is_wm_chrome(hwnd: HWND) -> bool {
+  if OverlayKind::is_overlay(hwnd) {
+    return true;
+  }
+
+  let mut buf = [0u16; 32];
+  // SAFETY: `buf` outlives the call; a stale `hwnd` just returns 0.
+  let len = unsafe { GetClassNameW(hwnd, &mut buf) };
+  let name = &buf[..usize::try_from(len).unwrap_or(0)];
+  // SAFETY: `w!` yields a static, null-terminated literal.
+  name == unsafe { w!("GlazeWM_TabBar").as_wide() }
 }
 
 /// Restacks `window` directly above `anchor`, in `anchor`'s always-on-top

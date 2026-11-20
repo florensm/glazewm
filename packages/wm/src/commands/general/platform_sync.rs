@@ -215,11 +215,60 @@ pub fn platform_sync(
     .peeks
     .schedule_prewarm(std::time::Instant::now());
 
+  keep_hidden_tabs_behind(state);
   recloak_owned_windows(state);
 
   state.pending_sync.clear();
 
   Ok(())
+}
+
+/// Keeps each stack's hidden tabs behind its active tab in the z-order.
+///
+/// A hidden tab keeps its place in the z-order, and a reposition raises
+/// it, so it often sat above the active tab. Shown again by something
+/// else, e.g. the shell along with its owner (see
+/// [`recloak_owned_windows`]), it then showed over the active tab until
+/// hidden again, and its companion (e.g. shades' recolored copy) until its
+/// owner caught up, measured at up to ~150ms. Behind the active tab, both
+/// stay out of sight.
+fn keep_hidden_tabs_behind(state: &WmState) {
+  let stacks = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned());
+
+  for stack in stacks {
+    let Some(active) = stack
+      .active_child()
+      .and_then(|child| child.as_window_container().ok())
+    else {
+      continue;
+    };
+
+    if active.state() == WindowState::Minimized
+      || state.animation_manager.stands_in_for(&active.id())
+    {
+      continue;
+    }
+
+    for tab in stack.windows() {
+      if tab.id() == active.id()
+        || tab.state() == WindowState::Minimized
+        || state.animation_manager.stands_in_for(&tab.id())
+      {
+        continue;
+      }
+
+      match tab.native().keep_behind(&active.native()) {
+        Ok(true) => debug!("Put hidden tab {tab} behind {active}."),
+        Ok(false) => {}
+        Err(err) => {
+          tracing::warn!("Failed to put hidden tab {tab} behind: {err}");
+        }
+      }
+    }
+  }
 }
 
 /// Hides again each owned window the layout hides on a shown workspace

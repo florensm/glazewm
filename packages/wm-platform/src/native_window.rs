@@ -372,6 +372,16 @@ impl NativeWindow {
     crate::window_class::is_topmost(self.inner.hwnd())
   }
 
+  /// Restacks the window behind `anchor` and the WM's chrome right behind
+  /// it, unless it already is anywhere below `anchor`, without showing it.
+  /// Returns whether it restacked it.
+  pub fn keep_behind(&self, anchor: &NativeWindow) -> crate::Result<bool> {
+    crate::window_class::keep_behind(
+      self.inner.hwnd(),
+      anchor.inner.hwnd(),
+    )
+  }
+
   /// Stops the window's taskbar button from flashing.
   ///
   /// Has no effect if the window isn't flashing.
