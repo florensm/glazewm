@@ -300,15 +300,40 @@ impl Companion {
       CompanionState::WindowHidden
     } else {
       CompanionState::WindowShown {
-        covers: self.covers_window(),
+        covers: self.coverage() == CompanionCoverage::Covers,
       }
     }
   }
 
-  /// Whether the companion is on screen over its window: shown, not
-  /// cloaked, and above the window in the z-order.
-  pub(crate) fn covers_window(self) -> bool {
-    self.is_on_screen() && is_above(self.hwnd(), HWND(self.source))
+  /// Where the companion is relative to its window.
+  ///
+  /// Only [`CompanionCoverage::Covers`] has it over the window as its
+  /// owner draws it at rest: one shown above the window, but still where
+  /// the window was before a move or resize, leaves part of the window
+  /// uncolored, or colors where the window no longer is.
+  fn coverage(self) -> CompanionCoverage {
+    let source = HWND(self.source);
+
+    if !self.is_on_screen() {
+      return CompanionCoverage::Cloaked;
+    }
+
+    if !is_above(self.hwnd(), source) {
+      return CompanionCoverage::Below;
+    }
+
+    let frame =
+      window_class::bounds_and_frame(source).map(|(_, frame)| frame);
+    let is_over_frame = self
+      .bounds()
+      .zip(frame)
+      .is_some_and(|(bounds, frame)| is_over_frame(&bounds, frame));
+
+    if is_over_frame {
+      CompanionCoverage::Covers
+    } else {
+      CompanionCoverage::Misplaced
+    }
   }
 
   /// Whether the companion is shown and not cloaked.
@@ -356,8 +381,7 @@ impl Companion {
 /// still count as covering it (rounding at fractional DPI scales).
 const COVERAGE_TOLERANCE: i32 = 1;
 
-/// Where a window's companion is relative to the window, for the flicker
-/// log.
+/// Where a window's companion is relative to the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompanionCoverage {
   /// No companion is shown for the window, cloaked or not.
@@ -387,36 +411,18 @@ impl CompanionCoverage {
 /// Shares the companion scan's snapshot, so it costs at most one
 /// `EnumWindows` per [`SNAPSHOT_TTL`] across calls.
 pub(crate) fn coverage(window: HWND) -> CompanionCoverage {
-  let Some(companion) = Companion::find(window) else {
-    return CompanionCoverage::NoCompanion;
-  };
+  Companion::find(window)
+    .map_or(CompanionCoverage::NoCompanion, Companion::coverage)
+}
 
-  if !companion.is_on_screen() {
-    return CompanionCoverage::Cloaked;
-  }
-
-  if !is_above(companion.hwnd(), window) {
-    return CompanionCoverage::Below;
-  }
-
-  let frame =
-    window_class::bounds_and_frame(window).map(|(_, frame)| frame);
-  let is_over_frame =
-    companion
-      .bounds()
-      .zip(frame)
-      .is_some_and(|(bounds, frame)| {
-        (bounds.left - frame.left).abs() <= COVERAGE_TOLERANCE
-          && (bounds.top - frame.top).abs() <= COVERAGE_TOLERANCE
-          && (bounds.right - frame.right).abs() <= COVERAGE_TOLERANCE
-          && (bounds.bottom - frame.bottom).abs() <= COVERAGE_TOLERANCE
-      });
-
-  if is_over_frame {
-    CompanionCoverage::Covers
-  } else {
-    CompanionCoverage::Misplaced
-  }
+/// Whether a companion at `bounds` lies over a window whose DWM extended
+/// frame bounds are `frame`, as the companion contract has it, within
+/// [`COVERAGE_TOLERANCE`].
+fn is_over_frame(bounds: &Rect, frame: RECT) -> bool {
+  (bounds.left - frame.left).abs() <= COVERAGE_TOLERANCE
+    && (bounds.top - frame.top).abs() <= COVERAGE_TOLERANCE
+    && (bounds.right - frame.right).abs() <= COVERAGE_TOLERANCE
+    && (bounds.bottom - frame.bottom).abs() <= COVERAGE_TOLERANCE
 }
 
 /// Shifts `src` by `-origin` and clips it to `size`, clipping `dst`
@@ -573,9 +579,27 @@ mod tests {
   use windows::Win32::Foundation::RECT;
 
   use super::{
-    map_rects, reuses_snapshot, CompanionState, HandoffWait, Reuse,
-    HANDOFF_MAX_WAIT, SNAPSHOT_TTL,
+    is_over_frame, map_rects, reuses_snapshot, CompanionState,
+    HandoffWait, Reuse, HANDOFF_MAX_WAIT, SNAPSHOT_TTL,
   };
+  use crate::Rect;
+
+  #[test]
+  fn companion_over_frame_allows_a_pixel_of_rounding_per_edge() {
+    let frame = RECT {
+      left: 100,
+      top: 50,
+      right: 900,
+      bottom: 650,
+    };
+
+    assert!(is_over_frame(&Rect::from_ltrb(100, 50, 900, 650), frame));
+    assert!(is_over_frame(&Rect::from_ltrb(101, 49, 899, 651), frame));
+    // Where the window was before moving 20px right.
+    assert!(!is_over_frame(&Rect::from_ltrb(80, 50, 880, 650), frame));
+    // The size it had before growing.
+    assert!(!is_over_frame(&Rect::from_ltrb(100, 50, 700, 650), frame));
+  }
 
   #[test]
   fn a_kept_scan_is_reused_however_old_until_a_companion_shows() {

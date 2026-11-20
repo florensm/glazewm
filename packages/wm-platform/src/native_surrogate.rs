@@ -79,7 +79,7 @@ pub(crate) fn style_like_window(hwnd: HWND, corner_style: CornerStyle) {
 /// `rcSource` starts at `border_inset` so invisible-border pixels are
 /// excluded; those pixels render as black in DWM thumbnails. When
 /// `border_inset` is all-zero this is the full physical window.
-fn content_rects(
+pub(crate) fn content_rects(
   width: i32,
   height: i32,
   border_inset: RECT,

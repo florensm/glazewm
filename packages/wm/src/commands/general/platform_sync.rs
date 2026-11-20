@@ -1925,6 +1925,16 @@ fn redraw_containers(
             .prepare_hand_back(&window.id(), &window.native());
         }
 
+        if is_visible && previous_display_state == DisplayState::Shown {
+          cover_unanimated_move(
+            state,
+            window,
+            apply_rect,
+            focused_container,
+            config,
+          );
+        }
+
         {
           // Attribute the reposition to the window's own process. When
           // `has_surrogate` is set the `SetWindowPos` is synchronous and
@@ -1967,6 +1977,11 @@ fn redraw_containers(
             }
           }
         }
+
+        // The move may have raised the window past its cover.
+        state
+          .animation_manager
+          .cover_companion_hand_back(&window.id());
 
         if is_visible && did_move {
           needs_transparency_flush = true;
@@ -2228,6 +2243,54 @@ fn cover_unanimated_uncloaks(
 
   if has_covers {
     wm_platform::dwm_flush();
+  }
+}
+
+/// Puts a `CompanionCover` over a shown `window` this pass moves or
+/// resizes to `rect` with no stand-in, or moves the one it has there, so
+/// its companion's owner catching up with the move (measured at up to
+/// ~250ms) isn't seen as the window uncolored.
+///
+/// The cover goes up just before the move, which is posted, so both
+/// normally land in the same composition. Not behind a `DwmFlush` as
+/// uncloak covers are: that would stall the pass a frame per window, on
+/// every step of e.g. a grab or an edge drag.
+fn cover_unanimated_move(
+  state: &mut WmState,
+  window: &WindowContainer,
+  rect: &Rect,
+  focused_container: &Container,
+  config: &UserConfig,
+) {
+  let id = window.id();
+  let has_stand_in = state.animation_manager.stands_in_for(&id)
+    || state.animation_manager.is_pending_ws_cleanup_incoming(&id);
+
+  if has_stand_in
+    || matches!(
+      window.state(),
+      WindowState::Fullscreen(_) | WindowState::Minimized
+    )
+    || window.active_drag().is_some()
+    || window.has_pending_dpi_adjustment()
+    || window.native().is_cloaked().unwrap_or(true)
+    || window.native().frame_with_shadows().ok().as_ref() == Some(rect)
+  {
+    return;
+  }
+
+  if let Some(cover) = state.animation_manager.companion_cover_mut(&id) {
+    cover.retarget(rect);
+    return;
+  }
+
+  let set = window.effect_set(id == focused_container.id());
+  let (_, corner_style, _) = surrogate_effects_for(set, config);
+
+  if let Some(cover) =
+    CompanionCover::new(&window.native(), rect, &corner_style, &[])
+  {
+    state.animation_manager.add_companion_cover(id, cover);
   }
 }
 

@@ -822,8 +822,8 @@ impl AnimationManager {
       || self.peeks.draws_window(window_id)
   }
 
-  /// Covers `window_id`, about to be uncloaked, with `cover` until its
-  /// companion is back over it.
+  /// Covers `window_id`, about to be uncloaked, moved or resized, with
+  /// `cover` until its companion is back over it.
   pub fn add_companion_cover(
     &mut self,
     window_id: Uuid,
@@ -831,6 +831,14 @@ impl AnimationManager {
   ) {
     self.companion_covers.insert(window_id, cover);
     self.ensure_timer_running();
+  }
+
+  /// The cover of `window_id`, e.g. to move it with the window.
+  pub fn companion_cover_mut(
+    &mut self,
+    window_id: &Uuid,
+  ) -> Option<&mut CompanionCover> {
+    self.companion_covers.get_mut(window_id)
   }
 
   pub fn has_companion_cover(&self, window_id: &Uuid) -> bool {
