@@ -352,6 +352,73 @@ impl Companion {
   }
 }
 
+/// How far a companion may sit off its window's frame, per edge, and
+/// still count as covering it (rounding at fractional DPI scales).
+const COVERAGE_TOLERANCE: i32 = 1;
+
+/// Where a window's companion is relative to the window, for the flicker
+/// log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompanionCoverage {
+  /// No companion is shown for the window, cloaked or not.
+  NoCompanion,
+  /// On screen, above the window and over its frame.
+  Covers,
+  /// Shown but cloaked.
+  Cloaked,
+  /// On screen, but below the window.
+  Below,
+  /// On screen above the window, but not over its frame (e.g. lagging a
+  /// move).
+  Misplaced,
+}
+
+impl CompanionCoverage {
+  /// Whether the companion is drawn on screen.
+  #[must_use]
+  pub fn is_on_screen(self) -> bool {
+    matches!(self, Self::Covers | Self::Below | Self::Misplaced)
+  }
+}
+
+/// Where `window`'s companion is relative to it (see
+/// [`CompanionCoverage`]).
+///
+/// Shares the companion scan's snapshot, so it costs at most one
+/// `EnumWindows` per [`SNAPSHOT_TTL`] across calls.
+pub(crate) fn coverage(window: HWND) -> CompanionCoverage {
+  let Some(companion) = Companion::find(window) else {
+    return CompanionCoverage::NoCompanion;
+  };
+
+  if !companion.is_on_screen() {
+    return CompanionCoverage::Cloaked;
+  }
+
+  if !is_above(companion.hwnd(), window) {
+    return CompanionCoverage::Below;
+  }
+
+  let frame =
+    window_class::bounds_and_frame(window).map(|(_, frame)| frame);
+  let is_over_frame =
+    companion
+      .bounds()
+      .zip(frame)
+      .is_some_and(|(bounds, frame)| {
+        (bounds.left - frame.left).abs() <= COVERAGE_TOLERANCE
+          && (bounds.top - frame.top).abs() <= COVERAGE_TOLERANCE
+          && (bounds.right - frame.right).abs() <= COVERAGE_TOLERANCE
+          && (bounds.bottom - frame.bottom).abs() <= COVERAGE_TOLERANCE
+      });
+
+  if is_over_frame {
+    CompanionCoverage::Covers
+  } else {
+    CompanionCoverage::Misplaced
+  }
+}
+
 /// Shifts `src` by `-origin` and clips it to `size`, clipping `dst`
 /// proportionally, so the thumbnail never samples past the companion:
 /// DWM renders an oversampled source as a transparent hole.

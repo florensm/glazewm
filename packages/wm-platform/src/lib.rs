@@ -66,6 +66,7 @@ mod window_placer;
 mod workspace_surrogate;
 
 pub use click_guard::{ClickGuard, GuardedClick};
+pub use companion::CompanionCoverage;
 pub use companion_cover::CompanionCover;
 pub use dispatcher::*;
 pub use display::*;
@@ -168,6 +169,13 @@ pub fn process_sent_messages() {
 #[must_use]
 pub fn next_thumbnail_order() -> u64 {
   dwm_thumbnail::next_order()
+}
+
+/// Where `window`'s companion (e.g. shades' recolored copy of it) is
+/// relative to the window.
+#[must_use]
+pub fn companion_coverage(window: &NativeWindow) -> CompanionCoverage {
+  companion::coverage(window.hwnd())
 }
 
 /// Scans for companion windows at rest, so a ready peek's next motion

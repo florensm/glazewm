@@ -83,6 +83,8 @@ pub struct WindowManager {
     mpsc::UnboundedReceiver<(uuid::Uuid, wm_platform::TabAction)>,
   /// Clicks the `ClickGuard` kept from where they landed.
   pub guarded_click_rx: mpsc::UnboundedReceiver<GuardedClick>,
+  /// Set while `GLAZEWM_FLICKER_LOG` is.
+  pub flicker_log: Option<crate::flicker_log::FlickerLog>,
 }
 
 impl WindowManager {
@@ -122,6 +124,7 @@ impl WindowManager {
       state,
       tab_action_rx,
       guarded_click_rx,
+      flicker_log: crate::flicker_log::FlickerLog::new(),
     })
   }
 
@@ -168,6 +171,10 @@ impl WindowManager {
     listener: &GrabListener,
     config: &UserConfig,
   ) -> anyhow::Result<()> {
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note("grab".to_string(), Instant::now());
+    }
+
     crate::grab::handle_grab_event(
       event,
       listener,
@@ -371,6 +378,10 @@ impl WindowManager {
     use wm_platform::TabAction;
 
     use crate::models::StackContainer;
+
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note(format!("tab bar {action:?}"), Instant::now());
+    }
 
     let Some(stack) = self.state.container_by_id(stack_id) else {
       return Ok(());
@@ -617,6 +628,10 @@ impl WindowManager {
     event: PlatformEvent,
     config: &mut UserConfig,
   ) -> anyhow::Result<()> {
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note_event(&event);
+    }
+
     let state = &mut self.state;
 
     match event {
@@ -733,6 +748,10 @@ impl WindowManager {
     subject_container_id: Option<Uuid>,
     config: &mut UserConfig,
   ) -> anyhow::Result<Uuid> {
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note_commands(commands);
+    }
+
     let state = &mut self.state;
 
     // Get the container to run WM commands with.
