@@ -8,18 +8,22 @@ use std::{
 
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, WorkspaceSwitchDirection, WorkspaceSwitchStyle,
+  EasingFunction, EffectSet, WorkspaceSwitchDirection,
+  WorkspaceSwitchStyle,
 };
 use wm_platform::{
+  lerp_f32,
   perf::{self, Stage},
-  NativeWindow, Overlay, Rect, SurrogateBatch, WorkspaceSurrogate, HWND,
+  NativeBorderOverlay, NativeWindow, Overlay, Rect, StyleBlend,
+  SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
 use super::AnimationManager;
 use crate::{
   commands::general::{
-    border_hidden_for_fullscreen, overlay_params_for, overlay_z_anchor,
-    track_overlays,
+    apply_focus_effects, border_hidden_for_fullscreen, overlay_params_for,
+    overlay_z_anchor, surrogate_effects_for, track_overlays,
+    upsert_pinned_border_overlay, SyncableOverlay,
   },
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
@@ -664,6 +668,316 @@ fn reanchor_final_overlays(state: &mut WmState) -> bool {
 }
 
 impl AnimationManager {
+  /// Drives the workspace-switch surrogates one frame. All windows share a
+  /// single elapsed-time driver so every surrogate translates by the same
+  /// pixel offset each frame, making both workspaces move as one panel.
+  ///
+  /// Returns the switching windows' IDs once the switch completes.
+  #[allow(clippy::too_many_lines)]
+  pub(super) fn tick_workspace_switch(
+    state: &mut WmState,
+    config: &UserConfig,
+  ) -> Option<Vec<Uuid>> {
+    use crate::animation::engine::{animation_progress_at, apply_easing};
+
+    // Compute the predictive vsync timestamp before taking a mutable
+    // borrow on `workspace_switch`. `predictive_vsync_now` reads
+    // from the installed waiter, so the period is always current —
+    // no stale cached field.
+    let ws_vsync_now = state.animation_manager.predictive_vsync_now();
+
+    // Likewise precomputed before the mutable borrow below -- needed by
+    // the per-tick overlay tracker to pick each surrogate's effect
+    // set.
+    let focused_id_for_overlay = state.focused_container().map(|c| c.id());
+    let urgent_ids: std::collections::HashSet<Uuid> = state
+      .windows()
+      .iter()
+      .filter(|window| window.is_urgent())
+      .map(CommonGetters::id)
+      .collect();
+    let effect_set = |id: Uuid, is_focused: bool| {
+      EffectSet::of(is_focused, urgent_ids.contains(&id))
+    };
+
+    if let Some(ws) = &mut state.animation_manager.workspace_switch {
+      // Anchor the animation clock to the first vsync-aligned tick so
+      // every inter-frame step is measured on the same clock.
+      // Falls back to the wall clock so progress always advances
+      // if no vblank signal arrives.
+      let now = match ws_vsync_now {
+        Some(vsync) => {
+          if !ws.vsync_anchored {
+            ws.start_time = Some(vsync);
+            ws.vsync_anchored = true;
+          }
+          vsync
+        }
+        None => Instant::now(),
+      };
+      let start = *ws.start_time.get_or_insert(now);
+      let raw_progress = animation_progress_at(start, ws.duration, now);
+      let eased = apply_easing(raw_progress, &ws.easing);
+
+      // Complete early once the surrogate is within
+      // `WS_COMPLETE_THRESHOLD_PX` of its target for non-overshooting
+      // curves — decelerating easing spends a large fraction of wall
+      // time covering the final sliver of distance, which looks
+      // "stuck" at the destination. Gating on residual *pixels*
+      // rather than a fixed progress fraction keeps the
+      // completion-frame snap sub-pixel for any slide distance
+      // or duration. Slide styles use their axis travel
+      // distance; fade/zoom have no positional travel, so fall back to a
+      // 99% fraction (a 1% opacity/scale snap is invisible).
+      // Overshooting curves always run to full wall-clock
+      // duration to preserve bounce.
+      let ws_done = if ws.easing.can_overshoot() {
+        raw_progress >= 1.0
+      } else if raw_progress >= 1.0 {
+        true
+      } else {
+        let slide_px = ws.motion().distance;
+        if slide_px > 0 {
+          #[allow(clippy::cast_precision_loss)]
+          let remaining_px = (1.0 - eased) * slide_px as f32;
+          remaining_px <= WS_COMPLETE_THRESHOLD_PX
+        } else {
+          eased >= 0.99
+        }
+      };
+
+      // When completing early (eased < 1.0), snap surrogates to 1.0 so
+      // they sit exactly at the final window position. Without this, a
+      // ~1% gap between surrogate and the just-uncloaked real window
+      // exposes the desktop for one frame.
+      let eased_final = if ws_done { 1.0 } else { eased };
+
+      // Incoming first, which a cut relies on: a composition landing
+      // between the two halves of its one tick then shows the new
+      // workspace drawn over the old one, never holes where neither is.
+      let motion = ws.motion();
+      let mut entries: Vec<_> = ws.windows.iter_mut().collect();
+      entries.sort_by_key(|(_, entry)| !entry.is_incoming);
+
+      for (&window_id, entry) in entries {
+        if let Some(ref mut s) = entry.surrogate {
+          // An outgoing window was hidden by its alpha as it was
+          // cloaked, a tick ago at least, so the cloak is on
+          // screen by now.
+          if !entry.is_incoming {
+            s.restore_alpha();
+
+            // Likewise its copy of the backdrop covered the real one,
+            // which can go, staying at rest while the window leaves.
+            if let Some(overlay) = s
+              .carries_backdrop()
+              .then(|| state.window_overlays.get_mut(&window_id))
+              .flatten()
+              .and_then(|overlays| overlays.backdrop.as_mut())
+              .filter(|overlay| overlay.is_visible())
+            {
+              overlay.hide();
+            }
+          }
+
+          // At completion, hide outgoing surrogates immediately. They
+          // have already slid fully off-screen, but hiding
+          // the thumbnail outright guarantees nothing
+          // lingers for the final composition frame
+          // before the real windows are uncloaked.
+          if ws_done && !entry.is_incoming {
+            s.hide_thumbnail();
+            s.hide_ring();
+            s.hide_backdrop();
+
+            // The ring is parked, or pinned to the viewport, rather
+            // than tracking its window, so nothing else would take it
+            // off-screen with the thumbnail it was following.
+            if let Some(overlay) = state
+              .window_overlays
+              .get_mut(&window_id)
+              .and_then(|overlays| overlays.border.as_mut())
+            {
+              overlay.hide();
+            }
+
+            continue;
+          }
+
+          // Before the motion update below, which then draws it.
+          s.refresh_companion();
+
+          let is_focused = Some(window_id) == focused_id_for_overlay;
+          let (from_alpha, _, from_overlays) = surrogate_effects_for(
+            effect_set(window_id, entry.was_focused),
+            config,
+          );
+          let (to_alpha, _, to_overlays) = surrogate_effects_for(
+            effect_set(window_id, is_focused),
+            config,
+          );
+
+          // Set before the motion update below, which applies it.
+          #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+          )]
+          s.set_effect_opacity(
+            lerp_f32(
+              f32::from(from_alpha),
+              f32::from(to_alpha),
+              eased_final,
+            )
+            .round() as u8,
+          );
+
+          let border_blend = StyleBlend::between(
+            from_overlays.border,
+            to_overlays.border,
+            eased_final,
+            NativeBorderOverlay::transparent,
+          );
+
+          // A carried ring is styled on its parked overlay here, and
+          // moves with the window in the motion update below. Its
+          // opacity follows the window's fade there too.
+          if let (Some(blend), Some(overlay)) = (
+            border_blend.filter(|_| s.carries_ring()),
+            state
+              .window_overlays
+              .get_mut(&window_id)
+              .and_then(|overlays| overlays.border.as_mut()),
+          ) {
+            overlay.apply_blend(blend);
+            // A width change resized the overlay.
+            s.carry_ring(overlay.hwnd(), &overlay.outer_rect());
+          }
+
+          match ws.style {
+            WorkspaceSwitchStyle::Slide
+            | WorkspaceSwitchStyle::Drift
+            | WorkspaceSwitchStyle::SoftZoom => {
+              let monitor_rect = Rect::from_xy(
+                ws.monitor_x,
+                ws.monitor_y,
+                ws.monitor_width,
+                ws.monitor_height,
+              );
+              let is_vertical =
+                ws.slide_direction == WorkspaceSwitchDirection::Vertical;
+              s.slide_axis(
+                eased_final,
+                entry.is_incoming,
+                ws.order_direction,
+                &monitor_rect,
+                motion.distance,
+                if entry.is_incoming {
+                  motion.zoom_incoming
+                } else {
+                  motion.zoom_outgoing
+                },
+                is_vertical,
+              );
+            }
+            // A cut only ever runs this on its one tick, where it shows
+            // the incoming surrogates at full.
+            WorkspaceSwitchStyle::Fade | WorkspaceSwitchStyle::Cut => {
+              s.update_fade(eased_final, entry.is_incoming);
+            }
+            WorkspaceSwitchStyle::Zoom => {
+              s.update_zoom(eased_final, entry.is_incoming);
+            }
+          }
+
+          // A surrogate that doesn't carry a copy of the ring (see
+          // `WorkspaceSurrogate::carry_ring`) has the overlay pinned to
+          // the monitor viewport instead, its ring slid within it by a
+          // composition offset. It follows the unclipped window rect,
+          // since the ring sits *outside* that rect and so is not
+          // described by the clipped visible strip.
+          if let Some(mut blend) =
+            border_blend.filter(|_| !s.carries_ring())
+          {
+            match (s.unclipped_rect(), s.panel()) {
+              (Some(rect), Some(panel)) => {
+                // Fade the ring in step with the window it outlines, so
+                // a configured `opacity_incoming`/`opacity_outgoing`
+                // does not leave a full-strength border floating over a
+                // half-faded window.
+                let frac = s.opacity_frac(eased_final, entry.is_incoming);
+                blend.from.opacity *= frac;
+                blend.to.opacity *= frac;
+
+                upsert_pinned_border_overlay(
+                  &mut state.window_overlays,
+                  window_id,
+                  blend,
+                  rect,
+                  &ws.border_viewport,
+                  panel,
+                  s.hwnd(),
+                );
+              }
+              _ => {
+                if let Some(overlay) = state
+                  .window_overlays
+                  .get_mut(&window_id)
+                  .and_then(|overlays| overlays.border.as_mut())
+                {
+                  overlay.hide();
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if ws_done {
+        Some(ws.windows.keys().copied().collect())
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  }
+
+  /// Ends a completed workspace switch, moving its surrogates to pending
+  /// cleanup so they outlive the final `platform_sync` call that uncloaks
+  /// the incoming real windows.
+  pub(super) fn finish_workspace_switch(
+    state: &mut WmState,
+    config: &UserConfig,
+    ids: Vec<Uuid>,
+  ) {
+    if let Some(ws) = state.animation_manager.workspace_switch.take() {
+      state.animation_manager.stash_for_ws_cleanup(ws);
+    }
+
+    for id in ids {
+      if let Some(window) = state.window_by_id(id) {
+        state.pending_sync.queue_container_to_redraw(window);
+      }
+    }
+
+    // Re-queue focus: `sync_focus` suppressed `SetForegroundWindow`
+    // while the animation was running to prevent the OS from
+    // asynchronously uncloaking the incoming focused window
+    // mid-slide. Now that the surrogates are done and incoming
+    // windows are about to be uncloaked, it is safe to transfer OS
+    // focus.
+    state.pending_sync.queue_focus_change();
+
+    // The surrogates ended on the post-switch focus styles. Apply them
+    // to the real windows now, while they are still cloaked: queued for
+    // the uncloaking sync instead, they would be applied a step after
+    // the uncloak and show their old style (e.g. transparency) for a
+    // frame.
+    if let Some(focused) = state.focused_container() {
+      apply_focus_effects(state, &focused, false, config);
+    }
+  }
+
   /// Returns `true` if `window_id` has a workspace-switch surrogate
   /// actively tracked this tick, or in its `pending_ws_cleanup` grace
   /// tail.

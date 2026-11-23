@@ -88,6 +88,36 @@ fn tick_wake(
 }
 
 impl AnimationManager {
+  /// Stops the timer after the last frame of an animation burst.
+  pub(super) fn end_burst(&mut self) {
+    // Last frame of this animation burst: emit the accumulated timings.
+    perf::report("animations idle");
+
+    self.animation_timer_running.store(false, Ordering::Relaxed);
+
+    // After the flag is cleared, which a sample is checked against.
+    self.sample_pending_edge_colors();
+
+    // All animations are done: clear the move/resize DXGI vsync waiter
+    // so a later animation re-selects its own monitor and the
+    // timer reverts to DwmFlush when vsync is unavailable.
+    // The workspace switch clears its own waiter above; this
+    // also covers move/resize, which has no dedicated completion
+    // hook. Safe here because no animation is active.
+    //
+    // Tried caching the waiter across idle gaps instead (to skip the
+    // DXGI re-enumeration cost on every new gesture) -- reverted: a
+    // `DxgiVsyncWaiter` reused after sitting idle can go stale (e.g.
+    // once display topology settles differently than when it was
+    // created) and `WaitForVBlank` on a stale output can block far
+    // longer than a frame instead of erroring cleanly, stalling
+    // the tick thread and starving animations almost entirely. Not
+    // worth the risk -- eagerly clearing it is what guarantees
+    // `ensure_waiter_for` always creates a fresh, known-good
+    // waiter for the monitor actually being animated on.
+    self.clear_waiter();
+  }
+
   /// Starts a ticking phase of the persistent animation timer thread.
   ///
   /// The timer thread is spawned once (on the first animation) and parked
