@@ -100,6 +100,7 @@ pub(super) fn overview_frame(
       effects: overview.effects,
       window_highlight: overview.window_highlight,
       strip_view: overview.strip_view,
+      stack: overview.stack,
       expose: overview.expose,
       workspace_row: overview.workspace_row,
       search_hint: overview.search_hint,

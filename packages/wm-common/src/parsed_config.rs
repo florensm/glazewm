@@ -5,9 +5,9 @@ use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
   OpacityValue, OverviewBackdropStyle, OverviewEffects, OverviewExpose,
-  OverviewStripView, OverviewSwitchStyle, OverviewWindowHighlight,
-  OverviewWorkspaceRow, OverviewZoomStyle, ParticleEffects, ParticleLook,
-  RectDelta,
+  OverviewStack, OverviewStripView, OverviewSwitchStyle,
+  OverviewWindowHighlight, OverviewWorkspaceRow, OverviewZoomStyle,
+  ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -700,6 +700,9 @@ pub struct OverviewConfig {
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
 
+  /// How the stack shows the workspaces.
+  pub stack: OverviewStack,
+
   /// What shows behind the cards.
   pub backdrop: OverviewBackdropConfig,
 
@@ -726,6 +729,7 @@ impl Default for OverviewConfig {
       font_family: "Segoe UI Variable Text".to_string(),
       hot_corner: OverviewHotCornerConfig::default(),
       expose: OverviewExpose::default(),
+      stack: OverviewStack::default(),
       backdrop: OverviewBackdropConfig::default(),
       colors: OverviewColorsConfig::default(),
       window_highlight: OverviewWindowHighlight::default(),

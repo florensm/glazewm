@@ -172,10 +172,6 @@ struct DrawnSize {
 /// wide takes; wider layouts' cards may be drawn that much wider.
 const REFERENCE_CARD_WIDTH: f32 = 0.26;
 
-/// Part of the overview's width the stack shows a monitor's width of a
-/// workspace at.
-const STACK_CARD_WIDTH: f32 = 0.45;
-
 /// Most monitor widths of a strip the stack shows at full length; a
 /// strip wider still is shrunk to fit that, as its `CardView` does. Kept
 /// low as a card's picture is drawn as wide as its strip.
@@ -185,18 +181,16 @@ const STACK_MAX_WIDTHS: f32 = 4.0;
 ///
 /// Cards are drawn at the size the layout mostly shows them at, since
 /// DWM only scales the drawing: shown much larger, its text would blur.
-fn drawn_size(layout: OverviewLayoutMode) -> DrawnSize {
+fn drawn_size(layout: OverviewLayoutMode, stack_zoom: f32) -> DrawnSize {
   let (part, chrome, max_widths, min_width, look) = match layout {
     OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
       (0.12, 0.8, MINIATURE_WIDTHS, 120.0, CardLook::Clean)
     }
-    OverviewLayoutMode::Stack => (
-      STACK_CARD_WIDTH,
-      1.1,
-      STACK_MAX_WIDTHS,
-      380.0,
-      CardLook::Classic,
-    ),
+    // Just the windows, as the workspace looks on screen; its name shows
+    // beside it.
+    OverviewLayoutMode::Stack => {
+      (stack_zoom, 1.1, STACK_MAX_WIDTHS, 380.0, CardLook::Clean)
+    }
   };
 
   DrawnSize {
@@ -210,12 +204,14 @@ fn drawn_size(layout: OverviewLayoutMode) -> DrawnSize {
 
 impl CardMetrics {
   /// Cards for an overview of `width` x `height` covering a monitor with
-  /// that same area, opened as `layout`, in a sensible range of sizes.
+  /// that same area, opened as `layout`, in a sensible range of sizes; the
+  /// stack's a monitor's width of a workspace `stack_zoom` of `width`.
   pub fn new(
     width: f32,
     height: f32,
     scale_factor: f32,
     layout: OverviewLayoutMode,
+    stack_zoom: f32,
   ) -> Self {
     let width = width.max(1.0);
     let height = height.max(1.0);
@@ -232,7 +228,7 @@ impl CardMetrics {
       max_widths,
       min_width,
       look,
-    } = drawn_size(layout);
+    } = drawn_size(layout, stack_zoom);
     let max_width = px(900.0) * part / REFERENCE_CARD_WIDTH;
     let card_width =
       (width * part).min(max_width).max(px(min_width)).min(width);
@@ -1304,7 +1300,9 @@ mod tests {
     Placement, RectF, SceneChrome, Spring, SpringRect, Targets, Tile,
     Zoom, STACK_MAX_WIDTHS,
   };
-  use crate::{OverviewCurve, OverviewLayoutMode, OverviewWorkspaceRow};
+  use crate::{
+    OverviewCurve, OverviewLayoutMode, OverviewStack, OverviewWorkspaceRow,
+  };
 
   /// Cards drawn for the stack.
   fn metrics() -> CardMetrics {
@@ -1312,7 +1310,13 @@ mod tests {
   }
 
   fn metrics_for(layout: OverviewLayoutMode) -> CardMetrics {
-    CardMetrics::new(1920.0, 1040.0, 1.0, layout)
+    CardMetrics::new(
+      1920.0,
+      1040.0,
+      1.0,
+      layout,
+      OverviewStack::default().clamped_zoom(),
+    )
   }
 
   /// `count` normal cards.
@@ -1951,7 +1955,30 @@ mod tests {
       miniature.tile_area().w / miniature.tile_area().h,
       1920.0 / 1040.0,
     );
-    assert_eq!(metrics().look, CardLook::Classic);
+    // The stack's are clean too, as the workspace looks on screen.
+    assert_eq!(metrics().look, CardLook::Clean);
+  }
+
+  #[test]
+  fn the_stack_shows_a_workspace_at_its_zoom_within_bounds() {
+    let width = |zoom: f32| {
+      let zoom = OverviewStack { zoom }.clamped_zoom();
+      CardMetrics::new(
+        1920.0,
+        1040.0,
+        1.0,
+        OverviewLayoutMode::Stack,
+        zoom,
+      )
+      .width
+    };
+
+    assert_close(width(0.5), 960.0);
+    assert_close(width(0.6), 1152.0);
+    // Past the range, and nonsense, keep to it.
+    assert_close(width(5.0), width(0.9));
+    assert_close(width(0.0), width(0.2));
+    assert_close(width(f32::NAN), width(0.5));
   }
 
   #[test]

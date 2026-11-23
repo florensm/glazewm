@@ -1928,6 +1928,7 @@ mod tests {
       window_highlight: crate::OverviewWindowHighlight::default(),
       strip_view: crate::OverviewStripView::default(),
       expose: crate::OverviewExpose::default(),
+      stack: crate::OverviewStack::default(),
       workspace_row: crate::OverviewWorkspaceRow::default(),
       search_hint: true,
       particles: crate::ParticleLook::default(),
