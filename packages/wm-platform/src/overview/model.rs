@@ -232,6 +232,9 @@ pub struct OverviewStyle {
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
 
+  /// How the stack shows the workspaces.
+  pub stack: OverviewStack,
+
   /// Whether the activities and the exposé show their row of miniatures.
   pub workspace_row: OverviewWorkspaceRow,
 
@@ -299,6 +302,35 @@ impl Default for OverviewExpose {
       gap: 28.0,
       arrangement: OverviewExposeArrangement::default(),
     }
+  }
+}
+
+/// How the stack shows the workspaces.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewStack {
+  /// How large a workspace shows, as a part of the screen's width.
+  pub zoom: f32,
+}
+
+impl OverviewStack {
+  /// Smallest and largest `zoom` honored.
+  const ZOOM_RANGE: (f32, f32) = (0.2, 0.9);
+
+  /// `zoom`, within what the stack can lay out.
+  #[must_use]
+  pub fn clamped_zoom(&self) -> f32 {
+    if self.zoom.is_finite() {
+      self.zoom.clamp(Self::ZOOM_RANGE.0, Self::ZOOM_RANGE.1)
+    } else {
+      Self::default().zoom
+    }
+  }
+}
+
+impl Default for OverviewStack {
+  fn default() -> Self {
+    Self { zoom: 0.5 }
   }
 }
 

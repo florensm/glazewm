@@ -106,7 +106,13 @@ impl Screen {
       hwnd: create_screen_window()?,
       frame: None,
       focus: ScreenFocus::default(),
-      metrics: CardMetrics::new(1.0, 1.0, 1.0, layout),
+      metrics: CardMetrics::new(
+        1.0,
+        1.0,
+        1.0,
+        layout,
+        crate::OverviewStack::default().clamped_zoom(),
+      ),
       drawn_for: layout,
       registered_for: None,
       raised: None,
@@ -197,6 +203,7 @@ impl Screen {
       self.area.h,
       frame.scale_factor,
       focus.layout,
+      frame.style.stack.clamped_zoom(),
     );
     self.focus = focus;
 
@@ -277,7 +284,9 @@ impl Screen {
     };
 
     self.work = RectF::from_rect(&frame.rect);
-    if old.bounds != frame.bounds || old.scale_factor != frame.scale_factor
+    if old.bounds != frame.bounds
+      || old.scale_factor != frame.scale_factor
+      || old.style.stack != frame.style.stack
     {
       self.area = RectF::from_rect(&frame.bounds);
       self.metrics = CardMetrics::new(
@@ -285,6 +294,7 @@ impl Screen {
         self.area.h,
         frame.scale_factor,
         self.drawn_for,
+        frame.style.stack.clamped_zoom(),
       );
     }
 
@@ -445,6 +455,10 @@ impl Screen {
       self.area.h,
       self.metrics.scale_factor,
       layout,
+      self.style().map_or_else(
+        || crate::OverviewStack::default().clamped_zoom(),
+        |style| style.stack.clamped_zoom(),
+      ),
     );
     let is_redrawn = metrics != self.metrics;
     self.drawn_for = layout;
