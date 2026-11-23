@@ -730,6 +730,12 @@ struct Screen {
   /// in view.
   pan: Option<(usize, f32)>,
 
+  /// How far the stack is scrolled past the selected workspace, toward
+  /// the next for a positive one, in workspaces; and when the wheel last
+  /// turned, to settle once it rests.
+  scroll: f32,
+  scrolled_at: Option<Instant>,
+
   /// Where the shown workspace's windows show once settled, first to
   /// last, for the arrows to go between them.
   nav: Vec<(isize, RectF)>,
@@ -1638,14 +1644,46 @@ impl Overview {
     self.after_input(action);
   }
 
-  /// Steps through the workspaces of the screen at screen point `point`.
+  /// Goes through the workspaces of the screen at screen point `point`
+  /// by `delta` wheel units: scrolling the stack, a notch
+  /// (`WHEEL_DELTA`) of them a workspace, so a touchpad glides it; in the
+  /// other layouts, a workspace a turn.
   #[allow(clippy::cast_precision_loss)]
-  fn on_wheel(&mut self, (x, y): (i32, i32), is_down: bool) {
+  fn on_wheel(&mut self, (x, y): (i32, i32), delta: f32) {
     if let Some((screen, _)) = self.locate((x as f32, y as f32)) {
       self.interaction.activate(screen);
     }
 
-    self.interaction.wheel(is_down, &self.workspaces);
+    let active = self.interaction.active;
+    let Some(screen) = self
+      .screens
+      .get_mut(active)
+      .filter(|screen| screen.scrolls_smoothly())
+    else {
+      self.interaction.wheel(delta < 0.0, &self.workspaces);
+      self.after_input(None);
+      return;
+    };
+
+    // Turned down, toward the next workspace.
+    let mut step = screen.scroll_by(-delta / WHEEL_DELTA as f32);
+    while let Some(is_down) = step {
+      let selected =
+        |interaction: &Interaction, workspaces: &[OverviewWorkspace]| {
+          interaction.focus(active, workspaces).selected
+        };
+      let before = selected(&self.interaction, &self.workspaces);
+      self.interaction.wheel(is_down, &self.workspaces);
+      let is_selected =
+        selected(&self.interaction, &self.workspaces) != before;
+      self.after_input(None);
+
+      let Some(screen) = self.screens.get_mut(active) else {
+        break;
+      };
+      screen.scrolled_onto(is_down, is_selected);
+      step = screen.scroll_step().filter(|_| is_selected);
+    }
     self.after_input(None);
   }
 
@@ -1837,7 +1875,7 @@ impl Overview {
         match (msg == WM_MOUSEHWHEEL, is_shifted) {
           (true, _) => self.on_pan(position, f32::from(delta)),
           (false, true) => self.on_pan(position, -f32::from(delta)),
-          (false, false) => self.on_wheel(position, delta < 0),
+          (false, false) => self.on_wheel(position, f32::from(delta)),
         }
       }
       WM_SETCURSOR if u32::try_from(lparam.0 & 0xffff) == Ok(HTCLIENT) => {

@@ -30,8 +30,9 @@ use crate::{
     },
     effects::{lean_toward, Entrance},
     layout::{
-      activities, chrome_opacity, stack, Camera, CardMetrics, CardView,
-      Placement, RectF, SceneChrome, Spring, Zoom, SEARCH_HEIGHT,
+      activities, chrome_opacity, stack, stack_step, Camera, CardMetrics,
+      CardView, Placement, RectF, SceneChrome, Spring, Zoom,
+      SEARCH_HEIGHT,
     },
     scene::SceneWindow,
     state::{Control, Hit, ScreenFocus, Toward},
@@ -59,6 +60,14 @@ fn drawn_border(
 
 /// ID of the next registration of a screen's thumbnails.
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
+
+/// How long the wheel rests before the stack settles on the selected
+/// workspace, in milliseconds.
+const SCROLL_SETTLE_MS: f32 = 140.0;
+
+/// Furthest the stack scrolls past its first or last workspace, in
+/// workspaces, before springing back.
+const SCROLL_OVERSHOOT: f32 = 0.2;
 
 /// How much a card grows under the cursor, shrinks while held down, and
 /// grows as where a window would drop.
@@ -131,6 +140,8 @@ impl Screen {
       sheet_alpha: Spring::new(0.0, 0.0, 0.002),
       retired: Vec::new(),
       pan: None,
+      scroll: 0.0,
+      scrolled_at: None,
       nav: Vec::new(),
       zoom: None,
       is_dirty: false,
@@ -355,6 +366,8 @@ impl Screen {
     self.raised = None;
     self.nav.clear();
     self.pan = None;
+    self.scroll = 0.0;
+    self.scrolled_at = None;
     self.zoom = None;
     self.sheet_drawn = None;
     self.sheet_alpha.snap(0.0);
@@ -587,8 +600,15 @@ impl Screen {
           .pan
           .filter(|(index, _)| *index == selected)
           .map_or(0.0, |(_, pan)| pan);
-        let (targets, pan) = stack(&self.metrics, &slots, selected, pan);
+        let (mut targets, pan) =
+          stack(&self.metrics, &slots, selected, pan);
         self.pan = Some((selected, pan));
+
+        // Scrolled part of the way to the next or previous workspace.
+        let shift = self.scroll * stack_step(&self.metrics);
+        for card in &mut targets.cards {
+          card.cy -= shift;
+        }
         targets
       }
       OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
@@ -747,6 +767,53 @@ impl Screen {
       }
     }
     self.is_dirty = true;
+  }
+
+  /// Whether the wheel scrolls it smoothly, as the stack does, rather than
+  /// stepping a workspace a notch.
+  pub(super) fn scrolls_smoothly(&self) -> bool {
+    self.focus.layout == OverviewLayoutMode::Stack
+      && self.zoom.is_none()
+      && self.frame.is_some()
+  }
+
+  /// Scrolls the stack `workspaces` along, toward the next for a positive
+  /// one. Returns the way it has scrolled past halfway to a neighbour, if
+  /// it has, for that one to be selected (see `scrolled_onto`).
+  pub(super) fn scroll_by(&mut self, workspaces: f32) -> Option<bool> {
+    self.scroll += workspaces;
+    self.scrolled_at = Some(Instant::now());
+    self.retarget(false);
+    self.scroll_step()
+  }
+
+  /// The way the stack has scrolled past halfway to a neighbour, if it
+  /// has.
+  pub(super) fn scroll_step(&self) -> Option<bool> {
+    if self.scroll >= 0.5 {
+      Some(true)
+    } else if self.scroll <= -0.5 {
+      Some(false)
+    } else {
+      None
+    }
+  }
+
+  /// Takes a step scrolled toward the next workspace when `is_down` off
+  /// the scroll if that one is now selected, or else holds the scroll
+  /// short of it, at an end of the stack.
+  pub(super) fn scrolled_onto(
+    &mut self,
+    is_down: bool,
+    is_selected: bool,
+  ) {
+    let way = if is_down { 1.0 } else { -1.0 };
+    self.scroll = if is_selected {
+      self.scroll - way
+    } else {
+      way * self.scroll.abs().min(SCROLL_OVERSHOOT)
+    };
+    self.retarget(false);
   }
 
   /// Pans the stack's selected strip `distance` monitor widths along,
@@ -1243,6 +1310,19 @@ impl Screen {
         self.is_dirty = true;
       }
     }
+    // Once the wheel rests, the stack settles on the selected workspace.
+    if self.scroll != 0.0 {
+      is_moving = true;
+      if self
+        .scrolled_at
+        .is_none_or(|at| elapsed_ms(at) >= SCROLL_SETTLE_MS)
+      {
+        self.scroll = 0.0;
+        self.scrolled_at = None;
+        self.retarget(false);
+      }
+    }
+
     is_moving |= self.sheet_alpha.step(dt);
     is_moving |= self.spotlight_y.step(dt);
     is_moving |= self.spotlight_alpha.step(dt);
