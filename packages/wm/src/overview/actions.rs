@@ -1,14 +1,18 @@
 //! Carrying out what is picked in the overview.
 
 use anyhow::Context;
-use wm_common::{InvokeCommand, InvokeFocusCommand, InvokeMoveCommand};
+use wm_common::{
+  InvokeCommand, InvokeFocusCommand, InvokeMoveCommand, WindowState,
+};
 use wm_platform::OverviewAction;
 
 use crate::{
   commands::{
     general::platform_sync,
+    window::update_window_state,
     workspace::{activate_workspace, summon_special_workspace},
   },
+  models::WindowContainer,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm::WindowManager,
@@ -57,6 +61,8 @@ impl WindowManager {
           state.pending_sync.queue_focus_change();
           return platform_sync(state, config);
         };
+
+        let window = restore_if_minimized(window, state, config)?;
 
         let workspace = window.workspace().map(|w| w.config().name);
         let mut commands = Vec::new();
@@ -216,6 +222,21 @@ fn window_by_handle(
 
 /// `focus --workspace <name>`, for a workspace readied by
 /// `prepare_target`; the special workspace too, which it has summoned.
+/// Brings a picked minimized window back, as `toggle-minimized` does:
+/// focusing it alone leaves it minimized. Others are returned as they are.
+fn restore_if_minimized(
+  window: WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<WindowContainer> {
+  if window.state() != WindowState::Minimized {
+    return Ok(window);
+  }
+
+  let restored = window.toggled_state(WindowState::Minimized, config);
+  update_window_state(window, restored, state, config)
+}
+
 fn focus_workspace_command(name: String) -> InvokeCommand {
   InvokeCommand::Focus(InvokeFocusCommand {
     workspace: Some(name),
@@ -316,6 +337,40 @@ mod tests {
       .workspace_by_name(name)?
       .monitor()
       .map(|monitor| monitor.id().as_u128())
+  }
+
+  #[test]
+  fn a_picked_minimized_window_is_restored_and_others_are_left_alone() {
+    use wm_common::WindowState;
+
+    use super::restore_if_minimized;
+    use crate::{
+      models::{Monitor, NonTilingWindow},
+      traits::WindowGetters,
+    };
+
+    let config = mock_config_with(|_| {});
+    let minimized =
+      NonTilingWindow::mock().state(WindowState::Minimized).call();
+    let floating = NonTilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .name("1".to_string())
+      .non_tiling_windows(vec![minimized.clone(), floating.clone()])
+      .call();
+    let mut state = crate::wm_state::WmState::mock(vec![Monitor::mock()
+      .workspaces(vec![workspace])
+      .call()]);
+
+    let restored =
+      restore_if_minimized(minimized.clone().into(), &mut state, &config)
+        .unwrap();
+    assert_ne!(restored.state(), WindowState::Minimized);
+    assert_eq!(restored.id(), minimized.id());
+
+    let untouched =
+      restore_if_minimized(floating.clone().into(), &mut state, &config)
+        .unwrap();
+    assert_eq!(untouched.state(), floating.state());
   }
 
   #[test]

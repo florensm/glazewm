@@ -259,7 +259,8 @@ and the rest fade out; with no match left, every window stays.
 - Pointing at a match, or at its row in the list, puts the list on it;
   clicking a row goes to that match.
 - `Enter` goes to the match the list is on. Without a match it does
-  nothing.
+  nothing. A minimized match is restored as it is gone to, as
+  `toggle-minimized` would.
 - `Backspace` takes back a character, and `Escape` clears the query,
   leaving the selection where the last step put it. With no query left
   they do what they always do: `Backspace` steps back, `Escape` closes.
@@ -674,5 +675,6 @@ real windows are already where their previews end up.
 
 Not in this version:
 
-- Picking minimized windows with the mouse (their icons show on their
-  card, and they are reachable by search).
+- Minimized windows as tiles of their own in the large view, picked with
+  the mouse or the arrows. For now their icons show on their card, and
+  search reaches them: picked there, they are restored.
