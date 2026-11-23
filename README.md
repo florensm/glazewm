@@ -154,7 +154,7 @@ general:
     on_workspace_switch: true
 
   # Move (left-drag) or resize (right-drag) a window from anywhere on it
-  # while holding a modifier. See docs/grab-and-move.md.
+  # while holding a modifier. See docs/features/grab-and-move.md.
   grab_and_move:
     enabled: false
     # 'alt' or 'win'.

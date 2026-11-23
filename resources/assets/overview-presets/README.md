@@ -12,7 +12,7 @@ include:
 ```
 
 Only one can be included at a time, as no setting may be set twice.
-Anything a preset leaves out keeps its default (see `docs/overview.md`).
+Anything a preset leaves out keeps its default (see `docs/features/overview.md`).
 
 | Preset | Look |
 | --- | --- |

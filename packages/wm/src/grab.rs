@@ -1,6 +1,6 @@
 //! Grab gestures: moving and resizing windows by dragging anywhere on them
 //! with a modifier held (`general.grab_and_move`, see
-//! `docs/grab-and-move.md`).
+//! `docs/features/grab-and-move.md`).
 //!
 //! A move runs as a drag by the title bar does: the platform moves the
 //! window with the cursor, and its moves arrive as for any interactive

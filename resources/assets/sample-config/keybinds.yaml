@@ -20,7 +20,7 @@ binding_modes:
         bindings: ["g"]
       - commands: ["float-out-of-stack"]
         bindings: ["f"]
-      # More stack commands are in docs/stacks.md.
+      # More stack commands are in docs/features/stacks.md.
       - commands: ["wm-disable-binding-mode --name stack"]
         bindings: ["escape", "enter"]
 

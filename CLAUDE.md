@@ -15,7 +15,7 @@ Crate structure:
 <code_map>
 
 Where things live. Animation terms (peek, stand-in, surrogate, hand-back, companion) are defined
-in the glossary at the top of `wm/src/animation/mod.rs`. Feature docs are in `docs/`.
+in the glossary at the top of `wm/src/animation/mod.rs`. Feature docs are in `docs/features/`.
 
 `packages/wm/src/`:
 
@@ -189,3 +189,19 @@ git push --force-with-lease -u origin test/<name>
 ```
 
 </build_targets>
+
+## Agent skills
+
+Everything the agent skills read or write lives in `docs/agents/`, apart from the feature docs.
+
+### Issue tracker
+
+GitHub Issues on `florensm/glazewm`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `docs/agents/GLOSSARY.md` and `docs/agents/adr/`, created when first needed. See `docs/agents/domain.md`.
