@@ -30,32 +30,39 @@ overview's own outline instead.
 
 ## Layouts
 
-- **Activities**: every workspace in miniature in a row along
-  the top, their names under them, and below them the shown workspace
-  large and as laid out. Picking another miniature slides that workspace
-  in; the title of the picked window shows under it.
-- **Stack**: every workspace at the same zoom, stacked top to bottom with
-  the selected one in the middle, as niri's overview does. Each card lines
-  up what its monitor shows with the middle of the screen, so a scrolling
-  workspace's strip reaches past either side at its full length. Picking
-  a window on a strip pans the strip to put that window in the middle,
-  and the wheel turned sideways (or with `Shift`) pans it by hand (see
-  [Scrolling workspaces](#scrolling-workspaces)).
-- **Exposé** (default): the activities' row of miniatures, and below it the shown
-  workspace's windows spread out side by side, as macOS's Mission
-  Control does, in rows each scaled to fill the room's width, so they
-  show as large as they can (but never larger than in the activities).
-  In a row, windows keep their sizes relative to each other, centered on
-  it (`expose.arrangement: "natural"`), or are all as tall, as a photo
-  grid lays out pictures (`"grid"`). Every tab of its stacks shows too, each a window of
-  its own. Rows follow where the windows sit on screen, top to bottom and
-  left to right, as many as cover the most room; `expose.max_per_row`
-  caps how many go in a row, e.g. to wrap a scrolling workspace's
-  columns onto rows, the left ones on top. Opening, they fly out of
-  where they are; closing, they fly back as the zoom lands, the picked
-  one over the others and, of a stack, shown on it. A window
-  dropped on another lands beside it, on the side nearest the cursor, as
-  in the activities; dropped elsewhere it only moves.
+Each layout is best at one job. Exposé, the default, spreads the
+windows out as large as they go, to find one. Activities shows the
+shown workspace as it is laid out, so a window dropped there lands
+where it will on screen. Stack shows every workspace at the same size,
+strips at full length, to move windows between them.
+
+- **Activities**, for arranging the shown workspace: every workspace in
+  miniature in a row along the top, their names under them, and below them
+  the shown workspace large and as laid out. Picking another miniature
+  slides that workspace in; the title of the picked window shows under it.
+- **Stack**, for arranging across workspaces and scrolling strips: every
+  workspace at the same zoom, stacked top to bottom with the selected one
+  in the middle, as niri's overview does. Each card lines up what its
+  monitor shows with the middle of the screen, so a scrolling workspace's
+  strip reaches past either side at its full length. Picking a window on a
+  strip pans the strip to put that window in the middle, and the wheel
+  turned sideways (or with `Shift`) pans it by hand (see [Scrolling
+  workspaces](#scrolling-workspaces)).
+- **Exposé** (default), for finding a window: the activities' row of
+  miniatures, and below it the shown workspace's windows spread out side
+  by side, as macOS's Mission Control does, in rows each scaled to fill
+  the room's width, so they show as large as they can (but never larger
+  than in the activities). In a row, windows keep their sizes relative to
+  each other, centered on it (`expose.arrangement: "natural"`), or are all
+  as tall, as a photo grid lays out pictures (`"grid"`). Every tab of its
+  stacks shows too, each a window of its own. Rows follow where the
+  windows sit on screen, top to bottom and left to right, as many as cover
+  the most room; `expose.max_per_row` caps how many go in a row, e.g. to
+  wrap a scrolling workspace's columns onto rows, the left ones on top.
+  Opening, they fly out of where they are; closing, they fly back as the
+  zoom lands, the picked one over the others and, of a stack, shown on it.
+  A window dropped on another lands beside it, on the side nearest the
+  cursor, as in the activities; dropped elsewhere it only moves.
 
 On the cards, each window shows its app's icon in its middle.
 
