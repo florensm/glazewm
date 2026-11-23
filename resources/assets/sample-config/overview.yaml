@@ -1,7 +1,6 @@
 # Opened by `toggle-overview`. As set here, it is a calm, OS-like exposé:
 # the desktop zooms out onto a rounded slab of wallpaper, the windows spread
 # out over it, and a slim strip of the other workspaces sits along the top.
-# Ready-made looks: resources/assets/overview-presets in the repository.
 overview:
   # -- Layout --------------------------------------------------------------
 
@@ -98,8 +97,7 @@ overview:
   # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
   bounce: 0
 
-  # Flourishes, all off but the picked window growing a little. See the
-  # 'playful' preset for them turned on.
+  # Flourishes, all off but the picked window growing a little.
   effects:
     # Accent glow around the selected workspace, optionally breathing.
     glow: false

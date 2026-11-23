@@ -521,7 +521,7 @@ overview:
     arrangement: "natural"
 
   # Flourishes. All are off but `window_lift`, for an overview as calm
-  # as an OS's own; the "playful" preset turns them on.
+  # as an OS's own.
   effects:
     # Soft glow of the accent color around the selected workspace.
     glow: false
@@ -579,11 +579,6 @@ overview:
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
 values above are the defaults.
-
-Ready-made looks to start from are in
-[`resources/assets/overview-presets`](../resources/assets/overview-presets/README.md),
-each a whole `overview:` section to include instead of your
-`overview.yaml`.
 
 ```yaml
 keybindings:
