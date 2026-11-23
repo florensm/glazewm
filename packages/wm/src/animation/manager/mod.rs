@@ -227,7 +227,7 @@ impl Drop for AnimationManager {
     if let Some(timer) = self
       .timer_thread
       .lock()
-      .expect("animation mutex poisoned")
+      .unwrap_or_else(std::sync::PoisonError::into_inner)
       .take()
     {
       timer.handle.thread().unpark();

@@ -148,8 +148,10 @@ impl AnimationManager {
 
     self.last_frame_at.set(Instant::now());
 
-    let mut guard =
-      self.timer_thread.lock().expect("animation mutex poisoned");
+    let mut guard = self
+      .timer_thread
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.as_ref() {
       // Wake the parked thread to begin a new ticking phase.
       Some(timer) => timer.handle.thread().unpark(),
@@ -197,7 +199,7 @@ impl AnimationManager {
     if let Some(timer) = self
       .timer_thread
       .lock()
-      .expect("animation mutex poisoned")
+      .unwrap_or_else(std::sync::PoisonError::into_inner)
       .take()
     {
       self.stalled_timers.fetch_add(1, Ordering::Relaxed);
@@ -284,7 +286,7 @@ impl AnimationManager {
             // the waiter without blocking on a wait in progress.
             let waiter = vsync_waiter
               .lock()
-              .expect("animation mutex poisoned")
+              .unwrap_or_else(std::sync::PoisonError::into_inner)
               .clone();
 
             // `DwmFlush` when no waiter is installed, or its wait failed.
