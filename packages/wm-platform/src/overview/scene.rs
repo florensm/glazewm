@@ -25,8 +25,8 @@ pub(crate) struct SceneWindow {
   /// it.
   pub is_hidden_tab: bool,
 
-  /// Minimized: only the exposé shows it, as a stand-in, in a row of its
-  /// own.
+  /// Minimized: only the exposé shows it, as a stand-in where it would
+  /// be restored to.
   pub is_minimized: bool,
 }
 

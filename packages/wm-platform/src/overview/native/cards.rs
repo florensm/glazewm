@@ -29,7 +29,12 @@ pub(super) fn screen_rect(
   workspace: &OverviewWorkspace,
   window: &OverviewWindow,
 ) -> RectF {
-  if workspace.is_displayed && !window.is_scrolled_off {
+  // A minimized window sits parked off screen, as a sliver: where it is
+  // restored to is what its stand-in shows as.
+  if workspace.is_displayed
+    && !window.is_scrolled_off
+    && !window.is_minimized
+  {
     visible_frame_on_screen(HWND(window.hwnd))
       .unwrap_or_else(|| RectF::from_rect(&window.rect))
   } else {

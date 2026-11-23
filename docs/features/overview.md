@@ -64,9 +64,10 @@ strips at full length, to move windows between them.
   A window dropped on another lands beside it, on the side nearest the
   cursor, as in the activities; dropped elsewhere it only moves.
 
-Minimized windows show in the exposé too, in a row along the bottom: a
-small window each, with its app's icon in the middle and its title, as
-Windows draws nothing for them. Picking one, by mouse, the arrows or
+Minimized windows show in the exposé too, spread out with the others at
+the size they are restored to: as a window of the surface color, with
+its app's icon in the middle and its title, as Windows draws nothing for
+them. They fade in rather than fly out of the screen. Picking one, by mouse, the arrows or
 search, restores it. Dragged onto a workspace, one moves there, still
 minimized.
 

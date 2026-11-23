@@ -944,9 +944,10 @@ pub(crate) fn draw_note(
   );
 }
 
-/// Size of a stand-in, in logical pixels: what shows in place of a
-/// window that renders nothing to a thumbnail, e.g. a minimized one.
-pub(crate) const STAND_IN_SIZE: (f32, f32) = (240.0, 150.0);
+/// Largest size a stand-in is drawn at, in logical pixels: what shows in
+/// place of a window that renders nothing to a thumbnail, e.g. a
+/// minimized one. It shows smaller, as its window would.
+pub(crate) const STAND_IN_SIZE: (f32, f32) = (640.0, 400.0);
 
 /// Draws a stand-in for window `hwnd` titled `title` over all of
 /// `surface`: a small window with its app's icon in the middle.

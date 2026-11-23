@@ -11,7 +11,6 @@ const SLIDE_GAP: f32 = 48.0;
 
 use crate::{
   overview::{
-    chrome::STAND_IN_SIZE,
     expose::spread,
     layout::{CardView, RectF, Tile},
     scene::{Scene, SceneWindow},
@@ -78,8 +77,6 @@ struct Spread {
   max_scale: f32,
   max_per_row: usize,
   arrangement: OverviewExposeArrangement,
-  /// Size of a minimized window's stand-in, in physical pixels.
-  stand_in: (f32, f32),
 }
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
@@ -113,37 +110,27 @@ fn scene_rects(
 }
 
 /// Where the exposé shows each window of `scene`, of those in `only` if
-/// given, every tab of a stack a window of its own, and its minimized
-/// windows' stand-ins in a row along the bottom. `None` for a window left
-/// out.
+/// given, every tab of a stack and minimized window a window of its own.
+/// `None` for a window left out.
 fn spread_windows(
   scene: &Scene,
   how: &Spread,
   only: Option<&[isize]>,
 ) -> Vec<Option<RectF>> {
-  let (minimized, shown): (Vec<_>, Vec<_>) = scene
+  let shown = scene
     .windows
     .iter()
     .enumerate()
     .filter(|(_, window)| {
       only.is_none_or(|only| only.contains(&window.preview.hwnd))
     })
-    .partition(|(_, window)| window.is_minimized);
-
-  let (row, area) = stand_in_row(
-    &how.area,
-    minimized.len(),
-    how.stand_in,
-    how.gap,
-    !shown.is_empty(),
-  );
-  let screen_rects = shown
-    .iter()
-    .map(|(_, window)| window.preview.screen_rect)
+    .map(|(index, window)| (index, window.preview.screen_rect))
     .collect::<Vec<_>>();
+  let screen_rects =
+    shown.iter().map(|(_, rect)| *rect).collect::<Vec<_>>();
   let slots = spread(
     &screen_rects,
-    &area,
+    &how.area,
     how.gap,
     how.max_scale,
     how.max_per_row,
@@ -154,52 +141,7 @@ fn spread_windows(
   for ((index, _), slot) in shown.iter().zip(slots) {
     rects[*index] = Some(slot);
   }
-  for ((index, _), slot) in minimized.iter().zip(row) {
-    rects[*index] = Some(slot);
-  }
   rects
-}
-
-/// Where a row of `count` stand-ins, each `size` big and `gap` apart,
-/// shows: centered along the bottom of `area`, shrunk to fit its width and
-/// at most a third of its height, or in its middle without `others`.
-/// Returns them left to right, and the part of `area` left above them.
-fn stand_in_row(
-  area: &RectF,
-  count: usize,
-  size: (f32, f32),
-  gap: f32,
-  others: bool,
-) -> (Vec<RectF>, RectF) {
-  if count == 0 || size.0 <= 0.0 || size.1 <= 0.0 {
-    return (Vec::new(), *area);
-  }
-
-  #[allow(clippy::cast_precision_loss)]
-  let count_f = count as f32;
-  let gaps = gap * (count_f - 1.0);
-  let scale = ((area.w - gaps).max(0.0) / (size.0 * count_f))
-    .min(area.h / 3.0 / size.1)
-    .min(1.0);
-  let (width, height) = (size.0 * scale, size.1 * scale);
-
-  let row_width = width * count_f + gaps;
-  let left = area.x + (area.w - row_width) / 2.0;
-  let top = if others {
-    area.bottom() - height
-  } else {
-    area.y + (area.h - height) / 2.0
-  };
-
-  #[allow(clippy::cast_precision_loss)]
-  let row = (0..count)
-    .map(|index| {
-      RectF::new(left + index as f32 * (width + gap), top, width, height)
-    })
-    .collect();
-  let above =
-    RectF::new(area.x, area.y, area.w, (area.h - height - gap).max(0.0));
-  (row, above)
 }
 
 /// The windows of `workspace` a search matches, which the exposé
@@ -481,10 +423,6 @@ impl Screen {
       max_per_row: usize::try_from(expose.max_per_row)
         .unwrap_or(usize::MAX),
       arrangement: expose.arrangement,
-      stand_in: (
-        self.metrics.px(STAND_IN_SIZE.0),
-        self.metrics.px(STAND_IN_SIZE.1),
-      ),
     }
   }
 
@@ -512,50 +450,12 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
-  use super::{scene_window_shown, stand_in_row};
+  use super::scene_window_shown;
   use crate::overview::{
     layout::{RectF, Tile},
     scene::SceneWindow,
     thumbnails::Preview,
   };
-
-  #[test]
-  fn stand_ins_sit_in_a_centered_row_below_the_other_windows() {
-    let area = RectF::new(0.0, 0.0, 1000.0, 900.0);
-    let (row, above) = stand_in_row(&area, 2, (240.0, 150.0), 20.0, true);
-
-    assert_eq!(
-      row,
-      [
-        RectF::new(250.0, 750.0, 240.0, 150.0),
-        RectF::new(510.0, 750.0, 240.0, 150.0),
-      ]
-    );
-    assert_eq!(above, RectF::new(0.0, 0.0, 1000.0, 730.0));
-  }
-
-  #[test]
-  fn stand_ins_shrink_to_fit_and_center_alone() {
-    let area = RectF::new(0.0, 0.0, 500.0, 900.0);
-    let (row, above) = stand_in_row(&area, 4, (240.0, 150.0), 20.0, false);
-
-    // 4 x 110 wide + 3 gaps of 20 fill the 500 across.
-    assert_eq!(row.len(), 4);
-    assert!((row[0].w - 110.0).abs() < 0.01);
-    assert!((row[3].right() - 500.0).abs() < 0.01);
-    // Without other windows, in the middle.
-    assert!(((row[0].y + row[0].h / 2.0) - 450.0).abs() < 0.01);
-    assert!(above.h < area.h);
-  }
-
-  #[test]
-  fn no_stand_ins_leave_the_area_whole() {
-    let area = RectF::new(10.0, 20.0, 500.0, 400.0);
-    assert_eq!(
-      stand_in_row(&area, 0, (240.0, 150.0), 20.0, true),
-      (Vec::new(), area)
-    );
-  }
 
   #[test]
   fn a_landing_window_reaches_where_it_settles_as_the_zoom_ends() {
