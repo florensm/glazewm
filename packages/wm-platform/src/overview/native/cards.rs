@@ -345,13 +345,7 @@ impl Screen {
             }),
             title: window
               .filter(|_| tab_bar.is_none() && look == CardLook::Classic)
-              .map(|w| {
-                if w.title.is_empty() {
-                  w.process_name.clone()
-                } else {
-                  w.title.clone()
-                }
-              }),
+              .map(OverviewWindow::display_title),
             has_preview: preview.thumbnail.is_some(),
             opacity: self.window_opacity(index, preview.hwnd),
             border_width,

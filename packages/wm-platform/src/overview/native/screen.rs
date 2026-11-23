@@ -891,6 +891,8 @@ impl Screen {
           window.lift.aim(lift, false);
         }
       }
+
+      self.draw_stand_ins(&style, force);
     }
 
     self.refresh_overlays(&style, force);
@@ -902,6 +904,40 @@ impl Screen {
     self.refresh_spotlight(&style, force);
     self.refresh_sheet(&style, force);
     self.is_dirty = true;
+  }
+
+  /// Draws the stand-ins of the scenes' minimized windows, unless they
+  /// show that already, or all of them when `force`.
+  fn draw_stand_ins(&mut self, style: &OverviewStyle, force: bool) {
+    let titles = self
+      .workspaces()
+      .iter()
+      .map(|workspace| {
+        workspace
+          .windows
+          .iter()
+          .filter(|window| window.is_minimized)
+          .map(|window| (window.hwnd, window.display_title()))
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
+    let (scale_factor, notify) = (self.metrics.scale_factor, self.notify);
+
+    for (scene, titles) in self.scenes.iter_mut().zip(&titles) {
+      for window in scene.windows.iter_mut().filter(|w| w.is_minimized) {
+        let hwnd = window.preview.hwnd;
+        let Some((_, title)) = titles.iter().find(|(h, _)| *h == hwnd)
+        else {
+          continue;
+        };
+        if force {
+          window.preview.forget_stand_in_drawn();
+        }
+        window
+          .preview
+          .draw_stand_in(title, scale_factor, style, notify);
+      }
+    }
   }
 
   /// Redraws the search line if it changed, or when `force`.

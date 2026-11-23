@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HWND, RECT};
 
 use super::Screen;
 use crate::{
@@ -86,13 +86,19 @@ impl Ghost {
     at: Option<(f32, f32)>,
     screen: &Screen,
   ) -> Option<Self> {
-    let preview = Preview::new(
+    let mut preview = Preview::new(
       hwnd,
       Tile {
         rect: RectF::default(),
         crop: RectF::default(),
       },
     );
+    let is_minimized = screen
+      .workspaces()
+      .iter()
+      .find_map(|workspace| workspace.window(hwnd))
+      .is_some_and(|window| window.is_minimized);
+    preview.use_stand_in(is_minimized);
     let (view_width, view_height) = screen.metrics.view;
     let (x, y) = at.unwrap_or((
       screen.area.x + view_width / 2.0,
@@ -202,14 +208,20 @@ impl Ghost {
     self.is_landing && self.alpha.is_settled()
   }
 
-  /// Draws its picture, titled `title`, for a screen at `scale_factor`,
-  /// unless it shows that already.
+  /// Draws its picture, and its window's stand-in if it shows one,
+  /// titled `title`, for a screen at `scale_factor`, unless it shows that
+  /// already.
   pub(super) fn draw(
     &mut self,
     title: &str,
     scale_factor: f32,
     style: &OverviewStyle,
+    notify: (HWND, u32),
   ) {
+    self
+      .preview
+      .draw_stand_in(title, scale_factor, style, notify);
+
     #[allow(clippy::cast_possible_truncation)]
     let size = (
       (GHOST_SIZE.0 * scale_factor).ceil() as i32,
@@ -232,6 +244,7 @@ impl Ghost {
   /// Forgets what its picture shows, so it is drawn anew.
   pub(super) fn forget_drawn(&mut self) {
     self.drawn = None;
+    self.preview.forget_stand_in_drawn();
   }
 
   /// Advances it by `dt` seconds. Returns whether it still moves.

@@ -123,6 +123,18 @@ pub struct OverviewWindow {
   pub border: Option<BorderOverlayParams>,
 }
 
+impl OverviewWindow {
+  /// Its title, or its process name when it has none.
+  #[must_use]
+  pub fn display_title(&self) -> String {
+    if self.title.is_empty() {
+      self.process_name.clone()
+    } else {
+      self.title.clone()
+    }
+  }
+}
+
 /// A window's backdrop or border, as the WM draws it around and behind
 /// the window, shown with the window's preview.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

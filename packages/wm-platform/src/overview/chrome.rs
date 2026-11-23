@@ -944,6 +944,51 @@ pub(crate) fn draw_note(
   );
 }
 
+/// Size of a stand-in, in logical pixels: what shows in place of a
+/// window that renders nothing to a thumbnail, e.g. a minimized one.
+pub(crate) const STAND_IN_SIZE: (f32, f32) = (240.0, 150.0);
+
+/// Draws a stand-in for window `hwnd` titled `title` over all of
+/// `surface`: a small window with its app's icon in the middle.
+pub(crate) fn draw_stand_in(
+  surface: &mut Surface,
+  hwnd: isize,
+  title: &str,
+  scale_factor: f32,
+  style: &OverviewStyle,
+  notify: (HWND, u32),
+) {
+  let units = Units { scale_factor };
+  let (width, height) = (to_f32(surface.width), to_f32(surface.height));
+  let rect = RectF::new(0.0, 0.0, width, height).to_rect();
+
+  surface.pixels().fill(0);
+  surface.canvas().fill_rounded_rect(
+    &rect,
+    round(units.px(style.card_corner_radius)),
+    style.surface,
+  );
+
+  let size = units.px(48.0).min(height / 2.0).min(width / 2.0);
+  let icon =
+    RectF::new((width - size) / 2.0, (height - size) / 2.0, size, size);
+  draw_window_icon(surface, hwnd, &icon.to_rect(), 0.9, notify);
+
+  draw_caption(
+    surface,
+    &mut Fonts::new(&style.font_family),
+    title,
+    &rect,
+    (
+      units.px(TILE_CAPTION.0),
+      units.px(TILE_CAPTION.1),
+      units.px(4.0),
+    ),
+    style,
+    1.0,
+  );
+}
+
 /// Draws the picture of a dragged or carried window titled `title` into
 /// `surface`. Its preview shows through the middle.
 pub(crate) fn draw_ghost(

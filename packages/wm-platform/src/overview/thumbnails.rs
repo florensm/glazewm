@@ -18,10 +18,13 @@ use windows::{
 use crate::{
   companion::Companion,
   dwm_thumbnail::Thumbnail,
-  overview::layout::{RectF, Tile},
+  overview::{
+    chrome::{draw_stand_in, STAND_IN_SIZE},
+    layout::{RectF, Tile},
+  },
   surface::Surface,
-  window_class, OverviewOverlay, OverviewOverlayKind, OverviewWindow,
-  Rect,
+  window_class, OverviewOverlay, OverviewOverlayKind, OverviewStyle,
+  OverviewWindow, Rect,
 };
 
 /// Shown for a window whose frame can't be read, e.g. one being
@@ -204,6 +207,19 @@ pub(crate) struct Preview {
 
   /// Where its window is on screen, which its tile shows.
   pub screen_rect: RectF,
+
+  /// Shown instead of the window, which renders nothing to a thumbnail,
+  /// e.g. while it is minimized.
+  stand_in: Option<StandIn>,
+}
+
+/// A small window with the app's icon in it, drawn in place of one that
+/// renders nothing to a thumbnail.
+struct StandIn {
+  picture: Picture,
+
+  /// Title and size it is drawn with.
+  drawn: Option<(String, (i32, i32))>,
 }
 
 /// One of a window's overlays, shown around its preview as it sits around
@@ -226,6 +242,66 @@ impl Preview {
       overlays: Vec::new(),
       is_scrolled_off: false,
       screen_rect: RectF::default(),
+      stand_in: None,
+    }
+  }
+
+  /// Shows a stand-in in place of the window when `shows`, e.g. while it
+  /// is minimized. Returns whether that changed, which calls for
+  /// registering the thumbnails anew.
+  pub fn use_stand_in(&mut self, shows: bool) -> bool {
+    if shows == self.stand_in.is_some() {
+      return false;
+    }
+
+    self.stand_in = if shows {
+      Picture::new().map(|picture| StandIn {
+        picture,
+        drawn: None,
+      })
+    } else {
+      None
+    };
+    true
+  }
+
+  /// Draws its stand-in, if it shows one, titled `title`, for a screen at
+  /// `scale_factor`, unless it shows that already.
+  pub fn draw_stand_in(
+    &mut self,
+    title: &str,
+    scale_factor: f32,
+    style: &OverviewStyle,
+    notify: (HWND, u32),
+  ) {
+    let Some(stand_in) = &mut self.stand_in else {
+      return;
+    };
+
+    #[allow(clippy::cast_possible_truncation)]
+    let size = (
+      (STAND_IN_SIZE.0 * scale_factor).ceil() as i32,
+      (STAND_IN_SIZE.1 * scale_factor).ceil() as i32,
+    );
+    if stand_in
+      .drawn
+      .as_ref()
+      .is_some_and(|drawn| drawn.0 == title && drawn.1 == size)
+    {
+      return;
+    }
+
+    let hwnd = self.hwnd;
+    stand_in.picture.draw(size, |surface| {
+      draw_stand_in(surface, hwnd, title, scale_factor, style, notify);
+    });
+    stand_in.drawn = Some((title.to_string(), size));
+  }
+
+  /// Forgets what its stand-in shows, so it is drawn anew.
+  pub fn forget_stand_in_drawn(&mut self) {
+    if let Some(stand_in) = &mut self.stand_in {
+      stand_in.drawn = None;
     }
   }
 
@@ -279,6 +355,11 @@ impl Preview {
   /// Registers its overlays, then itself, on `host`, above everything
   /// registered there so far.
   pub fn register(&mut self, host: HWND) {
+    if let Some(stand_in) = &mut self.stand_in {
+      stand_in.picture.register(host);
+      return;
+    }
+
     for overlay in &mut self.overlays {
       overlay.thumbnail =
         Thumbnail::register(host, HWND(overlay.overlay.hwnd));
@@ -294,6 +375,9 @@ impl Preview {
     for overlay in &mut self.overlays {
       retired.extend(overlay.thumbnail.take());
     }
+    if let Some(stand_in) = &mut self.stand_in {
+      stand_in.picture.retire(retired);
+    }
   }
 
   pub fn hide(&mut self) {
@@ -304,6 +388,9 @@ impl Preview {
 
     for thumbnail in self.thumbnail.iter_mut().chain(overlays) {
       thumbnail.hide();
+    }
+    if let Some(stand_in) = &mut self.stand_in {
+      stand_in.picture.hide();
     }
   }
 
@@ -327,6 +414,11 @@ impl Preview {
   /// Shows the preview at `dest` on the overview, with its overlays
   /// around it, cut to `clip`.
   pub fn place(&mut self, dest: &RectF, clip: &RectF, opacity: f32) {
+    if let Some(stand_in) = &mut self.stand_in {
+      stand_in.picture.place(dest, clip, opacity * self.alpha);
+      return;
+    }
+
     let clip_rect = to_win32(clip);
 
     for index in 0..self.overlays.len() {

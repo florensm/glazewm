@@ -64,6 +64,12 @@ strips at full length, to move windows between them.
   A window dropped on another lands beside it, on the side nearest the
   cursor, as in the activities; dropped elsewhere it only moves.
 
+Minimized windows show in the exposé too, in a row along the bottom: a
+small window each, with its app's icon in the middle and its title, as
+Windows draws nothing for them. Picking one, by mouse, the arrows or
+search, restores it. Dragged onto a workspace, one moves there, still
+minimized.
+
 On the cards, each window shows its app's icon in its middle.
 
 The row of miniatures comes in three sizes (`workspace_row`): a slim
@@ -682,6 +688,6 @@ real windows are already where their previews end up.
 
 Not in this version:
 
-- Minimized windows as tiles of their own in the large view, picked with
-  the mouse or the arrows. For now their icons show on their card, and
-  search reaches them: picked there, they are restored.
+- Minimized windows in the activities' large view: there, only their
+  icons show on their card. The exposé shows them (see
+  [Layouts](#layouts)).

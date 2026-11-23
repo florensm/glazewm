@@ -24,6 +24,10 @@ pub(crate) struct SceneWindow {
   /// A tab of a stack other than its shown one: only the exposé shows
   /// it.
   pub is_hidden_tab: bool,
+
+  /// Minimized: only the exposé shows it, as a stand-in, in a row of its
+  /// own.
+  pub is_minimized: bool,
 }
 
 impl SceneWindow {
@@ -45,6 +49,7 @@ impl SceneWindow {
       alpha: Spring::new(0.0, settle_ms, 0.002),
       lift: Spring::new(0.0, settle_ms, 0.0005),
       is_hidden_tab: false,
+      is_minimized: false,
     }
   }
 
@@ -117,7 +122,7 @@ pub(crate) struct Scene {
 }
 
 impl Scene {
-  /// The scene of `workspace`'s windows but its minimized ones, keeping
+  /// The scene of `workspace`'s windows, keeping
   /// the windows of `old` that are still there, each settling within
   /// about `settle_ms` with `bounce`, in coordinates starting at screen
   /// point `origin`.
@@ -143,7 +148,6 @@ impl Scene {
     let windows = workspace
       .windows
       .iter()
-      .filter(|window| !window.is_minimized)
       .map(|window| {
         // A hidden tab sits wherever it was put away: its stack's rect
         // is where it would show.
@@ -177,7 +181,10 @@ impl Scene {
         scene_window.preview.screen_rect = rect;
         scene_window.preview.is_scrolled_off = window.is_scrolled_off;
         scene_window.is_hidden_tab = window.is_hidden_tab;
+        scene_window.is_minimized = window.is_minimized;
         is_restyled |= scene_window.preview.restyle(window);
+        is_restyled |=
+          scene_window.preview.use_stand_in(window.is_minimized);
         scene_window
       })
       .collect::<Vec<_>>();
