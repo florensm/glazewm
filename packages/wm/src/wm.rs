@@ -83,6 +83,8 @@ pub struct WindowManager {
     mpsc::UnboundedReceiver<(uuid::Uuid, wm_platform::TabAction)>,
   /// Clicks the `ClickGuard` kept from where they landed.
   pub guarded_click_rx: mpsc::UnboundedReceiver<GuardedClick>,
+  /// Set while `GLAZEWM_FLICKER_LOG` is.
+  pub flicker_log: Option<crate::flicker_log::FlickerLog>,
 }
 
 impl WindowManager {
@@ -122,6 +124,7 @@ impl WindowManager {
       state,
       tab_action_rx,
       guarded_click_rx,
+      flicker_log: crate::flicker_log::FlickerLog::new(),
     })
   }
 
@@ -168,6 +171,10 @@ impl WindowManager {
     listener: &GrabListener,
     config: &UserConfig,
   ) -> anyhow::Result<()> {
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note("grab".to_string(), Instant::now());
+    }
+
     crate::grab::handle_grab_event(
       event,
       listener,
@@ -371,6 +378,10 @@ impl WindowManager {
     use wm_platform::TabAction;
 
     use crate::models::StackContainer;
+
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note(format!("tab bar {action:?}"), Instant::now());
+    }
 
     let Some(stack) = self.state.container_by_id(stack_id) else {
       return Ok(());
@@ -617,6 +628,10 @@ impl WindowManager {
     event: PlatformEvent,
     config: &mut UserConfig,
   ) -> anyhow::Result<()> {
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note_event(&event);
+    }
+
     let state = &mut self.state;
 
     match event {
@@ -640,10 +655,35 @@ impl WindowManager {
           )?;
           Ok(())
         }
-        WindowEvent::Shown { window, .. } => {
+        WindowEvent::Shown {
+          window,
+          notification,
+        } => {
           let shown = window.clone();
+          let hidden_tab = self
+            .flicker_log
+            .as_ref()
+            .and_then(|_| crate::flicker_log::hidden_tab(state, &window))
+            .map(|tab| {
+              let sighting = crate::flicker_log::HiddenTabSighting::take(
+                &tab,
+                notification.occurred_at(),
+              );
+              (tab, sighting)
+            });
+          let handling_start = Instant::now();
 
           handle_window_shown(window, state, config)?;
+
+          if let (Some(flicker_log), Some((tab, sighting))) =
+            (&mut self.flicker_log, hidden_tab)
+          {
+            flicker_log.note_hidden_tab_shown(
+              &tab,
+              &sighting,
+              handling_start.elapsed(),
+            );
+          }
           crate::stay_interactive::keep_stacked_windows_interactive(
             &shown, state, config,
           )?;
@@ -720,10 +760,16 @@ impl WindowManager {
     config: &UserConfig,
   ) -> anyhow::Result<()> {
     use crate::animation::AnimationManager;
+    // Before the frame, which may hand back a window whose owned windows,
+    // e.g. a stack's hidden tabs, the shell then uncloaks with it.
+    crate::commands::general::keep_hidden_tabs_behind(&self.state);
     // Access animation_manager through state to avoid double borrow
     let result =
       AnimationManager::update_internal(&mut self.state, config);
     crate::animation::motion_clicks::sync_motion_guard(&mut self.state);
+    // A frame can hand a window back, uncloaking it, outside a sync.
+    crate::commands::general::recloak_owned_windows(&self.state);
+    crate::commands::general::keep_windows_below_companions(&self.state);
     result
   }
 
@@ -733,6 +779,10 @@ impl WindowManager {
     subject_container_id: Option<Uuid>,
     config: &mut UserConfig,
   ) -> anyhow::Result<Uuid> {
+    if let Some(flicker_log) = &mut self.flicker_log {
+      flicker_log.note_commands(commands);
+    }
+
     let state = &mut self.state;
 
     // Get the container to run WM commands with.

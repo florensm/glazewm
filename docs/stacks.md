@@ -263,7 +263,7 @@ stack:
 ## Staying usable while a popup is open
 
 Apps such as WPF apps disable all their windows while a blocking popup
-(e.g. "Add Activity") is open, including the ones in a stack. Mark an
+(e.g. a dialog) is open, including the ones in a stack. Mark an
 app's windows with the `stay-interactive` window rule command to keep its
 stacked windows usable meanwhile:
 

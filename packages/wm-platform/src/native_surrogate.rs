@@ -79,7 +79,7 @@ pub(crate) fn style_like_window(hwnd: HWND, corner_style: CornerStyle) {
 /// `rcSource` starts at `border_inset` so invisible-border pixels are
 /// excluded; those pixels render as black in DWM thumbnails. When
 /// `border_inset` is all-zero this is the full physical window.
-fn content_rects(
+pub(crate) fn content_rects(
   width: i32,
   height: i32,
   border_inset: RECT,
@@ -878,6 +878,16 @@ impl NativeSurrogate {
     self.companion = Some(companion);
     self.companion_wait = HandoffWait::default();
     self.last_opacity = opacity;
+
+    // Until now its visible thumbnail drew the window as it really is
+    // (e.g. without shades' colors), for up to a recheck interval.
+    tracing::info!(
+      target: crate::FLICKER_LOG_TARGET,
+      "stand-in of {:#x} drew it uncolored until it found its companion \
+       mid-animation (rechecked every {}ms)",
+      source_hwnd.0,
+      COMPANION_RECHECK_INTERVAL.as_millis(),
+    );
 
     true
   }

@@ -215,7 +215,182 @@ pub fn platform_sync(
     .peeks
     .schedule_prewarm(std::time::Instant::now());
 
+  keep_hidden_tabs_behind(state);
+  recloak_owned_windows(state);
+  keep_windows_below_companions(state);
+
   state.pending_sync.clear();
+
+  Ok(())
+}
+
+/// Puts each shown window raised past its companion (e.g. shades'
+/// recolored copy) back below it.
+///
+/// A companion in the normal band sits directly above its window, so
+/// anything raising the window (the WM restacking it as a workspace switch
+/// hands it back, focusing it, its app) showed it uncolored until the
+/// companion's owner noticed and restacked, measured at 40-130ms, a frame
+/// of which was filmed as a white flash. Fixed here within a frame.
+pub(crate) fn keep_windows_below_companions(state: &WmState) {
+  for window in state.windows() {
+    let is_shown = matches!(
+      window.display_state(),
+      DisplayState::Shown | DisplayState::Showing
+    );
+    if !is_shown
+      || window.state() == WindowState::Minimized
+      || window.native().is_cloaked().unwrap_or(true)
+    {
+      continue;
+    }
+
+    match wm_platform::keep_below_companion(&window.native()) {
+      Ok(true) => debug!("Put {window} back below its companion."),
+      Ok(false) => {}
+      Err(err) => {
+        tracing::warn!(
+          "Failed to put {window} below its companion: {err}"
+        );
+      }
+    }
+  }
+}
+
+/// Keeps each stack's hidden tabs behind its active tab in the z-order.
+///
+/// A hidden tab keeps its place in the z-order, and a reposition raises
+/// it, so it often sat above the active tab. Shown again by something
+/// else, e.g. the shell along with its owner (see
+/// [`recloak_owned_windows`]), it then showed over the active tab until
+/// hidden again, and its companion (e.g. shades' recolored copy) until its
+/// owner caught up, measured at up to ~150ms. Behind the active tab, both
+/// stay out of sight.
+///
+/// Also while the active tab has a stand-in (e.g. a workspace switch's
+/// surrogate): restacking cloaked windows shows nothing, and the switch's
+/// end uncloaks the tabs' owner, and with it the tabs, on the frame that
+/// hands the active tab back.
+pub(crate) fn keep_hidden_tabs_behind(state: &WmState) {
+  let stacks = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned());
+
+  for stack in stacks {
+    let Some(active) = stack
+      .active_child()
+      .and_then(|child| child.as_window_container().ok())
+    else {
+      continue;
+    };
+
+    if active.state() == WindowState::Minimized {
+      continue;
+    }
+
+    for tab in stack.windows() {
+      if tab.id() == active.id()
+        || tab.state() == WindowState::Minimized
+        || state.animation_manager.stands_in_for(&tab.id())
+      {
+        continue;
+      }
+
+      match tab.native().keep_behind(&active.native()) {
+        Ok(true) => debug!("Put hidden tab {tab} behind {active}."),
+        Ok(false) => {}
+        Err(err) => {
+          tracing::warn!("Failed to put hidden tab {tab} behind: {err}");
+        }
+      }
+    }
+  }
+}
+
+/// Hides again each owned window the layout hides on a shown workspace
+/// that the shell brought back on screen with its owner, e.g. a stack's
+/// hidden tab whose owner, another of its app's windows, was just
+/// uncloaked.
+///
+/// The shell uncloaks an owned window along with its owner, without an
+/// uncloak event for it, so nothing else notices: it showed over the
+/// stack's active tab until something redrew it. Not the foreground
+/// window, which its app brought to the front: that one is shown as the
+/// active tab instead (see `reconcile_shown_tab`).
+///
+/// Only windows hidden in the layout, which one the shell can't cloak is
+/// hidden outright, as `reposition_window` does: one left on screen would
+/// be tried again on every call.
+///
+/// A tab to hide outright (see [`hides_outright`]) left only cloaked, e.g.
+/// by a tab switch, is hidden outright on a hidden workspace too: there it
+/// stayed cloaked until the switch back uncloaked its owner, and the shell
+/// it, over the active tab for a frame.
+pub(crate) fn recloak_owned_windows(state: &WmState) {
+  let mut foreground = None;
+
+  for window in state.windows() {
+    let is_hidden = matches!(
+      window.display_state(),
+      DisplayState::Hidden | DisplayState::Hiding
+    );
+    let is_displayed =
+      window.workspace().is_some_and(|ws| ws.is_displayed());
+    if !is_hidden
+      || !is_hidden_in_layout(&window)
+      || !is_displayed && !hides_outright(&window)
+      || window.state() == WindowState::Minimized
+      || state.animation_manager.stands_in_for(&window.id())
+    {
+      continue;
+    }
+
+    let native = window.native();
+    if !native.has_owner_window()
+      || !native.is_visible()
+      || native.is_cloaked().unwrap_or(true) && !hides_outright(&window)
+    {
+      continue;
+    }
+
+    let foreground =
+      foreground.get_or_insert_with(|| state.dispatcher.focused_window());
+    if native.id() == foreground.id() {
+      continue;
+    }
+
+    tracing::info!("Hiding {window} again, on screen or only cloaked.");
+    if let Err(err) = hide_again(&window) {
+      tracing::warn!("Failed to hide {window} again: {err}");
+    }
+  }
+}
+
+/// Whether `window`, hidden by the layout, is hidden outright rather than
+/// only cloaked: a stack's inactive tab that another window owns.
+///
+/// The shell uncloaks an owned window along with its owner, which every
+/// workspace switch and every animation standing in for the owner does
+/// (e.g. a WPF app's document window and its main window), showing every
+/// such tab over the active one for a moment, however fast the WM hides
+/// it again. It leaves a hidden window hidden. Not other windows the
+/// layout hides, e.g. a scrolling layout's columns its peeks draw, as DWM
+/// renders no thumbnail of a hidden window.
+pub(crate) fn hides_outright(window: &WindowContainer) -> bool {
+  is_inactive_stack_child(window) && window.native().has_owner_window()
+}
+
+/// Hides `window`, hidden by the layout but shown by something else, again
+/// where it is: cloaked, and hidden outright where [`hides_outright`] says
+/// or the shell can't cloak it.
+pub(crate) fn hide_again(window: &WindowContainer) -> anyhow::Result<()> {
+  let native = window.native();
+  let is_cloaked = native.cloak_if_viewed()?;
+
+  if !is_cloaked || hides_outright(window) {
+    native.hide()?;
+  }
 
   Ok(())
 }
@@ -1925,6 +2100,16 @@ fn redraw_containers(
             .prepare_hand_back(&window.id(), &window.native());
         }
 
+        if is_visible && previous_display_state == DisplayState::Shown {
+          cover_unanimated_move(
+            state,
+            window,
+            apply_rect,
+            focused_container,
+            config,
+          );
+        }
+
         {
           // Attribute the reposition to the window's own process. When
           // `has_surrogate` is set the `SetWindowPos` is synchronous and
@@ -1967,6 +2152,11 @@ fn redraw_containers(
             }
           }
         }
+
+        // The move may have raised the window past its cover.
+        state
+          .animation_manager
+          .cover_companion_hand_back(&window.id());
 
         if is_visible && did_move {
           needs_transparency_flush = true;
@@ -2231,13 +2421,62 @@ fn cover_unanimated_uncloaks(
   }
 }
 
+/// Puts a `CompanionCover` over a shown `window` this pass moves or
+/// resizes to `rect` with no stand-in, or moves the one it has there, so
+/// its companion's owner catching up with the move (measured at up to
+/// ~250ms) isn't seen as the window uncolored.
+///
+/// The cover goes up just before the move, which is posted, so both
+/// normally land in the same composition. Not behind a `DwmFlush` as
+/// uncloak covers are: that would stall the pass a frame per window, on
+/// every step of e.g. a grab or an edge drag.
+fn cover_unanimated_move(
+  state: &mut WmState,
+  window: &WindowContainer,
+  rect: &Rect,
+  focused_container: &Container,
+  config: &UserConfig,
+) {
+  let id = window.id();
+  let has_stand_in = state.animation_manager.stands_in_for(&id)
+    || state.animation_manager.is_pending_ws_cleanup_incoming(&id);
+
+  if has_stand_in
+    || matches!(
+      window.state(),
+      WindowState::Fullscreen(_) | WindowState::Minimized
+    )
+    || window.active_drag().is_some()
+    || window.has_pending_dpi_adjustment()
+    || window.native().is_cloaked().unwrap_or(true)
+    || window.native().frame_with_shadows().ok().as_ref() == Some(rect)
+  {
+    return;
+  }
+
+  if let Some(cover) = state.animation_manager.companion_cover_mut(&id) {
+    cover.retarget(rect);
+    return;
+  }
+
+  let set = window.effect_set(id == focused_container.id());
+  let (_, corner_style, _) = surrogate_effects_for(set, config);
+
+  if let Some(cover) =
+    CompanionCover::new(&window.native(), rect, &corner_style, &[])
+  {
+    state.animation_manager.add_companion_cover(id, cover);
+  }
+}
+
 /// Where this pass uncloaks `window` without moving it and with no
 /// stand-in to hand it back (see [`is_unanimated_reveal`]), if it does.
 ///
 /// It must stay where the layout last put it, so that no move animation
-/// starts, and be there already, cloaked: a window hidden outright, or a
-/// fullscreen one (covering it can end exclusive fullscreen), gets no
-/// cover.
+/// starts, and be there already, off screen: cloaked, or hidden outright,
+/// e.g. a stack's owned tab the shell can't cloak, which WPF also stops
+/// drawing, so it came back white until repainted. A fullscreen one gets
+/// no cover: covering it can end exclusive fullscreen.
 fn unanimated_uncloak_rect(
   state: &WmState,
   window: &WindowContainer,
@@ -2274,8 +2513,11 @@ fn unanimated_uncloak_rect(
   let is_in_place =
     window.native().frame_with_shadows().ok().as_ref() == Some(&rect);
 
-  (is_in_place && window.native().is_cloaked().unwrap_or(false))
-    .then_some(rect)
+  let native = window.native();
+  let is_off_screen =
+    !native.is_visible() || native.is_cloaked().unwrap_or(false);
+
+  (is_in_place && is_off_screen).then_some(rect)
 }
 
 /// Whether a window this pass `shows`, after `previous`, comes back on
@@ -2547,6 +2789,11 @@ fn reposition_window(
     let _visibility_scope = perf::scope(Stage::RepositionVisibility);
     if is_visible {
       window.native().set_cloaked_or_hidden(false)?;
+    } else if hides_outright(window) {
+      // Cloaked first all the same, so it never shows at its new rect.
+      if window.native().is_visible() {
+        window.native().hide()?;
+      }
     } else if !is_cloaked_first {
       if !is_hidden_in_layout(window) {
         anyhow::bail!(

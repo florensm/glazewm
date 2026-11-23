@@ -749,6 +749,11 @@ impl NativeWindow {
     hidden: bool,
   ) -> crate::Result<()> {
     if self.set_view_cloaked(hidden)? {
+      // Hidden outright as well while cloaked (e.g. a stack's owned tab,
+      // which its owner's uncloak would show), it is shown again too.
+      if !hidden && !self.is_visible() {
+        return self.show();
+      }
       return Ok(());
     }
 
@@ -808,7 +813,15 @@ impl NativeWindow {
         // cloaked there, so cloaking it again would do nothing, leaving
         // e.g. a stack's hidden tab shown. Uncloaking its view first
         // brings the view in line with the window being shown.
-        if cloaked && self.has_owner_window() && self.is_visible() {
+        //
+        // Only while it is on screen: done to one still cloaked, e.g. a
+        // hidden tab cloaked again as its stack is moved, it showed the
+        // window between the two calls, a flicker per hidden tab.
+        if cloaked
+          && self.has_owner_window()
+          && self.is_visible()
+          && !self.is_cloaked().unwrap_or(false)
+        {
           // SAFETY: `view` is a valid view of this window.
           unsafe { view.set_cloak(1, 0) }.ok().map_err(|_| {
             crate::Error::Platform("Failed to uncloak window.".to_string())
