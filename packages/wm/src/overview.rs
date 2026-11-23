@@ -509,6 +509,7 @@ fn overview_frame(
       },
       accent: open.accent,
       card: overview.card_color,
+      card_corner_radius: overview.card_corner_radius.max(0.0),
       surface: overview.surface_color,
       caption: overview.caption_color,
       text: overview.text_color,

@@ -413,6 +413,11 @@ overview:
   # Background of a workspace card.
   card_color: "#1c1c20e6"
 
+  # Corner radius of a workspace card, in logical pixels, which the
+  # windows drawn on it are rounded by too (at most their own few pixels).
+  # 0 makes them square, e.g. to go with square windows.
+  card_corner_radius: 14
+
   # Background of a hovered card, and of a window without a preview.
   surface_color: "#2a2a30ff"
 

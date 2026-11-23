@@ -128,9 +128,6 @@ pub(crate) struct TilePicture {
   pub border: Color,
 }
 
-/// Corner radius of a card, in logical pixels.
-const CARD_RADIUS: f32 = 14.0;
-
 /// How far a card's shadow fades out, and how far below the card it is
 /// cast, in logical pixels.
 const SHADOW: (f32, f32) = (22.0, 5.0);
@@ -140,9 +137,10 @@ const SHADOW: (f32, f32) = (22.0, 5.0);
 /// scaled up by DWM, so it can't take hundreds of MB or long to redraw.
 const MAX_PICTURE_PIXELS: f32 = 8_388_608.0;
 
-/// Corner radius of a card at scale 1, in pixels.
-pub(crate) fn card_radius(metrics: &CardMetrics) -> f32 {
-  CARD_RADIUS * metrics.scale_factor * metrics.chrome
+/// Corner radius of a card at scale 1, in pixels, rounded by `radius`
+/// logical pixels (see `OverviewStyle::card_corner_radius`).
+pub(crate) fn card_radius(metrics: &CardMetrics, radius: f32) -> f32 {
+  radius * metrics.scale_factor * metrics.chrome
 }
 
 /// Pixel size of a card at scale 1.
@@ -258,7 +256,7 @@ pub(crate) fn draw_card(
     scale_factor: metrics.scale_factor * metrics.chrome,
   };
   let margin = shadow_margin(&metrics);
-  let radius = round(units.px(CARD_RADIUS));
+  let radius = round(units.px(style.card_corner_radius));
   let (blur, drop) = SHADOW;
 
   surface.pixels().fill(0);
@@ -293,7 +291,7 @@ fn draw_face(
 
   surface.pixels().fill(0);
   let card = Rect::from_xy(0, 0, surface.width, surface.height);
-  let radius = round(units.px(CARD_RADIUS));
+  let radius = round(units.px(style.card_corner_radius));
 
   let is_inviting = picture.is_special && picture.is_receiving;
 
@@ -372,9 +370,10 @@ fn draw_face(
   // Previews are cut out in stacking order, so a floating window's hole
   // clears what was drawn for the tiled window under it.
   let tile_radius = match picture.look {
-    CardLook::Classic => 4.0,
+    CardLook::Classic => 4.0_f32,
     CardLook::Clean => 6.0,
-  };
+  }
+  .min(style.card_corner_radius);
   for tile in &picture.tiles {
     draw_tile(
       surface,
@@ -1862,6 +1861,7 @@ mod tests {
       },
       accent: color,
       card: color,
+      card_corner_radius: 14.0,
       surface: color,
       caption: color,
       text: color,

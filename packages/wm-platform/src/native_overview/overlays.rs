@@ -461,7 +461,9 @@ impl Screen {
     let card = self.cards.get(index)?;
     let rect = context.camera.apply(&card.placement().rect(&card.metrics));
     let scale = rect.w / card.metrics.width.max(1.0);
-    let radius = card_radius(&card.metrics) * scale + gap;
+    let corner =
+      self.style().map_or(0.0, |style| style.card_corner_radius);
+    let radius = card_radius(&card.metrics, corner) * scale + gap;
 
     Some((rect.inset(-gap), radius / self.metrics.px(RING_RADIUS)))
   }

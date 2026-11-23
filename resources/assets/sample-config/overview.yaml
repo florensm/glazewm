@@ -61,6 +61,8 @@ overview:
 
   # Workspace cards, hovered cards and window title strips.
   card_color: "#1c1c20e6"
+  # Rounding of the cards and the windows on them; 0 for square corners.
+  card_corner_radius: 14
   surface_color: "#2a2a30ff"
   caption_color: "#141418c7"
   text_color: "#f2f2f5ff"

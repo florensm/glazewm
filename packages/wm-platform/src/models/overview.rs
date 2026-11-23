@@ -164,6 +164,10 @@ pub struct OverviewStyle {
   /// Card background.
   pub card: Color,
 
+  /// Corner radius of a card, and at most of the windows drawn on it, in
+  /// logical pixels.
+  pub card_corner_radius: f32,
+
   /// Hovered card background, and behind a window with no preview.
   pub surface: Color,
 

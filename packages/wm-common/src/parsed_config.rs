@@ -694,6 +694,11 @@ pub struct OverviewConfig {
   /// Background of a workspace card.
   pub card_color: Color,
 
+  /// Corner radius of a workspace card, in logical pixels, which the
+  /// windows drawn on it are rounded by too, at most their own few
+  /// pixels: `0` for square ones, e.g. to go with square windows.
+  pub card_corner_radius: f32,
+
   /// Background of a hovered card, and of a window without a preview.
   pub surface_color: Color,
 
@@ -859,6 +864,7 @@ impl Default for OverviewConfig {
       backdrop_frame: OverviewBackdropFrameConfig::default(),
       accent_color: None,
       card_color: color(0x1c1c_20e6),
+      card_corner_radius: 14.0,
       surface_color: color(0x2a2a_30ff),
       caption_color: color(0x1414_18c7),
       text_color: color(0xf2f2_f5ff),
