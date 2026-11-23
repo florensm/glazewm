@@ -12,6 +12,45 @@ Crate structure:
 
 </project_overview>
 
+<code_map>
+
+Where things live. Animation terms (peek, stand-in, surrogate, hand-back, companion) are defined
+in the glossary at the top of `wm/src/animation/mod.rs`. Feature docs are in `docs/`.
+
+`packages/wm/src/`:
+
+- `wm.rs`, `main.rs`: event loop, dispatching platform events, IPC and animation ticks.
+- `events/`: one handler per OS window event. `commands/`: WM commands, by subject.
+- `commands/general/platform_sync/`: applying the WM's state to real windows. `overlays.rs`:
+  borders and backdrops at rest; `window_effects.rs`: Windows' own border, title bar, corners.
+- `layout/`: where tiles go (`split`, `dwindle`, `scrolling`, `edge_resize`, drops).
+- `animation/peek_view/`: moves, opens, closes, resizes on peeks. `motions` (putting windows on
+  peeks), `surfaces` (per-monitor surfaces, stacking), `ready` (kept peeks), `overlays` (copies
+  moving with peeks), `stretch` (scaled drawing while resizing).
+- `animation/manager/`: the per-frame tick (`mod.rs`), `frame_timer` (timer thread, vsync),
+  `workspace_switch` (switch surrogates), `edge_colors` (fill colors).
+- `animation/scroll_view.rs`: scrolling-layout columns reaching onto other monitors.
+- `overview/`: the WM side of the overview. `frame` (what it shows), `actions` (what is picked),
+  `hot_corner`.
+- `tab_bars.rs`, `auto_stack.rs`: stacks. `grab.rs`: grab and move. `flicker_log.rs`: the
+  `GLAZEWM_FLICKER_LOG` diagnostics.
+
+`packages/wm-platform/src/` (every Windows API call):
+
+- `overview/`: the overview's model, state, layout and look; `native/` is its runtime (thread,
+  screens, cards).
+- `listeners/`: keyboard, mouse, window, display and grab input. `overlays/`: border, backdrop,
+  drop indicator windows. `tab_bar/`: stack tab bar window, layout, painting.
+- `window_peek.rs`, `peek_surface.rs`, `native_surrogate.rs`, `workspace_surrogate.rs`,
+  `dwm_thumbnail.rs`: stand-ins' windows and DWM thumbnails.
+- `companion/`: other apps' windows drawn over ours (e.g. shades). `perf.rs`: the profiler.
+- `platform_impl/windows/`: low-level Win32 and composition code.
+
+Config: types and parsing in `wm-common/src/parsed_config.rs`; sample config in
+`resources/assets/sample-config/`.
+
+</code_map>
+
 <output_guidelines>
 
 - Be extremely concise. Sacrifice grammar for the sake of conciseness.
