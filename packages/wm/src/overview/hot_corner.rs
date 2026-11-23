@@ -25,7 +25,7 @@ pub(super) enum CornerVisit {
 const HOT_CORNER_SIZE: i32 = 2;
 
 /// Notes the cursor moving into or out of the hot corner of a monitor,
-/// opening the overview once it rests there for `hot_corner_delay_ms`.
+/// opening the overview once it rests there for `hot_corner.delay_ms`.
 pub fn check_hot_corner(
   event: &MouseEvent,
   state: &mut WmState,
@@ -35,7 +35,7 @@ pub fn check_hot_corner(
     return Ok(());
   };
 
-  let corner = config.value.overview.hot_corner;
+  let corner = config.value.overview.hot_corner.corner;
   let is_in = corner != HotCorner::None
     && !state.is_paused
     && state.monitors().iter().any(|monitor| {
@@ -46,7 +46,7 @@ pub fn check_hot_corner(
   match (*visit, is_in) {
     (_, false) => *visit = CornerVisit::Away,
     (CornerVisit::Away, true) => {
-      let delay = u64::from(config.value.overview.hot_corner_delay_ms);
+      let delay = u64::from(config.value.overview.hot_corner.delay_ms);
       *visit = CornerVisit::Resting(
         Instant::now() + Duration::from_millis(delay),
       );

@@ -363,7 +363,8 @@ struct Listeners {
 /// following the cursor, or a hot corner opening the overview.
 fn mouse_event_kinds(config: &UserConfig) -> &'static [MouseEventKind] {
   if config.value.general.focus_follows_cursor
-    || config.value.overview.hot_corner != wm_common::HotCorner::None
+    || config.value.overview.hot_corner.corner
+      != wm_common::HotCorner::None
   {
     &[MouseEventKind::Move, MouseEventKind::LeftButtonUp]
   } else {
