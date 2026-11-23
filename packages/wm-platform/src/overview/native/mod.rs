@@ -1146,9 +1146,14 @@ impl Overview {
       .workspaces
       .iter()
       .find_map(|workspace| workspace.window(ghost.hwnd))
-      .map(|window| window.title.clone());
+      .map(crate::OverviewWindow::display_title);
     if let (Some(title), Some(style)) = (title, screen.style()) {
-      ghost.draw(&title, screen.metrics.scale_factor, style);
+      ghost.draw(
+        &title,
+        screen.metrics.scale_factor,
+        style,
+        screen.notify,
+      );
     }
   }
 

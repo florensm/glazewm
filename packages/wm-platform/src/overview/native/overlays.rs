@@ -420,11 +420,7 @@ impl Screen {
 
     Some(TagPicture {
       hwnd,
-      text: if window.title.is_empty() {
-        window.process_name.clone()
-      } else {
-        window.title.clone()
-      },
+      text: window.display_title(),
       icons: self.icons,
     })
   }
