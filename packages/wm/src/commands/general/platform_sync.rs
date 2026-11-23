@@ -1189,7 +1189,18 @@ fn redraw_containers(
                 })
                 .ok()
               })
-              .map(carry_backdrop);
+              .map(carry_backdrop)
+              .map(|mut surrogate| {
+                let is_focused = id == focused_container.id();
+                carry_switch_tab_bar(
+                  state,
+                  window,
+                  &mut surrogate,
+                  is_focused,
+                  config,
+                );
+                surrogate
+              });
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
@@ -1251,7 +1262,17 @@ fn redraw_containers(
               e
             })
             .ok()
-            .map(carry_backdrop);
+            .map(carry_backdrop)
+            .map(|mut surrogate| {
+              carry_switch_tab_bar(
+                state,
+                window,
+                &mut surrogate,
+                was_focused,
+                config,
+              );
+              surrogate
+            });
             ws_windows.push((
               id,
               WorkspaceSwitchEntry {
@@ -3262,6 +3283,29 @@ fn park_switch_borders(
         overlay.set_rect(&rest, anchor);
       }
     }
+  }
+}
+
+/// Has `surrogate`, standing in for `window` in a workspace switch, draw
+/// the tab bar of the stack `window` is the active tab of along with it,
+/// styled as for `is_focused` (see `tab_bars::ready_switch_tab_bar`).
+///
+/// After its backdrop, under the window, and before its ring, over both.
+fn carry_switch_tab_bar(
+  state: &mut WmState,
+  window: &WindowContainer,
+  surrogate: &mut WorkspaceSurrogate,
+  is_focused: bool,
+  config: &UserConfig,
+) {
+  if let Some((source, place)) = crate::tab_bars::ready_switch_tab_bar(
+    state,
+    window,
+    &surrogate.rect,
+    is_focused,
+    config,
+  ) {
+    surrogate.carry_tab_bar(source, place);
   }
 }
 

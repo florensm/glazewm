@@ -12,4 +12,6 @@ pub(crate) use manager::{
   restack_switch_tenants, switch_crossing, AwayTransition, HandBack,
   MakingWay, WorkspaceSwitchEntry,
 };
-pub use manager::{AnimationManager, AnimationPositionResult};
+pub use manager::{
+  AnimationManager, AnimationPositionResult, SwitchedTabBar,
+};
