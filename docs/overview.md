@@ -624,7 +624,9 @@ moves things around and never redraws pixels:
   window backdrops: sharp at first, with a blurred copy and the tint
   fading in over it. A framed backdrop instead moves and scales a sharp
   copy, clipped to a rounded rect, on every frame of the zoom, as the
-  thumbnails are; its shadow is a `LayerVisual`'s drop shadow.
+  thumbnails are; its shadow is cast by a plain rounded panel of its own
+  under it, a `LayerVisual`'s drop shadow: cast by the wallpaper's layer
+  itself, it left the panel black.
 
 Nothing animates behind the overview: a window moved while it is on screen
 lands at once, and its preview follows it there.

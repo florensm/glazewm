@@ -52,10 +52,10 @@ use windows::{
       CompositionColorGradientStopCollection,
       CompositionLinearGradientBrush, CompositionMappingMode,
       CompositionPropertySet, CompositionRadialGradientBrush,
-      CompositionRoundedRectangleGeometry, CompositionShadow,
-      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
-      ContainerVisual, Desktop::DesktopWindowTarget, DropShadow,
-      InsetClip, KeyFrameAnimation, LayerVisual, ScalarKeyFrameAnimation,
+      CompositionRoundedRectangleGeometry, CompositionSpriteShape,
+      CompositionSurfaceBrush, Compositor, ContainerVisual,
+      Desktop::DesktopWindowTarget, DropShadow, InsetClip,
+      KeyFrameAnimation, LayerVisual, ScalarKeyFrameAnimation,
       ShapeVisual, SpriteVisual, Vector2KeyFrameAnimation,
     },
   },
@@ -2384,14 +2384,16 @@ pub(crate) struct OverviewBackdrop {
   framed: Option<crate::OverviewBackdropFrame>,
 }
 
-/// The `framed` backdrop's layers: a plain color, and over it the
-/// wallpaper on a rounded panel.
+/// The `framed` backdrop's layers: a plain color, over it the shadow of
+/// the rounded panel, and over that the wallpaper on the panel.
 struct FramedPanel {
   surround_brush: CompositionColorBrush,
   surround_sprite: SpriteVisual,
-  /// A layer, so its shadow follows its rounded clip.
-  panel: LayerVisual,
+  /// A layer of a plain rounded panel under the wallpaper's, casting the
+  /// shadow: cast by the wallpaper's own layer, it left the panel black.
+  shadow_layer: LayerVisual,
   shadow: DropShadow,
+  panel: ContainerVisual,
   geometry: CompositionRoundedRectangleGeometry,
   /// The whole monitor's wallpaper, scaled as the panel shows it.
   wallpaper: CompositionSurfaceBrush,
@@ -2421,29 +2423,37 @@ impl FramedPanel {
     let sprite = compositor.CreateSpriteVisual()?;
     sprite.SetBrush(&wallpaper)?;
     let geometry = compositor.CreateRoundedRectangleGeometry()?;
-    let body = compositor.CreateContainerVisual()?;
-    body.SetRelativeSizeAdjustment(FILL_PARENT)?;
-    body
+    let panel = compositor.CreateContainerVisual()?;
+    panel
       .SetClip(&compositor.CreateGeometricClipWithGeometry(&geometry)?)?;
-    body.Children()?.InsertAtTop(&sprite)?;
+    panel.Children()?.InsertAtTop(&sprite)?;
+    panel.SetIsVisible(false)?;
 
-    let shadow = compositor.CreateDropShadow()?;
-    shadow.SetColor(Color {
+    let black = Color {
       A: 255,
       R: 0,
       G: 0,
       B: 0,
-    })?;
+    };
+    let caster = compositor.CreateSpriteVisual()?;
+    caster.SetBrush(&compositor.CreateColorBrushWithColor(black)?)?;
+    caster.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    caster
+      .SetClip(&compositor.CreateGeometricClipWithGeometry(&geometry)?)?;
+    let shadow = compositor.CreateDropShadow()?;
+    shadow.SetColor(black)?;
     shadow.SetOpacity(0.0)?;
-    let panel = compositor.CreateLayerVisual()?;
-    panel.Children()?.InsertAtTop(&body)?;
-    panel.SetIsVisible(false)?;
+    let shadow_layer = compositor.CreateLayerVisual()?;
+    shadow_layer.Children()?.InsertAtTop(&caster)?;
+    shadow_layer.SetShadow(&shadow)?;
+    shadow_layer.SetIsVisible(false)?;
 
     Ok(Self {
       surround_brush,
       surround_sprite,
-      panel,
+      shadow_layer,
       shadow,
+      panel,
       geometry,
       wallpaper,
       sprite,
@@ -2457,14 +2467,12 @@ impl FramedPanel {
   ) -> windows::core::Result<()> {
     self.surround_sprite.SetIsVisible(frame.is_some())?;
     self.panel.SetIsVisible(frame.is_some())?;
+    self
+      .shadow_layer
+      .SetIsVisible(frame.is_some_and(|frame| frame.shadow))?;
 
     if let Some(frame) = frame {
       self.surround_brush.SetColor(to_ui_color(frame.color))?;
-      if frame.shadow {
-        self.panel.SetShadow(&self.shadow)?;
-      } else {
-        self.panel.SetShadow(None::<&CompositionShadow>)?;
-      }
     }
     Ok(())
   }
@@ -2487,12 +2495,15 @@ impl FramedPanel {
       X: panel.w.max(0.0),
       Y: panel.h.max(0.0),
     };
-    self.panel.SetOffset(Vector3 {
+    let offset = Vector3 {
       X: panel.x,
       Y: panel.y,
       Z: 0.0,
-    })?;
+    };
+    self.panel.SetOffset(offset)?;
     self.panel.SetSize(size)?;
+    self.shadow_layer.SetOffset(offset)?;
+    self.shadow_layer.SetSize(size)?;
     self.geometry.SetSize(size)?;
     let radius = corner_radius.clamp(0.0, size.X.min(size.Y) / 2.0);
     self.geometry.SetCornerRadius(Vector2 {
@@ -2687,6 +2698,7 @@ impl OverviewBackdrop {
         ] {
           root.Children()?.InsertAtTop(sprite)?;
         }
+        root.Children()?.InsertAtTop(&frame.shadow_layer)?;
         root.Children()?.InsertAtTop(&frame.panel)?;
         target.SetRoot(&root)?;
 
