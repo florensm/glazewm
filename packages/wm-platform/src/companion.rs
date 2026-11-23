@@ -12,7 +12,8 @@ use windows::{
     Foundation::{BOOL, HWND, LPARAM, RECT, TRUE},
     UI::WindowsAndMessaging::{
       EnumWindows, GetPropW, GetWindow, GetWindowRect, IsWindow,
-      IsWindowVisible, GW_HWNDNEXT,
+      IsWindowVisible, SetWindowPos, GW_HWNDNEXT, SWP_ASYNCWINDOWPOS,
+      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
     },
   },
 };
@@ -98,6 +99,10 @@ const MAX_Z_ORDER_WALK: usize = 4096;
 /// [`CompanionState`]).
 const HANDOFF_MAX_WAIT: Duration = Duration::from_secs(1);
 
+/// How long a companion has to cover its window, call after call, before
+/// a stand-in hands the window back to it (see [`HandoffWait::awaits`]).
+const HANDOFF_SETTLE: Duration = Duration::from_millis(50);
+
 /// Thumbnail opacity of a stand-in showing a companion, whatever the
 /// window's own alpha: the companion covers the window opaquely at rest,
 /// so drawn at the window's alpha it would look lighter for the whole
@@ -141,8 +146,8 @@ impl CompanionState {
 pub(crate) struct HandoffWait {
   /// When the companion was first found not covering its window.
   started_at: Option<Instant>,
-  /// Whether the companion covered its window on the last call.
-  covered_last: bool,
+  /// Since when the companion has covered its window, call after call.
+  covered_since: Option<Instant>,
   /// Whether the window was hidden on the last call.
   hidden_last: bool,
 }
@@ -156,14 +161,15 @@ impl HandoffWait {
   }
 
   /// Whether to keep covering the window: `companion` is shown by the
-  /// stand-in and hasn't been over the window since the last call, and
-  /// the wait hasn't timed out or become pointless.
+  /// stand-in and hasn't been over the window for [`HANDOFF_SETTLE`] on
+  /// every call since, and the wait hasn't timed out or become pointless.
   ///
-  /// Called once a tick, a composition apart: a companion found covering
-  /// is handed the window on the next call, once what its owner did to put
-  /// it back has been composited. Handed it at once, the stand-in could go
-  /// a composition before the companion showed, and the window showed
-  /// uncolored for a frame.
+  /// Called once a tick. Handed the window as soon as it covered it, the
+  /// companion was often moved again by its owner right after (shades
+  /// restacks its overlay around a window's stand-ins, several times as a
+  /// workspace switch ends), and anything raising the window then showed
+  /// it uncolored. Covering it longer costs nothing: the stand-in draws
+  /// the companion itself.
   pub(crate) fn awaits(&mut self, companion: Option<Companion>) -> bool {
     self.awaits_unobstructed(companion, &[])
   }
@@ -202,10 +208,11 @@ impl HandoffWait {
       CompanionState::WindowShown { covers } => covers,
     };
 
-    let covered_before = std::mem::replace(&mut self.covered_last, covers);
     if covers {
-      return !covered_before;
+      let since = *self.covered_since.get_or_insert(now);
+      return now.duration_since(since) < HANDOFF_SETTLE;
     }
+    self.covered_since = None;
 
     let started = *self.started_at.get_or_insert(now);
     now.duration_since(started) < HANDOFF_MAX_WAIT
@@ -279,6 +286,11 @@ impl Companion {
     HWND(self.hwnd)
   }
 
+  /// The window the companion draws over.
+  pub(crate) fn source(self) -> HWND {
+    HWND(self.source)
+  }
+
   /// Where the companion and its window are, for a [`HandoffWait`].
   fn state(self) -> CompanionState {
     let source = HWND(self.source);
@@ -300,15 +312,40 @@ impl Companion {
       CompanionState::WindowHidden
     } else {
       CompanionState::WindowShown {
-        covers: self.covers_window(),
+        covers: self.coverage() == CompanionCoverage::Covers,
       }
     }
   }
 
-  /// Whether the companion is on screen over its window: shown, not
-  /// cloaked, and above the window in the z-order.
-  pub(crate) fn covers_window(self) -> bool {
-    self.is_on_screen() && is_above(self.hwnd(), HWND(self.source))
+  /// Where the companion is relative to its window.
+  ///
+  /// Only [`CompanionCoverage::Covers`] has it over the window as its
+  /// owner draws it at rest: one shown above the window, but still where
+  /// the window was before a move or resize, leaves part of the window
+  /// uncolored, or colors where the window no longer is.
+  fn coverage(self) -> CompanionCoverage {
+    let source = HWND(self.source);
+
+    if !self.is_on_screen() {
+      return CompanionCoverage::Cloaked;
+    }
+
+    if !is_above(self.hwnd(), source) {
+      return CompanionCoverage::Below;
+    }
+
+    let frame =
+      window_class::bounds_and_frame(source).map(|(_, frame)| frame);
+    let is_over_frame = self
+      .bounds()
+      .zip(frame)
+      .is_some_and(|(bounds, frame)| is_over_frame(&bounds, frame));
+
+    if is_over_frame {
+      CompanionCoverage::Covers
+    } else {
+      CompanionCoverage::Misplaced
+    }
   }
 
   /// Whether the companion is shown and not cloaked.
@@ -350,6 +387,96 @@ impl Companion {
       (bounds.right - bounds.left, bounds.bottom - bounds.top),
     )
   }
+}
+
+/// How far a companion may sit off its window's frame, per edge, and
+/// still count as covering it (rounding at fractional DPI scales).
+const COVERAGE_TOLERANCE: i32 = 1;
+
+/// Where a window's companion is relative to the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompanionCoverage {
+  /// No companion is shown for the window, cloaked or not.
+  NoCompanion,
+  /// On screen, above the window and over its frame.
+  Covers,
+  /// Shown but cloaked.
+  Cloaked,
+  /// On screen, but below the window.
+  Below,
+  /// On screen above the window, but not over its frame (e.g. lagging a
+  /// move).
+  Misplaced,
+}
+
+impl CompanionCoverage {
+  /// Whether the companion is drawn on screen.
+  #[must_use]
+  pub fn is_on_screen(self) -> bool {
+    matches!(self, Self::Covers | Self::Below | Self::Misplaced)
+  }
+}
+
+/// Where `window`'s companion is relative to it (see
+/// [`CompanionCoverage`]).
+///
+/// Shares the companion scan's snapshot, so it costs at most one
+/// `EnumWindows` per [`SNAPSHOT_TTL`] across calls.
+pub(crate) fn coverage(window: HWND) -> CompanionCoverage {
+  Companion::find(window)
+    .map_or(CompanionCoverage::NoCompanion, Companion::coverage)
+}
+
+/// Puts `window` back directly below its companion if it was raised past
+/// it, in the same band, and the companion is on screen. Returns whether
+/// it did.
+///
+/// Only `window` is moved, never the companion: its owner owns its place.
+/// Posted, so a hung app doesn't block the WM.
+pub(crate) fn keep_below(window: HWND) -> crate::Result<bool> {
+  let Some(companion) = Companion::find(window) else {
+    return Ok(false);
+  };
+  let companion_hwnd = companion.hwnd();
+
+  // Inserted after a window of the other band, `window` would change band.
+  if !companion.is_on_screen()
+    || !is_above(window, companion_hwnd)
+    || window_class::is_topmost(window)
+      != window_class::is_topmost(companion_hwnd)
+  {
+    return Ok(false);
+  }
+
+  // SAFETY: Both handles are valid or fail the call; the flags leave
+  // position, size, visibility and activation untouched.
+  unsafe {
+    SetWindowPos(
+      window,
+      companion_hwnd,
+      0,
+      0,
+      0,
+      0,
+      SWP_NOACTIVATE
+        | SWP_NOMOVE
+        | SWP_NOSIZE
+        | SWP_NOSENDCHANGING
+        | SWP_ASYNCWINDOWPOS,
+    )
+  }?;
+
+  Ok(true)
+}
+
+/// Whether a companion at `bounds` lies over a window whose DWM extended
+/// frame bounds are `frame`, as the companion contract has it, within
+/// [`COVERAGE_TOLERANCE`].
+fn is_over_frame(bounds: &Rect, frame: RECT) -> bool {
+  (bounds.left - frame.left).abs() <= COVERAGE_TOLERANCE
+    && (bounds.top - frame.top).abs() <= COVERAGE_TOLERANCE
+    && (bounds.right - frame.right).abs() <= COVERAGE_TOLERANCE
+    && (bounds.bottom - frame.bottom).abs() <= COVERAGE_TOLERANCE
 }
 
 /// Shifts `src` by `-origin` and clips it to `size`, clipping `dst`
@@ -506,9 +633,27 @@ mod tests {
   use windows::Win32::Foundation::RECT;
 
   use super::{
-    map_rects, reuses_snapshot, CompanionState, HandoffWait, Reuse,
-    HANDOFF_MAX_WAIT, SNAPSHOT_TTL,
+    is_over_frame, map_rects, reuses_snapshot, CompanionState,
+    HandoffWait, Reuse, HANDOFF_MAX_WAIT, HANDOFF_SETTLE, SNAPSHOT_TTL,
   };
+  use crate::Rect;
+
+  #[test]
+  fn companion_over_frame_allows_a_pixel_of_rounding_per_edge() {
+    let frame = RECT {
+      left: 100,
+      top: 50,
+      right: 900,
+      bottom: 650,
+    };
+
+    assert!(is_over_frame(&Rect::from_ltrb(100, 50, 900, 650), frame));
+    assert!(is_over_frame(&Rect::from_ltrb(101, 49, 899, 651), frame));
+    // Where the window was before moving 20px right.
+    assert!(!is_over_frame(&Rect::from_ltrb(80, 50, 880, 650), frame));
+    // The size it had before growing.
+    assert!(!is_over_frame(&Rect::from_ltrb(100, 50, 700, 650), frame));
+  }
 
   #[test]
   fn a_kept_scan_is_reused_however_old_until_a_companion_shows() {
@@ -544,25 +689,42 @@ mod tests {
       .collect()
   }
 
-  #[test]
-  fn hands_back_a_call_after_the_companion_covers() {
-    assert_eq!(
-      answers(&[NOT_COVERING, COVERING, COVERING]),
-      [true, true, false]
-    );
+  /// Calls, 16ms apart, a companion covering from the first takes to be
+  /// handed the window: the first at or past `HANDOFF_SETTLE`.
+  fn calls_to_settle() -> usize {
+    let settle = u64::try_from(HANDOFF_SETTLE.as_millis()).unwrap_or(0);
+    usize::try_from(settle.div_ceil(16)).unwrap_or(0)
+  }
+
+  /// `states` followed by a companion covering long enough to settle.
+  fn then_settled(mut states: Vec<CompanionState>) -> Vec<CompanionState> {
+    states.extend(vec![COVERING; calls_to_settle() + 1]);
+    states
+  }
+
+  /// `true` for every call but the last of `states`, which hands back.
+  fn waits_until_last(states: &[CompanionState]) -> Vec<bool> {
+    let mut answers = vec![true; states.len() - 1];
+    answers.push(false);
+    answers
   }
 
   #[test]
-  fn waits_a_call_for_a_companion_covering_from_the_start() {
-    assert_eq!(answers(&[COVERING, COVERING]), [true, false]);
+  fn hands_back_once_the_companion_covered_long_enough() {
+    let states = then_settled(vec![NOT_COVERING]);
+    assert_eq!(answers(&states), waits_until_last(&states));
+  }
+
+  #[test]
+  fn waits_for_a_companion_covering_from_the_start() {
+    let states = then_settled(Vec::new());
+    assert_eq!(answers(&states), waits_until_last(&states));
   }
 
   #[test]
   fn waits_again_for_a_companion_that_stops_covering() {
-    assert_eq!(
-      answers(&[COVERING, NOT_COVERING, COVERING, COVERING]),
-      [true, true, true, false]
-    );
+    let states = then_settled(vec![COVERING, NOT_COVERING]);
+    assert_eq!(answers(&states), waits_until_last(&states));
   }
 
   #[test]
@@ -588,15 +750,9 @@ mod tests {
 
   #[test]
   fn waits_through_a_window_read_hidden_once() {
-    assert_eq!(
-      answers(&[
-        CompanionState::WindowHidden,
-        NOT_COVERING,
-        COVERING,
-        COVERING,
-      ]),
-      [true, true, true, false]
-    );
+    let states =
+      then_settled(vec![CompanionState::WindowHidden, NOT_COVERING]);
+    assert_eq!(answers(&states), waits_until_last(&states));
   }
 
   #[test]
@@ -617,24 +773,23 @@ mod tests {
   }
 
   #[test]
-  fn restarted_wait_waits_a_call_for_a_companion_covering() {
+  fn restarted_wait_waits_again_for_a_companion_covering() {
     let mut wait = HandoffWait::default();
     let start = Instant::now();
     assert!(wait.awaits_state(COVERING, start));
-    assert!(!wait.awaits_state(COVERING, start));
+    assert!(!wait.awaits_state(COVERING, start + HANDOFF_SETTLE));
 
+    let later = start + HANDOFF_SETTLE * 2;
     wait.restart();
-    assert!(wait.awaits_state(COVERING, start));
-    assert!(!wait.awaits_state(COVERING, start));
+    assert!(wait.awaits_state(COVERING, later));
+    assert!(!wait.awaits_state(COVERING, later + HANDOFF_SETTLE));
   }
 
   #[test]
   fn waits_while_obstructed() {
     let obstructed = COVERING.obstructed_if(true);
-    assert_eq!(
-      answers(&[obstructed, obstructed, COVERING, COVERING]),
-      [true, true, true, false]
-    );
+    let states = then_settled(vec![obstructed, obstructed]);
+    assert_eq!(answers(&states), waits_until_last(&states));
   }
 
   #[test]

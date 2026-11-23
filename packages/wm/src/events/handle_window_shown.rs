@@ -50,8 +50,9 @@ pub fn handle_window_shown(
 /// foreground.
 ///
 /// The tab becomes the active one if it is the foreground window, and is
-/// hidden again otherwise, so that the shown window always matches the
-/// active tab of the tab bar. Returns whether it was such a tab.
+/// hidden again in place otherwise, so that the shown window always
+/// matches the active tab of the tab bar. Returns whether it was such a
+/// tab.
 fn reconcile_shown_tab(
   window: &crate::models::WindowContainer,
   state: &mut WmState,
@@ -89,17 +90,24 @@ fn reconcile_shown_tab(
   let is_foreground =
     state.dispatcher.focused_window().id() == window.native().id();
 
-  if is_foreground {
-    info!("Showing the tab of a window brought to the front: {window}");
-    activate_stack_child(&stack, &window.clone().into(), state);
-    state.pending_sync.queue_focus_change();
-  } else {
-    // Marked as shown so that the next sync hides it again.
-    window.set_display_state(DisplayState::Shown);
+  if !is_foreground {
+    // Hidden again where it is, which is where the layout keeps it. A
+    // redraw of the stack per tab, as for a tab brought to the front,
+    // repositioned and restacked the active tab and its border and tab
+    // bar each time: the shell shows every hidden tab its owner owns as
+    // the owner is uncloaked, one after another, which flickered the
+    // border once per tab.
+    if let Err(err) = crate::commands::general::hide_again(window) {
+      tracing::warn!("Failed to hide {window} again: {err}");
+    }
+    return Ok(true);
   }
 
+  info!("Showing the tab of a window brought to the front: {window}");
+  activate_stack_child(&stack, &window.clone().into(), state);
   state
     .pending_sync
+    .queue_focus_change()
     .queue_containers_to_redraw(stack.windows())
     .queue_tab_bar_update();
 

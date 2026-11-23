@@ -44,6 +44,7 @@ mod covered_tiles;
 mod drop_indicator;
 mod error_notifier;
 mod events;
+mod flicker_log;
 mod focus_requests;
 mod grab;
 mod ipc_server;
@@ -217,12 +218,20 @@ async fn start_wm(
       error_notifier.report(&err);
     }
 
+    if let Some(flicker_log) = &mut wm.flicker_log {
+      flicker_log.sample_if_due(&wm.state);
+    }
+
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
     let closing_check = wm.next_closing_check();
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
     let hot_corner = wm.state.overview.hot_corner_deadline();
     let prewarm = wm.state.animation_manager.peeks.prewarm_deadline();
+    let flicker_sample = wm
+      .flicker_log
+      .as_ref()
+      .map(crate::flicker_log::FlickerLog::next_sample);
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -300,6 +309,8 @@ async fn start_wm(
         Ok(())
       },
       _ = sent_message_interval.tick() => Ok(()),
+      // Only wakes the loop, which samples at its top.
+      () = sleep_until(flicker_sample) => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
       },
@@ -639,6 +650,20 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       )
     });
 
+  // Opt-in, like the profiler, with a file of its own.
+  let flicker_layer = flicker_log::is_enabled()
+    .then(|| open_log_file(&error_log_dir, "flicker.log"))
+    .transpose()?
+    .map(|writer| {
+      fmt::Layer::new()
+        .with_ansi(false)
+        .with_writer(writer)
+        .with_filter(
+          tracing_subscriber::filter::Targets::new()
+            .with_target(flicker_log::LOG_TARGET, Level::INFO),
+        )
+    });
+
   let debug_layer = (verbosity.level() == Level::DEBUG)
     .then(|| open_log_file(&error_log_dir, "debug.log"))
     .transpose()?
@@ -660,6 +685,7 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_writer(error_writer.with_max_level(Level::WARN)),
     )
     .with(perf_layer)
+    .with(flicker_layer)
     .with(debug_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;

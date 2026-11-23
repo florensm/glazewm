@@ -1,6 +1,9 @@
-use std::sync::{
-  atomic::{AtomicBool, Ordering},
-  OnceLock,
+use std::{
+  sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock,
+  },
+  time::{Duration, Instant},
 };
 
 use tokio::sync::mpsc;
@@ -8,6 +11,7 @@ use windows::{
   core::w,
   Win32::{
     Foundation::HWND,
+    System::SystemInformation::GetTickCount,
     UI::{
       Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
       WindowsAndMessaging::{
@@ -53,9 +57,38 @@ thread_local! {
   static EVENT_TX: OnceLock<mpsc::UnboundedSender<WindowEvent>> = const { OnceLock::new() };
 }
 
-/// Platform-specific implementation of [`WindowEventNotification`].
+/// Oldest a window event's own timestamp is believed: anything older is
+/// a `GetTickCount` wrap, and the event is dated when it arrived instead.
+const MAX_EVENT_AGE: Duration = Duration::from_secs(60);
+
+/// Platform-specific implementation of [`WindowEventNotification`]: when
+/// the OS raised the event.
 #[derive(Clone, Debug)]
-pub struct WindowEventNotificationInner;
+pub struct WindowEventNotificationInner {
+  occurred_at: Instant,
+}
+
+impl WindowEventNotificationInner {
+  /// For an event the OS stamped with `event_time`, a `GetTickCount`
+  /// reading, so accurate to the system timer's tick (up to ~16ms).
+  fn raised_at(event_time: u32) -> Self {
+    let now = Instant::now();
+
+    // SAFETY: No preconditions.
+    let age = unsafe { GetTickCount() }.wrapping_sub(event_time);
+    let occurred_at = Some(Duration::from_millis(u64::from(age)))
+      .filter(|age| *age <= MAX_EVENT_AGE)
+      .and_then(|age| now.checked_sub(age))
+      .unwrap_or(now);
+
+    Self { occurred_at }
+  }
+
+  /// See [`WindowEventNotification::occurred_at`].
+  pub(crate) fn occurred_at(&self) -> Instant {
+    self.occurred_at
+  }
+}
 
 /// Platform-specific implementation of [`WindowListener`].
 #[derive(Debug)]
@@ -247,7 +280,7 @@ impl WindowListener {
     id_object: i32,
     id_child: i32,
     _event_thread: u32,
-    _event_time: u32,
+    event_time: u32,
   ) {
     // Top-level restacks are reported on the desktop window, not on the
     // windows that moved; restacks of other apps' child windows are
@@ -280,7 +313,9 @@ impl WindowListener {
       crate::companion::note_shown(handle);
     }
 
-    let notification = crate::WindowEventNotification(None);
+    let notification = crate::WindowEventNotification(Some(
+      WindowEventNotificationInner::raised_at(event_time),
+    ));
 
     let event = match event_type {
       EVENT_OBJECT_DESTROY => WindowEvent::Destroyed {

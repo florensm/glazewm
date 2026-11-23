@@ -66,6 +66,7 @@ mod window_placer;
 mod workspace_surrogate;
 
 pub use click_guard::{ClickGuard, GuardedClick};
+pub use companion::CompanionCoverage;
 pub use companion_cover::CompanionCover;
 pub use dispatcher::*;
 pub use display::*;
@@ -168,6 +169,36 @@ pub fn process_sent_messages() {
 #[must_use]
 pub fn next_thumbnail_order() -> u64 {
   dwm_thumbnail::next_order()
+}
+
+/// `tracing` target of the WM's opt-in flicker log, which the platform
+/// layer reports what only it sees to (e.g. a stand-in drawing a window
+/// without its companion).
+pub const FLICKER_LOG_TARGET: &str = "glazewm::flicker";
+
+/// Where `window`'s companion (e.g. shades' recolored copy of it) is
+/// relative to the window.
+#[must_use]
+pub fn companion_coverage(window: &NativeWindow) -> CompanionCoverage {
+  companion::coverage(window.hwnd())
+}
+
+/// `window`'s companion (e.g. shades' recolored copy of it), if it is on
+/// screen, i.e. shown and not cloaked.
+#[must_use]
+pub fn companion_on_screen(window: &NativeWindow) -> Option<NativeWindow> {
+  companion::Companion::find(window.hwnd())
+    .filter(|companion| companion.is_on_screen())
+    .map(|companion| {
+      platform_impl::NativeWindow::new(companion.hwnd().0).into()
+    })
+}
+
+/// Puts `window` back directly below its companion (e.g. shades' recolored
+/// copy of it) if it was raised past it, so the companion covers it again
+/// without waiting for its owner to notice. Returns whether it did.
+pub fn keep_below_companion(window: &NativeWindow) -> crate::Result<bool> {
+  companion::keep_below(window.hwnd())
 }
 
 /// Scans for companion windows at rest, so a ready peek's next motion

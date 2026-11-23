@@ -146,6 +146,18 @@ pub struct WindowEventNotification(
   pub Option<WindowEventNotificationInner>,
 );
 
+impl WindowEventNotification {
+  /// When the OS raised the event, rather than when it is handled, which
+  /// can be well after while the WM is busy. `None` for a synthetic one.
+  #[must_use]
+  pub fn occurred_at(&self) -> Option<std::time::Instant> {
+    self
+      .0
+      .as_ref()
+      .map(WindowEventNotificationInner::occurred_at)
+  }
+}
+
 #[derive(Clone, Debug)]
 pub struct KeybindingEvent {
   pub keybinding: Keybinding,
