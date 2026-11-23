@@ -1,15 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
 use wm_common::{StackConfig, TabBarPosition, TabCloseButton};
 use wm_platform::{
   BorderOverlayParams, Color, CornerRadii, Dispatcher, NativeStackTabBar,
   Rect, TabBarPlace, TabBarStyle, TabCloseMode, TabFrame, TabInfo,
-  UiThread,
+  UiThread, HWND,
 };
 
 use crate::{
-  animation::AnimationManager,
+  animation::{AnimationManager, SwitchedTabBar},
   commands::general::border_overlay_params_for,
   layout::scrolling,
   models::{NativeWindowProperties, StackContainer, WindowContainer},
@@ -396,7 +396,8 @@ pub enum Restack {
 ///
 /// Bars of stacks on hidden workspaces are kept, hidden, rather than
 /// recreated on every workspace switch. Bars of stacks in a workspace
-/// switch's slide are hidden until it ends.
+/// switch's slide are drawn by their window's surrogate meanwhile (see
+/// [`ready_switch_tab_bar`]), or hidden until it ends.
 ///
 /// Bars are put back directly behind their stack's active window after a
 /// focus change, and per `restack` otherwise.
@@ -435,16 +436,28 @@ pub fn sync_tab_bars(
     .map(|stack| stack.id())
     .collect::<std::collections::HashSet<_>>();
 
+  // Bars a workspace switch's surrogates draw copies of, left where they
+  // rest, cloaked (see `conceal_copied_bars`).
+  let mut carried = HashSet::new();
+
   let frames = state
     .root_container
     .descendants()
     .filter_map(|container| container.as_stack().cloned())
     .filter(|stack| !covered.contains(&stack.id()))
     .map(|stack| {
+      let switched = stack.active_child().and_then(|active| {
+        animation_manager.switched_tab_bar(&active.id())
+      });
+      if switched == Some(SwitchedTabBar::Concealed) {
+        carried.insert(stack.id());
+      }
+
+      let is_switching = stack.windows().iter().any(|window| {
+        animation_manager.is_in_workspace_switch(&window.id())
+      });
       let is_shown = stack.workspace().is_some_and(|ws| ws.is_displayed())
-        && !stack.windows().iter().any(|window| {
-          animation_manager.is_in_workspace_switch(&window.id())
-        });
+        && (!is_switching || switched == Some(SwitchedTabBar::Shown));
 
       let frame = is_shown
         .then(|| {
@@ -467,6 +480,10 @@ pub fn sync_tab_bars(
     .retain(|id, _| frames.contains_key(id) || covered.contains(id));
 
   for (stack_id, frame) in frames {
+    if carried.contains(&stack_id) {
+      continue;
+    }
+
     let Some(frame) = frame else {
       if let Some(bar) = state.tab_bars.get_mut(&stack_id) {
         bar.hide();
@@ -474,24 +491,11 @@ pub fn sync_tab_bars(
       continue;
     };
 
-    if let Some(bar) = state.tab_bars.get_mut(&stack_id) {
-      let restack = restack_all || restack == Restack::Stack(stack_id);
+    let is_new = !state.tab_bars.contains_key(&stack_id);
+    if let Some(bar) = tab_bar_of(state, stack_id) {
+      let restack =
+        is_new || restack_all || restack == Restack::Stack(stack_id);
       bar.update(frame, restack);
-      continue;
-    }
-
-    let tab_action_tx = state.tab_action_tx.clone();
-    let on_action = Box::new(move |action| {
-      let _ = tab_action_tx.send((stack_id, action));
-    });
-
-    match NativeStackTabBar::create(&tab_bar_dispatcher(state), on_action)
-    {
-      Ok(mut bar) => {
-        bar.update(frame, true);
-        state.tab_bars.insert(stack_id, bar);
-      }
-      Err(err) => tracing::warn!("Failed to create tab bar: {err}"),
     }
   }
 
@@ -499,18 +503,24 @@ pub fn sync_tab_bars(
 }
 
 /// Cloaks the bars that a peek draws a copy of, composited (see
-/// `PeekView::conceals_tab_bar`), and uncloaks the others, e.g. once that
+/// `PeekView::conceals_tab_bar`), or a workspace switch's surrogate does
+/// (see [`ready_switch_tab_bar`]), and uncloaks the others, e.g. once that
 /// peek's window lands or the peek goes.
+///
+/// Run once a switch's surrogates were composited over the bars they
+/// copy, as a sync runs after the switch starts.
 fn conceal_copied_bars(state: &mut WmState) {
-  let peeks = &state.animation_manager.peeks;
+  let animation_manager = &state.animation_manager;
   let concealed = state
     .root_container
     .descendants()
     .filter_map(|container| container.as_stack().cloned())
     .filter(|stack| {
-      stack
-        .active_child()
-        .is_some_and(|active| peeks.conceals_tab_bar(&active.id()))
+      stack.active_child().is_some_and(|active| {
+        animation_manager.peeks.conceals_tab_bar(&active.id())
+          || animation_manager.switched_tab_bar(&active.id())
+            == Some(SwitchedTabBar::Concealed)
+      })
     })
     .map(|stack| stack.id())
     .collect::<std::collections::HashSet<_>>();
@@ -518,6 +528,99 @@ fn conceal_copied_bars(state: &mut WmState) {
   for (stack_id, bar) in &mut state.tab_bars {
     bar.set_cloaked(concealed.contains(stack_id));
   }
+}
+
+/// Readies the tab bar of the stack `window` is the active tab of for a
+/// workspace switch's surrogate standing in for `window` at `rect` to draw
+/// a copy of (see `WorkspaceSurrogate::carry_tab_bar`): painted where it
+/// rests, styled as for `is_focused`. A bar not shown yet, e.g. of a stack
+/// sliding in, is cloaked first, so it is never seen; a shown one is only
+/// cloaked once its copy is on screen (see [`conceal_copied_bars`]).
+///
+/// Returns the bar's window and where it goes beside `window`. `None` for
+/// a window that is no stack's active tab, or whose stack shows no bar.
+pub fn ready_switch_tab_bar(
+  state: &mut WmState,
+  window: &WindowContainer,
+  rect: &Rect,
+  is_focused: bool,
+  config: &UserConfig,
+) -> Option<(HWND, TabBarPlace)> {
+  let place = tab_bar_place(window, rect, is_focused, config)?;
+  let stack = window.parent()?.as_stack().cloned()?;
+
+  let settings = state.tab_bar_settings.get_or_insert_with(|| {
+    TabBarSettings::from_config(&config.value.stack)
+  });
+  let frame =
+    tab_frame(&stack, settings, config, is_focused.then(|| window.id()))?;
+
+  let bar = tab_bar_of(state, stack.id())?;
+  if !bar.is_shown() {
+    bar.set_cloaked(true);
+  }
+  bar.update(frame, true);
+
+  Some((bar.hwnd(), place))
+}
+
+/// Shows the tab bars a finished workspace switch's surrogates drew copies
+/// of for its incoming windows, where they rest, under those copies,
+/// which go once this is on screen. Returns whether it showed any.
+pub fn reveal_switched_tab_bars(state: &mut WmState) -> bool {
+  let incoming = state.animation_manager.incoming_with_tab_bar_copies();
+  let stacks = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| {
+      stack
+        .active_child()
+        .is_some_and(|active| incoming.contains(&active.id()))
+    })
+    .map(|stack| stack.id())
+    .collect::<Vec<_>>();
+
+  let mut revealed = false;
+  for stack_id in stacks {
+    if let Some(bar) = state
+      .tab_bars
+      .get_mut(&stack_id)
+      .filter(|bar| bar.is_shown())
+    {
+      bar.set_cloaked(false);
+      revealed = true;
+    }
+  }
+
+  revealed
+}
+
+/// The tab bar of `stack_id`, made first if it has none. `None` if one
+/// can't be made.
+fn tab_bar_of(
+  state: &mut WmState,
+  stack_id: uuid::Uuid,
+) -> Option<&mut NativeStackTabBar> {
+  if !state.tab_bars.contains_key(&stack_id) {
+    let tab_action_tx = state.tab_action_tx.clone();
+    let on_action = Box::new(move |action| {
+      let _ = tab_action_tx.send((stack_id, action));
+    });
+
+    match NativeStackTabBar::create(&tab_bar_dispatcher(state), on_action)
+    {
+      Ok(bar) => {
+        state.tab_bars.insert(stack_id, bar);
+      }
+      Err(err) => {
+        tracing::warn!("Failed to create tab bar: {err}");
+        return None;
+      }
+    }
+  }
+
+  state.tab_bars.get_mut(&stack_id)
 }
 
 /// Dispatcher for the thread tab bars are created on, starting it with the

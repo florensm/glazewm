@@ -9,7 +9,7 @@ use crate::{
   window_class,
   window_edges::compute_border_inset,
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow,
-  PeekSurface, Rect, StyleBlend,
+  PeekSurface, Rect, StyleBlend, TabBarPlace,
 };
 
 /// Thumbnail opacity a surrogate is warmed up at under its still-shown
@@ -486,6 +486,37 @@ impl WorkspaceSurrogate {
     self.copies.set_backdrop_opacity(u8::MAX);
   }
 
+  /// Draws the tab bar `source` of the stack its window is the active tab
+  /// of, at `place` beside the window, along with it from now on, the bar
+  /// painted at its rest frame and cloaked (see
+  /// `NativeStackTabBar::set_cloaked`). Called again with the same
+  /// `source`, only updates `place`. Returns whether it does.
+  ///
+  /// The copy goes under the window, whose thumbnail is registered anew
+  /// over it, the new one up before the old one goes, and the ring over
+  /// both.
+  pub fn carry_tab_bar(
+    &mut self,
+    source: HWND,
+    place: TabBarPlace,
+  ) -> bool {
+    let dest = self.hwnd();
+    if self.copies.carry_bar(dest, source, place) {
+      if let Some(window) = self.inner.thumbnail_held_anew(self.source()) {
+        self.inner.put_thumbnail(window);
+      }
+      self.copies.raise_above_window(dest);
+    }
+    self.copies.carries_bar()
+  }
+
+  /// Whether the surrogate draws its stack's tab bar (see
+  /// [`carry_tab_bar`](Self::carry_tab_bar)).
+  #[must_use]
+  pub fn carries_tab_bar(&self) -> bool {
+    self.copies.carries_bar()
+  }
+
   /// Hides the backdrop, e.g. as its window leaves the screen for good.
   pub fn hide_backdrop(&mut self) {
     self.copies.show_backdrop(false);
@@ -501,6 +532,7 @@ impl WorkspaceSurrogate {
   fn set_opacities(&mut self, window: u8, around: u8) {
     self.inner.set_window_opacity(window);
     self.copies.set_opacity(around);
+    self.copies.set_bar_opacity(around);
   }
 
   /// Draws the window, ring and backdrop at `frac` of their own

@@ -276,6 +276,21 @@ impl WsCleanupStep {
   }
 }
 
+/// What a workspace switch does with the tab bar of a stack whose active
+/// tab takes part in it (see `AnimationManager::switched_tab_bar`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitchedTabBar {
+  /// Hidden until the switch is over: its window's surrogate draws no
+  /// copy of it.
+  Hidden,
+  /// Drawn by its window's surrogate, the bar itself kept cloaked where it
+  /// rests (see `WorkspaceSurrogate::carry_tab_bar`).
+  Concealed,
+  /// Shown again under its copy, the switch over but its surrogates not
+  /// yet gone.
+  Shown,
+}
+
 /// Shared state for all windows in a workspace-switch animation.
 ///
 /// A single elapsed-time driver advances all surrogates in lock-step so
@@ -2029,6 +2044,66 @@ impl AnimationManager {
       .collect()
   }
 
+  /// What becomes of the tab bar of the stack `window_id` is the active
+  /// tab of, as it takes part in a workspace switch. `None` outside one.
+  ///
+  /// A copy is drawn until the finished switch shows its overlays again
+  /// (see `WsCleanupStep::ShowOverlays`, which reveals the bar).
+  pub fn switched_tab_bar(
+    &self,
+    window_id: &Uuid,
+  ) -> Option<SwitchedTabBar> {
+    let carries = |entry: &WorkspaceSwitchEntry| {
+      entry
+        .surrogate
+        .as_ref()
+        .is_some_and(WorkspaceSurrogate::carries_tab_bar)
+    };
+
+    if let Some(entry) = self
+      .workspace_switch
+      .as_ref()
+      .and_then(|ws| ws.windows.get(window_id))
+    {
+      return Some(if carries(entry) {
+        SwitchedTabBar::Concealed
+      } else {
+        SwitchedTabBar::Hidden
+      });
+    }
+
+    let entry =
+      self.pending_ws_cleanup.as_ref()?.windows.get(window_id)?;
+    Some(match self.ws_cleanup_step {
+      _ if !carries(entry) => SwitchedTabBar::Hidden,
+      WsCleanupStep::AwaitUncloak | WsCleanupStep::ShowOverlays => {
+        SwitchedTabBar::Concealed
+      }
+      WsCleanupStep::Reanchor | WsCleanupStep::Drop => {
+        SwitchedTabBar::Shown
+      }
+    })
+  }
+
+  /// The incoming windows of a finished workspace switch whose surrogates
+  /// draw their stacks' tab bars (see
+  /// `WorkspaceSurrogate::carry_tab_bar`).
+  pub fn incoming_with_tab_bar_copies(&self) -> Vec<Uuid> {
+    self.pending_ws_cleanup.as_ref().map_or_default(|ws| {
+      ws.windows
+        .iter()
+        .filter(|(_, entry)| {
+          entry.is_incoming
+            && entry
+              .surrogate
+              .as_ref()
+              .is_some_and(WorkspaceSurrogate::carries_tab_bar)
+        })
+        .map(|(id, _)| *id)
+        .collect()
+    })
+  }
+
   /// Whether `window_id` takes part in a workspace-switch slide, playing
   /// or waiting on its surrogates' teardown.
   pub fn is_in_workspace_switch(&self, window_id: &Uuid) -> bool {
@@ -2630,6 +2705,9 @@ fn show_final_overlays(state: &mut WmState, config: &UserConfig) -> bool {
     }
   }
   batch.commit();
+
+  // Under the surrogates' copies of them, which go once this is on screen.
+  shown |= crate::tab_bars::reveal_switched_tab_bars(state);
 
   shown
 }

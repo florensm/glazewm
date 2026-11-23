@@ -148,6 +148,7 @@ struct BarCopy {
   thumbnail: Thumbnail,
   source: isize,
   place: TabBarPlace,
+  opacity: u8,
 }
 
 impl BarCopy {
@@ -158,7 +159,7 @@ impl BarCopy {
         let _ = self.thumbnail.set(Look {
           source: Some(source),
           dest,
-          opacity: u8::MAX,
+          opacity: self.opacity,
           visible: true,
         });
       }
@@ -865,6 +866,9 @@ pub(crate) struct OverlayCopies {
   /// Over the backdrop and under the window, as the bar's strip reaches
   /// under the window's rounded corners.
   bar: Option<BarCopy>,
+  /// What the bar is drawn at, opaque if `None` (see
+  /// [`set_bar_opacity`](Self::set_bar_opacity)).
+  bar_opacity: Option<u8>,
   fill: Option<FillCopy>,
   /// Where they were last placed.
   placement: Option<Placement>,
@@ -941,6 +945,7 @@ impl OverlayCopies {
       thumbnail,
       source: source.0,
       place,
+      opacity: self.bar_opacity.unwrap_or(u8::MAX),
     };
     if let Some(placement) = &self.placement {
       bar.place(placement);
@@ -956,6 +961,20 @@ impl OverlayCopies {
   /// Stops drawing the tab bar.
   pub(crate) fn drop_bar(&mut self) {
     self.bar = None;
+  }
+
+  /// Draws the tab bar at `opacity` from now on, a copy carried later
+  /// too, e.g. as its window fades in or out with a workspace.
+  pub(crate) fn set_bar_opacity(&mut self, opacity: u8) {
+    self.bar_opacity = Some(opacity);
+    let Some(bar) = self.bar.as_mut().filter(|bar| bar.opacity != opacity)
+    else {
+      return;
+    };
+    bar.opacity = opacity;
+    if let Some(placement) = &self.placement {
+      bar.place(placement);
+    }
   }
 
   /// Registers the fill, then the ring, anew over everything on `dest`,

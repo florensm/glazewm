@@ -117,8 +117,8 @@ windows that cover the stack cover its tab bar too.
 
 The bar moves along with its stack's move and resize animations. In the
 scrolling layout it slides with its column and is cut off at the monitor
-edge like the column, and a workspace switch hides it only on the monitor
-that switches.
+edge like the column. A workspace switch slides, fades or zooms it along
+with its stack's active window.
 
 The bar is drawn as part of its window: it is opaque, square where it
 meets the window, and reaches a few pixels under the window to fill in
