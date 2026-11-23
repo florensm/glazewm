@@ -278,11 +278,20 @@ impl Preview {
       return;
     };
 
-    #[allow(clippy::cast_possible_truncation)]
-    let size = (
-      (STAND_IN_SIZE.0 * scale_factor).ceil() as i32,
-      (STAND_IN_SIZE.1 * scale_factor).ceil() as i32,
+    // In its window's proportions, so the icon isn't stretched.
+    let (largest_w, largest_h) = (
+      STAND_IN_SIZE.0 * scale_factor,
+      STAND_IN_SIZE.1 * scale_factor,
     );
+    let (window_w, window_h) = (self.screen_rect.w, self.screen_rect.h);
+    let (w, h) = if window_w > 0.0 && window_h > 0.0 {
+      let fit = (largest_w / window_w).min(largest_h / window_h).min(1.0);
+      (window_w * fit, window_h * fit)
+    } else {
+      (largest_w, largest_h)
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let size = (w.ceil().max(1.0) as i32, h.ceil().max(1.0) as i32);
     if stand_in
       .drawn
       .as_ref()
