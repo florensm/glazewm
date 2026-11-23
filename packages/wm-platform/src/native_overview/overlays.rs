@@ -29,6 +29,9 @@ use crate::{
 pub(super) const RING_RADIUS: f32 = 16.0;
 const RING_GAP: f32 = 5.0;
 
+/// How far the glow on a hovered card reaches, in logical pixels.
+const HOVER_GLOW_REACH: f32 = 10.0;
+
 /// Corner radius a window's highlight is drawn with, in logical pixels.
 const WINDOW_RING_RADIUS: f32 = 10.0;
 
@@ -179,10 +182,12 @@ impl Overlays {
       px(3.0).max(1),
       accent,
     ));
-    self.hover_ring.slices.draw(SliceLook::ring(
+    // A soft glow rather than a second, fainter ring, so a hovered card
+    // can't pass for the selected one.
+    self.hover_ring.slices.draw(SliceLook::glow(
       px(RING_RADIUS),
-      px(2.0).max(1),
-      with_alpha(accent, 0.45),
+      px(HOVER_GLOW_REACH),
+      with_alpha(accent, 0.4),
     ));
     let highlight = style.window_highlight;
     let radius = px(WINDOW_CORNER_RADIUS + highlight.gap.max(0.0));
@@ -542,9 +547,12 @@ impl Screen {
           && !focus.is_dragging
       })
       .and_then(|index| {
+        // The glow's picture starts its fade its reach out from the rect,
+        // which then starts at the card.
+        let grow = px(HOVER_GLOW_REACH - RING_GAP);
         self
           .workspace_rect(index, context)
-          .map(|(rect, scale)| (index, rect, scale))
+          .map(|(rect, scale)| (index, rect.inset(-grow), scale))
       });
 
     let picked_rect = self.picked_window().and_then(|(index, hwnd)| {

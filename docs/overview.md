@@ -73,7 +73,9 @@ steps through). Cards are drawn at the size each layout
 shows them, so their text stays sharp.
 
 Selection and hover show as highlights that fade in on the next workspace
-or window, settling onto it, rather than travelling over to it. A card lifts under the cursor and sinks while held
+or window, settling onto it, rather than travelling over to it: the
+selected card in a ring, a hovered one in a soft glow, and the workspace
+on screen tinted. A card lifts under the cursor and sinks while held
 down, and an arrow or wheel step with nowhere to go bumps the selection
 that way. A dragged window pops up under the cursor and trails it, and
 once let go of flies into the card it lands on, or back home if it moved

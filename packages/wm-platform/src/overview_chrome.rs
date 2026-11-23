@@ -302,10 +302,12 @@ fn draw_face(
       2.5,
     )
   } else if picture.is_displayed {
+    // Tinted, not outlined: the selection ring around it, usually on it,
+    // would show as a second outline.
     (
       with_alpha(style.accent, 0.12),
-      with_alpha(style.accent, 0.8),
-      1.5,
+      with_alpha(style.accent, 0.2),
+      1.0,
     )
   } else if picture.is_special {
     (
