@@ -559,6 +559,11 @@ const STACK_GAP: f32 = 28.0;
 /// Every other card rests on what its monitor shows, so a strip slides
 /// back there as another workspace is selected: the pan is the
 /// overview's own, and never the workspace's.
+/// Distance between the middles of two cards stacked one over the other.
+pub(crate) fn stack_step(metrics: &CardMetrics) -> f32 {
+  metrics.height + metrics.px(STACK_GAP)
+}
+
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn stack(
   metrics: &CardMetrics,
@@ -570,7 +575,7 @@ pub(crate) fn stack(
   let margin = metrics.px(STACK_MARGIN);
   let search_y = metrics.bottom_search_y();
   let middle = (view_width / 2.0, (search_y - metrics.px(16.0)) / 2.0);
-  let step = metrics.height + metrics.px(STACK_GAP);
+  let step = stack_step(metrics);
   let mut panned = 0.0;
 
   let cards = slots
