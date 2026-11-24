@@ -462,6 +462,17 @@ fn create_screen_window() -> crate::Result<HWND> {
   )
 }
 
+/// A card's picture kept from one open to the next.
+struct KeptCard {
+  name: String,
+  picture: Picture,
+  drawn: CardPicture,
+}
+
+/// Most cards' pictures kept between opens: up to a strip wide each, and
+/// twice over with DWM's copy.
+const MAX_KEPT_CARDS: usize = 12;
+
 /// A workspace's card.
 struct Card {
   cx: Spring,
@@ -723,6 +734,10 @@ struct Screen {
 
   /// Pictures of cards no longer shown, kept for reuse.
   spare: Vec<Picture>,
+
+  /// Cards' pictures as the last open left them, by workspace name, for
+  /// the next open to show again without drawing them anew.
+  kept: Vec<KeptCard>,
 
   /// `None` if their pictures couldn't be created.
   overlays: Option<Overlays>,

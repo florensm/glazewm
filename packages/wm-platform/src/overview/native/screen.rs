@@ -24,7 +24,8 @@ use super::{
   scene_badges::{BadgeContent, SceneBadge, SceneBadges},
   scene_borders::{SceneBorder, SceneBorders},
   scenes::{scene_content, scene_window_shown},
-  to_ms, Card, PlaceContext, Screen, ScreenFrame,
+  to_ms, Card, KeptCard, PlaceContext, Screen, ScreenFrame,
+  MAX_KEPT_CARDS,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -153,6 +154,7 @@ impl Screen {
       pointer: None,
       entrance: None,
       spare: Vec::new(),
+      kept: Vec::new(),
       overlays: Overlays::new(0.0, 0.0),
       effects: Effects::new(0.0),
       search: None,
@@ -400,9 +402,9 @@ impl Screen {
 
   /// Hides it, keeping its pictures' windows for the next open.
   pub(super) fn close(&mut self) {
-    if self.frame.take().is_none() {
+    let Some(frame) = self.frame.take() else {
       return;
-    }
+    };
 
     // SAFETY: `self.hwnd` is the screen's window, on this thread.
     unsafe {
@@ -410,13 +412,33 @@ impl Screen {
     }
 
     self.unregister_thumbnails();
-    for card in self.cards.drain(..) {
-      self.spare.extend(card.into_pictures());
+    // Drawn cards are kept for the next open, which then draws only those
+    // that changed; the rest go spare.
+    let unused = self.kept.drain(..).map(|kept| kept.picture);
+    self.spare.extend(unused);
+    for (mut card, workspace) in
+      self.cards.drain(..).zip(&frame.workspaces)
+    {
+      let drawn = card.drawn.take();
+      let tab_bars = std::mem::take(&mut card.tab_bars);
+      self
+        .spare
+        .extend(tab_bars.into_iter().map(|bar| bar.picture));
+      match drawn.filter(|_| self.kept.len() < MAX_KEPT_CARDS) {
+        Some(drawn) => {
+          card.picture.unregister();
+          self.kept.push(KeptCard {
+            name: workspace.name.clone(),
+            picture: card.picture,
+            drawn,
+          });
+        }
+        None => self.spare.extend(card.into_pictures()),
+      }
     }
-
-    // Every card is drawn afresh on the next open, so their pixels (up
-    // to a card as wide as its strip, twice over with DWM's copy) would
-    // only sit in memory until then, to be paged back in when it does.
+    // Spare pictures would only sit in memory until the next open, to be
+    // paged back in when it does: up to a strip wide each, twice over
+    // with DWM's copy.
     for picture in &mut self.spare {
       picture.release();
     }
@@ -1045,15 +1067,20 @@ impl Screen {
         bar.draw(hover, card.icons, notify);
       }
 
-      if self.plain_cards {
+      // Kept from the last open as it is still, it shows as it is.
+      if self.plain_cards && card.drawn.as_ref() != Some(&picture) {
         let metrics = card.metrics;
         let size = plain_picture_size(&metrics);
         if card.picture.size() != size {
           card.picture.draw(size, |surface| {
             draw_plain_card(surface, &metrics, &style);
           });
+          card.drawn = None;
           place_card(card, index, &context);
         }
+        continue;
+      }
+      if self.plain_cards {
         continue;
       }
       if !force && card.drawn.as_ref() == Some(&picture) {

@@ -3,7 +3,7 @@
 
 use windows::Win32::Foundation::HWND;
 
-use super::{to_ms, Card, Screen};
+use super::{to_ms, Card, KeptCard, Screen};
 use crate::{
   overview::{
     chrome::{fade, with_alpha, CardPicture, TilePicture},
@@ -74,6 +74,26 @@ fn placeholder_rect(area: &RectF, restored: &RectF) -> RectF {
   let cx = cx.clamp(area.x + width / 2.0, area.right() - width / 2.0);
   let cy = cy.clamp(area.y + height / 2.0, area.bottom() - height / 2.0);
   RectF::new(cx - width / 2.0, cy - height / 2.0, width, height)
+}
+
+/// A picture for workspace `name`'s new card, and what it shows: as the
+/// last open left it, taken from `kept`, if it did, or else a blank one
+/// from `spare`.
+fn card_picture_for(
+  kept: &mut Vec<KeptCard>,
+  name: &str,
+  spare: &mut Vec<Picture>,
+) -> Option<(Picture, Option<CardPicture>)> {
+  match kept.iter().position(|card| card.name == name) {
+    Some(position) => {
+      let card = kept.swap_remove(position);
+      Some((card.picture, Some(card.drawn)))
+    }
+    None => spare
+      .pop()
+      .or_else(Picture::new)
+      .map(|picture| (picture, None)),
+  }
 }
 
 impl Screen {
@@ -158,7 +178,9 @@ impl Screen {
         continue;
       }
 
-      let Some(picture) = spare.pop().or_else(Picture::new) else {
+      let Some((picture, drawn)) =
+        card_picture_for(&mut self.kept, &workspace.name, &mut spare)
+      else {
         tracing::warn!("Failed to create an overview card.");
         continue;
       };
@@ -173,8 +195,9 @@ impl Screen {
         previews,
         tab_bars,
         picture,
-        drawn: None,
-        icons: 0,
+        // The icons it showed, so a kept picture still matches.
+        icons: drawn.as_ref().map_or(0, |drawn| drawn.icons),
+        drawn,
       });
     }
 
