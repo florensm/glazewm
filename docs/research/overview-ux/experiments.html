@@ -1,0 +1,509 @@
+<title>Overview Experiments Lab</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  :root { --exp: #b4419b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --exp: #e57cc8; } }
+  :root[data-theme="dark"] { --exp: #e57cc8; }
+  .banner { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 14px; border-radius: 12px; border: 1px dashed var(--exp); color: var(--ink); font-size: 13.5px; }
+  .banner b { color: var(--exp); font: 700 11px/1 var(--mono); letter-spacing: .1em; }
+  .lab { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 980px) { .lab { grid-template-columns: minmax(0, 1fr); } }
+  .live { display: flex; flex-direction: column; gap: 10px; min-width: 0; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
+  @media (max-width: 980px) { .live { position: static; } }
+  .screen { outline: none; border-radius: 12px; touch-action: none; transition: transform .25s cubic-bezier(.2,.8,.2,1); }
+  .screen:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+  .tiltwrap { perspective: 1800px; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .say { font-size: 13px; color: var(--muted); min-height: 1.5em; }
+  .say b { color: var(--ink); }
+  .opts { display: flex; flex-direction: column; }
+  .opt { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .opt:last-child { border-bottom: 0; }
+  .opt-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .opt-head h3 { font-size: 14.5px; }
+  .tog { width: 42px; height: 24px; border-radius: 99px; border: 0; padding: 0; background: var(--line); position: relative; flex: none; }
+  .tog::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .18s cubic-bezier(.3,.7,.2,1.3); }
+  .tog[aria-pressed="true"] { background: var(--exp); }
+  .tog[aria-pressed="true"]::after { transform: translateX(18px); }
+  .tog:hover { background: var(--line); filter: brightness(.95); }
+  .tog[aria-pressed="true"]:hover { background: var(--exp); }
+  .why { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+  .why i { font-style: normal; color: var(--ink); font-weight: 600; }
+  .why a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
+  .how { font: 500 11.5px/1.4 var(--mono); color: var(--exp); }
+  .recipes { display: flex; gap: 8px; flex-wrap: wrap; }
+  .recipes button { font-size: 13px; padding: 6px 11px; }
+  .recipes button[aria-pressed="true"] { border-color: var(--exp); background: color-mix(in srgb, var(--exp) 14%, var(--panel)); }
+  .seg button[aria-pressed="true"] { color: var(--exp); }
+  input[type=range] { accent-color: var(--exp); width: 100%; }
+  /* World-pixel overlays on the mock windows. */
+  .heat { position: absolute; inset: -6px; border-radius: 14px; box-shadow: 0 0 calc(60px * var(--heat, 0)) calc(18px * var(--heat, 0)) rgba(255, 150, 60, calc(.75 * var(--heat, 0))); opacity: calc(var(--chrome) * var(--show-heat, 0)); }
+  .age { position: absolute; right: 0; top: 0; transform-origin: 100% 0; transform: translate(10px, -14px) scale(var(--inv)); padding: 5px 10px; border-radius: 9px; background: rgba(15,16,22,.85); color: #ffd5b0; font: 700 20px/1 "JetBrains Mono", monospace; opacity: calc(var(--chrome) * var(--show-heat, 0)); }
+  .dwell { position: absolute; left: 50%; top: 50%; width: 110px; height: 110px; margin: -55px 0 0 -55px; border-radius: 50%; transform: scale(var(--inv)); background: conic-gradient(rgba(255,255,255,.95) calc(var(--dwell, 0) * 360deg), rgba(255,255,255,.18) 0); -webkit-mask: radial-gradient(circle, transparent 38px, #000 39px); mask: radial-gradient(circle, transparent 38px, #000 39px); opacity: calc(var(--chrome) * min(1, var(--dwell, 0) * 8)); }
+  .ring { position: absolute; border-radius: 50%; border: 3px dashed rgba(255,255,255,.28); pointer-events: none; transition: opacity .2s; }
+  .ringdot { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: rgba(255,255,255,.85); box-shadow: 0 0 0 8px rgba(255,255,255,.15); pointer-events: none; }
+  .ray { position: absolute; height: 4px; transform-origin: 0 50%; background: linear-gradient(90deg, rgba(255,255,255,.8), rgba(255,255,255,0)); border-radius: 2px; pointer-events: none; }
+  .dropglow { box-shadow: 0 0 0 5px #e57cc8 !important; transform: scale(1.12); transition: transform .15s; }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="playground.html">Zoom playground</a>
+    <a href="lab.html">Feature lab</a>
+    <a href="experiments.html" aria-current="page">Experiments</a>
+    <a href="layouts.html">Layout comparison</a>
+    <a href="concepts.html">Design concepts</a>
+    <a href="recommendations.html">Recommendations</a>
+  </nav>
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow" style="color:var(--exp)">GlazeWM overview · experiments</span>
+    <h1>Experiments lab</h1>
+    <p class="lede">Ideas GlazeWM doesn't have yet, live and combinable: a flick ring, a carousel, windows sized by how recently you used them, a magnifier under the cursor, search that pulls matches in by how well they match, dragging that makes room, the wheel scrubbing the overview open. Each says what might be good about it and what might not.</p>
+  </header>
+  <p class="banner"><b>EXPERIMENTAL</b> None of these exist in GlazeWM. They're here to be felt before anyone builds them.</p>
+
+  <div class="recipes" id="recipes" role="group" aria-label="Recipes"></div>
+
+  <div class="lab">
+    <div class="live">
+      <div class="tiltwrap"><div class="screen" id="screen" tabindex="0" aria-label="Mock desktop. Focus it and press Space to open the overview."></div></div>
+      <div class="bar">
+        <button class="primary" id="openBtn">Open</button>
+        <button id="tour">Play tour</button>
+        <button id="reset">Reset desktop</button>
+      </div>
+      <p class="say" id="say">Click the desktop or press <b>Space</b>.</p>
+    </div>
+    <section class="panel opts" id="opts" aria-label="Experiments"></section>
+  </div>
+</div>
+
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, APPS, W, H } = OverviewStage;
+  const L = OverviewLayouts;
+  const $ = (id) => document.getElementById(id);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const lerpRect = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), w: lerp(a.w, b.w, t), h: lerp(a.h, b.h, t) });
+  const scaleAbout = (r, f) => ({ x: r.x + r.w * (1 - f) / 2, y: r.y + r.h * (1 - f) / 2, w: r.w * f, h: r.h * f });
+  const center = (r) => [r.x + r.w / 2, r.y + r.h / 2];
+
+  const HOME = [
+    { x: 8, y: 8, w: 1000, h: 1016 }, { x: 1016, y: 8, w: 896, h: 600 }, { x: 1016, y: 616, w: 896, h: 408 },
+    { x: 300, y: 190, w: 900, h: 620 }, { x: 1180, y: 150, w: 640, h: 520 }, { x: 110, y: 560, w: 560, h: 420 },
+    { x: 700, y: 520, w: 560, h: 400 },
+  ];
+  const APP_OF = [0, 1, 2, 0, 1, 3, 6];
+  const TITLES = ['layout.rs — glazewm', 'Mission Control — Apple Support', 'cargo test --workspace', 'expose.rs — glazewm',
+    'niri/wiki/Overview — GitHub', '#window-managers', 'overview ideas.md'];
+  const HAY = TITLES.map((t, i) => (APPS[APP_OF[i]].name + ' ' + t).toLowerCase());
+  const N = HOME.length;
+
+  // Shortest part of each title that tells it apart from its app's other windows.
+  const SHORT = TITLES.map((t, i) => {
+    const parts = t.split(' — ');
+    const siblings = TITLES.filter((_, j) => j !== i && APP_OF[j] === APP_OF[i]).map((s) => s.split(' — '));
+    if (!siblings.length) return APPS[APP_OF[i]].name;
+    return parts.find((p, k) => siblings.every((s) => s[k] !== p)) || parts[0];
+  });
+
+  const EXPERIMENTS = [
+    { key: 'layout', title: 'Layout', kind: 'seg', options: [['cluster', 'Cluster'], ['importance', 'Sized by recency'], ['radial', 'Flick ring'], ['carousel', 'Carousel']],
+      why: '<i>Sized by recency:</i> the window you used last is largest, old ones shrink, positions kept. <i>Flick ring:</i> press on the desktop, windows ring around the cursor, drag toward one and let go: a marking menu, which gets faster with muscle memory. <i>Carousel:</i> most recent first, one large in the middle, wheel or arrows. ',
+      risk: 'Ring and carousel lose where windows are on screen, which studies found helps.', how: 'expose.rs: new arrange modes', src: [['Pie menus', 'https://en.wikipedia.org/wiki/Pie_menu'], ['Cover Flow', 'https://en.wikipedia.org/wiki/Cover_Flow']] },
+    { key: 'fisheye', title: 'Magnifier under the cursor', kind: 'range', range: [0, 0.6, 0.05], fmt: (v) => (v ? '+' + Math.round(v * 100) + '%' : 'off'),
+      why: 'Windows near the pointer swell, as the macOS Dock does, so small previews become readable without picking.', risk: 'Moving targets are harder to hit; keep it gentle.', how: 'native/screen.rs: per-frame scale by cursor distance', src: [['Dock magnification', 'https://support.apple.com/guide/mac-help/change-dock-desktop-and-menu-bar-settings-mchlp1119/mac']] },
+    { key: 'gravity', title: 'Gravity search', kind: 'toggle',
+      why: 'Each window is pulled toward the middle by how well it matches: exact matches in front and large, loose ones partway, the rest shrink back. The ranking becomes visible.', risk: 'Windows move with every keystroke.', how: 'search score → position and scale' },
+    { key: 'reflow', title: 'Drag makes room', kind: 'toggle',
+      why: 'While you drag a window around the overview, the others slide aside where it would land, and it stays there on drop. Drop it on a workspace at the top to send it there.', risk: 'Only meaningful for floating windows; tiles have their own drop rules.', how: 'grab.rs + expose.rs live respread', src: [['niri overview DnD', 'https://github.com/YaLTeR/niri/wiki/Overview']] },
+    { key: 'scrub', title: 'Wheel scrubs it open', kind: 'toggle',
+      why: 'Wheel up on the desktop opens the overview as far as you turn, and lets go into the nearest end, as touchpad gestures do in GNOME, KDE and niri. You stay in control of the motion, which is what dizzy users asked for.', risk: 'The wheel already switches workspaces on the desktop in many setups; needs a modifier.', how: 'mouse hook: wheel → openness, settle on idle', src: [['KDE Discuss', 'https://discuss.kde.org/t/plasma-6-0-4-new-overview-effect-causing-dizziness/15595']] },
+    { key: 'heat', title: 'Recency heat', kind: 'toggle',
+      why: 'A warm glow on the windows you used recently, and how long ago, so "the one from a minute ago" stands out.', risk: 'Decoration; easy to overdo.', how: 'focus history timestamps' },
+    { key: 'short', title: 'Short distinct titles', kind: 'toggle',
+      why: 'Titles shown always, but only the part that tells a window apart from its app\'s others: "layout.rs" and "expose.rs", not "… — glazewm" twice. As editor tabs do.', risk: 'Hides context for windows of different apps.', how: 'title diffing per app', src: [['VS Code label format', 'https://code.visualstudio.com/docs/getstarted/userinterface#_tabs']] },
+    { key: 'dwell', title: 'Pick by resting', kind: 'toggle',
+      why: 'Rest the pointer on a window and a ring fills; when it closes, the window is picked. Mouse-only, no click, as accessibility dwell-clicking does.', risk: 'Accidental picks if too short; 700 ms here.', how: 'hover timer', src: [['Dwell clicking', 'https://en.wikipedia.org/wiki/Dwell_(user_interface)']] },
+    { key: 'tilt', title: 'Depth tilt', kind: 'toggle',
+      why: 'The whole overview leans a few degrees toward the cursor. Pure delight; no function.', risk: 'Motion-sensitive users; off with reduced motion.', how: 'would need a 3D transform on the overview window' },
+  ];
+
+  const RECIPES = {
+    flick: { label: 'Flick', layout: 'radial', fisheye: 0, gravity: false, reflow: false, scrub: false, heat: false, short: true, dwell: false, tilt: false },
+    magnifier: { label: 'Magnifier', layout: 'cluster', fisheye: 0.35, gravity: true, reflow: true, scrub: true, heat: false, short: true, dwell: false, tilt: false },
+    memory: { label: 'Memory lane', layout: 'importance', fisheye: 0, gravity: true, reflow: false, scrub: false, heat: true, short: false, dwell: false, tilt: false },
+    carousel: { label: 'Carousel', layout: 'carousel', fisheye: 0, gravity: false, reflow: false, scrub: true, heat: true, short: true, dwell: false, tilt: false },
+    mouse: { label: 'Mouse only', layout: 'cluster', fisheye: 0.25, gravity: false, reflow: true, scrub: true, heat: false, short: true, dwell: true, tilt: true },
+  };
+  const cfg = { ...RECIPES.magnifier };
+  const st = {
+    rects: HOME.map((r) => ({ ...r })), mru: [2, 0, 1, 3, 5, 4, 6], ages: [3, 12, 0, 45, 160, 25, 600],
+    gone: new Set(), query: '', sel: -1, pointer: null, ring: null, flick: null, press: null, drag: null, cf: 0, dwellT: 0,
+  };
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const params = () => ({ ...PRESETS.proposed, titles: cfg.short ? 'always' : 'hover', staggerFrom: st.ring ? [st.ring.x, st.ring.y] : undefined,
+    open: cfg.layout === 'radial' ? { kind: 'spring', stiffness: 700, damping: 0.78 } : PRESETS.proposed.open, staggerMs: cfg.layout === 'radial' ? 14 : 10 });
+
+  // Scores 0–1: exact substring 1 (more at the start), letters in order 0.45.
+  function score(i) {
+    const q = st.query.toLowerCase(); if (!q) return 0;
+    const h = HAY[i], at = h.indexOf(q);
+    if (at >= 0) return 1 - Math.min(0.25, at / 80);
+    let k = 0; for (const c of h) if (c === q[k]) k++;
+    return k === q.length ? 0.45 : 0;
+  }
+
+  // Where each window goes for `cfg`.
+  function layout(t) {
+    const room = t.room, live = [...Array(N).keys()].filter((i) => !st.gone.has(i));
+    const out = st.rects.map((r) => scaleAbout(r, 0.01));
+    let base;
+    const srcRects = live.map((i) => (st.drag && st.drag.i === i ? { ...st.rects[i], ...st.drag.desk } : st.rects[i]));
+    if (cfg.layout === 'importance') {
+      const order = st.mru.filter((i) => live.includes(i));
+      base = L.cluster(srcRects.map((r, k) => scaleAbout(r, 1 - 0.5 * order.indexOf(live[k]) / Math.max(1, order.length - 1))), room, { gap: 28, largest: 0.94 });
+    } else if (cfg.layout === 'radial') {
+      const order = st.mru.filter((i) => live.includes(i));
+      const box = [300, 200], R = Math.max(330, (order.length * box[0] * 0.95) / (2 * Math.PI) + 60);
+      const cx = Math.min(Math.max(st.ring?.x ?? W / 2, room.x + R + box[0] / 2 - 60), room.x + room.w - R - box[0] / 2 + 60);
+      const cy = Math.min(Math.max(st.ring?.y ?? H / 2 + 40, room.y + R * 0.8 + box[1] / 2), room.y + room.h - R * 0.8 - box[1] / 2);
+      st.ringAt = { x: cx, y: cy, R };
+      base = live.map((i) => {
+        const a = -Math.PI / 2 + (order.indexOf(i) / order.length) * Math.PI * 2;
+        const r = st.rects[i], s = Math.min(box[0] / r.w, box[1] / r.h);
+        const x = cx + Math.cos(a) * R, y = cy + Math.sin(a) * R * 0.82;
+        return { x: x - r.w * s / 2, y: y - r.h * s / 2, w: r.w * s, h: r.h * s, angle: a };
+      });
+    } else if (cfg.layout === 'carousel') {
+      const order = st.mru.filter((i) => live.includes(i));
+      st.cf = Math.max(0, Math.min(order.length - 1, st.cf));
+      st.zOrder = new Map();
+      base = live.map((i) => {
+        const d = order.indexOf(i) - st.cf, ad = Math.abs(d), r = st.rects[i];
+        const boxW = ad === 0 ? W * 0.56 : W * 0.3 * Math.pow(0.84, ad - 1), boxH = ad === 0 ? H * 0.6 : H * 0.34 * Math.pow(0.84, ad - 1);
+        const s = Math.min(boxW / r.w, boxH / r.h);
+        const x = W / 2 + Math.sign(d) * (ad === 0 ? 0 : W * 0.3 + (ad - 1) * W * 0.1);
+        const y = room.y + room.h / 2 + (ad === 0 ? 0 : 30);
+        st.zOrder.set(i, 100 - ad);
+        return { x: x - r.w * s / 2, y: y - r.h * s / 2, w: r.w * s, h: r.h * s };
+      });
+    } else {
+      base = L.cluster(srcRects, room, { gap: 24, largest: 0.94 });
+    }
+    live.forEach((i, k) => { out[i] = base[k]; });
+    st.base = out.map((r) => ({ ...r }));
+
+    // Gravity: pull matches toward the middle by score.
+    if (cfg.gravity && st.query && (cfg.layout === 'cluster' || cfg.layout === 'importance')) {
+      const hits = live.map((i) => [i, score(i)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]);
+      if (hits.length) {
+        const inner = { x: room.x + room.w * 0.12, y: room.y + room.h * 0.08, w: room.w * 0.76, h: room.h * 0.7 };
+        const spot = L.cluster(hits.map(([i]) => st.rects[i]), inner, { gap: 30, largest: 0.95 });
+        for (const i of live) {
+          const s = score(i), k = hits.findIndex(([j]) => j === i);
+          out[i] = s > 0 ? lerpRect(scaleAbout(out[i], 0.75), scaleAbout(spot[k], 0.8 + 0.2 * s), Math.min(1, 0.35 + s)) : scaleAbout(out[i], 0.6);
+        }
+      }
+    }
+    // The dragged window rides the cursor.
+    if (st.drag) { const r = out[st.drag.i]; const [px, py] = st.drag.at; const f = 1.06; out[st.drag.i] = { x: px - r.w * f / 2, y: py - r.h * f / 2, w: r.w * f, h: r.h * f }; }
+    // Magnifier.
+    if (cfg.fisheye && st.pointer && !st.drag) {
+      for (const i of live) {
+        const [cx, cy] = center(out[i]), d = Math.hypot(cx - st.pointer[0], cy - st.pointer[1]) / (W * 0.22);
+        out[i] = scaleAbout(out[i], 1 + cfg.fisheye * Math.exp(-d * d));
+      }
+    }
+    for (const i of st.gone) if (st.goneTo?.[i]) out[i] = st.goneTo[i];
+    return out;
+  }
+
+  $('screen').style.setProperty('--ovs-search-top', '150px');
+  const stage = new Stage($('screen'), { params: params(), windows: st.rects, apps: APP_OF, titles: TITLES, layout, interactive: false, onChange: onStage });
+  const baseRender = stage.render.bind(stage);
+  stage.render = () => {
+    baseRender();
+    if (cfg.layout === 'carousel' && st.zOrder) stage.wins.forEach((w, i) => { if (i !== stage.picked) w.el.style.zIndex = st.zOrder.get(i) ?? 1; });
+    if (st.drag) stage.wins[st.drag.i].el.style.zIndex = 200;
+  };
+
+  let overlay;
+  function decorate() {
+    stage.wins.forEach((w, i) => {
+      w.deco.innerHTML = '<div class="heat"></div><div class="age"></div><div class="dwell"></div>';
+      w.tag.textContent = cfg.short ? SHORT[i] : TITLES[i];
+    });
+    overlay = document.createElement('div'); overlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:60';
+    stage.world.append(overlay);
+  }
+  const ago = (m) => (m < 1 ? 'now' : m < 60 ? m + 'm' : Math.round(m / 60) + 'h');
+
+  function paint() {
+    const maxRank = N - 1;
+    stage.wins.forEach((w, i) => {
+      const rank = st.mru.indexOf(i);
+      w.el.style.setProperty('--heat', Math.max(0, 1 - rank / 3).toFixed(2));
+      w.el.style.setProperty('--show-heat', cfg.heat ? 1 : 0);
+      w.deco.querySelector('.age').textContent = ago(st.ages[i]);
+      const fade = st.gone.has(i) ? 0 : cfg.gravity && st.query && (cfg.layout === 'cluster' || cfg.layout === 'importance') && !score(i) ? 0.3
+        : cfg.layout === 'carousel' ? (Math.abs(st.mru.filter((j) => !st.gone.has(j)).indexOf(i) - st.cf) > 3 ? 0 : 1) : 1;
+      if (Math.abs(w.fade.to - fade) > 1e-3) stage.fadeWindow(i, fade);
+      w.tag.textContent = cfg.short ? SHORT[i] : TITLES[i];
+    });
+    stage.params.titles = cfg.short ? 'always' : 'hover';
+    overlay.innerHTML = '';
+    if (stage.isOpen && cfg.layout === 'radial' && st.ringAt) {
+      const { x, y, R } = st.ringAt;
+      overlay.innerHTML = `<div class="ring" style="left:${x - R}px;top:${y - R * 0.82}px;width:${2 * R}px;height:${2 * R * 0.82}px"></div><div class="ringdot" style="left:${x}px;top:${y}px"></div>`;
+      if (st.pointer) {
+        const dx = st.pointer[0] - x, dy = st.pointer[1] - y, len = Math.min(Math.hypot(dx, dy), R);
+        overlay.innerHTML += `<div class="ray" style="left:${x}px;top:${y - 2}px;width:${len}px;transform:rotate(${Math.atan2(dy, dx)}rad)"></div>`;
+      }
+    }
+    stage.setSearch(st.query ? st.query : null, st.query ? `${[...Array(N).keys()].filter((i) => !st.gone.has(i) && score(i) > 0).length} match` : null);
+  }
+
+  const say = (h) => { $('say').innerHTML = h; };
+  let raf = 0;
+  const relayout = (anim, stagger = 0) => { if (stage.isOpen) stage.relayout(anim, stagger); paint(); };
+  const quick = { kind: 'spring', stiffness: 900, damping: 0.9 };
+  const liveRelayout = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; relayout(quick); }); };
+
+  function select(i) { if (i === st.sel) return; st.sel = i; stage.setHover(i); st.dwellT = performance.now(); }
+  function pick(i, how) {
+    if (i == null || i < 0 || st.gone.has(i)) return;
+    st.mru = [i, ...st.mru.filter((j) => j !== i)]; st.ages[i] = 0;
+    st.query = ''; st.flick = null; paint(); stage.close(i); st.ring = null;
+    say(`<b>${TITLES[i]}</b> picked ${how}.`);
+  }
+  function open(at) {
+    if (stage.isOpen) return;
+    st.ring = at ? { x: at[0], y: at[1] } : null; st.cf = 0; st.sel = -1; st.query = '';
+    stage.params = { ...stage.params, ...params() };
+    stage.open(); paint();
+    say({ radial: 'Move toward a window and <b>let go</b> (or click it). Arrows go around.', carousel: '<b>Wheel</b> or <b>← →</b> through recent windows, <b>Enter</b> picks.' }[cfg.layout] || 'Point, type, drag, or rest on a window.');
+  }
+  function cancel() { st.query = ''; paint(); stage.close(-1); st.ring = null; say('Closed without a pick.'); }
+
+  // Pointer.
+  const screen = $('screen');
+  const toWorld = (e) => { const b = screen.getBoundingClientRect(); return [(e.clientX - b.left) / stage.k, (e.clientY - b.top) / stage.k]; };
+  const hit = (x, y) => {
+    let best = -1, z = -1;
+    stage.t.rects.forEach((r, i) => { if (st.gone.has(i) || stage.wins[i].fade.to < 0.5) return; if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { const zi = +stage.wins[i].el.style.zIndex || 0; if (zi > z) { z = zi; best = i; } } });
+    return best;
+  };
+  const miniAt = (e) => [...stage.strip.children].findIndex((m) => { const b = m.getBoundingClientRect(); return e.clientX >= b.left && e.clientX <= b.right && e.clientY >= b.top && e.clientY <= b.bottom; });
+
+  screen.addEventListener('pointerdown', (e) => {
+    screen.focus(); stopTour();
+    const p = toWorld(e); st.pointer = p;
+    if (!stage.isOpen) {
+      if (cfg.layout === 'radial') { open(p); st.flick = { x: p[0], y: p[1], moved: false }; screen.setPointerCapture(e.pointerId); }
+      else st.pendingOpen = true;
+      return;
+    }
+    const i = hit(...p);
+    st.press = { i, x: p[0], y: p[1] };
+    if (i >= 0 && cfg.reflow) screen.setPointerCapture(e.pointerId);
+  });
+
+  screen.addEventListener('pointermove', (e) => {
+    const p = toWorld(e); st.pointer = p;
+    if (cfg.tilt && !reduce) { const b = screen.getBoundingClientRect(); const nx = (e.clientX - b.left) / b.width - 0.5, ny = (e.clientY - b.top) / b.height - 0.5; screen.style.transform = `rotateY(${nx * 7}deg) rotateX(${-ny * 5}deg)`; }
+    if (!stage.isOpen) return;
+    if (cfg.layout === 'radial' && st.ringAt) {
+      const dx = p[0] - st.ringAt.x, dy = (p[1] - st.ringAt.y) / 0.82;
+      if (Math.hypot(dx, dy) > 70) {
+        const a = Math.atan2(dy, dx), order = st.mru.filter((i) => !st.gone.has(i));
+        const k = ((Math.round(((a + Math.PI / 2) / (Math.PI * 2)) * order.length) % order.length) + order.length) % order.length;
+        select(order[k]); if (st.flick) st.flick.moved = true;
+      }
+      paint(); return;
+    }
+    if (st.press && st.press.i >= 0 && cfg.reflow && Math.hypot(p[0] - st.press.x, p[1] - st.press.y) > 14) {
+      if (!st.drag) { st.drag = { i: st.press.i }; select(-1); say('Dragging: the others make room. Drop on a workspace up top to send it there.'); }
+      const ref = [...Array(N).keys()].find((j) => j !== st.drag.i && !st.gone.has(j));
+      const s = st.base[ref].w / st.rects[ref].w, [rc, tc] = [center(st.rects[ref]), center(st.base[ref])];
+      const r = st.rects[st.drag.i];
+      const desk = { x: rc[0] + (p[0] - tc[0]) / s - r.w / 2, y: rc[1] + (p[1] - tc[1]) / s - r.h / 2 };
+      st.drag.at = p; st.drag.desk = desk;
+      const m = miniAt(e); [...stage.strip.children].forEach((el, k) => el.classList.toggle('dropglow', k === m && k > 0));
+      liveRelayout(); return;
+    }
+    const i = hit(...p); select(i);
+    if (cfg.fisheye) liveRelayout();
+  });
+
+  screen.addEventListener('pointerup', (e) => {
+    const p = toWorld(e);
+    if (st.pendingOpen) { st.pendingOpen = false; open(); return; }
+    if (st.flick) { const f = st.flick; st.flick = null; if (f.moved && st.sel >= 0) { pick(st.sel, 'with a flick'); } return; }
+    if (st.drag) {
+      const i = st.drag.i, m = miniAt(e);
+      [...stage.strip.children].forEach((el) => el.classList.remove('dropglow'));
+      if (m > 0) {
+        const b = stage.strip.children[m].getBoundingClientRect(), sb = screen.getBoundingClientRect();
+        st.goneTo = st.goneTo || {}; st.goneTo[i] = { x: (b.left - sb.left) / stage.k + 10, y: (b.top - sb.top) / stage.k + 6, w: b.width / stage.k - 20, h: b.height / stage.k - 12 };
+        st.gone.add(i); say(`<b>${TITLES[i]}</b> sent to workspace ${m + 1}.`);
+      } else { st.rects[i] = { ...st.rects[i], ...st.drag.desk }; say('Dropped: it stays where you put it.'); }
+      st.drag = null; st.press = null; relayout({ kind: 'spring', stiffness: 420, damping: 0.8 }, 10); return;
+    }
+    if (st.press) { const pr = st.press; st.press = null; if (pr.i >= 0) pick(pr.i, 'with a click'); else if (stage.isOpen) cancel(); }
+  });
+
+  screen.addEventListener('pointerleave', () => { st.pointer = null; if (!st.drag) select(-1); screen.style.transform = ''; if (cfg.fisheye) liveRelayout(); });
+
+  // Wheel: scrub the overview open, or turn the carousel.
+  let scrubTimer = 0, scrubbing = false;
+  screen.addEventListener('wheel', (e) => {
+    e.preventDefault(); stopTour();
+    if (stage.isOpen && !scrubbing && cfg.layout === 'carousel') { st.cf += Math.sign(e.deltaY || e.deltaX); st.sel = -1; relayout({ kind: 'spring', stiffness: 420, damping: 0.85 }); syncCarousel(); return; }
+    if (!cfg.scrub) { if (!stage.isOpen && e.deltaY < 0) open(); return; }
+    if (!scrubbing) {
+      scrubbing = true;
+      stage.t = stage.computeTargets();
+      if (stage.isOpen) { stage.isOpen = false; }
+    }
+    const v = Math.max(0, Math.min(1.05, stage.slabMotion.x - e.deltaY * 0.0022));
+    stage.slabMotion = new OverviewStage.Motion(v); stage.wins.forEach((w) => { w.motion = new OverviewStage.Motion(v); });
+    stage.render(); paint();
+    say(`Scrubbing: <b>${Math.round(Math.min(1, v) * 100)}%</b> open. Stop turning to let it settle.`);
+    clearTimeout(scrubTimer);
+    scrubTimer = setTimeout(() => {
+      scrubbing = false;
+      if (stage.slabMotion.x > 0.35) { stage.isOpen = false; open(); }
+      else { stage.isOpen = true; stage.close(-1); say('Let go below a third: it settles back closed.'); }
+    }, 160);
+  }, { passive: false });
+
+  function syncCarousel() { const order = st.mru.filter((i) => !st.gone.has(i)); st.cf = Math.max(0, Math.min(order.length - 1, st.cf)); select(order[st.cf]); paint(); }
+
+  // Keys.
+  function arrow(k) {
+    const order = st.mru.filter((i) => !st.gone.has(i));
+    if (cfg.layout === 'carousel') { st.cf += k === 'ArrowRight' || k === 'ArrowDown' ? 1 : -1; relayout({ kind: 'spring', stiffness: 420, damping: 0.85 }); syncCarousel(); return; }
+    if (cfg.layout === 'radial') { const at = Math.max(0, order.indexOf(st.sel)); const n = (at + (k === 'ArrowRight' || k === 'ArrowDown' ? 1 : -1) + order.length) % order.length; select(order[st.sel < 0 ? 0 : n]); return; }
+    const c = (i) => center(stage.t.rects[i]);
+    if (st.sel < 0) { select(order[0]); return; }
+    const [x, y] = c(st.sel), v = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
+    let best = -1, bd = Infinity;
+    for (const i of order) { if (i === st.sel) continue; const [ix, iy] = c(i), dx = ix - x, dy = iy - y, al = dx * v[0] + dy * v[1]; if (al <= 4) continue; const d = al + 2 * Math.abs(dx * v[1] + dy * v[0]); if (d < bd) { bd = d; best = i; } }
+    if (best >= 0) select(best);
+  }
+  screen.addEventListener('keydown', (e) => {
+    stopTour();
+    if (!stage.isOpen) { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); open(); } return; }
+    if (e.key.startsWith('Arrow')) { arrow(e.key); e.preventDefault(); return; }
+    if (e.key === 'Enter') { const best = st.query ? [...Array(N).keys()].filter((i) => !st.gone.has(i)).sort((a, b) => score(b) - score(a))[0] : st.sel; pick(st.sel >= 0 && (!st.query || score(st.sel)) ? st.sel : best, 'with Enter'); e.preventDefault(); return; }
+    if (e.key === 'Escape') { if (st.query) { st.query = ''; relayout(); } else cancel(); e.preventDefault(); return; }
+    if (e.key === 'Backspace') { st.query = st.query.slice(0, -1); relayout(undefined, 8); e.preventDefault(); return; }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key !== ' ' || st.query)) {
+      st.query += e.key; relayout({ kind: 'spring', stiffness: 460, damping: 0.85 }, 10);
+      const best = [...Array(N).keys()].filter((i) => !st.gone.has(i) && score(i) > 0).sort((a, b) => score(b) - score(a))[0];
+      if (best != null) { if (cfg.layout === 'carousel') { st.cf = st.mru.filter((i) => !st.gone.has(i)).indexOf(best); relayout(); } select(best); }
+      e.preventDefault();
+    }
+  });
+
+  // Dwell: rest on a window for 700 ms to pick it.
+  (function dwellLoop() {
+    const now = performance.now();
+    stage.wins.forEach((w, i) => {
+      const on = cfg.dwell && stage.isOpen && i === st.sel && st.pointer && !st.drag && !st.flick && stage.openness > 0.9;
+      const v = on ? Math.min(1, (now - st.dwellT) / 700) : 0;
+      w.el.style.setProperty('--dwell', v.toFixed(3));
+      if (on && v >= 1) pick(i, 'by resting on it');
+    });
+    requestAnimationFrame(dwellLoop);
+  })();
+
+  function onStage(s) { $('openBtn').textContent = stage.isOpen ? 'Close' : 'Open'; if (s === 'opened') paint(); }
+  $('openBtn').onclick = () => { stopTour(); stage.isOpen ? cancel() : open(); screen.focus(); };
+  $('reset').onclick = () => { st.rects.forEach((r, i) => Object.assign(r, HOME[i])); st.gone.clear(); st.goneTo = {}; relayout(undefined, 10); say('Desktop reset.'); };
+
+  // Switches.
+  function buildOpts() {
+    const host = $('opts'); host.innerHTML = '';
+    for (const f of EXPERIMENTS) {
+      const d = document.createElement('div'); d.className = 'opt';
+      const head = document.createElement('div'); head.className = 'opt-head'; head.innerHTML = `<h3>${f.title}</h3>`;
+      d.append(head);
+      if (f.kind === 'toggle') {
+        const t = document.createElement('button'); t.className = 'tog'; t.setAttribute('aria-pressed', String(!!cfg[f.key])); t.setAttribute('aria-label', f.title);
+        t.onclick = () => { cfg[f.key] = !cfg[f.key]; t.setAttribute('aria-pressed', String(cfg[f.key])); changed(f.key); };
+        head.append(t);
+      } else if (f.kind === 'range') {
+        const out = document.createElement('output'); out.className = 'mono small'; out.textContent = f.fmt(cfg[f.key]); head.append(out);
+        const inp = document.createElement('input'); inp.type = 'range'; inp.min = f.range[0]; inp.max = f.range[1]; inp.step = f.range[2]; inp.value = cfg[f.key]; inp.id = 'x-' + f.key; inp.setAttribute('aria-label', f.title);
+        inp.oninput = () => { cfg[f.key] = +inp.value; out.textContent = f.fmt(cfg[f.key]); changed(f.key); };
+        d.append(inp);
+      } else {
+        const seg = document.createElement('div'); seg.className = 'seg'; seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', f.title);
+        for (const [v, label] of f.options) {
+          const b = document.createElement('button'); b.textContent = label; b.setAttribute('aria-pressed', String(cfg[f.key] === v));
+          b.onclick = () => { cfg[f.key] = v; seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); changed(f.key); };
+          seg.append(b);
+        }
+        d.append(seg);
+      }
+      const src = (f.src || []).map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener">${n}</a>`).join(' · ');
+      const why = document.createElement('p'); why.className = 'why';
+      why.innerHTML = `${f.why} <i>Risk:</i> ${f.risk || 'little.'}${src ? ' · ' + src : ''}`;
+      const how = document.createElement('p'); how.className = 'how'; how.textContent = 'would touch: ' + f.how;
+      d.append(why, how); host.append(d);
+    }
+  }
+  function changed(key) {
+    markRecipe();
+    if (key === 'tilt' && !cfg.tilt) screen.style.transform = '';
+    if (key === 'layout') { st.cf = 0; if (stage.isOpen && cfg.layout === 'radial') st.ring = st.pointer ? { x: st.pointer[0], y: st.pointer[1] } : null; relayout({ kind: 'spring', stiffness: 380, damping: 0.8 }, 16); if (cfg.layout === 'carousel') syncCarousel(); }
+    else relayout();
+  }
+  function buildRecipes() {
+    for (const [k, r] of Object.entries(RECIPES)) {
+      const b = document.createElement('button'); b.textContent = r.label; b.dataset.k = k;
+      b.onclick = () => { Object.assign(cfg, r); buildOpts(); markRecipe(); if (!cfg.tilt) screen.style.transform = ''; if (stage.isOpen) { stage.close(-1); setTimeout(() => open(), 350); } else open(); say(`Recipe: <b>${r.label}</b>.`); screen.focus(); };
+      $('recipes').append(b);
+    }
+    markRecipe();
+  }
+  function markRecipe() { for (const b of $('recipes').children) { const r = RECIPES[b.dataset.k]; b.setAttribute('aria-pressed', String(Object.keys(r).every((k) => k === 'label' || cfg[k] === r[k]))); } }
+
+  // Tour: a scripted run through the current recipe.
+  let tourToken = 0;
+  function stopTour() { tourToken++; }
+  async function tour() {
+    const t = ++tourToken; const wait = (ms) => new Promise((res, rej) => setTimeout(() => (t === tourToken ? res() : rej(0)), ms));
+    const move = (x, y) => { st.pointer = [x, y]; stage.showCursor(x, y, 380); };
+    try {
+      if (stage.isOpen) { cancel(); await wait(500); }
+      if (cfg.layout === 'radial') {
+        move(900, 560); await wait(450); stage.press(); open([900, 560]); await wait(500);
+        for (const k of [1, 2, 3]) { const r = stage.t.rects[st.mru[k]], [x, y] = center(r); move(lerp(900, x, 0.6), lerp(560, y, 0.6)); select(st.mru[k]); paint(); await wait(600); }
+        pick(st.sel, 'with a flick'); stage.hideCursor(); return;
+      }
+      if (cfg.scrub) { say('Scrubbing with the wheel…'); for (let v = 0; v <= 0.6; v += 0.05) { stage.slabMotion = new OverviewStage.Motion(v); stage.wins.forEach((w) => { w.motion = new OverviewStage.Motion(v); }); stage.t = stage.computeTargets(); stage.render(); await wait(45); } open(); }
+      else open();
+      await wait(800);
+      if (cfg.layout === 'carousel') { for (let k = 0; k < 3; k++) { st.cf++; relayout({ kind: 'spring', stiffness: 420, damping: 0.85 }); syncCarousel(); await wait(650); } pick(st.sel, 'with Enter'); return; }
+      if (cfg.fisheye) { for (const [x, y] of [[500, 400], [900, 450], [1400, 600]]) { move(x, y); select(hit(x, y)); liveRelayout(); await wait(650); } }
+      if (cfg.gravity) { for (const c of 'glaze') { st.query += c; relayout({ kind: 'spring', stiffness: 460, damping: 0.85 }, 10); await wait(200); } await wait(1300); st.query = ''; relayout(); await wait(600); }
+      const target = st.mru[1], [x, y] = center(stage.t.rects[target]); move(x, y); select(target); st.dwellT = performance.now();
+      await wait(cfg.dwell ? 900 : 600);
+      if (stage.isOpen) pick(target, 'with a click');
+      stage.hideCursor();
+    } catch { stage.hideCursor(); }
+  }
+  $('tour').onclick = () => tour();
+
+  decorate(); buildOpts(); buildRecipes(); paint();
+})();
+</script>
