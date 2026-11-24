@@ -188,6 +188,11 @@
         { key: 'expose.app_icons', kind: 'bool', def: false, isNew: true, help: 'A large app icon in the middle of every window.' },
         { key: 'expose.minimized', kind: 'enum', options: ['inline', 'shelf'], def: 'inline', isNew: true, help: 'Minimized windows with the others (today), or on a shelf below them. The preview\'s Notes window is minimized.' },
       ] },
+      { title: 'Motion', items: [
+        { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },
+        { key: 'animation.easing', kind: 'easing', def: 'spring', shared: 'every layout', help: 'Pace of the open and close. A spring ignores the lengths; spring(damping, stiffness) tunes it. More in the Shared tab.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
+      ] },
       { title: 'Search and keys', items: [
         { key: 'expose.search_mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', isNew: true, help: 'Click the preview and <b>type</b> (try "glaze"): matches spread out (today), non-matches dim where they are, or matches gather in the middle while the rest wait on a shelf.' },
         { key: 'expose.hints', kind: 'enum', options: ['off', 'alt'], def: 'off', isNew: true, help: 'Hold <b>Alt</b> in the preview: a letter on every window; Alt+letter picks it.' },
@@ -199,6 +204,11 @@
       { title: 'Workspace row', items: [
         { key: 'workspace_row', kind: 'enum', options: ['compact', 'shown', 'hidden'], def: 'compact', shared: 'exposé and activities', help: 'The row of workspace miniatures: slim, larger, or none.' },
         { key: 'activities.workspace_row_position', kind: 'enum', options: SIDES, def: 'top', isNew: true, help: 'Which edge the row sits on in the activities.' },
+      ] },
+      { title: 'Motion', items: [
+        { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },
+        { key: 'animation.easing', kind: 'easing', def: 'spring', shared: 'every layout', help: 'Pace of the open and close. A spring ignores the lengths; spring(damping, stiffness) tunes it. More in the Shared tab.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
       ] },
       { title: 'Large view', items: [
         { key: 'activities.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space around the large view.' },
@@ -215,6 +225,11 @@
         { key: 'stack.names', kind: 'enum', options: ['beside', 'above', 'below', 'hidden'], def: 'beside', isNew: true, help: 'Where each workspace\'s name goes.' },
         { key: 'stack.neighbour_opacity', kind: 'range', min: 0.2, max: 1, step: 0.05, def: 1, isNew: true, fmt: pct, help: 'How strongly the workspaces before and after the selected one show.' },
         { key: 'stack.neighbour_scale', kind: 'range', min: 0.7, max: 1, step: 0.01, def: 1, isNew: true, fmt: (v) => v.toFixed(2) + '×', help: 'How much smaller they are than the selected one, as GNOME\'s side workspaces are (0.94).' },
+      ] },
+      { title: 'Motion', items: [
+        { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },
+        { key: 'animation.easing', kind: 'easing', def: 'spring', shared: 'every layout', help: 'Pace of the open and close. A spring ignores the lengths; spring(damping, stiffness) tunes it. More in the Shared tab.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
       ] },
     ] },
     { id: 'shared', label: 'Shared', layout: null, intro: 'Everything that applies to every layout: which one opens, the look, the wallpaper, the motion and effects. The preview shows the layout it opens on.', groups: [
@@ -742,26 +757,27 @@
     const fit = () => { world.style.transform = `scale(${host.clientWidth / W})`; };
     new ResizeObserver(() => { fit(); render(); }).observe(host);
     function render() {
-      const v = state, z = v['stack.zoom'], o = Math.max(0, Math.min(1.05, st.open.x));
+      const v = state, z = v['stack.zoom'], raw = Math.max(0, Math.min(1.05, st.open.x)), fade = v['animation.style'] === 'fade';
+      const o = fade ? 1 : raw, grow = fade ? 1 + 0.05 * (1 - Math.min(1, raw)) : 1;
       const horiz = v['stack.direction'] === 'horizontal', gap = v['stack.gap'];
       const size = 1 + (z - 1) * o, step = horiz ? W * z + gap : H * z + gap;
       host.style.background = cssColor(v['wallpaper.color']) || '#141416';
       host.style.setProperty('--sk-accent', accentColor());
       els.forEach(({ d, name }, i) => {
         const di = i - st.pos.x, ad = Math.min(Math.abs(di), 1);
-        const s = size * (1 - (1 - v['stack.neighbour_scale']) * ad * o);
+        const s = size * grow * (1 - (1 - v['stack.neighbour_scale']) * ad * o);
         const off = di * (o * step + (1 - o) * (horiz ? W : H) * 1.05);
         const cx = W / 2 + (horiz ? off : 0), cy = H / 2 + (horiz ? 0 : off);
         d.style.transform = `translate(${cx - (W * s) / 2}px,${cy - (H * s) / 2}px) scale(${s})`;
         d.style.setProperty('--s', s);
         d.style.borderRadius = (v['look.corner_radius'] * o) / Math.max(s, 0.05) + 'px';
-        d.style.opacity = 1 - (1 - v['stack.neighbour_opacity']) * ad * o;
+        d.style.opacity = (1 - (1 - v['stack.neighbour_opacity']) * ad * o) * (fade ? Math.min(1, raw) : 1);
         d.classList.toggle('sel', o > 0.5 && Math.round(st.pos.to) === i);
         const w = W * s, h = H * s, pos = v['stack.names'];
         const nx = pos === 'beside' ? (horiz ? cx - w / 2 : cx - w / 2 - 28) : cx - w / 2;
         const ny = pos === 'above' ? cy - h / 2 - 44 : pos === 'below' ? cy + h / 2 + 14 : (horiz ? cy - h / 2 - 44 : cy - 16);
         name.style.transform = `translate(${nx}px,${ny}px)` + (pos === 'beside' && !horiz ? ' translateX(-100%)' : '');
-        name.style.opacity = pos === 'hidden' ? 0 : Math.max(0, (o - 0.7) / 0.3) * (1 - 0.5 * ad);
+        name.style.opacity = pos === 'hidden' ? 0 : Math.max(0, ((fade ? raw : o) - 0.7) / 0.3) * (1 - 0.5 * ad);
         name.style.color = cssColor(v['look.colors.text']) || '#f2f2f5';
         name.style.fontFamily = v['look.font_family'] ? `"${v['look.font_family']}", system-ui, sans-serif` : '';
       });
