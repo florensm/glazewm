@@ -56,10 +56,18 @@ strips at full length, to move windows between them.
   cluster in the middle of the room, as macOS's Mission Control does:
   each about where it sits on screen relative to the others, all scaled
   alike, pushed apart only where they'd be under `expose.gap` apart. The
-  cluster takes at most 85% of the room either way, and shows no window
-  larger than it is, so a few windows stay close together rather than
-  spread to the edges. Every tab of its stacks shows too, each a window
-  of its own.
+  cluster takes at most `expose.largest` (85%) of the room either way, and
+  shows no window larger than it is, so a few windows stay close together
+  rather than spread to the edges. Every tab of its stacks shows too, each
+  a window of its own. `expose.arrange` lays them out otherwise: `grid`
+  gives every window an even cell in reading order, so sizes stay most
+  alike, and `rows` arranges them as GNOME's overview does, small windows
+  grown up to 1.5× against tall ones. `expose.small_window_boost` grows
+  small windows in the cluster instead, keeping where each sits, and
+  `expose.readable_floor` switches a crowded workspace to rows once its
+  windows would show smaller than that. `expose.titles: always` puts each
+  window's title on it, not just the picked one's, and `expose.app_icons`
+  shows its app's icon large in its middle.
   Opening, they fly out of where they are; closing, they fly back as the
   zoom lands, the picked one over the others and, of a stack, shown on it.
   A window dropped on another lands beside it, on the side nearest the
@@ -72,7 +80,10 @@ the surface color the wallpaper shows through a little, with its app's icon in t
 middle and its title centered
 under it, as Windows draws nothing for them. They fade in rather than fly out of the screen. Picking one, by mouse, the arrows or
 search, restores it. Dragged onto a workspace, one moves there, still
-minimized.
+minimized. With `expose.minimized: shelf`, they wait instead in a row of
+small previews along the bottom of the room, under a "Minimized" label,
+the other windows arranged above; still picked, searched and dragged as
+any window.
 
 On the cards, each window shows its app's icon in its middle.
 
@@ -452,6 +463,12 @@ keybindings:
 | `expose.largest` | `0.85` | Most of the room's width and height the exposé's windows take together: `0.6` to `1`. |
 | `expose.margin` | `48` | Space the exposé keeps free along the screen's edges, in logical pixels: `8` to `120`. |
 | `activities.margin` | `48` | Space the activities keep free around the large view, in logical pixels: `8` to `120`. |
+| `expose.arrange` | `"cluster"` | How the exposé lays out the windows: `cluster`, `grid` or `rows` (see [Layouts](#layouts)). |
+| `expose.small_window_boost` | `0` | How much the cluster grows small windows against large ones before placing them: `0` (off) to `0.6`. |
+| `expose.readable_floor` | `0` | Smallest window scale before the exposé switches to rows: `0` (off) to `0.7`. |
+| `expose.titles` | `"hover"` | Titles on the picked window only (`hover`), or on every window (`always`). |
+| `expose.app_icons` | `false` | Each window's app icon, large in its middle. |
+| `expose.minimized` | `"inline"` | Minimized windows with the others (`inline`), or on a shelf along the bottom (`shelf`). |
 | `expose.workspace_row` | `"inherit"` | The exposé's own row of miniatures: `inherit` (as `workspace_row`), `compact`, `shown` or `hidden`. |
 | `expose.workspace_row_position` | `"top"` | Edge the exposé's row sits along: `top`, `bottom`, `left` or `right` (see [Layouts](#layouts)). |
 | `activities.workspace_row_position` | `"top"` | Edge the activities' row sits along: `top`, `bottom`, `left` or `right`. |

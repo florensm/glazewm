@@ -141,6 +141,10 @@ pub(crate) struct Scene {
   /// Name of its workspace, to find it again when workspaces change.
   pub name: String,
   pub windows: Vec<SceneWindow>,
+
+  /// Band the exposé's shelf takes, its label included, while it has
+  /// windows on one.
+  pub shelf: Option<RectF>,
 }
 
 impl Scene {
@@ -221,6 +225,8 @@ impl Scene {
       Self {
         name: workspace.name.clone(),
         windows,
+        // Laid out again as the scenes are retargeted.
+        shelf: None,
       },
       is_changed,
     )
@@ -290,8 +296,8 @@ mod tests {
   #[test]
   fn a_scene_is_seen_while_a_window_shows_or_fades_in() {
     let mut scene = Scene {
-      name: String::new(),
       windows: vec![window(), window()],
+      ..Scene::default()
     };
     assert!(!scene.is_seen());
 

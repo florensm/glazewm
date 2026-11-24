@@ -3327,6 +3327,67 @@ mod tests {
   }
 
   #[test]
+  fn overview_expose_arrangement_and_looks_read_and_keep_todays_defaults()
+  {
+    use wm_platform::{
+      OverviewExposeArrange, OverviewExposeMinimized, OverviewExposeTitles,
+    };
+
+    let parse = |value: serde_json::Value| {
+      serde_json::from_value::<OverviewConfig>(value)
+    };
+    let config = parse(serde_json::json!({
+      "expose": {
+        "arrange": "rows",
+        "small_window_boost": 0.35,
+        "readable_floor": 0.5,
+        "titles": "always",
+        "app_icons": true,
+        "minimized": "shelf",
+      },
+    }))
+    .expect("parses");
+    let expose = config.expose;
+    assert_eq!(expose.arrange, OverviewExposeArrange::Rows);
+    assert!((expose.clamped_small_window_boost() - 0.35).abs() < 1e-6);
+    assert!((expose.clamped_readable_floor() - 0.5).abs() < 1e-6);
+    assert_eq!(expose.titles, OverviewExposeTitles::Always);
+    assert!(expose.app_icons);
+    assert_eq!(expose.minimized, OverviewExposeMinimized::Shelf);
+    let grid =
+      parse(serde_json::json!({ "expose": { "arrange": "grid" } }))
+        .expect("parses");
+    assert_eq!(grid.expose.arrange, OverviewExposeArrange::Grid);
+
+    // Out of range is held to the range.
+    let wild = parse(serde_json::json!({
+      "expose": { "small_window_boost": 2, "readable_floor": -1 },
+    }))
+    .expect("parses")
+    .expose;
+    assert!((wild.clamped_small_window_boost() - 0.6).abs() < 1e-6);
+    assert!(wild.clamped_readable_floor().abs() < 1e-6);
+
+    for bad in [
+      serde_json::json!({ "expose": { "arrange": "spiral" } }),
+      serde_json::json!({ "expose": { "titles": "never" } }),
+      serde_json::json!({ "expose": { "app_icons": "yes" } }),
+      serde_json::json!({ "expose": { "minimized": "hidden" } }),
+      serde_json::json!({ "expose": { "readable_floor": "half" } }),
+    ] {
+      assert!(parse(bad.clone()).is_err(), "{bad}");
+    }
+
+    let defaults = OverviewConfig::default().expose;
+    assert_eq!(defaults.arrange, OverviewExposeArrange::Cluster);
+    assert!(defaults.clamped_small_window_boost().abs() < 1e-6);
+    assert!(defaults.clamped_readable_floor().abs() < 1e-6);
+    assert_eq!(defaults.titles, OverviewExposeTitles::Hover);
+    assert!(!defaults.app_icons);
+    assert_eq!(defaults.minimized, OverviewExposeMinimized::Inline);
+  }
+
+  #[test]
   fn overview_window_highlight_reads_partial_settings() {
     let config =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({

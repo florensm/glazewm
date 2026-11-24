@@ -18,6 +18,7 @@ mod effects;
 mod ghost;
 mod overlays;
 mod pacing;
+mod scene_badges;
 mod scene_borders;
 mod scenes;
 mod screen;
@@ -65,7 +66,7 @@ use windows::{
 
 use self::{
   effects::Effects, ghost::Ghost, overlays::Overlays, pacing::FrameTime,
-  scene_borders::SceneBorders,
+  scene_badges::SceneBadges, scene_borders::SceneBorders,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -679,6 +680,9 @@ struct Screen {
   /// Borders drawn around the scenes' windows that show none of their
   /// own.
   scene_borders: SceneBorders,
+
+  /// Titles and app icons on the exposé's windows.
+  scene_badges: SceneBadges,
 
   /// Where the activities show the selected workspace large.
   scene_area: RectF,

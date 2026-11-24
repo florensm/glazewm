@@ -736,13 +736,39 @@ pub(crate) fn draw_slices(surface: &mut Surface, look: &SliceLook) {
 const TAG: (f32, f32, f32, f32, f32) = (30.0, 12.0, 16.0, 8.0, 12.5);
 
 /// What the tag under the picked window shows.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TagPicture {
   pub hwnd: isize,
   pub text: String,
 
   /// Bumped as window icons arrive, so the tag picks up its window's.
   pub icons: u64,
+}
+
+/// Side of the app icon `expose.app_icons` shows in each window, with its
+/// backing, in logical pixels.
+pub(crate) const ICON_BADGE: f32 = 72.0;
+
+/// Draws window `hwnd`'s app icon on a rounded backing into `surface`,
+/// `ICON_BADGE` square.
+pub(crate) fn draw_icon_badge(
+  surface: &mut Surface,
+  hwnd: isize,
+  style: &OverviewStyle,
+  notify: (HWND, u32),
+) {
+  surface.pixels().fill(0);
+  let side = surface.width.min(surface.height);
+  let rect = Rect::from_xy(0, 0, side, side);
+  surface.canvas().fill_rounded_rect(
+    &rect,
+    side * 2 / 9,
+    with_alpha(style.card, 0.82),
+  );
+  let inset = side / 6;
+  let icon =
+    Rect::from_xy(inset, inset, side - 2 * inset, side - 2 * inset);
+  draw_window_icon(surface, hwnd, &icon, 1.0, notify);
 }
 
 /// Pixel size of `tag`, at most `max_width` wide.

@@ -6,7 +6,8 @@ use std::time::Instant;
 use windows::Win32::Foundation::HWND;
 
 use super::{
-  scenes::scene_window_shown, to_f32_size, PlaceContext, Screen,
+  scenes::{scene_window_shown, SHELF_LABEL},
+  to_f32_size, PlaceContext, Screen,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -76,6 +77,9 @@ pub(super) struct Overlays {
   /// Where the shown workspace has no windows.
   pub(super) note: Tag<String>,
 
+  /// Over the exposé's shelf, while it has windows.
+  pub(super) shelf_label: Tag<String>,
+
   /// The shown workspace's working area as the activities' scene lays it
   /// out, which its note centers on.
   pub(super) workspace_rect: SpringRect,
@@ -97,6 +101,7 @@ impl Overlays {
       tag: Tag::new(highlight_ms)?,
       close: Tag::new(highlight_ms)?,
       note: Tag::new(highlight_ms)?,
+      shelf_label: Tag::new(highlight_ms)?,
       workspace_rect: SpringRect::new(RectF::default(), switch_ms),
       labels: Vec::new(),
     })
@@ -119,6 +124,7 @@ impl Overlays {
     self.tag.mark.retune(highlight_ms);
     self.close.mark.retune(highlight_ms);
     self.note.mark.retune(highlight_ms);
+    self.shelf_label.mark.retune(highlight_ms);
     self.workspace_rect.retune(switch_ms, bounce);
   }
 
@@ -144,6 +150,7 @@ impl Overlays {
 
     if layout.has_scene() {
       self.note.picture.register(host);
+      self.shelf_label.picture.register(host);
     }
   }
 
@@ -164,6 +171,7 @@ impl Overlays {
     self.tag.picture.retire(retired);
     self.close.picture.retire(retired);
     self.note.picture.retire(retired);
+    self.shelf_label.picture.retire(retired);
   }
 
   /// Draws the highlights in `style`, at `metrics`' scale; each only if
@@ -225,6 +233,7 @@ impl Overlays {
     self.tag.mark.reset();
     self.close.mark.reset();
     self.note.mark.reset();
+    self.shelf_label.mark.reset();
   }
 
   /// Forgets what the pictures show, so they are all drawn anew.
@@ -232,6 +241,7 @@ impl Overlays {
     self.tag.drawn = None;
     self.close.drawn = None;
     self.note.drawn = None;
+    self.shelf_label.drawn = None;
     for label in &mut self.labels {
       label.drawn = None;
     }
@@ -249,6 +259,7 @@ impl Overlays {
       self.tag.mark.step(dt),
       self.close.mark.step(dt),
       self.note.mark.step(dt),
+      self.shelf_label.mark.step(dt),
       self.workspace_rect.step(dt),
     ]
     .contains(&true)
@@ -346,6 +357,16 @@ impl Screen {
         overlays.note.drawn = Some(note);
       }
     }
+
+    // Drawn once, so it's ready whenever a shelf comes.
+    let shelf_label = SHELF_LABEL.to_string();
+    if overlays.shelf_label.drawn.as_ref() != Some(&shelf_label) {
+      let size = note_size(&shelf_label, style, scale_factor);
+      overlays.shelf_label.picture.draw(size, |surface| {
+        draw_note(surface, &shelf_label, style, scale_factor);
+      });
+      overlays.shelf_label.drawn = Some(shelf_label);
+    }
   }
 
   /// Where the close button shows for `picked`, the picked window and
@@ -424,6 +445,15 @@ impl Screen {
       text: window.display_title(),
       icons: self.icons,
     })
+  }
+
+  /// Band the shown workspace's shelf takes in the exposé, while it has
+  /// windows on one.
+  pub(super) fn shelf_band(&self) -> Option<RectF> {
+    if !self.focus.layout.spreads_windows() {
+      return None;
+    }
+    self.scenes.get(self.focus.selected)?.shelf
   }
 
   /// What shows where the shown workspace has no windows.
@@ -617,6 +647,22 @@ impl Screen {
           )
         });
 
+    // Centered over the shelf, at the top of its band.
+    let shelf_target = self.shelf_band().zip(self.overlays.as_ref()).map(
+      |(band, overlays)| {
+        let (width, height) =
+          to_f32_size(overlays.shelf_label.picture.size());
+        let cx = band.center().0;
+        #[allow(clippy::cast_possible_wrap)]
+        let key = selected as isize;
+        (
+          key,
+          RectF::new(cx - width / 2.0, band.y, width, height),
+          1.0,
+        )
+      },
+    );
+
     let screen_target = focus
       .marks_keyboard
       .then(|| ((), view.inset(px(SCREEN_RING_GAP)), 1.0));
@@ -655,6 +701,8 @@ impl Screen {
     overlays.close.place(&view, chrome);
     is_gliding |= overlays.note.mark.follow(note_target, now);
     overlays.note.place(&view, chrome);
+    is_gliding |= overlays.shelf_label.mark.follow(shelf_target, now);
+    overlays.shelf_label.place(&view, chrome);
 
     is_gliding
   }

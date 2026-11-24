@@ -8,6 +8,7 @@ pub(crate) mod layout;
 pub(crate) mod model;
 pub(crate) mod native;
 pub(crate) mod overlays;
+pub(crate) mod rows;
 pub(crate) mod scene;
 pub(crate) mod state;
 pub(crate) mod tab_bars;

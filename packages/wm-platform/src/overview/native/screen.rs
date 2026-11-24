@@ -18,6 +18,7 @@ use super::{
   overlays::Overlays,
   pacing::{draw_order, DrawBudget, FrameTime},
   place_card,
+  scene_badges::{BadgeContent, SceneBadge, SceneBadges},
   scene_borders::{SceneBorder, SceneBorders},
   scenes::{scene_content, scene_window_shown},
   to_ms, PlaceContext, Screen, ScreenFrame,
@@ -28,7 +29,7 @@ use crate::{
     chrome::{
       draw_card, draw_plain_card, draw_search, draw_sheet, draw_spotlight,
       picture_size, plain_picture_size, sheet_size, spotlight_margin,
-      spotlight_size,
+      spotlight_size, TagPicture,
     },
     effects::{lean_toward, Entrance},
     layout::{
@@ -42,8 +43,9 @@ use crate::{
   },
   platform_impl::composition::OverviewBackdrop,
   tab_bar::layout::TabHit,
-  BorderOverlayParams, OverviewEffects, OverviewLayoutMode, OverviewStyle,
-  OverviewWallpaperStyle, OverviewWorkspace, OverviewZoomStyle,
+  BorderOverlayParams, OverviewEffects, OverviewExposeTitles,
+  OverviewLayoutMode, OverviewStyle, OverviewWallpaperStyle,
+  OverviewWindow, OverviewWorkspace, OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -128,6 +130,7 @@ impl Screen {
       scene_shown: None,
       is_picked: false,
       scene_borders: SceneBorders::default(),
+      scene_badges: SceneBadges::default(),
       card_targets: Vec::new(),
       pointer: None,
       entrance: None,
@@ -547,6 +550,14 @@ impl Screen {
         })
         .count();
       self.scene_borders.register(host, bordered);
+
+      let windows = self
+        .scenes
+        .iter()
+        .map(|scene| scene.windows.len())
+        .sum::<usize>();
+      let badges = self.badges_per_window() * windows;
+      self.scene_badges.register(host, badges);
     }
 
     for card in &mut self.cards {
@@ -611,6 +622,7 @@ impl Screen {
       window.preview.retire(&mut retired);
     }
     self.scene_borders.retire(&mut retired);
+    self.scene_badges.retire(&mut retired);
     if let Some(effects) = &mut self.effects {
       effects.retire(&mut retired);
     }
@@ -1473,7 +1485,6 @@ impl Screen {
   fn place(&mut self) -> bool {
     let context = self.place_context();
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
-    let fade = context.fade;
     let layout = self.focus.layout;
     self.place_backdrop(&context);
 
@@ -1488,45 +1499,7 @@ impl Screen {
     }
 
     if layout.has_scene() {
-      let landing = self.closing_card();
-      let workspaces = self
-        .frame
-        .as_ref()
-        .map_or(&[][..], |frame| &frame.workspaces);
-      let mut borders = Vec::new();
-
-      for (index, scene) in self.scenes.iter_mut().enumerate() {
-        for window in &mut scene.windows {
-          let (rect, alpha) = scene_window_shown(
-            window,
-            (landing == Some(index)).then_some(fade),
-          );
-          let rect = context.camera.apply(&rect);
-          let opacity = alpha * window.preview.opacity * context.presence;
-
-          if opacity > 0.002 {
-            window.preview.place(&rect, &view, opacity);
-          } else {
-            window.preview.hide();
-            continue;
-          }
-
-          let params = workspaces
-            .get(index)
-            .and_then(|workspace| drawn_border(workspace, window));
-          let width = window.preview.screen_rect.w;
-          if let (Some(params), true) = (params, width > 0.0) {
-            borders.push(SceneBorder {
-              rect,
-              params,
-              scale: rect.w / width,
-              opacity,
-            });
-          }
-        }
-      }
-
-      self.scene_borders.place(&borders, &view);
+      self.place_scenes(&context);
     }
 
     let is_gliding =
@@ -1631,6 +1604,109 @@ impl Screen {
       }
     }?;
     Some(camera.apply(&rect))
+  }
+
+  /// Places the scenes' windows, with their borders and badges, where
+  /// their animations have them now.
+  fn place_scenes(&mut self, context: &PlaceContext) {
+    let (view, scale_factor, fade) =
+      (context.view, self.metrics.scale_factor, context.fade);
+    let landing = self.closing_card();
+    let (has_titles, has_icons) = self.badges_shown();
+    let picked = self.picked_window().map(|(_, hwnd)| hwnd);
+    let icons = self.icons;
+    let workspaces = self
+      .frame
+      .as_ref()
+      .map_or(&[][..], |frame| &frame.workspaces);
+    let mut borders = Vec::new();
+    let mut badges = Vec::new();
+
+    for (index, scene) in self.scenes.iter_mut().enumerate() {
+      for window in &mut scene.windows {
+        let (rect, alpha) = scene_window_shown(
+          window,
+          (landing == Some(index)).then_some(fade),
+        );
+        let rect = context.camera.apply(&rect);
+        let opacity = alpha * window.preview.opacity * context.presence;
+
+        if opacity > 0.002 {
+          window.preview.place(&rect, &view, opacity);
+        } else {
+          window.preview.hide();
+          continue;
+        }
+
+        let hwnd = window.preview.hwnd;
+        let badge = |content| SceneBadge {
+          content,
+          rect,
+          opacity: opacity * context.chrome,
+        };
+        if has_titles && picked != Some(hwnd) {
+          let title = workspaces
+            .get(index)
+            .and_then(|workspace| workspace.window(hwnd))
+            .map(OverviewWindow::display_title);
+          if let Some(text) = title {
+            badges.push(badge(BadgeContent::Title(TagPicture {
+              hwnd,
+              text,
+              icons,
+            })));
+          }
+        }
+        // A minimized window's placeholder shows its icon already.
+        if has_icons && !window.is_minimized {
+          badges.push(badge(BadgeContent::Icon(hwnd, icons)));
+        }
+
+        let params = workspaces
+          .get(index)
+          .and_then(|workspace| drawn_border(workspace, window));
+        let width = window.preview.screen_rect.w;
+        if let (Some(params), true) = (params, width > 0.0) {
+          borders.push(SceneBorder {
+            rect,
+            params,
+            scale: rect.w / width,
+            opacity,
+          });
+        }
+      }
+    }
+
+    self.scene_borders.place(&borders, &view);
+    if let Some(frame) = &self.frame {
+      self.scene_badges.place(
+        &badges,
+        &view,
+        &frame.style,
+        scale_factor,
+        self.notify,
+      );
+    }
+  }
+
+  /// Whether the exposé shows a title on every window, and an app icon
+  /// in each.
+  fn badges_shown(&self) -> (bool, bool) {
+    self
+      .style()
+      .filter(|_| self.focus.layout.spreads_windows())
+      .map_or((false, false), |style| {
+        (
+          style.expose.titles == OverviewExposeTitles::Always,
+          style.expose.app_icons,
+        )
+      })
+  }
+
+  /// How many badges each scene window may show.
+  fn badges_per_window(&self) -> usize {
+    let (has_titles, has_icons) = self.badges_shown();
+    usize::from(has_titles) + usize::from(has_icons)
   }
 
   /// Where the search box's picture shows, its shadow included.

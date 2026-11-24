@@ -353,6 +353,46 @@ pub enum OverviewRowSide {
   Right,
 }
 
+/// How the exposé arranges the shown workspace's windows.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeArrange {
+  /// One cluster, each window about where it sits on screen.
+  #[default]
+  Cluster,
+  /// Even cells in reading order, each window fit to its cell.
+  Grid,
+  /// GNOME's rows.
+  Rows,
+}
+
+/// Which of the exposé's windows show their titles.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeTitles {
+  /// The picked or hovered one.
+  #[default]
+  Hover,
+  Always,
+}
+
+/// Where the exposé shows minimized windows.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeMinimized {
+  /// Arranged with the others.
+  #[default]
+  Inline,
+  /// On a shelf of small previews along the bottom of the room.
+  Shelf,
+}
+
 /// How the exposé spreads the shown workspace's windows.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -373,9 +413,38 @@ pub struct OverviewExpose {
 
   /// Edge its row of miniatures sits along.
   pub workspace_row_position: OverviewRowSide,
+
+  pub arrange: OverviewExposeArrange,
+
+  /// How much the cluster grows small windows relative to large ones,
+  /// from 0 to 0.6.
+  pub small_window_boost: f32,
+
+  /// Smallest window scale, from 0 (off) to 0.7, under which the windows
+  /// are arranged in rows instead.
+  pub readable_floor: f32,
+
+  pub titles: OverviewExposeTitles,
+
+  /// Whether each window shows its app's icon large in its middle.
+  pub app_icons: bool,
+
+  pub minimized: OverviewExposeMinimized,
 }
 
 impl OverviewExpose {
+  /// `small_window_boost`, within 0 to 0.6.
+  #[must_use]
+  pub fn clamped_small_window_boost(&self) -> f32 {
+    clamped(self.small_window_boost, (0.0, 0.6), 0.0)
+  }
+
+  /// `readable_floor`, within 0 to 0.7.
+  #[must_use]
+  pub fn clamped_readable_floor(&self) -> f32 {
+    clamped(self.readable_floor, (0.0, 0.7), 0.0)
+  }
+
   /// `largest`, within 0.6 to 1.
   #[must_use]
   pub fn clamped_largest(&self) -> f32 {
@@ -397,6 +466,12 @@ impl Default for OverviewExpose {
       margin: 48.0,
       workspace_row: OverviewExposeRow::default(),
       workspace_row_position: OverviewRowSide::default(),
+      arrange: OverviewExposeArrange::default(),
+      small_window_boost: 0.0,
+      readable_floor: 0.0,
+      titles: OverviewExposeTitles::default(),
+      app_icons: false,
+      minimized: OverviewExposeMinimized::default(),
     }
   }
 }

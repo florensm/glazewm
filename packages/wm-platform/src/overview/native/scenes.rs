@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use super::{cards::screen_rect, to_ms, Screen, ScreenFrame};
+use super::{cards::screen_rect, to_f32_size, to_ms, Screen, ScreenFrame};
 
 /// Gap, in logical pixels, a sliding scene keeps from the one it slides
 /// past.
@@ -11,13 +11,14 @@ const SLIDE_GAP: f32 = 48.0;
 
 use crate::{
   overview::{
-    expose::spread,
+    chrome::note_size,
+    expose::{arrange, shelf, Arrangement},
     layout::{CardView, RectF, Tile},
     scene::{Scene, SceneWindow},
     state::ScreenFocus,
   },
-  OverviewRowSide, OverviewStripView, OverviewSwitchStyle,
-  OverviewWorkspace,
+  OverviewExposeMinimized, OverviewRowSide, OverviewStripView,
+  OverviewSwitchStyle, OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -72,16 +73,28 @@ pub(super) fn scene_content(
 /// How the exposé spreads a scene's windows.
 struct Spread {
   area: RectF,
-  /// Space between windows, in physical pixels.
-  gap: f32,
-  /// Most of `area` either way the windows take.
-  largest: f32,
+  how: Arrangement,
+  /// The shelf minimized windows go on, if they do.
+  shelf: Option<ShelfLook>,
 }
+
+/// Sizes of the exposé's shelf, in physical pixels.
+#[derive(Clone, Copy)]
+struct ShelfLook {
+  height: f32,
+  label: f32,
+}
+
+/// Height of the previews on the exposé's shelf, in logical pixels.
+const SHELF_HEIGHT: f32 = 96.0;
+
+/// Label over the exposé's shelf of minimized windows.
+pub(super) const SHELF_LABEL: &str = "Minimized";
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
 /// there, or spread as `spread` has it. `None` for a window not shown,
 /// e.g. a stack's other tab where it isn't spread. Crops each preview as
-/// it then shows.
+/// it then shows, and notes where its shelf is.
 fn scene_rects(
   scene: &mut Scene,
   tiles: &[Option<Tile>],
@@ -92,8 +105,11 @@ fn scene_rects(
     for window in &mut scene.windows {
       window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
     }
-    return spread_windows(scene, how, only);
+    let (rects, shelf) = spread_windows(scene, how, only);
+    scene.shelf = shelf;
+    return rects;
   }
+  scene.shelf = None;
 
   scene
     .windows
@@ -109,31 +125,54 @@ fn scene_rects(
 }
 
 /// Where the exposé shows each window of `scene`, of those in `only` if
-/// given, every tab of a stack and minimized window a window of its own.
-/// `None` for a window left out.
+/// given, every tab of a stack and minimized window a window of its own:
+/// minimized ones on a shelf along the bottom if `how` has one. `None`
+/// for a window left out. Also returns the band the shelf takes.
 fn spread_windows(
   scene: &Scene,
   how: &Spread,
   only: Option<&[isize]>,
-) -> Vec<Option<RectF>> {
-  let shown = scene
+) -> (Vec<Option<RectF>>, Option<RectF>) {
+  let (shelved, shown): (Vec<_>, Vec<_>) = scene
     .windows
     .iter()
     .enumerate()
     .filter(|(_, window)| {
       only.is_none_or(|only| only.contains(&window.preview.hwnd))
     })
-    .map(|(index, window)| (index, window.preview.screen_rect))
-    .collect::<Vec<_>>();
-  let screen_rects =
-    shown.iter().map(|(_, rect)| *rect).collect::<Vec<_>>();
-  let slots = spread(&screen_rects, &how.area, how.gap, how.largest);
+    .map(|(index, window)| {
+      (index, window.preview.screen_rect, window.is_minimized)
+    })
+    .partition(|(_, _, is_minimized)| {
+      how.shelf.is_some() && *is_minimized
+    });
 
+  let screen_rects = |windows: &[(usize, RectF, bool)]| {
+    windows.iter().map(|(_, rect, _)| *rect).collect::<Vec<_>>()
+  };
   let mut rects = vec![None; scene.windows.len()];
-  for ((index, _), slot) in shown.iter().zip(slots) {
+  let mut room = how.area;
+  let mut band = None;
+  if let (Some(look), false) = (how.shelf, shelved.is_empty()) {
+    let shelf = shelf(
+      &screen_rects(&shelved),
+      &how.area,
+      how.how.gap,
+      look.height,
+      look.label,
+    );
+    for ((index, ..), rect) in shelved.iter().zip(shelf.rects) {
+      rects[*index] = Some(rect);
+    }
+    room = shelf.room;
+    band = Some(shelf.band);
+  }
+
+  let slots = arrange(&screen_rects(&shown), &room, &how.how);
+  for ((index, ..), slot) in shown.iter().zip(slots) {
     rects[*index] = Some(slot);
   }
-  rects
+  (rects, band)
 }
 
 /// The windows of `workspace` a search matches, which the exposé
@@ -466,10 +505,28 @@ impl Screen {
 
   /// How the exposé spreads a scene of `frame` over the scene area.
   fn spread_as(&self, frame: &ScreenFrame) -> Spread {
+    let expose = &frame.style.expose;
     Spread {
       area: self.scene_area,
-      gap: self.metrics.px(frame.style.expose.gap.max(0.0)),
-      largest: frame.style.expose.clamped_largest(),
+      how: Arrangement {
+        style: expose.arrange,
+        gap: self.metrics.px(expose.gap.max(0.0)),
+        largest: expose.clamped_largest(),
+        small_window_boost: expose.clamped_small_window_boost(),
+        readable_floor: expose.clamped_readable_floor(),
+        work: RectF::from_rect(&frame.rect),
+      },
+      shelf: (expose.minimized == OverviewExposeMinimized::Shelf).then(
+        || ShelfLook {
+          height: self.metrics.px(SHELF_HEIGHT),
+          label: to_f32_size(note_size(
+            SHELF_LABEL,
+            &frame.style,
+            self.metrics.scale_factor,
+          ))
+          .1,
+        },
+      ),
     }
   }
 
