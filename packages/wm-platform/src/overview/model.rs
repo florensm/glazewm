@@ -334,23 +334,23 @@ impl Default for OverviewStack {
   }
 }
 
-/// How the exposé sizes the windows of a row against each other; either
-/// way, each row is scaled to fill the room's width.
+/// How the exposé spreads the windows: freely, or in rows each scaled to
+/// fill the room's width.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OverviewExposeArrangement {
-  /// Keeping their sizes relative to each other, centered on their row,
-  /// as macOS's Mission Control does.
-  #[default]
+  /// Keeping their sizes relative to each other, centered on their row.
   Natural,
 
   /// All as tall, as a photo grid lays out pictures.
   Grid,
 
-  /// Not in rows: each where it sits on screen, all scaled alike and
-  /// pushed apart only where they'd overlap.
+  /// Not in rows: each where it sits on screen, all scaled alike, pushed
+  /// apart where they'd overlap and spread out over all the room, as
+  /// macOS's Mission Control does.
+  #[default]
   Free,
 }
 

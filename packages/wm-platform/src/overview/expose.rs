@@ -27,7 +27,7 @@ pub(crate) fn spread(
     return Vec::new();
   }
   if arrangement == OverviewExposeArrangement::Free {
-    return scatter(windows, area, gap, max_scale);
+    return scatter(windows, area, gap);
   }
   let max_per_row = match max_per_row {
     0 => windows.len(),
@@ -119,15 +119,15 @@ pub(crate) fn spread(
 /// the rest is room between it and the windows around it.
 const FREE_SHARE: f32 = 0.75;
 
+/// Most of the area's width and height a window spread freely takes, so
+/// one or two windows don't show as large as the screen.
+const FREE_LARGEST: f32 = 0.85;
+
 /// Spreads `windows` over `area` where each sits on screen, all scaled
-/// alike, as large as fits up to `max_scale`, and pushed apart only where
-/// they'd overlap, so they end up at least about `gap` apart.
-fn scatter(
-  windows: &[RectF],
-  area: &RectF,
-  gap: f32,
-  max_scale: f32,
-) -> Vec<RectF> {
+/// alike, as large as fits (none over `FREE_LARGEST` of `area`), pushed
+/// apart where they'd overlap, at least about `gap` apart, and then
+/// spread out to reach `area`'s edges both ways.
+fn scatter(windows: &[RectF], area: &RectF, gap: f32) -> Vec<RectF> {
   // Each shrunk on its own spot, so even tiled windows, which touch on
   // screen, come apart with room around them.
   let start = windows
@@ -139,26 +139,59 @@ fn scatter(
       RectF::new(cx - w / 2.0, cy - h / 2.0, w, h)
     })
     .collect::<Vec<_>>();
+  let largest = start
+    .iter()
+    .map(|rect| {
+      (FREE_LARGEST * area.w / rect.w).min(FREE_LARGEST * area.h / rect.h)
+    })
+    .fold(f32::INFINITY, f32::min);
 
   // The gap is in `area`'s pixels, so it's kept in screen pixels at the
   // scale the spread ends up at: a few rounds, each wider, to settle.
-  let mut scale = fit_scale(&start, area, max_scale);
+  let mut scale = fit_scale(&start, area, largest);
   let mut rects = start;
   for _ in 0..3 {
     separate(&mut rects, gap / scale.max(f32::EPSILON));
-    scale = fit_scale(&rects, area, max_scale);
+    scale = fit_scale(&rects, area, largest);
   }
 
+  // Their middles spread further apart each way than their sizes shrink,
+  // as far as keeps every window within `area`: at `scale` they all fit,
+  // so that's the least.
   let (bx, by) = bounds(&rects).center();
   let (ax, ay) = area.center();
+  let reach = |offset: f32, size: f32, room: f32| {
+    if offset.abs() > f32::EPSILON {
+      (room / 2.0 - size * scale / 2.0) / offset.abs()
+    } else {
+      f32::INFINITY
+    }
+  };
+  let (spread_x, spread_y) =
+    rects.iter().fold((f32::INFINITY, f32::INFINITY), |(sx, sy), rect| {
+      let (cx, cy) = rect.center();
+      (
+        sx.min(reach(cx - bx, rect.w, area.w)),
+        sy.min(reach(cy - by, rect.h, area.h)),
+      )
+    });
+  let spread = |value: f32| {
+    if value.is_finite() {
+      value.max(scale)
+    } else {
+      scale
+    }
+  };
+  let (spread_x, spread_y) = (spread(spread_x), spread(spread_y));
+
   rects
     .iter()
     .map(|rect| {
       let (cx, cy) = rect.center();
       let (w, h) = (rect.w * scale, rect.h * scale);
       RectF::new(
-        ax + (cx - bx) * scale - w / 2.0,
-        ay + (cy - by) * scale - h / 2.0,
+        ax + (cx - bx) * spread_x - w / 2.0,
+        ay + (cy - by) * spread_y - h / 2.0,
         w,
         h,
       )
@@ -497,6 +530,32 @@ mod tests {
         assert!(!overlaps(&room, other), "{rect:?} {other:?}");
       }
     }
+  }
+
+  /// Freely, windows spread to the area's edges both ways, even where the
+  /// area is wider than the screen, a lone one no larger than
+  /// `FREE_LARGEST` of it.
+  #[test]
+  fn free_windows_fill_the_area() {
+    let wide = RectF::new(0.0, 0.0, 1600.0, 600.0);
+    let windows = [
+      RectF::new(0.0, 0.0, 960.0, 540.0),
+      RectF::new(960.0, 0.0, 960.0, 540.0),
+      RectF::new(0.0, 540.0, 960.0, 540.0),
+      RectF::new(960.0, 540.0, 960.0, 540.0),
+    ];
+    let rects = spread(&windows, &wide, 20.0, 1.0, 0, FREE);
+    assert!(rects[0].x.abs() < 0.5, "{rects:?}");
+    assert!((rects[1].right() - wide.right()).abs() < 0.5, "{rects:?}");
+    assert!(rects[0].y.abs() < 0.5, "{rects:?}");
+    assert!((rects[3].bottom() - wide.bottom()).abs() < 0.5, "{rects:?}");
+    // Each the same size, and apart: the left ones left of the right ones.
+    assert!((rects[0].w - rects[3].w).abs() < 1e-3);
+    assert!(rects[1].x > rects[0].right());
+
+    let lone = spread(&windows[..1], &AREA, 20.0, 1.0, 0, FREE)[0];
+    assert!(lone.w <= AREA.w * 0.85 + 0.5, "{lone:?}");
+    assert!(lone.h <= AREA.h * 0.85 + 0.5, "{lone:?}");
   }
 
   /// Freely, windows already apart keep their layout, only scaled.

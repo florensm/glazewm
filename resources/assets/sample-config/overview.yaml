@@ -16,15 +16,12 @@ overview:
   # and F1 shows the shortcuts.
   search_hint: false
 
-  # How the exposé spreads the windows: at most `max_per_row` to a row (0
-  # for as many as shows them largest), `gap` pixels apart. `arrangement`:
-  # 'free' (not in rows: each where it sits on screen, pushed apart only
-  # where they'd overlap), 'natural' (rows, windows keeping their sizes
-  # against each other) or 'grid' (rows, all of a row as tall).
+  # The exposé spreads the windows out over all the room, each about where
+  # it sits on screen, at least `gap` pixels apart. For rows instead, set
+  # `arrangement: "natural"` (or "grid", all of a row as tall) and
+  # optionally `max_per_row`.
   expose:
-    max_per_row: 0
     gap: 28
-    arrangement: "free"
 
   # How large the stack shows a workspace, as a part of the screen's
   # width: 0.2 to 0.9.

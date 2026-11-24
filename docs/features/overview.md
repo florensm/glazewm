@@ -52,15 +52,15 @@ strips at full length, to move windows between them.
   middle, and the wheel turned sideways (or with `Shift`) pans it by hand
   (see [Scrolling workspaces](#scrolling-workspaces)).
 - **Exposé** (default), for finding a window: the activities' row of
-  miniatures, and below it the shown workspace's windows spread out side
-  by side, as macOS's Mission Control does, in rows each scaled to fill
-  the room's width, so they show as large as they can (but never larger
-  than in the activities). In a row, windows keep their sizes relative to
-  each other, centered on it (`expose.arrangement: "natural"`), or are all
-  as tall, as a photo grid lays out pictures (`"grid"`). Or not in rows
-  at all (`"free"`): each window where it sits on screen, all scaled alike
-  and pushed apart only where they'd overlap, at least about `gap` apart;
-  `max_per_row` doesn't apply. Every tab of its
+  miniatures, and below it the shown workspace's windows spread out over
+  all the room, as macOS's Mission Control does (`expose.arrangement:
+  "free"`, the default): each about where it sits on screen, all scaled
+  alike (none over 85% of the room), pushed apart where they'd overlap,
+  at least about `gap` apart, and spread out to reach the room's edges.
+  Or in rows each scaled to fill the room's width (but never larger than
+  in the activities): in a row, windows keep their sizes relative to
+  each other, centered on it (`"natural"`), or are all as tall, as a
+  photo grid lays out pictures (`"grid"`). Every tab of its
   stacks shows too, each a window of its own. Rows follow where the
   windows sit on screen, top to bottom and left to right, as many as cover
   the most room; `expose.max_per_row` caps how many go in a row, e.g. to
@@ -446,18 +446,17 @@ overview:
     # opens, in milliseconds; 0 opens it at once.
     delay_ms: 300
 
-  # How the exposé spreads the windows: at most `max_per_row` side by side
-  # before wrapping onto another row (0 for as many as shows them
-  # largest), `gap` logical pixels apart.
+  # How the exposé spreads the windows, `gap` logical pixels apart.
   #
-  # `arrangement`: "free" (not in rows, each where it sits on screen,
-  # pushed apart only where they'd overlap), or rows sized "natural" (as
-  # they are against each other, centered on the row) or "grid" (all as
-  # tall).
+  # `arrangement`: "free" (over all the room, each about where it sits on
+  # screen), or rows sized "natural" (as they are against each other,
+  # centered on the row) or "grid" (all as tall). For rows, `max_per_row`
+  # caps how many go side by side before wrapping (0 for as many as shows
+  # them largest).
   expose:
     max_per_row: 0
     gap: 28
-    arrangement: "natural"
+    arrangement: "free"
 
   # How large the stack shows a workspace, as a part of the screen's
   # width, from 0.2 to 0.9; each workspace's name shows beside it.
