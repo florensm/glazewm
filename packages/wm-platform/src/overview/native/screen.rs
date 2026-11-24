@@ -6,9 +6,12 @@ use std::{
   time::Instant,
 };
 
-use windows::Win32::UI::WindowsAndMessaging::{
-  SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
-  SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+use windows::Win32::{
+  Foundation::HWND,
+  UI::WindowsAndMessaging::{
+    SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+  },
 };
 
 use super::{
@@ -21,7 +24,7 @@ use super::{
   scene_badges::{BadgeContent, SceneBadge, SceneBadges},
   scene_borders::{SceneBorder, SceneBorders},
   scenes::{scene_content, scene_window_shown},
-  to_ms, PlaceContext, Screen, ScreenFrame,
+  to_ms, Card, PlaceContext, Screen, ScreenFrame,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -48,6 +51,19 @@ use crate::{
   OverviewStackDirection, OverviewStyle, OverviewWallpaperStyle,
   OverviewWindow, OverviewWorkspace, OverviewZoomStyle,
 };
+
+/// Registers `card`'s thumbnails on `host`: its tab bars under its
+/// windows, which cover the strip reaching under them, and its picture
+/// over both.
+fn register_card(card: &mut Card, host: HWND) {
+  for bar in &mut card.tab_bars {
+    bar.picture.register(host);
+  }
+  for preview in &mut card.previews {
+    preview.register(host);
+  }
+  card.picture.register(host);
+}
 
 /// The border to draw around scene `window` of `workspace`: the one the
 /// WM gives it, unless it shows its own.
@@ -120,6 +136,7 @@ impl Screen {
       ),
       drawn_for: layout,
       registered_for: None,
+      pending_registration: None,
       raised: None,
       registration: 0,
       area: RectF::default(),
@@ -256,7 +273,7 @@ impl Screen {
     self.zoom = self
       .zoom
       .map(|(zoom, started)| (self.trimmed(zoom), started));
-    self.register_thumbnails();
+    self.register_shown_first();
     self.plain_cards = self.zoom.is_some();
     self.refresh_pictures(true);
     self.is_gliding = self.place();
@@ -409,6 +426,7 @@ impl Screen {
     self.pointer = None;
     self.entrance = None;
     self.registered_for = None;
+    self.pending_registration = None;
     self.raised = None;
     self.nav.clear();
     self.pan = None;
@@ -527,20 +545,52 @@ impl Screen {
   /// picture, the labels, highlights and tags, then the search line and
   /// the shortcut sheet.
   fn register_thumbnails(&mut self) {
-    let host = self.hwnd;
-    let layout = self.focus.layout;
-
     // Those shown now stay up until their replacements are placed, so
     // nothing blinks out in between.
     let retired = self.retire_thumbnails();
     self.retired.extend(retired);
+    self.pending_registration = None;
+    self.register_rest(None);
+  }
 
+  /// Registers, on open, only what zooms before the first frame: the
+  /// shown workspace's previews (its scene's windows, or its card in the
+  /// stack). The rest follows on the next frame (see `tick`), so the
+  /// first frame comes a round trip to DWM per thumbnail sooner. Its
+  /// thumbnails then sit under the rest, other scenes' windows included,
+  /// which only meet it sliding in.
+  fn register_shown_first(&mut self) {
+    let retired = self.retire_thumbnails();
+    self.retired.extend(retired);
+
+    let (host, shown) = (self.hwnd, self.focus.selected);
+    if self.focus.layout.has_scene() {
+      if let Some(scene) = self.scenes.get_mut(shown) {
+        for window in &mut scene.windows {
+          window.preview.register(host);
+        }
+      }
+    } else if let Some(card) = self.cards.get_mut(shown) {
+      register_card(card, host);
+    }
+    self.pending_registration = Some(shown);
+    self.registered_for = Some(self.focus.layout);
+    self.registration = NEXT_REGISTRATION.fetch_add(1, Ordering::Relaxed);
+  }
+
+  /// Registers every thumbnail, but those of workspace `registered`
+  /// registered already, above everything registered so far.
+  fn register_rest(&mut self, registered: Option<usize>) {
+    let host = self.hwnd;
+    let layout = self.focus.layout;
     let raised = self.raised;
     if layout.has_scene() {
       for window in self
         .scenes
         .iter_mut()
-        .flat_map(|scene| &mut scene.windows)
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != registered)
+        .flat_map(|(_, scene)| &mut scene.windows)
         .filter(|window| Some(window.preview.hwnd) != raised)
       {
         window.preview.register(host);
@@ -567,15 +617,11 @@ impl Screen {
       self.scene_badges.register(host, badges);
     }
 
-    for card in &mut self.cards {
-      // Under the windows, which cover the strip reaching under them.
-      for bar in &mut card.tab_bars {
-        bar.picture.register(host);
+    let is_card_registered = !layout.has_scene();
+    for (index, card) in self.cards.iter_mut().enumerate() {
+      if !(is_card_registered && Some(index) == registered) {
+        register_card(card, host);
       }
-      for preview in &mut card.previews {
-        preview.register(host);
-      }
-      card.picture.register(host);
     }
 
     // Over the cards, under the highlights.
@@ -1462,7 +1508,13 @@ impl Screen {
     }
     self.frame_time.advance(now);
 
+    // The thumbnails an open left for its second frame.
     let mut is_moving = false;
+    if let Some(shown) = self.pending_registration.take() {
+      self.register_rest(Some(shown));
+      self.is_dirty = true;
+      is_moving = true;
+    }
     for card in &mut self.cards {
       is_moving |= card.cx.step(dt);
       is_moving |= card.cy.step(dt);

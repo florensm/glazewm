@@ -658,6 +658,10 @@ struct Screen {
   /// Layout whose thumbnails are registered, if any are.
   registered_for: Option<OverviewLayoutMode>,
 
+  /// Workspace whose previews alone an open registered before its first
+  /// frame, the rest waiting for the next.
+  pending_registration: Option<usize>,
+
   /// The scene window picked to close on, registered above everything
   /// else so it flies home over the windows around it.
   raised: Option<isize>,
