@@ -42,12 +42,15 @@ strips at full length, to move windows between them.
   slides that workspace in; the title of the picked window shows under it.
 - **Stack**, for arranging across workspaces and scrolling strips: every
   workspace at the same zoom, stacked top to bottom with the selected one
-  in the middle, as niri's overview does. Each card lines up what its
-  monitor shows with the middle of the screen, so a scrolling workspace's
-  strip reaches past either side at its full length. Picking a window on a
-  strip pans the strip to put that window in the middle, and the wheel
-  turned sideways (or with `Shift`) pans it by hand (see [Scrolling
-  workspaces](#scrolling-workspaces)).
+  in the middle, as niri's overview does: just its windows, as the
+  workspace looks on screen, at `stack.zoom` of the screen's width, with
+  its name beside it. The wheel scrolls through them by how far it turns,
+  so a touchpad glides, and settles on the nearest once it rests. Each
+  card lines up what its monitor shows with the middle of the screen, so a
+  scrolling workspace's strip reaches past either side at its full length.
+  Picking a window on a strip pans the strip to put that window in the
+  middle, and the wheel turned sideways (or with `Shift`) pans it by hand
+  (see [Scrolling workspaces](#scrolling-workspaces)).
 - **Exposé** (default), for finding a window: the activities' row of
   miniatures, and below it the shown workspace's windows spread out side
   by side, as macOS's Mission Control does, in rows each scaled to fill
@@ -448,6 +451,11 @@ overview:
     max_per_row: 0
     gap: 28
     arrangement: "natural"
+
+  # How large the stack shows a workspace, as a part of the screen's
+  # width, from 0.2 to 0.9; each workspace's name shows beside it.
+  stack:
+    zoom: 0.5
 
   # What shows behind the cards.
   backdrop:
