@@ -1,0 +1,205 @@
+<title>Overview Layout Comparison</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  :root { --s1: #2f6fe4; --s2: #d9730d; --s3: #0e9f86; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s1: #3987e5; --s2: #d95926; --s3: #199e70; } }
+  :root[data-theme="dark"] { --s1: #3987e5; --s2: #d95926; --s3: #199e70; }
+  .hero { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .hero { grid-template-columns: minmax(0, 1fr); } }
+  .minis { display: grid; gap: 12px; }
+  .mini { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: center; background: var(--panel); border: 2px solid transparent; border-radius: 12px; padding: 8px; cursor: pointer; text-align: left; font-weight: 400; }
+  .mini:hover { background: var(--panel); border-color: var(--line); }
+  .mini[aria-pressed="true"] { border-color: var(--accent); }
+  .mini .ovs { border-radius: 6px; pointer-events: none; }
+  .mini h3 { display: flex; align-items: center; gap: 8px; }
+  .mini h3 i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .big .ovs { border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font: 600 11px/1.2 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  td { font: 500 13px/1.3 var(--mono); }
+  td.best { font-weight: 700; color: var(--good); }
+  td .app { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 8px; vertical-align: -1px; }
+  .scroll { overflow-x: auto; }
+  .chart { position: relative; }
+  .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 500 12px/1.5 var(--mono); box-shadow: 0 6px 20px rgba(0,0,0,.15); white-space: nowrap; opacity: 0; transition: opacity .12s; }
+  .tip i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+  .note { border-left: 3px solid var(--c); padding: 2px 0 2px 12px; display: flex; flex-direction: column; gap: 4px; }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="playground.html">Zoom playground</a>
+    <a href="layouts.html" aria-current="page">Layout comparison</a>
+    <a href="concepts.html">Design concepts</a>
+    <a href="recommendations.html">Recommendations</a>
+  </nav>
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">GlazeWM overview · research</span>
+    <h1>Three ways to spread windows</h1>
+    <p class="lede">The same windows in the same room, laid out as GlazeWM's cluster (where they sit on screen, kept), GNOME's rows, and an even grid like Windows Task View. Switch layouts to watch the windows move; the numbers are each window's final scale.</p>
+  </header>
+
+  <div class="toolbar row" style="justify-content:space-between">
+    <div class="seg" id="layout" role="group" aria-label="Layout">
+      <button data-v="cluster" aria-pressed="true">Cluster</button><button data-v="rows" aria-pressed="false">Rows</button><button data-v="grid" aria-pressed="false">Grid</button>
+    </div>
+    <div class="row">
+      <span class="small muted">Windows</span>
+      <input id="count" type="range" min="1" max="8" value="5" aria-label="Number of windows" style="width:120px;accent-color:var(--accent)">
+      <output id="countOut" class="mono">5</output>
+      <div class="seg" id="arrangement" role="group" aria-label="Arrangement">
+        <button data-v="tiled" aria-pressed="true">Tiled</button><button data-v="floating" aria-pressed="false">Floating</button><button data-v="onebig" aria-pressed="false">One big</button>
+      </div>
+      <div class="seg" id="room" role="group" aria-label="Room">
+        <button data-v="glazewm" aria-pressed="true">Room today</button><button data-v="proposed" aria-pressed="false">Room proposed</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="big" id="big"></div>
+    <div class="minis" id="minis"></div>
+  </div>
+
+  <div class="grid2">
+    <section class="panel" style="display:flex;flex-direction:column;gap:12px">
+      <h2>Average window scale by window count</h2>
+      <p class="small muted" id="chartSub"></p>
+      <div class="chart" id="chart"><div class="tip" id="tip"></div></div>
+      <div class="row small" id="legend"></div>
+    </section>
+    <section class="panel" style="display:flex;flex-direction:column;gap:12px">
+      <h2>Each window's final scale</h2>
+      <p class="small muted">Its width in the overview over its width on screen. The largest of the three is green.</p>
+      <div class="scroll"><table id="table"></table></div>
+    </section>
+  </div>
+
+  <section class="notes">
+    <div class="note" style="--c:var(--s1)"><h3>Cluster</h3><p class="small">One scale for every window, each where it sits relative to the others, so the eye finds them where it left them and the big window stays the big one. Its cost is the bounding box: one far-off window shrinks everything.</p></div>
+    <div class="note" style="--c:var(--s2)"><h3>Rows</h3><p class="small">GNOME's: rows by height, short windows bumped up to 1.5×. With equal tiles it uses the room best (six tiles at 0.81× against the cluster's 0.65×). With mixed sizes it evens them out, shrinking the big window most.</p></div>
+    <div class="note" style="--c:var(--s3)"><h3>Grid</h3><p class="small">Each window fills an even cell in reading order. The best average, because small windows grow up to the cap, but the big window you were working in shrinks the most, and positions are lost.</p></div>
+  </section>
+</div>
+
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, scenario, targets, APPS } = OverviewStage;
+  const $ = (id) => document.getElementById(id);
+  const NAMES = { cluster: 'Cluster', rows: 'Rows', grid: 'Grid' };
+  const COLORS = { cluster: 'var(--s1)', rows: 'var(--s2)', grid: 'var(--s3)' };
+  const state = { layout: 'cluster', count: 5, arrangement: 'tiled', room: 'glazewm' };
+
+  // Same room for all three; rows and grid cap at 0.95 like GNOME's.
+  const paramsFor = (layout) => {
+    const base = { ...PRESETS[state.room], wallpaper: 'slab', strip: 'compact' };
+    if (layout === 'cluster') return { ...base, layout };
+    return { ...base, layout, maxScale: 0.95, rowsMax: 0.95, gap: layout === 'rows' ? 18 : base.gap };
+  };
+  const windows = () => scenario(state.count, state.arrangement);
+
+  const big = new Stage($('big'), { params: paramsFor('cluster'), windows: windows(), open: true, interactive: false });
+  const minis = {};
+  for (const layout of Object.keys(NAMES)) {
+    const b = document.createElement('button'); b.className = 'mini'; b.setAttribute('aria-pressed', String(layout === state.layout));
+    b.innerHTML = `<div class="m"></div><div style="display:flex;flex-direction:column;gap:6px;min-width:0"><h3><i style="background:${COLORS[layout]}"></i>${NAMES[layout]}</h3><span class="chip" data-avg></span></div>`;
+    b.onclick = () => setLayout(layout);
+    $('minis').append(b);
+    minis[layout] = { button: b, stage: new Stage(b.querySelector('.m'), { params: paramsFor(layout), windows: windows(), open: true, interactive: false }) };
+  }
+
+  const scalesOf = (layout, ws) => targets(paramsFor(layout), ws).rects.map((r, i) => r.w / ws[i].w);
+  const avg = (a) => a.reduce((t, v) => t + v, 0) / a.length;
+
+  function setLayout(layout) {
+    state.layout = layout;
+    document.querySelectorAll('#layout button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === layout)));
+    for (const [k, m] of Object.entries(minis)) m.button.setAttribute('aria-pressed', String(k === layout));
+    big.morph(paramsFor(layout));
+  }
+
+  function refresh() {
+    const ws = windows();
+    big.setWindows(ws); big.setParams(paramsFor(state.layout));
+    for (const [k, m] of Object.entries(minis)) {
+      m.stage.setWindows(ws); m.stage.setParams(paramsFor(k));
+      m.button.querySelector('[data-avg]').innerHTML = `average <b>${avg(scalesOf(k, ws)).toFixed(2)}×</b>`;
+    }
+    table(ws); chart();
+  }
+
+  function table(ws) {
+    const s = Object.fromEntries(Object.keys(NAMES).map((k) => [k, scalesOf(k, ws)]));
+    let h = '<thead><tr><th>Window</th><th>On screen</th>' + Object.values(NAMES).map((n) => `<th>${n}</th>`).join('') + '</tr></thead><tbody>';
+    ws.forEach((r, i) => {
+      const vals = Object.keys(NAMES).map((k) => s[k][i]), best = Math.max(...vals);
+      h += `<tr><td><span class="app" style="background:${APPS[i % APPS.length].tint}"></span>${APPS[i % APPS.length].name}</td><td>${Math.round(r.w)}×${Math.round(r.h)}</td>` +
+        vals.map((v) => `<td class="${v === best && vals.filter((x) => x === best).length < 3 ? 'best' : ''}">${v.toFixed(2)}×</td>`).join('') + '</tr>';
+    });
+    $('table').innerHTML = h + '</tbody>';
+  }
+
+  function chart() {
+    const W = 560, H = 300, m = { l: 44, r: 70, t: 12, b: 36 };
+    const pw = W - m.l - m.r, ph = H - m.t - m.b;
+    const data = Object.fromEntries(Object.keys(NAMES).map((k) => [k, [1, 2, 3, 4, 5, 6, 7, 8].map((n) => avg(scalesOf(k, scenario(n, state.arrangement))))]));
+    const all = Object.values(data).flat();
+    const lo = Math.max(0, Math.floor((Math.min(...all) - 0.05) * 10) / 10), hi = Math.min(1, Math.ceil((Math.max(...all) + 0.02) * 10) / 10);
+    const X = (n) => m.l + ((n - 1) / 7) * pw, Y = (v) => m.t + (1 - (v - lo) / (hi - lo)) * ph;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Average window scale for 1 to 8 windows, per layout">`;
+    for (let v = lo; v <= hi + 1e-6; v += 0.1) svg += `<line x1="${m.l}" x2="${m.l + pw}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" stroke-width="1"/><text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end" fill="var(--muted)" font-size="11" font-family="var(--mono)">${v.toFixed(1)}×</text>`;
+    for (let n = 1; n <= 8; n++) svg += `<text x="${X(n)}" y="${H - 14}" text-anchor="middle" fill="var(--muted)" font-size="11" font-family="var(--mono)">${n}</text>`;
+    svg += `<text x="${m.l + pw / 2}" y="${H}" text-anchor="middle" fill="var(--muted)" font-size="11">windows on the workspace</text>`;
+    const ends = [];
+    for (const [k, vals] of Object.entries(data)) {
+      svg += `<polyline fill="none" stroke="${COLORS[k]}" stroke-width="2" stroke-linejoin="round" points="${vals.map((v, i) => X(i + 1) + ',' + Y(v)).join(' ')}"/>`;
+      vals.forEach((v, i) => { svg += `<circle cx="${X(i + 1)}" cy="${Y(v)}" r="4" fill="${COLORS[k]}" stroke="var(--panel)" stroke-width="2"/>`; });
+      ends.push([k, Y(vals[7])]);
+    }
+    ends.sort((a, b) => a[1] - b[1]);
+    for (let i = 1; i < ends.length; i++) if (ends[i][1] - ends[i - 1][1] < 14) ends[i][1] = ends[i - 1][1] + 14;
+    for (const [k, y] of ends) svg += `<text x="${X(8) + 10}" y="${y + 4}" fill="var(--ink)" font-size="12" font-weight="600">${NAMES[k]}</text>`;
+    svg += `<line id="cross" y1="${m.t}" y2="${m.t + ph}" stroke="var(--muted)" stroke-dasharray="3 3" opacity="0"/><rect id="hit" x="${m.l - 20}" y="${m.t}" width="${pw + 40}" height="${ph}" fill="transparent"/></svg>`;
+    const host = $('chart');
+    host.querySelector('svg')?.remove();
+    host.insertAdjacentHTML('afterbegin', svg);
+    $('chartSub').textContent = `${{ tiled: 'Tiled', floating: 'Floating', onebig: 'One big window and floating ones' }[state.arrangement]}, in the ${state.room === 'glazewm' ? "room GlazeWM uses today" : 'proposed room'}.`;
+    $('legend').innerHTML = Object.keys(NAMES).map((k) => `<span class="chip"><i style="display:inline-block;width:14px;height:3px;border-radius:2px;background:${COLORS[k]}"></i>${NAMES[k]}</span>`).join('');
+    const svgEl = host.querySelector('svg'), tip = $('tip'), cross = svgEl.querySelector('#cross');
+    svgEl.querySelector('#hit').addEventListener('pointermove', (e) => {
+      const b = svgEl.getBoundingClientRect(), k = W / b.width;
+      const n = Math.max(1, Math.min(8, Math.round(((e.clientX - b.left) * k - m.l) / pw * 7) + 1));
+      cross.setAttribute('x1', X(n)); cross.setAttribute('x2', X(n)); cross.setAttribute('opacity', 1);
+      tip.innerHTML = `<b>${n} window${n > 1 ? 's' : ''}</b><br>` + Object.keys(NAMES).map((l) => `<i style="background:${COLORS[l]}"></i>${NAMES[l]} ${data[l][n - 1].toFixed(2)}×`).join('<br>');
+      tip.style.opacity = 1;
+      const left = X(n) / k + 12, maxLeft = b.width - tip.offsetWidth - 4;
+      tip.style.left = Math.min(left, maxLeft) + 'px'; tip.style.top = '10px';
+    });
+    svgEl.querySelector('#hit').addEventListener('pointerleave', () => { tip.style.opacity = 0; cross.setAttribute('opacity', 0); });
+  }
+
+  document.querySelectorAll('#layout button').forEach((b) => b.onclick = () => setLayout(b.dataset.v));
+  const segs = (id, key) => document.querySelectorAll(`#${id} button`).forEach((b) => b.onclick = () => {
+    state[key] = b.dataset.v;
+    document.querySelectorAll(`#${id} button`).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    refresh();
+  });
+  segs('arrangement', 'arrangement'); segs('room', 'room');
+  $('count').oninput = () => { state.count = +$('count').value; $('countOut').textContent = state.count; refresh(); };
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && !e.shiftKey && document.activeElement === document.body) {
+      e.preventDefault(); const order = Object.keys(NAMES); setLayout(order[(order.indexOf(state.layout) + 1) % 3]);
+    }
+  });
+  refresh();
+})();
+</script>

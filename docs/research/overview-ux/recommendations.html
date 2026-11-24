@@ -1,0 +1,117 @@
+<title>Overview Tuning Recommendations</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  .ab { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
+  .ab figure { margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .ab figcaption { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+  .ab figcaption b { font-family: var(--display); font-size: 18px; }
+  .walk { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 10px; }
+  .step { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 12px; background: var(--chip); min-width: 0; }
+  .step .v { font: 700 26px/1 var(--mono); font-variant-numeric: tabular-nums; }
+  .step .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .step .bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+  .step.now .bar i { background: var(--warn); }
+  ol.recs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; counter-reset: rec; }
+  ol.recs li { counter-increment: rec; display: grid; grid-template-columns: 44px minmax(0, 1fr) minmax(0, 220px); gap: 14px; align-items: start; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+  ol.recs li::before { content: counter(rec); font: 700 22px/1 var(--display); color: var(--accent); padding-top: 2px; }
+  @media (max-width: 760px) { ol.recs li { grid-template-columns: 34px minmax(0, 1fr); } ol.recs .where { grid-column: 2; } }
+  .recs h3 { font-size: 17px; margin-bottom: 4px; }
+  .change { font: 600 13px/1.4 var(--mono); }
+  .change s { color: var(--muted); text-decoration-thickness: 1.5px; }
+  .change span { color: var(--good); }
+  .where { font: 500 12px/1.5 var(--mono); color: var(--muted); display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+  .why { color: var(--muted); font-size: 14px; max-width: 72ch; }
+  .tries { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="playground.html">Zoom playground</a>
+    <a href="layouts.html">Layout comparison</a>
+    <a href="concepts.html">Design concepts</a>
+    <a href="recommendations.html" aria-current="page">Recommendations</a>
+  </nav>
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">GlazeWM overview · research</span>
+    <h1>Why it zooms out too much, and what to change</h1>
+    <p class="lede">A full-screen window ends at 0.69× of its size today: four margins stack up, and the windows shrink inside a wallpaper slab that shrinks too. GNOME, KDE and macOS land near 0.8× with one margin. Eight changes, ranked, with the number to use and where it goes. Sources and the full comparison are in <a href="https://github.com/florensm/glazewm/blob/test/overview-config/docs/research/overview-ux.md">docs/research/overview-ux.md</a>.</p>
+  </header>
+
+  <section class="ab" aria-label="Today and proposed, side by side">
+    <figure><div id="today"></div><figcaption><b>Today</b><span class="chip warn">full-screen window <b>0.69×</b></span></figcaption></figure>
+    <figure><div id="proposed"></div><figcaption><b>Proposed</b><span class="chip good">full-screen window <b>0.80×</b></span></figcaption></figure>
+  </section>
+  <div class="row"><button class="primary" id="play">Play both</button><button id="loop" aria-pressed="true">Looping</button><span class="small muted">Click either desktop to try it yourself.</span></div>
+
+  <section class="panel" style="display:flex;flex-direction:column;gap:12px">
+    <h2>Where the size goes</h2>
+    <p class="small muted">A full-screen window on 1920×1080 at 100%, as each change lands. Computed with the same code as the playground.</p>
+    <div class="walk" id="walk"></div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:12px">
+    <h2>Ranked changes</h2>
+    <ol class="recs">
+      <li><div><h3>Raise the cluster's cap</h3><p class="change"><s>0.85</s> → <span>0.94</span> of the room</p><p class="why">The room already has margins; the cap adds 7.5% more on every side. Alone, this takes a full-screen window from 0.69× to 0.77×.</p></div>
+        <div class="where"><span>expose.rs</span><span>LARGEST</span></div></li>
+      <li><div><h3>Thinner margins and wallpaper padding</h3><p class="change">margins <s>48</s> → <span>32</span> px · padding <s>24</s> → <span>16</span> px</p><p class="why">With 1, windows end at 0.80× and fill 92% of the slab instead of 82%: the desktop and its windows shrink about alike, so the open reads as one depth, not two.</p></div>
+        <div class="where"><span>layout.rs activities: margin</span><span>parsed_config.rs OverviewWallpaperConfig::default: padding</span></div></li>
+      <li><div><h3>Open on a softer spring with a little give; close as today</h3><p class="change">open <s>spring(1, 800)</s> → <span>spring(0.85, 520)</span> · close stays spring(1, 800)</p><p class="why">Same 90% at 140 ms, but within 1% by 196 ms and a 0.6% overshoot, so it lands instead of stopping. Closing stays fast, as exits should be. Needs the easing split into open and close.</p></div>
+        <div class="where"><span>parsed_config.rs SpringParams::default</span><span>OverviewAnimationConfig: open_easing, close_easing</span></div></li>
+      <li><div><h3>A small stagger by default</h3><p class="change">stagger <s>0</s> → <span>10 ms</span>, all within 60 ms</p><p class="why">Windows peeling off nearest-first read as windows moving apart, not a camera moving back. Too short to wait on. Open only.</p></div>
+        <div class="where"><span>parsed_config.rs effects.stagger_ms</span><span>native/scenes.rs ripple_delays</span></div></li>
+      <li><div><h3>A hover you can feel</h3><p class="change">lift <s>0.025</s> → <span>0.04</span>, title at once</p><p class="why">GNOME grows a hovered window 5 px each way, about 1.25%. At 0.8× scale, 4% is clearly felt without jumping.</p></div>
+        <div class="where"><span>parsed_config.rs effects.window_lift</span></div></li>
+      <li><div><h3>Chrome arrives sooner</h3><p class="change">from <s>80%</s> → <span>60%</span> open</p><p class="why">Names and highlights fade in while the windows still settle, so the overview feels ready sooner.</p></div>
+        <div class="where"><span>layout.rs CHROME_FROM</span></div></li>
+      <li><div><h3>Dim the others slightly while pointing</h3><p class="change">dim <s>0</s> → <span>0.12</span></p><p class="why">A lighter version of App Exposé's focus: the hovered window stands out without the rest going dark.</p></div>
+        <div class="where"><span>parsed_config.rs effects.dim</span></div></li>
+      <li><div><h3>A slightly tighter gap</h3><p class="change">gap <s>28</s> → <span>24</span> px</p><p class="why">With larger windows, 28 px looks wide. GNOME uses 6 px plus its preview chrome.</p></div>
+        <div class="where"><span>parsed_config.rs expose.gap</span></div></li>
+    </ol>
+  </section>
+
+  <section class="panel" style="display:flex;flex-direction:column;gap:12px">
+    <h2>Worth trying behind an option</h2>
+    <div class="tries">
+      <div style="display:flex;flex-direction:column;gap:4px"><h3>A wallpaper that stays</h3><p class="small muted"><code>wallpaper.style: "still"</code>: full screen, dimmed 25%, only the windows move, as on macOS. Removes the sense of depth entirely. Try it in the playground with "Stays, dimmed".</p></div>
+      <div style="display:flex;flex-direction:column;gap:4px"><h3>Rows for equal windows</h3><p class="small muted">Six equal tiles end at 0.81× in GNOME's rows and 0.65× in the cluster. With mixed sizes rows shrink the big window most, so only when windows are about the same size. See the layout comparison.</p></div>
+      <div style="display:flex;flex-direction:column;gap:4px"><h3>Hold to pick</h3><p class="small muted">Holding the binding's modifier makes the overview quasi-modal like Alt+Tab: arrows move, release picks. The quickest of the concepts.</p></div>
+    </div>
+  </section>
+</div>
+
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, scenario, targets } = OverviewStage;
+  const $ = (id) => document.getElementById(id);
+  const ws = scenario(4, 'tiled');
+  const a = new Stage($('today'), { params: PRESETS.glazewm, windows: ws, onChange: done });
+  const b = new Stage($('proposed'), { params: PRESETS.proposed, windows: ws, onChange: done });
+  let loop = !matchMedia('(prefers-reduced-motion: reduce)').matches, timer = 0;
+  function both() { const o = !a.isOpen; for (const s of [a, b]) o ? s.open() : s.close(o ? -1 : 1); }
+  function done(s) { if (loop && (s === 'opened' || s === 'closed') && !a.running && !b.running) { clearTimeout(timer); timer = setTimeout(() => loop && both(), s === 'opened' ? 1400 : 900); } }
+  $('play').onclick = both;
+  $('loop').onclick = () => { loop = !loop; $('loop').setAttribute('aria-pressed', loop); $('loop').textContent = loop ? 'Looping' : 'Loop'; if (loop) both(); };
+  for (const el of [$('today'), $('proposed')]) el.addEventListener('pointerdown', () => { loop = false; $('loop').setAttribute('aria-pressed', 'false'); $('loop').textContent = 'Loop'; }, true);
+  if (loop) setTimeout(both, 600);
+
+  const full = [{ x: 0, y: 0, w: 1920, h: 1032 }];
+  const g = PRESETS.glazewm;
+  const steps = [
+    ['Today', g],
+    ['+ cap 0.94', { ...g, largest: 0.94 }],
+    ['+ margins 32', { ...g, largest: 0.94, margin: 32 }],
+    ['+ padding 16', { ...g, largest: 0.94, margin: 32, padding: 16 }],
+  ];
+  $('walk').innerHTML = steps.map(([name, p], i) => {
+    const t = targets(p, full), v = t.rects[0].w / 1920, fill = t.rects[0].w / t.slab.w;
+    return `<div class="step ${i ? '' : 'now'}"><span class="small muted">${name}</span><span class="v">${v.toFixed(2)}×</span><div class="bar"><i style="width:${v * 100}%"></i></div><span class="small muted">fills ${Math.round(fill * 100)}% of the slab</span></div>`;
+  }).join('');
+})();
+</script>

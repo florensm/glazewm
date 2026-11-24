@@ -1,0 +1,327 @@
+<title>Overview Design Concepts</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  .concept { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .concept { grid-template-columns: minmax(0, 1fr); } }
+  .demo { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .demo-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .demo-bar .status { margin-left: auto; font: 500 12px/1 var(--mono); color: var(--muted); }
+  .copy { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .copy h2 { font-size: 28px; }
+  .num { font: 700 12px/1 var(--mono); color: var(--accent); letter-spacing: .1em; }
+  .pitch { font-size: 17px; line-height: 1.45; }
+  ul.takes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+  ul.takes li { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; font-size: 13.5px; align-items: baseline; }
+  .badge { font: 600 10.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 4px 6px; border-radius: 5px; text-align: center; }
+  .badge.has { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+  .badge.opt { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .badge.code { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  .keys { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 30px; }
+  .key { font: 600 13px/1 var(--mono); padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); border-bottom-width: 3px; background: var(--panel); transition: transform .08s, background .12s, color .12s; }
+  .key.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); transform: translateY(2px); border-bottom-width: 1px; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+  .ribbon { position: relative; overflow: hidden; aspect-ratio: 16/9; width: 100%; border-radius: 10px; background: #101116; outline: none; user-select: none; }
+  .ribbon:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+  .rws { position: absolute; left: 0; top: 0; transform-origin: 50% 50%; will-change: transform, opacity; border-radius: 1.4%; overflow: hidden; cursor: pointer; }
+  .rws .wall { position: absolute; inset: 0; }
+  .rws .w { position: absolute; border-radius: 8px; overflow: hidden; box-shadow: 0 3px 12px rgba(0,0,0,.35);
+    background: linear-gradient(#e9ebf0 0 34px, transparent 34px), repeating-linear-gradient(180deg, transparent 0 22px, #d5d8e0 22px 31px) 0 50px / 62% 100% no-repeat, #f6f7fa;
+    background-position: 0 0, 5% 60px, 0 0; }
+  .rws .w::before { content: ""; position: absolute; left: 14px; top: 10px; width: 16px; height: 16px; border-radius: 4px; background: var(--t); }
+  .rws .w::after { content: ""; position: absolute; left: 5%; right: 5%; top: 18%; height: 22%; border-radius: 12px; background: var(--t); opacity: .7; }
+  .rws .w.dark { background: linear-gradient(#1f2230 0 34px, transparent 34px), repeating-linear-gradient(180deg, transparent 0 22px, #3b4261 22px 31px) 0 50px / 58% 100% no-repeat, #1a1b26; background-position: 0 0, 5% 60px, 0 0; }
+  .rws .w.dark::after { display: none; }
+  .rws .inner { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+  .rlabel { position: absolute; left: 0; top: 0; transform-origin: 0 0; color: #e9e9ef; font: 600 14px/1.2 var(--body); white-space: nowrap; pointer-events: none; will-change: transform, opacity; }
+  .rlabel span { font-weight: 400; opacity: .65; margin-left: 6px; }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="playground.html">Zoom playground</a>
+    <a href="layouts.html">Layout comparison</a>
+    <a href="concepts.html" aria-current="page">Design concepts</a>
+    <a href="recommendations.html">Recommendations</a>
+  </nav>
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">GlazeWM overview · research</span>
+    <h1>Five ways the overview could feel</h1>
+    <p class="lede">Each plays on its own. Click a demo to take over: click a window to pick it, the background to cancel, or a closed desktop to open it. Each lists what it would take in GlazeWM: an option that exists, a new option, or new code.</p>
+  </header>
+
+  <!-- 1 -->
+  <section class="concept panel" data-concept="settle">
+    <div class="demo"><div class="stage"></div>
+      <div class="demo-bar"><button data-replay>Replay</button><span class="status" data-status></span></div></div>
+    <div class="copy">
+      <span class="num">01 · RECOMMENDED DEFAULT</span>
+      <h2>Settle</h2>
+      <p class="pitch">The overview as it is, tuned: windows end at 0.8× instead of 0.69×, fill their slab, and land with a hint of give. The others dim a little as you point.</p>
+      <ul class="takes">
+        <li><span class="badge code">code</span><span>Cluster cap 0.94 (<code>expose.rs</code>), margins 32 (<code>layout.rs</code>), chrome from 60% open.</span></li>
+        <li><span class="badge has">option</span><span><code>wallpaper.padding: 16</code>, <code>expose.gap: 24</code>, <code>effects.stagger_ms: 10</code>, <code>window_lift: 0.04</code>, <code>dim: 0.12</code>.</span></li>
+        <li><span class="badge opt">new option</span><span>Separate open and close easings: open <code>spring(0.85, 520)</code>, close <code>spring(1, 800)</code>.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="concept panel" data-concept="spotlight">
+    <div class="demo"><div class="stage"></div>
+      <div class="demo-bar"><button data-replay>Replay</button><span class="status" data-status></span></div></div>
+    <div class="copy">
+      <span class="num">02 · SEARCH FIRST</span>
+      <h2>Spotlight</h2>
+      <p class="pitch">Typing already searches. Here the matches also take the room: they gather in the middle, growing as the query narrows, and the rest bow out to a shelf along the bottom instead of fading in place. <span class="kbd">Enter</span> takes the first.</p>
+      <ul class="takes">
+        <li><span class="badge has">exists</span><span>The exposé already spreads only the matches; non-matches fade to a quarter.</span></li>
+        <li><span class="badge code">code</span><span>Non-matches to a shelf of small previews (<code>native/scenes.rs</code> <code>spread_windows</code>), still clickable.</span></li>
+        <li><span class="badge code">code</span><span>Search box grows from the field rather than appearing, 180 ms.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="concept panel" data-concept="ribbon">
+    <div class="demo"><div class="ribbon" tabindex="0" aria-label="Workspace ribbon demo: arrows to move, Enter to open"></div>
+      <div class="demo-bar"><div class="keys" data-keys><span class="key" data-k="←">←</span><span class="key" data-k="→">→</span><span class="key" data-k="Enter">Enter</span></div><button data-replay>Replay</button><span class="status" data-status></span></div></div>
+    <div class="copy">
+      <span class="num">03 · WORKSPACES FIRST</span>
+      <h2>Ribbon</h2>
+      <p class="pitch">For moving between workspaces rather than windows: every workspace in a row at the same size, the selected one in the middle, its neighbours peeking in on both sides as GNOME's do. Arrows slide the ribbon; <span class="kbd">Enter</span> zooms in.</p>
+      <ul class="takes">
+        <li><span class="badge has">exists</span><span>The stack layout, turned on its side; the activities' slide between workspaces.</span></li>
+        <li><span class="badge opt">new option</span><span><code>stack.direction: horizontal</code>, neighbours at 0.86× and 60% opacity.</span></li>
+        <li><span class="badge code">code</span><span>Wheel and touchpad glide the ribbon continuously, settling on the nearest, as the stack does today.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="concept panel" data-concept="bloom">
+    <div class="demo"><div class="stage"></div>
+      <div class="demo-bar"><button data-replay>Replay</button><span class="status" data-status></span></div></div>
+    <div class="copy">
+      <span class="num">04 · PLAYFUL</span>
+      <h2>Bloom</h2>
+      <p class="pitch">Opened from a hot corner, the windows peel off nearest the cursor first and overshoot a touch, like cards dealt from that corner. Picking one sends a ripple out from it. All motion, no extra waiting: the last window starts within 200 ms.</p>
+      <ul class="takes">
+        <li><span class="badge has">option</span><span><code>hot_corner.corner: bottom_left</code>, <code>effects.ripples: true</code>, <code>stagger_ms: 26</code>, <code>animation.bounce</code>.</span></li>
+        <li><span class="badge code">code</span><span>Stagger outward from the cursor rather than the focused window (<code>ripple_delays</code> origin).</span></li>
+        <li><span class="badge opt">new option</span><span>Open easing <code>spring(0.62, 380)</code>: an 8% overshoot.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="concept panel" data-concept="hold">
+    <div class="demo"><div class="stage"></div>
+      <div class="demo-bar"><div class="keys" data-keys><span class="key" data-k="Alt">Alt</span><span class="key" data-k="W">W</span><span class="key" data-k="→">→</span><span class="key" data-k="↓">↓</span></div><button data-replay>Replay</button><span class="status" data-status></span></div></div>
+    <div class="copy">
+      <span class="num">05 · QUICKEST</span>
+      <h2>Hold to pick</h2>
+      <p class="pitch">A tap of <span class="kbd">Alt</span>+<span class="kbd">W</span> opens the overview as today. Holding <span class="kbd">Alt</span> makes it work like Alt+Tab: arrows move the ring, letting go of <span class="kbd">Alt</span> picks. Switching window becomes one gesture of the hand.</p>
+      <ul class="takes">
+        <li><span class="badge has">exists</span><span>Arrows move spatially; <code>Enter</code> picks.</span></li>
+        <li><span class="badge code">code</span><span>Track the keybinding's modifier while open; its release picks once a selection was moved (<code>wm.rs</code> keyboard hook).</span></li>
+        <li><span class="badge opt">new option</span><span><code>overview.release_picks: true</code>.</span></li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, scenario, Motion, APPS, W, H, WORK } = OverviewStage;
+  const L = OverviewLayouts;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Runs `script` in a loop while its card is on screen, until the viewer takes over.
+  function director(card, script, reset) {
+    let token = 0, visible = false, taken = false;
+    const status = card.querySelector('[data-status]');
+    const sleep = (ms, t) => new Promise((res, rej) => setTimeout(() => (t === token ? res() : rej(0)), ms));
+    async function loop() {
+      const t = ++token;
+      try {
+        while (true) { reset(); await sleep(400, t); await script((ms) => sleep(ms, t)); await sleep(900, t); }
+      } catch { /* stopped */ }
+    }
+    const start = () => { if (visible && !taken && !reduce) { status.textContent = 'playing'; loop(); } };
+    const stop = () => { token++; };
+    new IntersectionObserver(([e]) => { visible = e.isIntersecting; visible ? start() : stop(); }, { threshold: 0.25 }).observe(card);
+    card.querySelector('.demo').addEventListener('pointerdown', (e) => {
+      if (e.target.closest('[data-replay]')) return;
+      if (!taken) { taken = true; stop(); status.textContent = 'your turn'; }
+    }, true);
+    card.querySelector('[data-replay]').onclick = () => { taken = false; stop(); start(); };
+    if (reduce) status.textContent = 'motion reduced: click to try';
+  }
+
+  const keyFlash = (card, k, on) => card.querySelector(`[data-k="${k}"]`)?.classList.toggle('on', on);
+  const proposed = { ...PRESETS.proposed, icons: false };
+
+  // 1. Settle.
+  {
+    const card = document.querySelector('[data-concept="settle"]');
+    const stage = new Stage(card.querySelector('.stage'), { params: proposed, windows: scenario(4, 'tiled') });
+    director(card, async (sleep) => {
+      stage.open(); await sleep(700);
+      let [x, y] = stage.centerOf(2); stage.showCursor(x + 30, y + 40, 650); await sleep(650); stage.setHover(2); await sleep(900);
+      [x, y] = stage.centerOf(1); stage.showCursor(x - 20, y + 30, 520); await sleep(520); stage.setHover(1); await sleep(700);
+      stage.press(); stage.close(1); stage.hideCursor(); await sleep(900);
+    }, () => { stage.hideCursor(); if (stage.isOpen) stage.close(); });
+  }
+
+  // 2. Spotlight.
+  {
+    const card = document.querySelector('[data-concept="spotlight"]');
+    const ws = scenario(6, 'floating');
+    const names = ['code', 'firefox', 'terminal', 'chat', 'music', 'files'];
+    const stage = new Stage(card.querySelector('.stage'), { params: { ...proposed, strip: 'none' }, windows: ws });
+    const fuzzy = (q, s) => { let i = 0; for (const c of s) if (c === q[i]) i++; return i === q.length; };
+    function apply(q) {
+      const room = stage.t.room;
+      const hits = names.map((n, i) => (q && (n.includes(q) || fuzzy(q, n + ' ' + APPS[i].title.toLowerCase())) ? i : -1)).filter((i) => i >= 0);
+      if (!q || !hits.length) {
+        stage.morphRects(L.cluster(ws, room, { gap: 24, largest: 0.94 }));
+        ws.forEach((_, i) => stage.fadeWindow(i, 1)); stage.setSearch(q || null, q ? 'no match' : null); return hits;
+      }
+      const top = { x: room.x, y: room.y + 70, w: room.w, h: room.h - 70 - 150 };
+      const spread = L.cluster(hits.map((i) => ws[i]), top, { gap: 32, largest: 0.94 });
+      const rest = ws.map((_, i) => i).filter((i) => !hits.includes(i));
+      const shelfH = 110, gap = 20;
+      const widths = rest.map((i) => ws[i].w / ws[i].h * shelfH);
+      let x = W / 2 - (widths.reduce((a, b) => a + b, 0) + gap * (rest.length - 1)) / 2;
+      const rects = ws.map(() => null);
+      hits.forEach((i, k) => { rects[i] = spread[k]; });
+      rest.forEach((i, k) => { rects[i] = { x, y: H - shelfH - 40, w: widths[k], h: shelfH }; x += widths[k] + gap; });
+      stage.morphRects(rects, { kind: 'spring', stiffness: 460, damping: 0.86 }, 12);
+      ws.forEach((_, i) => stage.fadeWindow(i, hits.includes(i) ? 1 : 0.45));
+      stage.setSearch(q, `1 of ${hits.length}`);
+      return hits;
+    }
+    director(card, async (sleep) => {
+      stage.open(); await sleep(800);
+      let hits = [];
+      for (const q of ['f', 'fi', 'fir']) { hits = apply(q); stage.setHover(hits[0]); await sleep(q === 'fi' ? 1100 : 380); }
+      await sleep(800);
+      stage.setSearch(null); stage.close(hits[0]); await sleep(800);
+    }, () => { stage.setSearch(null); if (stage.isOpen) stage.close(); });
+    card.querySelector('.stage').addEventListener('click', () => setTimeout(() => stage.setSearch(null), 0));
+  }
+
+  // 3. Ribbon.
+  {
+    const card = document.querySelector('[data-concept="ribbon"]');
+    const host = card.querySelector('.ribbon');
+    const spaces = [
+      { name: '1', label: 'code', ws: scenario(3, 'tiled') }, { name: '2', label: 'web', ws: scenario(2, 'tiled') },
+      { name: '3', label: 'chat', ws: scenario(4, 'floating') }, { name: '4', label: 'music', ws: scenario(1, 'tiled') },
+      { name: '5', label: 'notes', ws: scenario(5, 'tiled') },
+    ];
+    const walls = [
+      'radial-gradient(60% 80% at 20% 25%,#3c5d8f,transparent 60%),radial-gradient(55% 70% at 85% 75%,#c2643f,transparent 62%),linear-gradient(160deg,#1d2b45,#4a3340)',
+      'radial-gradient(70% 70% at 70% 30%,#2f7f78,transparent 60%),linear-gradient(200deg,#0f2a2e,#1d3b4f)',
+      'radial-gradient(60% 70% at 30% 70%,#7b4fa8,transparent 60%),linear-gradient(140deg,#1c1530,#3b2342)',
+      'radial-gradient(60% 70% at 60% 40%,#b8873a,transparent 60%),linear-gradient(170deg,#2a2016,#3e2b23)',
+      'radial-gradient(60% 70% at 40% 40%,#4f78b8,transparent 60%),linear-gradient(160deg,#141b2b,#22304a)',
+    ];
+    const els = spaces.map((sp, i) => {
+      const el = document.createElement('div'); el.className = 'rws';
+      el.innerHTML = `<div class="wall" style="background:${walls[i]}"></div><div class="inner">` + sp.ws.map((r, j) => {
+        const app = APPS[(j + i * 2) % APPS.length];
+        return `<div class="w ${['editor', 'terminal', 'music'].includes(app.kind) ? 'dark' : ''}" style="--t:${app.tint};left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px"></div>`;
+      }).join('') + '</div>';
+      const label = document.createElement('div'); label.className = 'rlabel';
+      label.innerHTML = `${sp.name} · ${sp.label}<span>${sp.ws.length} window${sp.ws.length > 1 ? 's' : ''}</span>`;
+      el.onclick = () => { if (open.to < 0.5) { openUp(); return; } if (Math.round(pos.to) === i) enter(); else go(i); };
+      host.append(el, label); return { el, label };
+    });
+    const pos = new Motion(1), open = new Motion(0);
+    const glide = { kind: 'spring', stiffness: 360, damping: 0.86 };
+    let running = false, last = 0;
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      const busy = pos.step(dt) | open.step(dt);
+      render(); if (busy) requestAnimationFrame(frame); else running = false;
+    }
+    const kick = () => { if (!running) { running = true; last = performance.now(); requestAnimationFrame(frame); } };
+    function render() {
+      const bw = host.clientWidth, bh = host.clientHeight, o = open.x;
+      const size = 1 + (0.62 - 1) * o, step = bw * 0.62 + bw * 0.035;
+      els.forEach(({ el, label }, i) => {
+        const d = i - pos.x, ad = Math.min(Math.abs(d), 1.2);
+        const s = size * (1 - (1 - 0.86) * Math.min(ad, 1) * o);
+        const w = bw * s, h = bh * s;
+        const cx = bw / 2 + d * (o * step + (1 - o) * bw * 1.02);
+        const cy = bh / 2 - o * bh * 0.04;
+        el.style.width = bw + 'px'; el.style.height = bh + 'px';
+        el.querySelector('.inner').style.transform = `scale(${bw / W})`;
+        el.style.transform = `translate(${cx - bw / 2}px,${cy - bh / 2}px) scale(${s})`;
+        el.style.opacity = 1 - 0.4 * Math.min(ad, 1) * o;
+        el.style.borderRadius = (14 * o / s) + 'px';
+        el.style.zIndex = 10 - Math.round(Math.abs(d));
+        label.style.transform = `translate(${cx - w / 2}px,${cy + h / 2 + 10}px)`;
+        label.style.opacity = Math.max(0, (o - 0.6) / 0.4) * (1 - 0.5 * Math.min(ad, 1));
+      });
+    }
+    const go = (i) => { pos.aim(Math.max(0, Math.min(spaces.length - 1, i)), glide); kick(); };
+    const openUp = () => { open.aim(1, { kind: 'spring', stiffness: 520, damping: 0.85 }); kick(); };
+    const enter = () => { open.aim(0, { kind: 'spring', stiffness: 800, damping: 1 }); kick(); };
+    host.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight') { go(Math.round(pos.to) + 1); keyFlash(card, '→', true); setTimeout(() => keyFlash(card, '→', false), 150); }
+      else if (e.key === 'ArrowLeft') { go(Math.round(pos.to) - 1); keyFlash(card, '←', true); setTimeout(() => keyFlash(card, '←', false), 150); }
+      else if (e.key === 'Enter' || e.key === ' ') { open.to > 0.5 ? enter() : openUp(); }
+      else if (e.key === 'Escape') enter();
+      else return;
+      e.preventDefault();
+    });
+    host.addEventListener('wheel', (e) => { if (open.to < 0.5) return; e.preventDefault(); go(Math.round(pos.to) + Math.sign(e.deltaY || e.deltaX)); }, { passive: false });
+    new ResizeObserver(render).observe(host);
+    const press = async (sleep, k, act) => { keyFlash(card, k, true); act(); await sleep(160); keyFlash(card, k, false); };
+    director(card, async (sleep) => {
+      openUp(); await sleep(900);
+      await press(sleep, '→', () => go(2)); await sleep(650);
+      await press(sleep, '→', () => go(3)); await sleep(650);
+      await press(sleep, '←', () => go(2)); await sleep(800);
+      await press(sleep, 'Enter', enter); await sleep(900);
+    }, () => { pos.aim(1, { kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] }); open.aim(0, { kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] }); kick(); });
+  }
+
+  // 4. Bloom.
+  {
+    const card = document.querySelector('[data-concept="bloom"]');
+    const params = { ...proposed, open: { kind: 'spring', stiffness: 380, damping: 0.62 }, staggerMs: 26, staggerWithinMs: 200, lift: 0.06, dim: 0.2, staggerFrom: [0, H] };
+    const stage = new Stage(card.querySelector('.stage'), { params, windows: scenario(6, 'onebig') });
+    const ripplePick = (i) => { const [x, y] = stage.centerOf(i); stage.ripple(x, y); stage.close(i); };
+    card.querySelector('.stage').addEventListener('click', () => {}, true);
+    director(card, async (sleep) => {
+      stage.showCursor(260, 520, 10); await sleep(200);
+      stage.showCursor(6, H - 50, 700); await sleep(900);
+      stage.open(); await sleep(900);
+      let [x, y] = stage.centerOf(3); stage.showCursor(x, y + 20, 700); await sleep(700); stage.setHover(3); await sleep(500);
+      [x, y] = stage.centerOf(1); stage.showCursor(x + 10, y + 20, 520); await sleep(520); stage.setHover(1); await sleep(650);
+      stage.press(); ripplePick(1); stage.hideCursor(); await sleep(1000);
+    }, () => { stage.hideCursor(); if (stage.isOpen) stage.close(); });
+  }
+
+  // 5. Hold to pick.
+  {
+    const card = document.querySelector('[data-concept="hold"]');
+    const params = { ...proposed, chromeFrom: 0.35, dim: 0.16, lift: 0.04 };
+    const stage = new Stage(card.querySelector('.stage'), { params, windows: scenario(5, 'tiled') });
+    director(card, async (sleep) => {
+      keyFlash(card, 'Alt', true); await sleep(200); keyFlash(card, 'W', true); stage.open(); await sleep(140); keyFlash(card, 'W', false);
+      await sleep(260); stage.setHover(0); await sleep(450);
+      for (const [k, i] of [['→', 1], ['↓', 2], ['→', 3]]) { keyFlash(card, k, true); stage.setHover(i); await sleep(140); keyFlash(card, k, false); await sleep(330); }
+      await sleep(250); keyFlash(card, 'Alt', false); stage.close(3); await sleep(900);
+    }, () => { ['Alt', 'W', '→', '↓'].forEach((k) => keyFlash(card, k, false)); if (stage.isOpen) stage.close(); });
+  }
+})();
+</script>

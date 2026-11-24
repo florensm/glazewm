@@ -1,0 +1,347 @@
+<title>Overview Zoom Playground</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  .stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; }
+  .pane { display: flex; flex-direction: column; gap: 10px; border: 2px solid transparent; border-radius: 16px; padding: 10px; background: var(--panel); cursor: pointer; min-width: 0; }
+  .pane[data-active="true"] { border-color: var(--accent); }
+  .pane-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .pane-head .tag { font: 700 12px/1 var(--mono); background: var(--ink); color: var(--bg); border-radius: 6px; padding: 5px 7px; }
+  .readout { display: flex; gap: 6px; flex-wrap: wrap; }
+  .toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+  .controls { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 860px) { .controls { grid-template-columns: minmax(0, 1fr); } }
+  .group { display: flex; flex-direction: column; gap: 12px; }
+  .group + .group { border-top: 1px solid var(--line); padding-top: 14px; }
+  .group-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  canvas.curve { width: 100%; height: 150px; display: block; }
+  .legend { display: flex; gap: 14px; font: 500 12px/1 var(--mono); color: var(--muted); flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="playground.html" aria-current="page">Zoom playground</a>
+    <a href="layouts.html">Layout comparison</a>
+    <a href="concepts.html">Design concepts</a>
+    <a href="recommendations.html">Recommendations</a>
+  </nav>
+  <header class="group" style="gap:8px">
+    <span class="eyebrow">GlazeWM overview · research</span>
+    <h1>Zoom playground</h1>
+    <p class="lede">Two mock 1920×1080 desktops opening into an overview. Pick a preset for each side, tune the side outlined in blue, and play both together. Click a window in an open overview to zoom into it; click the background to cancel.</p>
+  </header>
+
+  <div class="toolbar">
+    <div class="row">
+      <button class="primary" id="play">Open both <span class="kbd" style="border-color:currentColor;opacity:.7">Space</span></button>
+      <button id="loop" aria-pressed="false">Loop</button>
+      <button id="slow" aria-pressed="false">Slow ×4</button>
+    </div>
+    <div class="row">
+      <span class="small muted">Windows</span>
+      <input id="count" type="range" min="1" max="8" value="4" aria-label="Number of windows" style="width:120px;accent-color:var(--accent)">
+      <output id="countOut" class="mono">4</output>
+      <div class="seg" id="arrangement" role="group" aria-label="Arrangement">
+        <button data-v="tiled" aria-pressed="true">Tiled</button>
+        <button data-v="floating" aria-pressed="false">Floating</button>
+        <button data-v="onebig" aria-pressed="false">One big</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stages">
+    <section class="pane" id="paneA" data-active="true" aria-label="Side A">
+      <div class="pane-head"><span class="tag">A</span><select id="presetA" aria-label="Preset for side A"></select></div>
+      <div class="stage" id="stageA"></div>
+      <div class="readout" id="readA"></div>
+    </section>
+    <section class="pane" id="paneB" data-active="false" aria-label="Side B">
+      <div class="pane-head"><span class="tag">B</span><select id="presetB" aria-label="Preset for side B"></select></div>
+      <div class="stage" id="stageB"></div>
+      <div class="readout" id="readB"></div>
+    </section>
+  </div>
+
+  <div class="controls">
+    <section class="panel group" aria-label="Settings">
+      <div class="group">
+        <div class="group-head"><h3>Sizing <span class="muted small" id="editing">· editing A</span></h3>
+          <div class="seg" id="layout" role="group" aria-label="Layout">
+            <button data-v="cluster">Cluster</button><button data-v="rows">Rows</button><button data-v="grid">Grid</button><button data-v="rigid">Rigid zoom</button>
+          </div>
+        </div>
+        <div class="fields" id="sizing"></div>
+      </div>
+      <div class="group">
+        <div class="group-head"><h3>Backdrop and strip</h3></div>
+        <div class="row">
+          <div class="seg" id="wallpaper" role="group" aria-label="Wallpaper">
+            <button data-v="slab">Shrinks onto a slab</button><button data-v="blur">Stays, blurred</button><button data-v="dim">Stays, dimmed</button>
+          </div>
+          <div class="seg" id="strip" role="group" aria-label="Workspace strip">
+            <button data-v="compact">Compact row</button><button data-v="thumbs">Thumbnails</button><button data-v="names">Names</button><button data-v="bottom">Bottom</button><button data-v="none">None</button>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-head"><h3>Motion</h3></div>
+        <div class="fields" id="motion"></div>
+      </div>
+      <div class="group">
+        <div class="group-head"><h3>Feedback</h3></div>
+        <div class="fields" id="feedback"></div>
+      </div>
+    </section>
+
+    <aside class="panel group" aria-label="Curves and config">
+      <div class="group">
+        <div class="group-head"><h3>Open, first 600 ms</h3></div>
+        <canvas class="curve" id="curve" aria-label="Progress of the open over time, for both sides"></canvas>
+        <div class="legend"><span><i style="background:var(--accent)"></i>A</span><span><i style="background:var(--warn)"></i>B</span><span>dashed: 90%</span></div>
+      </div>
+      <div class="group">
+        <div class="group-head"><h3>As GlazeWM config</h3><button id="copy">Copy</button></div>
+        <pre id="yaml"></pre>
+        <p class="small muted">Lines marked <code># code</code> have no option today; they are constants in the files named.</p>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, scenario } = OverviewStage;
+  const L = OverviewLayouts;
+  const $ = (id) => document.getElementById(id);
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+
+  const state = { count: 4, arrangement: 'tiled', active: 'A', slow: false, loop: false };
+  const params = { A: clone(PRESETS.glazewm), B: clone(PRESETS.proposed) };
+  const presetOf = { A: 'glazewm', B: 'proposed' };
+  const curves = {
+    'ease-out-sine': [0.61, 1, 0.88, 1], 'ease-out-quad': [0.5, 1, 0.89, 1], 'ease-out-cubic': [0.33, 1, 0.68, 1],
+    'ease-out-quint': [0.22, 1, 0.36, 1], 'snappy': [0.2, 0.9, 0.1, 1], 'overshoot': [0.34, 1.4, 0.64, 1], 'linear': [0, 0, 1, 1],
+  };
+
+  const scaleAnim = (a) => state.slow
+    ? (a.kind === 'spring' ? { ...a, stiffness: a.stiffness / 16 } : { ...a, ms: a.ms * 4 })
+    : a;
+  const effective = (p) => ({ ...p, open: scaleAnim(p.open), close: scaleAnim(p.close) });
+
+  const windows = () => scenario(state.count, state.arrangement);
+  const stages = {
+    A: new Stage($('stageA'), { params: effective(params.A), windows: windows(), onChange: (s) => onStage('A', s) }),
+    B: new Stage($('stageB'), { params: effective(params.B), windows: windows(), onChange: (s) => onStage('B', s) }),
+  };
+
+  function onStage(side, s) {
+    if (side === 'A' && (s === 'opened' || s === 'closed')) {
+      $('play').firstChild.textContent = stages.A.isOpen ? 'Close both ' : 'Open both ';
+      if (state.loop && !stages.A.running && !stages.B.running) setTimeout(() => { if (state.loop) toggleBoth(); }, 700);
+    }
+  }
+
+  for (const side of ['A', 'B']) {
+    const sel = $('preset' + side);
+    for (const [k, v] of Object.entries(PRESETS)) sel.add(new Option(v.label, k));
+    sel.add(new Option('Custom', 'custom'));
+    sel.value = presetOf[side];
+    sel.addEventListener('change', () => {
+      if (sel.value === 'custom') return;
+      params[side] = clone(PRESETS[sel.value]); presetOf[side] = sel.value;
+      apply(side); if (state.active === side) buildControls();
+    });
+    $('pane' + side).addEventListener('pointerdown', (e) => {
+      if (e.target.closest('select')) return;
+      setActive(side);
+    });
+  }
+
+  function setActive(side) {
+    if (state.active === side) return;
+    state.active = side;
+    $('paneA').dataset.active = side === 'A'; $('paneB').dataset.active = side === 'B';
+    $('editing').textContent = '· editing ' + side;
+    buildControls();
+  }
+
+  function apply(side) {
+    stages[side].setParams(effective(params[side]));
+    readout(side); drawCurves(); yaml();
+  }
+
+  function markCustom(side) { presetOf[side] = 'custom'; $('preset' + side).value = 'custom'; }
+
+  function timeTo(anim, frac) {
+    if (anim.kind === 'bezier') { const c = L.cubicBezier(...anim.curve); for (let u = 0; u <= 1; u += 0.002) if (c(u) >= frac) return u * anim.ms; return anim.ms; }
+    for (let t = 0; t < 3; t += 0.001) if (L.spring(t, anim) >= frac) return t * 1000;
+    return 3000;
+  }
+  function settle(anim) { return anim.kind === 'bezier' ? anim.ms : L.springSettle(anim) * 1000; }
+
+  function readout(side) {
+    const r = stages[side].readout(), p = params[side];
+    const big = r.scales.reduce((m, s) => Math.max(m, s), 0), small = r.scales.reduce((m, s) => Math.min(m, s), 9);
+    const scaleText = Math.abs(big - small) < 0.005 ? big.toFixed(2) + '×' : small.toFixed(2) + '–' + big.toFixed(2) + '×';
+    const cls = big < 0.72 ? 'warn' : big >= 0.76 ? 'good' : '';
+    const fill = p.wallpaper === 'slab' && p.layout !== 'rigid' ? `<span class="chip"><b>${Math.round(r.fill * 100)}%</b> of slab filled</span>` : '';
+    $('read' + side).innerHTML =
+      `<span class="chip ${cls}">windows <b>${scaleText}</b></span>` +
+      (p.wallpaper === 'slab' ? `<span class="chip">slab <b>${r.slab.toFixed(2)}×</b></span>` : '<span class="chip">wallpaper <b>stays</b></span>') + fill +
+      `<span class="chip">90% at <b>${Math.round(timeTo(p.open, 0.9))} ms</b></span>` +
+      `<span class="chip">settled <b>${Math.round(settle(p.open))} ms</b></span>`;
+  }
+
+  // Controls for the active side.
+  function slider(host, key, label, min, max, step, fmt, get, set) {
+    const id = 'f-' + key;
+    const wrap = document.createElement('div'); wrap.className = 'field';
+    wrap.innerHTML = `<label for="${id}">${label}</label><output for="${id}"></output><input id="${id}" type="range" min="${min}" max="${max}" step="${step}">`;
+    const input = wrap.querySelector('input'), out = wrap.querySelector('output');
+    input.value = get(); out.textContent = fmt(+input.value);
+    input.addEventListener('input', () => { set(+input.value); out.textContent = fmt(+input.value); markCustom(state.active); apply(state.active); });
+    host.append(wrap);
+  }
+  function seg(id, get, set) {
+    const host = $(id);
+    host.querySelectorAll('button').forEach((b) => {
+      b.setAttribute('aria-pressed', String(b.dataset.v === get()));
+      b.onclick = () => { set(b.dataset.v); markCustom(state.active); apply(state.active); buildControls(); };
+    });
+  }
+
+  function easingFields(host, which) {
+    const p = params[state.active], a = p[which];
+    const name = which === 'open' ? 'Open' : 'Close';
+    const kindWrap = document.createElement('div'); kindWrap.className = 'field';
+    kindWrap.innerHTML = `<label>${name} easing</label><span></span>`;
+    const s = document.createElement('div'); s.className = 'seg'; s.style.gridColumn = '1 / -1';
+    s.innerHTML = '<button data-v="spring">Spring</button><button data-v="bezier">Curve</button>';
+    s.querySelectorAll('button').forEach((b) => {
+      b.setAttribute('aria-pressed', String(b.dataset.v === a.kind));
+      b.onclick = () => {
+        p[which] = b.dataset.v === 'spring' ? { kind: 'spring', stiffness: 600, damping: 1 } : { kind: 'bezier', ms: 280, curve: curves['ease-out-cubic'] };
+        markCustom(state.active); apply(state.active); buildControls();
+      };
+    });
+    kindWrap.append(s); host.append(kindWrap);
+    if (a.kind === 'spring') {
+      slider(host, which + 'k', name + ' stiffness', 100, 1400, 10, (v) => v, () => a.stiffness, (v) => { a.stiffness = v; });
+      slider(host, which + 'd', name + ' damping ratio', 0.4, 1.6, 0.01, (v) => v.toFixed(2), () => a.damping, (v) => { a.damping = v; });
+    } else {
+      slider(host, which + 'ms', name + ' duration', 80, 900, 10, (v) => v + ' ms', () => a.ms, (v) => { a.ms = v; });
+      const f = document.createElement('div'); f.className = 'field';
+      const id = 'f-' + which + 'curve';
+      f.innerHTML = `<label for="${id}">${name} curve</label><span></span>`;
+      const sel = document.createElement('select'); sel.id = id; sel.style.gridColumn = '1 / -1';
+      for (const k of Object.keys(curves)) sel.add(new Option(k, k));
+      const match = Object.entries(curves).find(([, c]) => c.join() === a.curve.join());
+      if (!match) sel.add(new Option(`cubic-bezier(${a.curve.join(', ')})`, 'own'));
+      sel.value = match ? match[0] : 'own';
+      sel.onchange = () => { if (curves[sel.value]) { a.curve = curves[sel.value]; markCustom(state.active); apply(state.active); } };
+      f.append(sel); host.append(f);
+    }
+  }
+
+  function buildControls() {
+    const p = params[state.active];
+    seg('layout', () => p.layout, (v) => { p.layout = v; });
+    seg('wallpaper', () => p.wallpaper, (v) => { p.wallpaper = v; });
+    seg('strip', () => p.strip, (v) => { p.strip = v; });
+    const sizing = $('sizing'); sizing.innerHTML = '';
+    if (p.layout === 'rigid') {
+      slider(sizing, 'zoom', 'Zoom', 0.25, 0.9, 0.01, (v) => v.toFixed(2) + '×', () => p.zoom, (v) => { p.zoom = v; });
+    } else {
+      if (p.layout === 'cluster') slider(sizing, 'largest', 'Cluster share of the room', 0.6, 1, 0.01, (v) => Math.round(v * 100) + '%', () => p.largest, (v) => { p.largest = v; });
+      else slider(sizing, 'maxScale', 'Largest window scale', 0.5, 1, 0.01, (v) => v.toFixed(2) + '×', () => p.rowsMax ?? p.maxScale, (v) => { p.rowsMax = v; p.maxScale = v; });
+      slider(sizing, 'margin', 'Screen margins', 0, 140, 2, (v) => v + ' px', () => p.margin, (v) => { p.margin = v; });
+      slider(sizing, 'padding', 'Wallpaper padding', 0, 60, 1, (v) => v + ' px', () => p.padding, (v) => { p.padding = v; });
+      slider(sizing, 'gap', 'Gap between windows', 0, 90, 1, (v) => v + ' px', () => p.gap, (v) => { p.gap = v; });
+    }
+    const motion = $('motion'); motion.innerHTML = '';
+    easingFields(motion, 'open'); easingFields(motion, 'close');
+    slider(motion, 'stagger', 'Stagger per window', 0, 40, 1, (v) => v + ' ms', () => p.staggerMs, (v) => { p.staggerMs = v; });
+    const fb = $('feedback'); fb.innerHTML = '';
+    slider(fb, 'chromeFrom', 'Chrome appears from', 0, 0.95, 0.05, (v) => Math.round(v * 100) + '% open', () => p.chromeFrom, (v) => { p.chromeFrom = v; });
+    slider(fb, 'lift', 'Hover lift', 0, 0.1, 0.005, (v) => (v * 100).toFixed(1) + '%', () => p.lift, (v) => { p.lift = v; });
+    slider(fb, 'dim', 'Dim the others on hover', 0, 0.5, 0.01, (v) => Math.round(v * 100) + '%', () => p.dim, (v) => { p.dim = v; });
+  }
+
+  function drawCurves() {
+    const c = $('curve'), dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    c.width = w * dpr; c.height = h * dpr;
+    const g = c.getContext('2d'); g.scale(dpr, dpr);
+    const css = getComputedStyle(document.documentElement);
+    const col = (v) => css.getPropertyValue(v).trim();
+    const pad = { l: 30, r: 8, t: 10, b: 20 }, pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
+    const X = (ms) => pad.l + (ms / 600) * pw, Y = (v) => pad.t + (1 - v / 1.1) * ph;
+    g.strokeStyle = col('--line'); g.lineWidth = 1; g.font = '11px ' + col('--mono'); g.fillStyle = col('--muted');
+    for (const ms of [0, 150, 300, 450, 600]) { g.beginPath(); g.moveTo(X(ms), pad.t); g.lineTo(X(ms), pad.t + ph); g.stroke(); g.fillText(ms + '', X(ms) - (ms ? 10 : 0), h - 5); }
+    for (const v of [0, 0.5, 1]) { g.beginPath(); g.moveTo(pad.l, Y(v)); g.lineTo(pad.l + pw, Y(v)); g.stroke(); g.fillText(v.toFixed(1), 4, Y(v) + 4); }
+    g.setLineDash([4, 4]); g.beginPath(); g.moveTo(pad.l, Y(0.9)); g.lineTo(pad.l + pw, Y(0.9)); g.stroke(); g.setLineDash([]);
+    for (const [side, color] of [['A', col('--accent')], ['B', col('--warn')]]) {
+      const a = params[side].open;
+      const m = new OverviewStage.Motion(0); m.aim(1, a);
+      g.strokeStyle = color; g.lineWidth = 2.2; g.beginPath(); g.moveTo(X(0), Y(0));
+      for (let ms = 2; ms <= 600; ms += 2) { m.step(0.002); g.lineTo(X(ms), Y(m.x)); }
+      g.stroke();
+    }
+  }
+
+  function yaml() {
+    const p = params[state.active];
+    const ease = (a) => a.kind === 'spring' ? `"spring(${+a.damping.toFixed(2)}, ${a.stiffness})"` : `"cubic_bezier(${a.curve.join(', ')})"`;
+    const lines = ['overview:'];
+    if (p.layout !== 'cluster') lines.push(`  # layout: ${p.layout} (not in GlazeWM; see the layout comparison)`);
+    lines.push(`  expose:`, `    gap: ${p.gap}`);
+    lines.push(`  wallpaper:`, `    style: "${p.wallpaper === 'slab' ? 'framed' : 'blurred'}"${p.wallpaper === 'dim' ? '  # dimmed, not blurred: new' : ''}`, `    padding: ${p.padding}`);
+    lines.push(`  animation:`, `    easing: ${ease(p.open)}${p.open.kind === 'spring' ? '' : `\n    open_ms: ${p.open.ms}`}`);
+    if (JSON.stringify(p.open) !== JSON.stringify(p.close)) lines.push(`    # close: ${ease(p.close)}${p.close.kind === 'bezier' ? ', ' + p.close.ms + ' ms' : ''}  (new: one easing today)`);
+    lines.push(`  effects:`, `    stagger_ms: ${p.staggerMs}`, `    window_lift: ${p.lift}`, `    dim: ${p.dim}`);
+    lines.push(`# code: expose.rs LARGEST = ${p.largest}`, `# code: layout.rs activities margin = ${p.margin}`, `# code: layout.rs CHROME_FROM = ${p.chromeFrom}`);
+    $('yaml').textContent = lines.join('\n');
+  }
+  $('copy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('yaml').textContent); $('copy').textContent = 'Copied'; }
+    catch { const r = document.createRange(); r.selectNodeContents($('yaml')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); $('copy').textContent = 'Selected'; }
+    setTimeout(() => { $('copy').textContent = 'Copy'; }, 1400);
+  };
+
+  function toggleBoth() {
+    const opening = !stages.A.isOpen;
+    for (const s of Object.values(stages)) opening ? s.open() : s.close();
+  }
+  $('play').onclick = toggleBoth;
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !e.target.closest('input, select, button')) { e.preventDefault(); toggleBoth(); }
+  });
+  $('loop').onclick = () => {
+    state.loop = !state.loop; $('loop').setAttribute('aria-pressed', state.loop);
+    $('loop').textContent = state.loop ? 'Looping' : 'Loop';
+    if (state.loop) toggleBoth();
+  };
+  $('slow').onclick = () => {
+    state.slow = !state.slow; $('slow').setAttribute('aria-pressed', state.slow);
+    $('slow').textContent = state.slow ? 'Slow ×4 on' : 'Slow ×4';
+    apply('A'); apply('B');
+  };
+  $('count').oninput = () => { state.count = +$('count').value; $('countOut').textContent = state.count; reload(); };
+  document.querySelectorAll('#arrangement button').forEach((b) => b.onclick = () => {
+    state.arrangement = b.dataset.v;
+    document.querySelectorAll('#arrangement button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    reload();
+  });
+  function reload() { for (const side of ['A', 'B']) { stages[side].setWindows(windows()); readout(side); } }
+
+  new ResizeObserver(drawCurves).observe($('curve'));
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawCurves);
+  buildControls(); readout('A'); readout('B'); yaml();
+  setTimeout(toggleBoth, 500);
+})();
+</script>
