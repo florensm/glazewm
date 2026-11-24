@@ -14,7 +14,7 @@ use crate::{
   overview::{
     chrome::{with_alpha, SliceLook},
     effects::{pulse, Ripple},
-    layout::{chrome_opacity, CardMetrics, RectF},
+    layout::{CardMetrics, RectF},
     overlays::{Highlight, NineSlice},
   },
   OverviewEffects, OverviewStyle, ParticleEdges, ParticleEffects,
@@ -346,7 +346,7 @@ impl Screen {
 
     let view = context.view;
     self.effects.as_mut().is_some_and(|effects| {
-      effects.place(glow, enabled, &view, chrome_opacity(context.fade))
+      effects.place(glow, enabled, &view, context.chrome)
     })
   }
 

@@ -16,7 +16,7 @@ use crate::{
       draw_tag, label_size, note_size, tag_size, with_alpha, ClosePicture,
       LabelPicture, SliceLook, TagPicture, CLOSE_BUTTON,
     },
-    layout::{chrome_opacity, CardMetrics, RectF, SpringRect, LABEL_GAP},
+    layout::{CardMetrics, RectF, SpringRect, LABEL_GAP},
     overlays::{Highlight, Tag},
     state::{Mode, Toward},
     thumbnails::Picture,
@@ -524,8 +524,7 @@ impl Screen {
     let layout = focus.layout;
     let selected = focus.selected;
     let view = context.view;
-    let fade = context.fade;
-    let chrome = chrome_opacity(fade);
+    let chrome = context.chrome;
     let px = |length: f32| length * self.metrics.scale_factor;
 
     let ringed = self.ringed();
@@ -701,7 +700,7 @@ impl Screen {
           });
         Some((
           RectF::new(x, y, width, height),
-          chrome_opacity(context.fade) * card.alpha.value * appear,
+          context.chrome * card.alpha.value * appear,
         ))
       })
       .collect()

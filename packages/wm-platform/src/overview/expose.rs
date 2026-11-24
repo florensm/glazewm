@@ -3,9 +3,6 @@
 
 use crate::overview::layout::RectF;
 
-/// Most of the area's width and height the cluster takes.
-const LARGEST: f32 = 0.85;
-
 /// Rounds of pushing apart and rescaling, for the gap to settle at the
 /// scale the cluster ends up at.
 const ROUNDS: usize = 6;
@@ -14,13 +11,14 @@ const ROUNDS: usize = 6;
 /// cluster, centered: all scaled alike, each where it sits relative to
 /// the others, pushed apart only where they'd be under `gap` apart.
 ///
-/// The cluster takes at most `LARGEST` of `area` either way, and shows no
+/// The cluster takes at most `largest` of `area` either way, and shows no
 /// window larger than it is. Returns a rect per window, in the order
 /// given.
 pub(crate) fn spread(
   windows: &[RectF],
   area: &RectF,
   gap: f32,
+  largest: f32,
 ) -> Vec<RectF> {
   if windows.is_empty() {
     return Vec::new();
@@ -35,10 +33,10 @@ pub(crate) fn spread(
 
   // The gap is in `area`'s pixels, so it's kept in screen pixels at the
   // scale the cluster ends up at, which pushing apart lowers.
-  let mut scale = fit_scale(&rects, area);
+  let mut scale = fit_scale(&rects, area, largest);
   for _ in 0..ROUNDS {
     separate(&mut rects, gap / scale.max(f32::EPSILON));
-    let next = fit_scale(&rects, area);
+    let next = fit_scale(&rects, area, largest);
     let settled = (next - scale).abs() <= scale * 0.01;
     scale = next;
     if settled {
@@ -100,12 +98,12 @@ fn separate(rects: &mut [RectF], pad: f32) {
   }
 }
 
-/// The scale at which all of `rects` fit `LARGEST` of `area`, at most
+/// The scale at which all of `rects` fit `largest` of `area`, at most
 /// their own size.
-fn fit_scale(rects: &[RectF], area: &RectF) -> f32 {
+fn fit_scale(rects: &[RectF], area: &RectF, largest: f32) -> f32 {
   let bounds = bounds(rects);
-  (LARGEST * area.w / bounds.w)
-    .min(LARGEST * area.h / bounds.h)
+  (largest * area.w / bounds.w)
+    .min(largest * area.h / bounds.h)
     .clamp(0.0, 1.0)
 }
 
@@ -117,10 +115,11 @@ fn bounds(rects: &[RectF]) -> RectF {
 
 #[cfg(test)]
 mod tests {
-  use super::{spread, LARGEST};
+  use super::spread;
   use crate::overview::layout::RectF;
 
   const AREA: RectF = RectF::new(0.0, 0.0, 1600.0, 900.0);
+  const LARGEST: f32 = 0.85;
 
   fn overlaps(a: &RectF, b: &RectF) -> bool {
     a.x < b.right()
@@ -150,7 +149,7 @@ mod tests {
 
   #[test]
   fn no_windows_spread_to_nothing() {
-    assert!(spread(&[], &AREA, 16.0).is_empty());
+    assert!(spread(&[], &AREA, 16.0, LARGEST).is_empty());
   }
 
   /// A lone window shows centered, at its shape, no larger than it is
@@ -158,14 +157,26 @@ mod tests {
   #[test]
   fn a_lone_window_is_centered_and_capped() {
     let small = RectF::new(100.0, 100.0, 400.0, 300.0);
-    let rects = spread(&[small], &AREA, 20.0);
+    let rects = spread(&[small], &AREA, 20.0, LARGEST);
     assert_eq!(rects, vec![RectF::new(600.0, 300.0, 400.0, 300.0)]);
 
     let large = RectF::new(0.0, 0.0, 1920.0, 1080.0);
-    let rect = spread(&[large], &AREA, 20.0)[0];
+    let rect = spread(&[large], &AREA, 20.0, LARGEST)[0];
     assert!((rect.h - AREA.h * LARGEST).abs() < 0.5, "{rect:?}");
     assert!((rect.w / rect.h - 1920.0 / 1080.0).abs() < 1e-3);
     assert_centered(&[rect], &AREA);
+  }
+
+  /// The cluster takes the part of the area it's given, either way.
+  #[test]
+  fn the_cluster_takes_its_largest_part() {
+    let large = RectF::new(0.0, 0.0, 1920.0, 1080.0);
+    for largest in [0.6, 0.94, 1.0] {
+      let rect = spread(&[large], &AREA, 20.0, largest)[0];
+      assert!((rect.h - AREA.h * largest).abs() < 0.5, "{rect:?}");
+      assert!(within(&rect, &AREA), "{rect:?}");
+      assert_centered(&[rect], &AREA);
+    }
   }
 
   /// Two windows far apart on screen stay a cluster: centered, as far
@@ -176,7 +187,7 @@ mod tests {
       RectF::new(0.0, 300.0, 400.0, 300.0),
       RectF::new(800.0, 300.0, 400.0, 300.0),
     ];
-    let rects = spread(&windows, &AREA, 20.0);
+    let rects = spread(&windows, &AREA, 20.0, LARGEST);
 
     // Under the area, so at their own size and their own distance.
     assert!((rects[0].w - 400.0).abs() < 1e-3);
@@ -194,7 +205,7 @@ mod tests {
       RectF::new(960.0, 540.0, 960.0, 540.0),
     ];
     let gap = 24.0;
-    let rects = spread(&windows, &AREA, gap);
+    let rects = spread(&windows, &AREA, gap, LARGEST);
 
     for (index, rect) in rects.iter().enumerate() {
       assert!(within(rect, &AREA), "{rect:?}");
@@ -222,7 +233,7 @@ mod tests {
       RectF::new(300.0, 200.0, 800.0, 600.0),
     ];
     let gap = 24.0;
-    let rects = spread(&windows, &AREA, gap);
+    let rects = spread(&windows, &AREA, gap, LARGEST);
 
     let scale = rects[0].w / windows[0].w;
     for (index, rect) in rects.iter().enumerate() {

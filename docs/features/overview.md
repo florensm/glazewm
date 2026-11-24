@@ -382,7 +382,13 @@ takes as long as it needs to settle whatever `animation.open_ms` and
 `animation.close_ms` say, a named curve (`ease_out`, `snappy` for a fast
 start and a crisp stop, ...) or `cubic_bezier(x1, y1, x2, y2)`.
 A curve or spring overshooting makes the zoom swing past and back; the
-fades stay within their range.
+fades stay within their range. `animation.open_easing` gives the open a
+pace of its own.
+
+A spring zoom ends once nothing on screen is more than half a pixel from
+where it lands, landing there exactly, rather than creeping the last
+fraction of a pixel: `spring(1, 800)` over 600 px ends at about 335 ms
+instead of 415 ms. The spring's own `epsilon` still bounds it.
 
 | `animation.switch` | A workspace newly shown in the activities |
 | --- | --- |
@@ -429,6 +435,9 @@ keybindings:
 | `hot_corner.corner` | `"none"` | Corner that opens the overview as the cursor rests in it: `none`, `top_left`, `top_right`, `bottom_left` or `bottom_right`. Once per visit, and not while a mouse button is held. |
 | `hot_corner.delay_ms` | `300` | How long the cursor rests there first; `0` opens it at once. |
 | `expose.gap` | `28` | Least space between the exposé's windows, in logical pixels. |
+| `expose.largest` | `0.85` | Most of the room's width and height the exposé's windows take together: `0.6` to `1`. |
+| `expose.margin` | `48` | Space the exposé keeps free along the screen's edges, in logical pixels: `8` to `120`. |
+| `activities.margin` | `48` | Space the activities keep free around the large view, in logical pixels: `8` to `120`. |
 | `stack.zoom` | `0.5` | How large the stack shows a workspace, as a part of the screen's width: `0.2` to `0.9`. |
 
 ### `overview.look`
@@ -465,12 +474,14 @@ keybindings:
 | --- | --- | --- |
 | `style` | `"zoom"` | How it opens and closes: `zoom`, `fade` or `none` (see [Zoom](#zoom)). |
 | `easing` | `"spring"` | Pace of the open and close: any animation easing. A spring ignores the two lengths below. |
+| `open_easing` | unset | Pace of the open alone, e.g. `"spring(0.85, 520)"`; unset opens at `easing`'s. The close keeps `easing`. |
 | `open_ms` | `280` | Length of the open; `0` opens it at once. |
 | `close_ms` | `220` | Length of the close, into the picked workspace; `0` closes it at once. |
 | `switch` | `"slide"` | How the activities change the workspace they show large: `slide`, `fade` or `miniature`. |
 | `switch_ms` | `260` | About how long cards and windows take to move to a new selection or layout; `0` moves them at once. |
 | `highlight_ms` | `140` | How long highlights take to settle onto what they mark next and to fade; `0` snaps them. |
 | `bounce` | `0` | How far cards and windows overshoot before settling: `0` (not at all) to `0.8` (wobbly). The zooms go by `easing` instead. |
+| `chrome_from` | `0.8` | How far open the zoom is when names and highlights start to fade in: `0` (at once) to `0.95`. |
 
 For flourishes such as a glow around the selection or particles where a
 window lands, see [Experimental effects](#experimental-effects).

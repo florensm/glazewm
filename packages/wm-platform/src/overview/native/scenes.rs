@@ -73,6 +73,8 @@ struct Spread {
   area: RectF,
   /// Space between windows, in physical pixels.
   gap: f32,
+  /// Most of `area` either way the windows take.
+  largest: f32,
 }
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
@@ -124,7 +126,7 @@ fn spread_windows(
     .collect::<Vec<_>>();
   let screen_rects =
     shown.iter().map(|(_, rect)| *rect).collect::<Vec<_>>();
-  let slots = spread(&screen_rects, &how.area, how.gap);
+  let slots = spread(&screen_rects, &how.area, how.gap, how.largest);
 
   let mut rects = vec![None; scene.windows.len()];
   for ((index, _), slot) in shown.iter().zip(slots) {
@@ -440,6 +442,7 @@ impl Screen {
     Spread {
       area: self.scene_area,
       gap: self.metrics.px(frame.style.expose.gap.max(0.0)),
+      largest: frame.style.expose.clamped_largest(),
     }
   }
 

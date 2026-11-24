@@ -428,19 +428,23 @@ pub(crate) const LABEL_GAP: f32 = 6.0;
 const MINIATURE_WIDTHS: f32 = 2.0;
 
 /// What the activities and the exposé show around their scene.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SceneChrome {
   /// The row of miniatures over it, and how large.
   pub row: OverviewWorkspaceRow,
 
   /// The search field under it, while no search is on.
   pub has_search_line: bool,
+
+  /// Space kept free along the screen's edges, in logical pixels.
+  pub margin: f32,
 }
 
 impl SceneChrome {
   pub const FULL: Self = Self {
     row: OverviewWorkspaceRow::Shown,
     has_search_line: true,
+    margin: 48.0,
   };
 
   /// Whether it shows the row of miniatures at all.
@@ -465,8 +469,11 @@ pub(crate) fn activities(
   chrome: SceneChrome,
 ) -> (Targets, RectF) {
   let (view_width, view_height) = metrics.view;
-  let (margin, gap, top) =
-    (metrics.px(48.0), metrics.px(16.0), metrics.px(18.0));
+  let (margin, gap, top) = (
+    metrics.px(chrome.margin),
+    metrics.px(16.0),
+    metrics.px(18.0),
+  );
   let label = metrics.px(LABEL_GAP + LABEL_HEIGHT);
 
   // As tall as a part of the overview, shrunk for a long row to fit.
@@ -822,6 +829,24 @@ impl Camera {
       rect.h * self.scale_y,
     )
   }
+
+  /// Farthest a point of `view` is from where this camera shows it.
+  pub fn travel(&self, view: &RectF) -> f32 {
+    let (right, bottom) = (view.x + view.w, view.y + view.h);
+    [
+      (view.x, view.y),
+      (right, view.y),
+      (view.x, bottom),
+      (right, bottom),
+    ]
+    .into_iter()
+    .map(|(x, y)| {
+      let dx = x * (self.scale_x - 1.0) + self.offset_x;
+      let dy = y * (self.scale_y - 1.0) + self.offset_y;
+      dx.hypot(dy)
+    })
+    .fold(0.0, f32::max)
+  }
 }
 
 /// The part of a `source`-sized image that fills `dest` without
@@ -854,7 +879,13 @@ pub(crate) struct Zoom {
   pub is_closing: bool,
   from: f32,
   duration_ms: f32,
+  /// Progress along its curve at which it lands, cutting off the rest.
+  end: f32,
 }
+
+/// Fewest pixels a zoom counts as moving: openness also fades things,
+/// whose half an 8-bit step is this part of the way.
+const LEAST_ZOOM_TRAVEL: f32 = 255.0;
 
 impl Zoom {
   /// Zooms out of `card` over `duration_ms`.
@@ -865,6 +896,7 @@ impl Zoom {
       is_closing: false,
       from: 0.0,
       duration_ms: duration_ms as f32,
+      end: 1.0,
     }
   }
 
@@ -878,14 +910,44 @@ impl Zoom {
       is_closing: true,
       from,
       duration_ms: duration_ms as f32 * from,
+      end: 1.0,
     }
   }
 
-  /// Openness `elapsed_ms` in, paced by `curve`. A curve overshooting
-  /// takes it past where it heads for a moment.
+  /// The same zoom on a spring's `curve`, ending as soon as what moves
+  /// `travel` pixels over a whole zoom is within half a pixel of where
+  /// it lands. A spring otherwise creeps the last fraction of a pixel
+  /// for about a fifth of its time. Other curves play to their end.
+  #[must_use]
+  pub fn trimmed(mut self, curve: &OverviewCurve, travel: f32) -> Self {
+    let span = (self.target() - self.from).abs();
+    let travel = travel.max(LEAST_ZOOM_TRAVEL) * span;
+    if curve.is_spring() && travel > 0.0 {
+      self.end = curve.settled_from(0.5 / travel);
+      self.duration_ms *= self.end;
+    }
+    self
+  }
+
+  fn target(&self) -> f32 {
+    if self.is_closing {
+      0.0
+    } else {
+      1.0
+    }
+  }
+
+  /// Openness `elapsed_ms` in, paced by `curve`, exactly where it heads
+  /// once finished. A curve overshooting takes it past there for a
+  /// moment.
   pub fn openness(&self, elapsed_ms: f32, curve: &OverviewCurve) -> f32 {
-    let to = if self.is_closing { 0.0 } else { 1.0 };
-    self.from + (to - self.from) * curve.at(self.progress(elapsed_ms))
+    let progress = self.progress(elapsed_ms);
+    let eased = if progress >= 1.0 {
+      1.0
+    } else {
+      curve.at(progress * self.end)
+    };
+    self.from + (self.target() - self.from) * eased
   }
 
   pub fn is_finished(&self, elapsed_ms: f32) -> bool {
@@ -920,15 +982,13 @@ pub(crate) fn ease_out_back(progress: f32, bounce: f32) -> f32 {
   1.0 + t * t * ((c + 1.0) * t + c)
 }
 
-/// Openness from which the overview's chrome starts to show.
-const CHROME_FROM: f32 = 0.8;
-
 /// How strongly the overview's chrome (hints, names, highlights) shows at
-/// `openness`: only once the zoom has nearly settled, so an open shows
-/// the windows shrinking first, and gone as soon as a close starts.
-pub(crate) fn chrome_opacity(openness: f32) -> f32 {
-  let progress =
-    ((openness - CHROME_FROM) / (1.0 - CHROME_FROM)).clamp(0.0, 1.0);
+/// `openness`, starting `from` an openness below 1: only once the zoom
+/// has nearly settled, so an open shows the windows shrinking first, and
+/// gone as soon as a close starts.
+pub(crate) fn chrome_opacity(openness: f32, from: f32) -> f32 {
+  let from = from.clamp(0.0, 0.95);
+  let progress = ((openness - from) / (1.0 - from)).clamp(0.0, 1.0);
   progress * progress * (3.0 - 2.0 * progress)
 }
 
@@ -1488,6 +1548,106 @@ mod tests {
     assert_close(open.openness(125.0, &line), 0.5);
   }
 
+  /// A spring from 0 to 1 of damping `ratio` and `stiffness`, sampled as
+  /// the WM samples the zoom's, over the time it takes to come within
+  /// 1e-4 of 1, and that time in milliseconds.
+  fn spring_curve(ratio: f32, stiffness: f32) -> (OverviewCurve, f32) {
+    let omega = stiffness.sqrt();
+    let beta = ratio * omega;
+    let offset = |secs: f32| {
+      let envelope = (-beta * secs).exp();
+      if ratio < 1.0 {
+        let ringing = (omega * omega - beta * beta).sqrt();
+        envelope
+          * ((ringing * secs).cos()
+            + beta / ringing * (ringing * secs).sin())
+      } else {
+        envelope * (1.0 + beta * secs)
+      }
+    };
+    let settle_ms = (1..10_000_u16)
+      .rev()
+      .find(|&ms| offset(f32::from(ms) / 1000.0).abs() >= 1e-4)
+      .map_or(0.0, |ms| f32::from(ms) + 1.0);
+    let samples = (0..=64_u16)
+      .map(|step| {
+        let secs = f32::from(step) / 64.0 * settle_ms / 1000.0;
+        if step == 64 {
+          1.0
+        } else {
+          1.0 - offset(secs)
+        }
+      })
+      .collect();
+    (OverviewCurve::spring(samples), settle_ms)
+  }
+
+  /// A spring zoom ends once what moves is within half a pixel, landing
+  /// exactly on target: about 335 ms for `spring(1, 800)` over 600 px,
+  /// rather than the 415 ms it takes to come within 1e-4 of the way.
+  #[test]
+  fn spring_zoom_ends_on_half_a_pixel() {
+    let (curve, settle_ms) = spring_curve(1.0, 800.0);
+    assert!((405.0..425.0).contains(&settle_ms), "{settle_ms}");
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let open = Zoom::open(0, settle_ms as u32).trimmed(&curve, 600.0);
+    let ends_ms = open.duration().as_secs_f32() * 1000.0;
+    assert!((325.0..345.0).contains(&ends_ms), "{ends_ms}");
+
+    let last = open.openness(ends_ms - 1.0, &curve);
+    assert!((1.0 - last) * 600.0 < 0.5 + 0.05, "{last}");
+    let done = ends_ms + 0.01;
+    assert!(open.is_finished(done));
+    assert!((open.openness(done, &curve) - 1.0).abs() <= f32::EPSILON);
+
+    // Closing lands exactly too, as soon for the same distance.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let close =
+      Zoom::close(0, 1.0, settle_ms as u32).trimmed(&curve, 600.0);
+    assert!(
+      (close.duration().as_secs_f32() * 1000.0 - ends_ms).abs() < 1.0
+    );
+    assert!(close.openness(done, &curve).abs() <= f32::EPSILON);
+
+    // Farther needs longer; a curve other than a spring's plays out.
+    let far = Zoom::open(0, 415).trimmed(&curve, 4000.0);
+    assert!(far.duration() > open.duration());
+    let bezier = OverviewCurve::default();
+    assert_eq!(
+      Zoom::open(0, 280).trimmed(&bezier, 600.0),
+      Zoom::open(0, 280)
+    );
+  }
+
+  /// On a spring that overshoots, the zoom ends only once its last swing
+  /// out of the band is over.
+  #[test]
+  fn bouncy_spring_settles_after_its_last_swing() {
+    let (curve, _) = spring_curve(0.5, 800.0);
+    let from = curve.settled_from(0.5 / 600.0);
+    assert!(from > 0.0 && from < 1.0, "{from}");
+    let after = (0..=200_u8)
+      .map(|step| from + (1.0 - from) * f32::from(step) / 200.0)
+      .all(|progress| {
+        (1.0 - curve.at(progress)).abs() < 0.5 / 600.0 + 1e-4
+      });
+    assert!(after, "stays within the band from {from}");
+    assert!(curve.settled_from(1.0) < 0.1, "a loose band settles early");
+  }
+
+  /// Opening out of a card at half the screen's size, its corners travel
+  /// farthest.
+  #[test]
+  fn camera_travel_is_the_farthest_corner() {
+    let view = RectF::new(0.0, 0.0, 1920.0, 1080.0);
+    let card = RectF::new(480.0, 270.0, 960.0, 540.0);
+    let start = Camera::zoom(&card, &view, 0.0);
+    let corner = 960.0_f32.hypot(540.0);
+    assert_close(start.travel(&view), corner);
+    assert_close(Camera::IDENTITY.travel(&view), 0.0);
+  }
+
   #[test]
   fn zoom_closes_a_half_open_overview_in_half_the_time() {
     let curve = OverviewCurve::default();
@@ -1615,14 +1775,19 @@ mod tests {
 
   #[test]
   fn chrome_shows_only_as_the_zoom_settles() {
-    assert_close(chrome_opacity(0.0), 0.0);
-    assert_close(chrome_opacity(0.8), 0.0);
-    assert_close(chrome_opacity(1.0), 1.0);
+    assert_close(chrome_opacity(0.0, 0.8), 0.0);
+    assert_close(chrome_opacity(0.8, 0.8), 0.0);
+    assert_close(chrome_opacity(1.0, 0.8), 1.0);
 
-    let steps =
-      (80..=100_u8).map(|step| chrome_opacity(f32::from(step) / 100.0));
+    let steps = (80..=100_u8)
+      .map(|step| chrome_opacity(f32::from(step) / 100.0, 0.8));
     let rising = steps.clone().zip(steps.skip(1)).all(|(a, b)| b >= a);
     assert!(rising, "fades in without dipping");
+
+    // Earlier from an earlier start, and still whole at the end.
+    assert!(chrome_opacity(0.7, 0.6) > 0.0);
+    assert_close(chrome_opacity(1.0, 0.0), 1.0);
+    assert_close(chrome_opacity(1.0, 1.0), 1.0);
   }
 
   #[test]
@@ -1863,6 +2028,7 @@ mod tests {
     let bare = SceneChrome {
       row: OverviewWorkspaceRow::Hidden,
       has_search_line: false,
+      ..SceneChrome::FULL
     };
 
     let (_, full) = activities(&metrics, &slots, SceneChrome::FULL);
@@ -1903,6 +2069,32 @@ mod tests {
     assert_rect_close(&open.apply(&zoom_rect), &zoom_rect);
   }
 
+  /// The scene keeps its margin from the screen's sides, and from the top
+  /// without a row.
+  #[test]
+  fn the_scene_keeps_its_margin() {
+    let metrics = metrics_for(OverviewLayoutMode::Activities);
+    let slots = slots(&metrics, 4);
+    for margin in [8.0, 32.0, 120.0] {
+      let chrome = SceneChrome {
+        margin,
+        ..SceneChrome::FULL
+      };
+      let (_, scene) = activities(&metrics, &slots, chrome);
+      assert_close(scene.x, margin);
+      assert_close(1920.0 - scene.right(), margin);
+
+      let bare = SceneChrome {
+        row: OverviewWorkspaceRow::Hidden,
+        has_search_line: false,
+        margin,
+      };
+      let (_, scene) = activities(&metrics, &slots, bare);
+      assert_close(scene.y, margin);
+      assert_close(1040.0 - scene.bottom(), margin);
+    }
+  }
+
   /// A compact row's miniatures are smaller, leaving the scene more room
   /// than a full row does.
   #[test]
@@ -1911,7 +2103,7 @@ mod tests {
     let slots = slots(&metrics, 4);
     let chrome = |row| SceneChrome {
       row,
-      has_search_line: true,
+      ..SceneChrome::FULL
     };
 
     let (full, full_scene) =

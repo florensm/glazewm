@@ -60,6 +60,7 @@ pub(super) fn overview_frame(
   let (look, wallpaper, animation) =
     (&overview.look, &overview.wallpaper, &overview.animation);
   let colors = &look.colors;
+  let open_easing = animation.open_easing();
 
   OverviewFrame {
     screens,
@@ -86,8 +87,10 @@ pub(super) fn overview_frame(
       search: colors.search,
       font_family: look.font_family.clone(),
       zoom_style: animation.style,
-      zoom_curve: zoom_curve(&animation.easing),
-      open_duration_ms: animation.easing.duration_ms(animation.open_ms),
+      open_curve: zoom_curve(open_easing),
+      close_curve: zoom_curve(&animation.easing),
+      chrome_from: animation.clamped_chrome_from(),
+      open_duration_ms: open_easing.duration_ms(animation.open_ms),
       close_duration_ms: animation.easing.duration_ms(animation.close_ms),
       switch_style: animation.switch,
       switch_duration_ms: animation.switch_ms,
@@ -98,6 +101,7 @@ pub(super) fn overview_frame(
       strip_view: overview.strip_view,
       stack: overview.stack,
       expose: overview.expose,
+      activities: overview.activities,
       workspace_row: overview.workspace_row,
       search_hint: overview.search_hint,
       particles: config.value.animations.particles.look(),
@@ -110,13 +114,16 @@ const ZOOM_CURVE_STEPS: u16 = 64;
 
 /// `easing` sampled for the overview's thread, which plays it.
 fn zoom_curve(easing: &EasingFunction) -> OverviewCurve {
-  OverviewCurve::new(
-    (0..=ZOOM_CURVE_STEPS)
-      .map(|step| {
-        apply_easing(f32::from(step) / f32::from(ZOOM_CURVE_STEPS), easing)
-      })
-      .collect(),
-  )
+  let samples = (0..=ZOOM_CURVE_STEPS)
+    .map(|step| {
+      apply_easing(f32::from(step) / f32::from(ZOOM_CURVE_STEPS), easing)
+    })
+    .collect();
+  if matches!(easing, EasingFunction::Spring(_)) {
+    OverviewCurve::spring(samples)
+  } else {
+    OverviewCurve::new(samples)
+  }
 }
 
 /// `monitor`'s screen: its workspaces, the "+" card, and the special

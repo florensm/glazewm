@@ -520,6 +520,8 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
+  /// How strongly names and highlights show at that openness.
+  chrome: f32,
   /// How strongly the overview shows over the desktop as a whole: the
   /// openness while it fades in or out, else fully.
   presence: f32,
@@ -536,6 +538,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   let PlaceContext {
     camera,
     fade,
+    chrome: _,
     presence,
     view,
     zoom_card,

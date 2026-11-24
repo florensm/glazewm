@@ -248,6 +248,10 @@ impl Screen {
 
     self.show_backdrop();
     self.retarget(true);
+    // Once the cards are in place, which is where the zoom heads.
+    self.zoom = self
+      .zoom
+      .map(|(zoom, started)| (self.trimmed(zoom), started));
     self.register_thumbnails();
     self.plain_cards = self.zoom.is_some();
     self.refresh_pictures(true);
@@ -772,6 +776,14 @@ impl Screen {
     self.style().map_or(SceneChrome::FULL, |style| SceneChrome {
       row: style.workspace_row,
       has_search_line: style.search_hint,
+      margin: match self.focus.layout {
+        OverviewLayoutMode::Activities => {
+          style.activities.clamped_margin()
+        }
+        OverviewLayoutMode::Expose | OverviewLayoutMode::Stack => {
+          style.expose.clamped_margin()
+        }
+      },
     })
   }
 
@@ -1169,7 +1181,7 @@ impl Screen {
       return 1.0;
     };
     self.style().map_or(1.0, |style| {
-      zoom.openness(self.since(started), &style.zoom_curve)
+      zoom.openness(self.since(started), style.zoom_curve(zoom.is_closing))
     })
   }
 
@@ -1190,21 +1202,33 @@ impl Screen {
   /// whole screen, so all of it scales as one; for the fade, a little
   /// larger the less open.
   pub(super) fn camera(&self) -> Camera {
-    let (Some((zoom, _)), Some(style)) = (self.zoom, self.style()) else {
-      return Camera::IDENTITY;
-    };
+    self.zoom.map_or(Camera::IDENTITY, |(zoom, _)| {
+      self.zoom_camera(zoom.card, self.openness())
+    })
+  }
 
-    match style.zoom_style {
-      OverviewZoomStyle::Zoom => {
-        self.zoom_rect(zoom.card).map_or(Camera::IDENTITY, |rect| {
-          Camera::zoom(&rect, &self.work_in_view(), self.openness())
+  /// The camera zooming out of or into card `index` at `openness`.
+  fn zoom_camera(&self, index: usize, openness: f32) -> Camera {
+    match self.style().map(|style| style.zoom_style) {
+      Some(OverviewZoomStyle::Zoom) => {
+        self.zoom_rect(index).map_or(Camera::IDENTITY, |rect| {
+          Camera::zoom(&rect, &self.work_in_view(), openness)
         })
       }
-      OverviewZoomStyle::Fade => {
-        Camera::grown(&self.view(), FADE_GROWTH * (1.0 - self.openness()))
+      Some(OverviewZoomStyle::Fade) => {
+        Camera::grown(&self.view(), FADE_GROWTH * (1.0 - openness))
       }
-      OverviewZoomStyle::None => Camera::IDENTITY,
+      Some(OverviewZoomStyle::None) | None => Camera::IDENTITY,
     }
+  }
+
+  /// `zoom`, ending once nothing on screen is more than half a pixel from
+  /// where it lands, on a spring.
+  fn trimmed(&self, zoom: Zoom) -> Zoom {
+    self.style().map_or(zoom, |style| {
+      let travel = self.zoom_camera(zoom.card, 0.0).travel(&self.view());
+      zoom.trimmed(style.zoom_curve(zoom.is_closing), travel)
+    })
   }
 
   /// Where workspace `index` shows its monitor's working area, on its
@@ -1263,7 +1287,8 @@ impl Screen {
 
     self.hold();
     self.entrance = None;
-    let zoom = Zoom::close(index, self.openness(), duration_ms);
+    let zoom =
+      self.trimmed(Zoom::close(index, self.openness(), duration_ms));
     self.zoom = Some((zoom, self.frame_time.start(Instant::now())));
     // Spread windows head back to where they really are.
     if self.focus.layout.spreads_windows() {
@@ -1347,6 +1372,10 @@ impl Screen {
     PlaceContext {
       camera: self.camera(),
       fade: self.openness().clamp(0.0, 1.0),
+      chrome: chrome_opacity(
+        self.openness(),
+        self.style().map_or(0.0, |style| style.chrome_from),
+      ),
       presence: self.presence(),
       entrance: self
         .entrance
@@ -1507,7 +1536,7 @@ impl Screen {
         search.place(
           &RectF::new(0.0, self.search_y.value, view.w, search_height),
           &view,
-          chrome_opacity(fade),
+          context.chrome,
         );
       } else {
         search.hide();
@@ -1515,8 +1544,7 @@ impl Screen {
     }
 
     let spotlight_rect = self.spotlight_rect();
-    let spotlight_opacity =
-      chrome_opacity(fade) * self.spotlight_alpha.value;
+    let spotlight_opacity = context.chrome * self.spotlight_alpha.value;
     if let Some(spotlight) = &mut self.spotlight {
       match spotlight_rect {
         Some(rect) if spotlight_opacity > 0.002 => {
@@ -1527,7 +1555,7 @@ impl Screen {
     }
 
     let sheet_rect = self.sheet_rect();
-    let sheet_opacity = chrome_opacity(fade) * self.sheet_alpha.value;
+    let sheet_opacity = context.chrome * self.sheet_alpha.value;
     if let Some(sheet) = &mut self.sheet {
       match sheet_rect {
         Some(rect) if sheet_opacity > 0.002 => {

@@ -4,10 +4,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
-  OpacityValue, OverviewEffects, OverviewExpose, OverviewStack,
-  OverviewStripView, OverviewSwitchStyle, OverviewWallpaperStyle,
-  OverviewWindowHighlight, OverviewWorkspaceRow, OverviewZoomStyle,
-  ParticleEffects, ParticleLook, RectDelta,
+  OpacityValue, OverviewActivities, OverviewEffects, OverviewExpose,
+  OverviewStack, OverviewStripView, OverviewSwitchStyle,
+  OverviewWallpaperStyle, OverviewWindowHighlight, OverviewWorkspaceRow,
+  OverviewZoomStyle, ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -692,6 +692,9 @@ pub struct OverviewConfig {
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
 
+  /// How the activities frame the workspace they show large.
+  pub activities: OverviewActivities,
+
   /// How the stack shows the workspaces.
   pub stack: OverviewStack,
 
@@ -850,6 +853,9 @@ pub struct OverviewAnimationConfig {
   /// spring takes as long as it needs to settle, whatever the durations.
   pub easing: EasingFunction,
 
+  /// Pace of the open alone; unset opens at `easing`'s.
+  pub open_easing: Option<EasingFunction>,
+
   /// Length of the open; `0` opens it instantly.
   pub open_ms: u32,
 
@@ -873,6 +879,28 @@ pub struct OverviewAnimationConfig {
   /// How far cards and windows overshoot where they head before settling
   /// back, from `0` (not at all) to `0.8` (wobbly).
   pub bounce: f32,
+
+  /// Openness from which names and highlights start to show, from `0` to
+  /// `0.95`.
+  pub chrome_from: f32,
+}
+
+impl OverviewAnimationConfig {
+  /// Pace of the open.
+  #[must_use]
+  pub fn open_easing(&self) -> &EasingFunction {
+    self.open_easing.as_ref().unwrap_or(&self.easing)
+  }
+
+  /// `chrome_from`, within 0 to 0.95.
+  #[must_use]
+  pub fn clamped_chrome_from(&self) -> f32 {
+    if self.chrome_from.is_finite() {
+      self.chrome_from.clamp(0.0, 0.95)
+    } else {
+      Self::default().chrome_from
+    }
+  }
 }
 
 impl Default for OverviewAnimationConfig {
@@ -880,12 +908,14 @@ impl Default for OverviewAnimationConfig {
     Self {
       style: OverviewZoomStyle::default(),
       easing: EasingFunction::Spring(SpringParams::default()),
+      open_easing: None,
       open_ms: 280,
       close_ms: 220,
       switch: OverviewSwitchStyle::default(),
       switch_ms: 260,
       highlight_ms: 140,
       bounce: 0.0,
+      chrome_from: 0.8,
     }
   }
 }
@@ -3158,6 +3188,76 @@ mod tests {
     assert_eq!(defaults.wallpaper.style, OverviewWallpaperStyle::Framed);
     assert!((defaults.look.corner_radius - 14.0).abs() < f32::EPSILON);
     assert_eq!(defaults.look.font_family, "Segoe UI Variable Text");
+  }
+
+  #[test]
+  fn overview_sizes_and_motion_read_and_keep_todays_defaults() {
+    let parse = |value: serde_json::Value| {
+      serde_json::from_value::<OverviewConfig>(value)
+    };
+    let config = parse(serde_json::json!({
+      "expose": { "largest": 0.94, "margin": 32 },
+      "activities": { "margin": 24 },
+      "animation": {
+        "chrome_from": 0.6,
+        "open_easing": "spring(0.85, 520, 0.0001)",
+      },
+    }))
+    .expect("parses");
+
+    assert!((config.expose.clamped_largest() - 0.94).abs() < 1e-6);
+    assert!((config.expose.clamped_margin() - 32.0).abs() < 1e-6);
+    assert!((config.expose.gap - 28.0).abs() < 1e-6, "keeps the gap");
+    assert!((config.activities.clamped_margin() - 24.0).abs() < 1e-6);
+    assert!((config.animation.clamped_chrome_from() - 0.6).abs() < 1e-6);
+    assert!(matches!(
+      config.animation.open_easing(),
+      EasingFunction::Spring(spring) if (spring.stiffness - 520.).abs() < 1e-3
+    ));
+    assert_eq!(
+      config.animation.easing,
+      EasingFunction::Spring(SpringParams::default()),
+      "the close keeps its own"
+    );
+
+    // Out of range is held to the range.
+    let wild = parse(serde_json::json!({
+      "expose": { "largest": 3, "margin": 0 },
+      "activities": { "margin": 500 },
+      "animation": { "chrome_from": 2 },
+    }))
+    .expect("parses");
+    assert!((wild.expose.clamped_largest() - 1.0).abs() < 1e-6);
+    assert!((wild.expose.clamped_margin() - 8.0).abs() < 1e-6);
+    assert!((wild.activities.clamped_margin() - 120.0).abs() < 1e-6);
+    assert!((wild.animation.clamped_chrome_from() - 0.95).abs() < 1e-6);
+
+    // Not a value of their kind at all is an error.
+    assert!(parse(serde_json::json!({ "expose": { "largest": "big" } }))
+      .is_err());
+    assert!(parse(
+      serde_json::json!({ "activities": { "margin": "wide" } })
+    )
+    .is_err());
+    assert!(parse(
+      serde_json::json!({ "animation": { "chrome_from": [] } })
+    )
+    .is_err());
+    assert!(parse(
+      serde_json::json!({ "animation": { "open_easing": "nope" } })
+    )
+    .is_err());
+
+    let defaults = OverviewConfig::default();
+    assert!((defaults.expose.clamped_largest() - 0.85).abs() < 1e-6);
+    assert!((defaults.expose.clamped_margin() - 48.0).abs() < 1e-6);
+    assert!((defaults.activities.clamped_margin() - 48.0).abs() < 1e-6);
+    assert!((defaults.animation.clamped_chrome_from() - 0.8).abs() < 1e-6);
+    assert_eq!(defaults.animation.open_easing, None);
+    assert_eq!(
+      defaults.animation.open_easing(),
+      &defaults.animation.easing
+    );
   }
 
   #[test]

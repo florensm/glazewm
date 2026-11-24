@@ -188,8 +188,15 @@ pub struct OverviewStyle {
   /// How it opens and closes.
   pub zoom_style: OverviewZoomStyle,
 
-  /// Pace of the open and close, from 0 to 1 over their durations.
-  pub zoom_curve: OverviewCurve,
+  /// Pace of the open, from 0 to 1 over its duration.
+  pub open_curve: OverviewCurve,
+
+  /// Pace of the close, from 0 to 1 over its duration.
+  pub close_curve: OverviewCurve,
+
+  /// Openness from which names and highlights start to show, from 0 to
+  /// 0.95.
+  pub chrome_from: f32,
 
   /// Length of the open; 0 opens instantly.
   pub open_duration_ms: u32,
@@ -223,6 +230,8 @@ pub struct OverviewStyle {
   /// How the exposé spreads the windows.
   pub expose: OverviewExpose,
 
+  pub activities: OverviewActivities,
+
   /// How the stack shows the workspaces.
   pub stack: OverviewStack,
 
@@ -235,6 +244,18 @@ pub struct OverviewStyle {
 
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
+}
+
+impl OverviewStyle {
+  /// Pace of the close if `is_closing`, else of the open.
+  #[must_use]
+  pub fn zoom_curve(&self, is_closing: bool) -> &OverviewCurve {
+    if is_closing {
+      &self.close_curve
+    } else {
+      &self.open_curve
+    }
+  }
 }
 
 /// How much of a scrolling workspace's strip the activities show large.
@@ -277,11 +298,72 @@ pub enum OverviewWorkspaceRow {
 pub struct OverviewExpose {
   /// Space between windows, in logical pixels.
   pub gap: f32,
+
+  /// Most of the room's width and height the windows take, from 0.6 to
+  /// 1.
+  pub largest: f32,
+
+  /// Space kept free along the screen's edges, in logical pixels, from 8
+  /// to 120.
+  pub margin: f32,
+}
+
+impl OverviewExpose {
+  /// `largest`, within 0.6 to 1.
+  #[must_use]
+  pub fn clamped_largest(&self) -> f32 {
+    clamped(self.largest, (0.6, 1.0), Self::default().largest)
+  }
+
+  /// `margin`, within 8 to 120 px.
+  #[must_use]
+  pub fn clamped_margin(&self) -> f32 {
+    clamped(self.margin, MARGIN_RANGE, Self::default().margin)
+  }
 }
 
 impl Default for OverviewExpose {
   fn default() -> Self {
-    Self { gap: 28.0 }
+    Self {
+      gap: 28.0,
+      largest: 0.85,
+      margin: 48.0,
+    }
+  }
+}
+
+/// How the activities frame the workspace they show large.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewActivities {
+  /// Space kept free along the screen's edges, in logical pixels, from 8
+  /// to 120.
+  pub margin: f32,
+}
+
+impl OverviewActivities {
+  /// `margin`, within 8 to 120 px.
+  #[must_use]
+  pub fn clamped_margin(&self) -> f32 {
+    clamped(self.margin, MARGIN_RANGE, Self::default().margin)
+  }
+}
+
+impl Default for OverviewActivities {
+  fn default() -> Self {
+    Self { margin: 48.0 }
+  }
+}
+
+/// Smallest and largest margin honored, in logical pixels.
+const MARGIN_RANGE: (f32, f32) = (8.0, 120.0);
+
+/// `value` within `range`, or `default` if it isn't a number.
+fn clamped(value: f32, range: (f32, f32), default: f32) -> f32 {
+  if value.is_finite() {
+    value.clamp(range.0, range.1)
+  } else {
+    default
   }
 }
 
@@ -300,11 +382,7 @@ impl OverviewStack {
   /// `zoom`, within what the stack can lay out.
   #[must_use]
   pub fn clamped_zoom(&self) -> f32 {
-    if self.zoom.is_finite() {
-      self.zoom.clamp(Self::ZOOM_RANGE.0, Self::ZOOM_RANGE.1)
-    } else {
-      Self::default().zoom
-    }
+    clamped(self.zoom, Self::ZOOM_RANGE, Self::default().zoom)
   }
 }
 
@@ -402,6 +480,7 @@ pub enum OverviewSwitchStyle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OverviewCurve {
   samples: Vec<f32>,
+  is_spring: bool,
 }
 
 impl OverviewCurve {
@@ -409,7 +488,54 @@ impl OverviewCurve {
   /// straight line for fewer than two.
   #[must_use]
   pub fn new(samples: Vec<f32>) -> Self {
-    Self { samples }
+    Self {
+      samples,
+      is_spring: false,
+    }
+  }
+
+  /// A spring's curve, sampled until it settles: a zoom on it may end
+  /// once what moves is close enough (see `Zoom::trimmed`).
+  #[must_use]
+  pub fn spring(samples: Vec<f32>) -> Self {
+    Self {
+      samples,
+      is_spring: true,
+    }
+  }
+
+  #[must_use]
+  pub fn is_spring(&self) -> bool {
+    self.is_spring
+  }
+
+  /// Progress from which it stays within `epsilon` of 1 for good.
+  #[must_use]
+  #[allow(clippy::cast_precision_loss)]
+  pub fn settled_from(&self, epsilon: f32) -> f32 {
+    let steps = self.samples.len().saturating_sub(1);
+    let is_off = |sample: f32| (1.0 - sample).abs() >= epsilon;
+    let Some(last_off) = self.samples.iter().rposition(|&s| is_off(s))
+    else {
+      return 0.0;
+    };
+    if last_off >= steps {
+      return 1.0;
+    }
+
+    // Where the line to the next sample crosses into the band.
+    let (from, to) = (self.samples[last_off], self.samples[last_off + 1]);
+    let edge = if from < 1.0 {
+      1.0 - epsilon
+    } else {
+      1.0 + epsilon
+    };
+    let part = if (to - from).abs() > f32::EPSILON {
+      ((edge - from) / (to - from)).clamp(0.0, 1.0)
+    } else {
+      0.0
+    };
+    (last_off as f32 + part) / steps as f32
   }
 
   /// Its value at `progress`, between the samples either side of it.
