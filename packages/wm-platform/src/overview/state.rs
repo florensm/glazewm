@@ -2059,8 +2059,29 @@ fn lowercase_match_score(
 ) -> Option<usize> {
   [&window.title, &window.process_name]
     .into_iter()
-    .filter_map(|text| text.to_lowercase().find(query))
+    .filter_map(|text| text_score(&text.to_lowercase(), query))
     .min()
+}
+
+/// Score of a match by letters in order with gaps, which ranks after
+/// every exact one.
+const LOOSE_MATCH: usize = 1 << 16;
+
+/// Where `query` sits in `text`, lower being better: an exact match at
+/// its position, else its letters in order with gaps (e.g. "vsc" in
+/// "visual studio code"), the tighter the better. `None` for neither.
+fn text_score(text: &str, query: &str) -> Option<usize> {
+  if let Some(at) = text.find(query) {
+    return Some(at);
+  }
+
+  let mut letters = text.char_indices();
+  let mut span: Option<(usize, usize)> = None;
+  for wanted in query.chars() {
+    let (at, _) = letters.find(|(_, letter)| *letter == wanted)?;
+    span = Some(span.map_or((at, at), |(first, _)| (first, at)));
+  }
+  span.map(|(first, last)| LOOSE_MATCH + (last - first))
 }
 
 /// Whether card `index` is the special workspace's.
@@ -2073,8 +2094,8 @@ fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{
-    all_workspaces, Control, Hit, Interaction, Key, Mode, SearchField,
-    Toward, BINDINGS, MAX_RESULTS,
+    all_workspaces, text_score, Control, Hit, Interaction, Key, Mode,
+    SearchField, Toward, BINDINGS, LOOSE_MATCH, MAX_RESULTS,
   };
   use crate::{
     overview::layout::RectF, Direction, OverviewAction, OverviewInput,
@@ -2901,6 +2922,21 @@ mod tests {
       state.input(&OverviewInput::FocusSpecialWorkspace, &workspaces),
       Some(focus_workspace("special"))
     );
+  }
+
+  /// Exact matches rank by where they start, before any by letters in
+  /// order, which rank by how tight they are.
+  #[test]
+  fn search_matches_exactly_then_by_letters_in_order() {
+    let code = "visual studio code";
+    assert_eq!(text_score(code, "studio"), Some(7));
+    assert_eq!(text_score(code, "vsc"), Some(LOOSE_MATCH + 14));
+    assert_eq!(text_score(code, "vsd"), Some(LOOSE_MATCH + 10));
+    assert!(text_score(code, "vsd") < text_score(code, "vsc"));
+    assert!(text_score(code, "code") < text_score(code, "vsc"));
+    assert_eq!(text_score(code, "csv"), None, "not in order");
+    assert_eq!(text_score(code, "vsx"), None);
+    assert_eq!(text_score("terminal", "t"), Some(0));
   }
 
   #[test]

@@ -1876,17 +1876,23 @@ fn draw_marked(
   rect: &Rect,
   colors: [Color; 2],
 ) {
-  let Some((start, end)) = find_ignoring_case(text, query) else {
-    draw_text(surface, fonts[0], text, rect, colors[0], Align::Left);
-    return;
-  };
+  let marked = find_ignoring_case(text, query)
+    .map(|range| vec![range])
+    .or_else(|| find_letters_ignoring_case(text, query))
+    .unwrap_or_default();
+
+  // Plain and marked parts in turn, from the start.
+  let mut parts = Vec::with_capacity(marked.len() * 2 + 1);
+  let mut at = 0;
+  for (start, end) in marked {
+    parts.push((&text[at..start], 0));
+    parts.push((&text[start..end], 1));
+    at = end;
+  }
+  parts.push((&text[at..], 0));
 
   let mut left = rect.left;
-  for (part, index) in [
-    (&text[..start], 0),
-    (&text[start..end], 1),
-    (&text[end..], 0),
-  ] {
+  for (part, index) in parts {
     if part.is_empty() || left >= rect.right {
       continue;
     }
@@ -1928,13 +1934,42 @@ pub(crate) fn find_ignoring_case(
   })
 }
 
+/// Byte ranges of the letters of `query` in `text` in order, ignoring
+/// case, the first of each, as a search matching them with gaps has it.
+fn find_letters_ignoring_case(
+  text: &str,
+  query: &str,
+) -> Option<Vec<(usize, usize)>> {
+  let query = query
+    .chars()
+    .flat_map(char::to_lowercase)
+    .collect::<Vec<_>>();
+  if query.is_empty() {
+    return None;
+  }
+
+  let mut ranges = Vec::new();
+  let mut wanted = 0;
+  for (start, char) in text.char_indices() {
+    let lower = char.to_lowercase().collect::<Vec<_>>();
+    if query[wanted..].starts_with(&lower) {
+      ranges.push((start, start + char.len_utf8()));
+      wanted += lower.len();
+      if wanted == query.len() {
+        return Some(ranges);
+      }
+    }
+  }
+  None
+}
+
 #[cfg(test)]
 mod tests {
   use windows::Win32::Foundation::HWND;
 
   use super::{
-    draw_search, draw_spotlight, find_ignoring_case, search_hits,
-    spotlight_size,
+    draw_search, draw_spotlight, find_ignoring_case,
+    find_letters_ignoring_case, search_hits, spotlight_size,
   };
   use crate::{
     overview::state::{SearchField, SearchResult},
@@ -2054,5 +2089,16 @@ mod tests {
     assert_eq!(find_ignoring_case("Ärger", "är"), Some((0, 3)));
     assert_eq!(find_ignoring_case("Terminal", "zz"), None);
     assert_eq!(find_ignoring_case("Terminal", ""), None);
+
+    assert_eq!(
+      find_letters_ignoring_case("Visual Studio Code", "vsc"),
+      Some(vec![(0, 1), (2, 3), (14, 15)])
+    );
+    assert_eq!(
+      find_letters_ignoring_case("Ärger", "äe"),
+      Some(vec![(0, 2), (4, 5)])
+    );
+    assert_eq!(find_letters_ignoring_case("Terminal", "lt"), None);
+    assert_eq!(find_letters_ignoring_case("Terminal", ""), None);
   }
 }

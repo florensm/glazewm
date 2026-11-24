@@ -253,7 +253,10 @@ around its edges shows which.
 ### Search
 
 Typing goes to the search from anywhere: there is no key to start one.
-It matches window titles and process names, on every monitor. While
+It matches window titles and process names, on every monitor: where
+they hold the query as typed, best where it comes first, and after those
+where they hold its letters in order with gaps ("vsc" finds "Visual
+Studio Code"), best where they're closest together. While
 idle, a "Type to search" field sits at the bottom of every monitor; once
 something is typed, a search box takes its place near the top: the
 query, which match it is on (e.g. "2 of 5"), and a list of the matches,
