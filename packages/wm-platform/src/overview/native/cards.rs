@@ -44,19 +44,31 @@ pub(super) fn screen_rect(
   }
 }
 
-/// Part of its workspace's height a minimized window's stand-in takes.
+/// Part of its workspace's height a minimized window's stand-in takes,
+/// when where it's restored to says nothing of its size.
 const STAND_IN_SHARE: f32 = 0.35;
 
-/// Width of a stand-in against its height.
+/// Width of such a stand-in against its height.
 const STAND_IN_ASPECT: f32 = 1.6;
 
+/// Least part of its workspace's width and height a restored rect spans
+/// to be taken as the window's size, rather than a parked sliver.
+const STAND_IN_LEAST_SHARE: f32 = 0.15;
+
 /// Where a minimized window shows as its stand-in, on a workspace showing
-/// `area`: all alike in size, so the exposé shares its room evenly among
-/// them, wherever (and however large) each is restored to; and centered
-/// where `restored` is, kept within `area`, so they spread in that order.
+/// `area`: as large as `restored`, the rect it's restored to, so the
+/// exposé scales it alike with the windows around it, unless that's a
+/// sliver (then a set size); centered where `restored` is, kept within
+/// `area`.
 fn stand_in_rect(area: &RectF, restored: &RectF) -> RectF {
-  let height = area.h * STAND_IN_SHARE;
-  let width = (height * STAND_IN_ASPECT).min(area.w);
+  let (width, height) = if restored.w >= area.w * STAND_IN_LEAST_SHARE
+    && restored.h >= area.h * STAND_IN_LEAST_SHARE
+  {
+    (restored.w.min(area.w), restored.h.min(area.h))
+  } else {
+    let height = area.h * STAND_IN_SHARE;
+    ((height * STAND_IN_ASPECT).min(area.w), height)
+  };
   let (cx, cy) = restored.center();
   let cx = cx.clamp(area.x + width / 2.0, area.right() - width / 2.0);
   let cy = cy.clamp(area.y + height / 2.0, area.bottom() - height / 2.0);
@@ -424,14 +436,18 @@ mod tests {
   }
 
   #[test]
-  fn stand_ins_are_alike_in_size_where_their_windows_are_restored_to() {
+  fn stand_ins_are_as_large_as_where_their_windows_are_restored_to() {
     let area = RectF::new(0.0, 0.0, 1920.0, 1000.0);
     let big = stand_in_rect(&area, &RectF::new(0.0, 0.0, 1900.0, 980.0));
+    let small =
+      stand_in_rect(&area, &RectF::new(100.0, 100.0, 600.0, 400.0));
     let sliver =
       stand_in_rect(&area, &RectF::new(1500.0, 300.0, 160.0, 4.0));
 
-    assert_near((big.w, big.h), (560.0, 350.0));
-    assert_near((sliver.w, sliver.h), (big.w, big.h));
+    assert_near((big.w, big.h), (1900.0, 980.0));
+    assert_near((small.w, small.h), (600.0, 400.0));
+    // A sliver says nothing of its size: a set one.
+    assert_near((sliver.w, sliver.h), (560.0, 350.0));
     // Centered where restored to, kept within the workspace.
     assert_near(sliver.center(), (1580.0, 302.0));
     assert_near(big.center(), (950.0, 490.0));

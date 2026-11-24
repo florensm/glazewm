@@ -57,7 +57,10 @@ strips at full length, to move windows between them.
   the room's width, so they show as large as they can (but never larger
   than in the activities). In a row, windows keep their sizes relative to
   each other, centered on it (`expose.arrangement: "natural"`), or are all
-  as tall, as a photo grid lays out pictures (`"grid"`). Every tab of its
+  as tall, as a photo grid lays out pictures (`"grid"`). Or not in rows
+  at all (`"free"`): each window where it sits on screen, all scaled alike
+  and pushed apart only where they'd overlap, at least about `gap` apart;
+  `max_per_row` doesn't apply. Every tab of its
   stacks shows too, each a window of its own. Rows follow where the
   windows sit on screen, top to bottom and left to right, as many as cover
   the most room; `expose.max_per_row` caps how many go in a row, e.g. to
@@ -68,8 +71,10 @@ strips at full length, to move windows between them.
   cursor, as in the activities; dropped elsewhere it only moves.
 
 Minimized windows show in the exposé too, spread out with the others,
-all alike in size so they share the room evenly: as a window of the
-surface color, with its app's icon in the middle and its title centered
+as large as where they're restored to, so they scale alike with the
+windows around them (a set size when that's a parked sliver): as a glass
+window outline the wallpaper shows through, with its app's icon in the
+middle and its title centered
 under it, as Windows draws nothing for them. They fade in rather than fly out of the screen. Picking one, by mouse, the arrows or
 search, restores it. Dragged onto a workspace, one moves there, still
 minimized.
@@ -445,8 +450,10 @@ overview:
   # before wrapping onto another row (0 for as many as shows them
   # largest), `gap` logical pixels apart.
   #
-  # `arrangement` sizes the windows of a row: "natural" (as they are
-  # against each other, centered on the row) or "grid" (all as tall).
+  # `arrangement`: "free" (not in rows, each where it sits on screen,
+  # pushed apart only where they'd overlap), or rows sized "natural" (as
+  # they are against each other, centered on the row) or "grid" (all as
+  # tall).
   expose:
     max_per_row: 0
     gap: 28

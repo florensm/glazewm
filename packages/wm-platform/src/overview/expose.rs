@@ -1,5 +1,6 @@
 //! Where the exposé spreads a workspace's windows: in rows filling the
-//! room's width, in about the order they sit on screen.
+//! room's width, in about the order they sit on screen, or freely where
+//! they sit.
 
 use crate::{overview::layout::RectF, OverviewExposeArrangement};
 
@@ -25,6 +26,9 @@ pub(crate) fn spread(
   if windows.is_empty() {
     return Vec::new();
   }
+  if arrangement == OverviewExposeArrangement::Free {
+    return scatter(windows, area, gap, max_scale);
+  }
   let max_per_row = match max_per_row {
     0 => windows.len(),
     max => max,
@@ -34,7 +38,8 @@ pub(crate) fn spread(
   let shapes = windows
     .iter()
     .map(|window| match arrangement {
-      OverviewExposeArrangement::Natural => {
+      OverviewExposeArrangement::Natural
+      | OverviewExposeArrangement::Free => {
         RectF::new(0.0, 0.0, window.w.max(1.0), window.h.max(1.0))
       }
       OverviewExposeArrangement::Grid => {
@@ -108,6 +113,95 @@ pub(crate) fn spread(
   }
 
   rects
+}
+
+/// Spreads `windows` over `area` where each sits on screen, all scaled
+/// alike, as large as fits up to `max_scale`, and pushed apart only where
+/// they'd overlap, so they end up at least about `gap` apart.
+fn scatter(
+  windows: &[RectF],
+  area: &RectF,
+  gap: f32,
+  max_scale: f32,
+) -> Vec<RectF> {
+  let start = windows
+    .iter()
+    .map(|window| {
+      RectF::new(window.x, window.y, window.w.max(1.0), window.h.max(1.0))
+    })
+    .collect::<Vec<_>>();
+
+  // The gap is in `area`'s pixels, so it's kept in screen pixels at the
+  // scale the spread ends up at: a few rounds, each wider, to settle.
+  let mut scale = fit_scale(&start, area, max_scale);
+  let mut rects = start;
+  for _ in 0..3 {
+    separate(&mut rects, gap / scale.max(f32::EPSILON));
+    scale = fit_scale(&rects, area, max_scale);
+  }
+
+  let (bx, by) = bounds(&rects).center();
+  let (ax, ay) = area.center();
+  rects
+    .iter()
+    .map(|rect| {
+      let (cx, cy) = rect.center();
+      let (w, h) = (rect.w * scale, rect.h * scale);
+      RectF::new(
+        ax + (cx - bx) * scale - w / 2.0,
+        ay + (cy - by) * scale - h / 2.0,
+        w,
+        h,
+      )
+    })
+    .collect()
+}
+
+/// Pushes overlapping `rects` apart, each pair along the axis they
+/// overlap least on, until all are at least `pad` apart.
+fn separate(rects: &mut [RectF], pad: f32) {
+  // shortcut: pairwise pushes, fine for the dozens of windows on a
+  // workspace; a sweep would be needed for hundreds.
+  for _ in 0..500 {
+    let mut moved = false;
+    for a in 0..rects.len() {
+      for b in a + 1..rects.len() {
+        let ((ax, ay), (bx, by)) = (rects[a].center(), rects[b].center());
+        let over_x =
+          (rects[a].w + rects[b].w) / 2.0 + pad - (bx - ax).abs();
+        let over_y =
+          (rects[a].h + rects[b].h) / 2.0 + pad - (by - ay).abs();
+        if over_x <= 0.0 || over_y <= 0.0 {
+          continue;
+        }
+        moved = true;
+        // On one spot (a stack's tabs), the later one goes right or down.
+        let away = |from: f32, to: f32| if to < from { -1.0 } else { 1.0 };
+        if over_x <= over_y {
+          let push = over_x / 2.0 * away(ax, bx);
+          rects[a] = rects[a].translate(-push, 0.0);
+          rects[b] = rects[b].translate(push, 0.0);
+        } else {
+          let push = over_y / 2.0 * away(ay, by);
+          rects[a] = rects[a].translate(0.0, -push);
+          rects[b] = rects[b].translate(0.0, push);
+        }
+      }
+    }
+    if !moved {
+      break;
+    }
+  }
+}
+
+/// The scale at which all of `rects` fit `area`, at most `max_scale`.
+fn fit_scale(rects: &[RectF], area: &RectF, max_scale: f32) -> f32 {
+  let bounds = bounds(rects);
+  (area.w / bounds.w).min(area.h / bounds.h).min(max_scale).max(0.0)
+}
+
+fn bounds(rects: &[RectF]) -> RectF {
+  rects[1..].iter().fold(rects[0], |all, rect| all.union(rect))
 }
 
 /// The scale of each of `rows`' `shapes`: filling `area`'s width, but
@@ -229,6 +323,7 @@ mod tests {
   const GRID: OverviewExposeArrangement = OverviewExposeArrangement::Grid;
   const NATURAL: OverviewExposeArrangement =
     OverviewExposeArrangement::Natural;
+  const FREE: OverviewExposeArrangement = OverviewExposeArrangement::Free;
 
   const AREA: RectF = RectF::new(0.0, 0.0, 1600.0, 900.0);
 
@@ -344,6 +439,49 @@ mod tests {
     assert!((rects[0].w - rects[1].w).abs() < 1e-3);
     let middle = |rect: &RectF| rect.y + rect.h / 2.0;
     assert!((middle(&rects[0]) - middle(&rects[1])).abs() < 1e-3);
+    assert!(rects[1].x > rects[0].right());
+  }
+
+  /// Freely, a stack's tabs on one spot and a floating window over a
+  /// tiled one come apart, at least about the gap, within the area, all
+  /// at the same scale and left of each other as on screen.
+  #[test]
+  fn free_windows_are_pushed_apart_where_they_sit() {
+    let stack = RectF::new(0.0, 0.0, 960.0, 1080.0);
+    let windows = [
+      stack,
+      stack,
+      stack,
+      RectF::new(960.0, 0.0, 960.0, 1080.0),
+      RectF::new(1200.0, 300.0, 500.0, 400.0),
+    ];
+    let gap = 24.0;
+    let rects = spread(&windows, &AREA, gap, 1.0, 0, FREE);
+
+    for (index, rect) in rects.iter().enumerate() {
+      assert!(within(rect, &AREA), "{rect:?}");
+      let scale = rect.w / windows[index].w;
+      assert!((scale - rects[0].w / windows[0].w).abs() < 1e-3);
+      for other in &rects[index + 1..] {
+        // At least about the gap: half of it on each side's share.
+        assert!(!overlaps(&rect.inset(-gap / 4.0), other));
+      }
+    }
+    // The tiled right half stays right of the stack.
+    assert!(rects[3].center().0 > rects[0].center().0);
+  }
+
+  /// Freely, windows already apart keep their layout, only scaled.
+  #[test]
+  fn free_windows_apart_keep_their_layout() {
+    let windows = [
+      RectF::new(0.0, 0.0, 900.0, 1080.0),
+      RectF::new(1020.0, 0.0, 900.0, 1080.0),
+    ];
+    let rects = spread(&windows, &AREA, 20.0, 1.0, 0, FREE);
+
+    assert!((rects[0].y - rects[1].y).abs() < 1e-3);
+    assert!((rects[0].w - rects[1].w).abs() < 1e-3);
     assert!(rects[1].x > rects[0].right());
   }
 

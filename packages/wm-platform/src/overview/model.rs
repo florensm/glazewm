@@ -348,6 +348,10 @@ pub enum OverviewExposeArrangement {
 
   /// All as tall, as a photo grid lays out pictures.
   Grid,
+
+  /// Not in rows: each where it sits on screen, all scaled alike and
+  /// pushed apart only where they'd overlap.
+  Free,
 }
 
 /// What the overview shows behind its cards.

@@ -953,7 +953,7 @@ const STAND_IN_TITLE: f32 = 12.0;
 pub(crate) const STAND_IN_SIZE: (f32, f32) = (640.0, 400.0);
 
 /// Draws a stand-in for window `hwnd` titled `title` over all of
-/// `surface`: a small window with its app's icon in the middle.
+/// `surface`: a glass window outline with its app's icon in the middle.
 pub(crate) fn draw_stand_in(
   surface: &mut Surface,
   hwnd: isize,
@@ -966,12 +966,31 @@ pub(crate) fn draw_stand_in(
   let (width, height) = (to_f32(surface.width), to_f32(surface.height));
   let rect = RectF::new(0.0, 0.0, width, height).to_rect();
 
+  // Glass, as it isn't really there: the wallpaper shows through, under
+  // a faint title bar and a light edge, so it reads as a window outline.
+  let radius = round(units.px(style.card_corner_radius));
+  let bar = units.px(26.0).min(height / 4.0);
   surface.pixels().fill(0);
-  surface.canvas().fill_rounded_rect(
-    &rect,
-    round(units.px(style.card_corner_radius)),
-    style.surface,
-  );
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_rounded_rect(&rect, radius, with_alpha(style.text, 0.08));
+    canvas.fill_rect_with_corners(
+      &RectF::new(0.0, 0.0, width, bar).to_rect(),
+      CornerRadii {
+        top_left: radius,
+        top_right: radius,
+        bottom_right: 0,
+        bottom_left: 0,
+      },
+      with_alpha(style.text, 0.05),
+    );
+    canvas.stroke_rounded_rect(
+      &rect,
+      radius,
+      round(units.px(1.0)).max(1),
+      with_alpha(style.text, 0.18),
+    );
+  }
 
   // The icon, and the title centered under it, together in the middle.
   let font_size = units.px(STAND_IN_TITLE);
