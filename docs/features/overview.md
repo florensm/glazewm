@@ -51,6 +51,18 @@ strips at full length, to move windows between them.
   Picking a window on a strip pans the strip to put that window in the
   middle, and the wheel turned sideways (or with `Shift`) pans it by hand
   (see [Scrolling workspaces](#scrolling-workspaces)).
+  `stack.direction: horizontal` lines the workspaces up side by side
+  instead, each as wide as its strip, so a long strip pushes the ones
+  after it along; `←` `→` and the wheel go along them. `stack.gap` sets
+  the space between them, `stack.names` puts each name beside, above or
+  below its workspace (above, for `beside` in a horizontal stack) or
+  hides it, and `stack.neighbour_opacity` and `stack.neighbour_scale`
+  show the workspaces but the selected one fainter and smaller, as
+  GNOME's side workspaces are. Moving between workspaces glides over
+  `animation.switch_ms`, overshooting by `animation.bounce`.
+  `stack.open_style` gives the stack its own open and close: `zoom`,
+  `fade`, `none`, or `cascade`, a zoom that brings the workspaces in one
+  after another, outward from the selected one.
 - **Exposé** (default), for finding a window: the activities' row of
   miniatures, and below it the shown workspace's windows gathered as one
   cluster in the middle of the room, as macOS's Mission Control does:
@@ -190,7 +202,8 @@ An arrow goes to what lies that way on screen:
   windows show on the cards themselves, so no arrow points into them:
   `Space` goes in. Among the windows, the arrows go to the nearest window
   that way, and `↑` or `↓` off their edge goes to the workspace above or
-  below.
+  below. Side by side (`stack.direction: horizontal`), `←` `→` do all
+  this instead, and `↑` `↓` cross to the monitor that way.
 - With nothing that way on the monitor, an arrow goes on to the monitor
   that way (see [Monitors](#monitors)), or bumps when there is none.
   `←` and `→` in the stack therefore never go into a workspace: they
@@ -497,6 +510,12 @@ keybindings:
 | `expose.workspace_row_position` | `"top"` | Edge the exposé's row sits along: `top`, `bottom`, `left` or `right` (see [Layouts](#layouts)). |
 | `activities.workspace_row_position` | `"top"` | Edge the activities' row sits along: `top`, `bottom`, `left` or `right`. |
 | `stack.zoom` | `0.5` | How large the stack shows a workspace, as a part of the screen's width: `0.2` to `0.9`. |
+| `stack.direction` | `"vertical"` | Workspaces top to bottom (`vertical`), or side by side (`horizontal`). |
+| `stack.gap` | `28` | Space between workspaces, in logical pixels: `0` to `200`. |
+| `stack.names` | `"beside"` | Where each workspace's name goes: `beside`, `above`, `below` or `hidden`. |
+| `stack.neighbour_opacity` | `1` | Opacity of the workspaces but the selected one: `0.2` to `1`. |
+| `stack.neighbour_scale` | `1` | Their size against the selected one: `0.7` to `1`. |
+| `stack.open_style` | `"inherit"` | The stack's own open and close: `inherit` (as `animation.style`), `zoom`, `fade`, `none` or `cascade`. |
 
 ### `overview.look`
 

@@ -220,14 +220,14 @@
     { id: 'stack', label: 'Stack', layout: 'stack', intro: 'Every workspace at the same size, one after another, to move windows between them. Wheel or arrows go through them; click one to go there.', groups: [
       { title: 'Workspaces', items: [
         { key: 'stack.zoom', kind: 'range', min: 0.2, max: 0.9, step: 0.01, def: 0.5, fmt: (v) => v.toFixed(2) + '×', help: 'How large each workspace shows.' },
-        { key: 'stack.direction', kind: 'enum', options: ['vertical', 'horizontal'], def: 'vertical', isNew: true, help: 'Stacked top to bottom (today, as niri does), or side by side like a ribbon.' },
-        { key: 'stack.gap', kind: 'range', min: 0, max: 200, step: 2, def: 28, unit: 'px', isNew: true, help: 'Space between workspaces. 28 px in layout.rs today.' },
-        { key: 'stack.names', kind: 'enum', options: ['beside', 'above', 'below', 'hidden'], def: 'beside', isNew: true, help: 'Where each workspace\'s name goes.' },
-        { key: 'stack.neighbour_opacity', kind: 'range', min: 0.2, max: 1, step: 0.05, def: 1, isNew: true, fmt: pct, help: 'How strongly the workspaces before and after the selected one show.' },
-        { key: 'stack.neighbour_scale', kind: 'range', min: 0.7, max: 1, step: 0.01, def: 1, isNew: true, fmt: (v) => v.toFixed(2) + '×', help: 'How much smaller they are than the selected one, as GNOME\'s side workspaces are (0.94).' },
+        { key: 'stack.direction', kind: 'enum', options: ['vertical', 'horizontal'], def: 'vertical', help: 'Stacked top to bottom (today, as niri does), or side by side like a ribbon.' },
+        { key: 'stack.gap', kind: 'range', min: 0, max: 200, step: 2, def: 28, unit: 'px', help: 'Space between workspaces. 28 px in layout.rs today.' },
+        { key: 'stack.names', kind: 'enum', options: ['beside', 'above', 'below', 'hidden'], def: 'beside', help: 'Where each workspace\'s name goes.' },
+        { key: 'stack.neighbour_opacity', kind: 'range', min: 0.2, max: 1, step: 0.05, def: 1, fmt: pct, help: 'How strongly the workspaces before and after the selected one show.' },
+        { key: 'stack.neighbour_scale', kind: 'range', min: 0.7, max: 1, step: 0.01, def: 1, fmt: (v) => v.toFixed(2) + '×', help: 'How much smaller they are than the selected one, as GNOME\'s side workspaces are (0.94).' },
       ] },
       { title: 'Motion', items: [
-        { key: 'stack.open_style', kind: 'enum', options: ['inherit', 'zoom', 'fade', 'none', 'cascade'], def: 'inherit', isNew: true, help: 'How the stack opens and closes, apart from the other layouts: "inherit" uses animation.style; cascade brings the workspaces in one after another, outward from the selected one.' },
+        { key: 'stack.open_style', kind: 'enum', options: ['inherit', 'zoom', 'fade', 'none', 'cascade'], def: 'inherit', help: 'How the stack opens and closes, apart from the other layouts: "inherit" uses animation.style; cascade brings the workspaces in one after another, outward from the selected one.' },
         { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', shared: 'activities and stack', help: 'How long workspaces glide when you scroll or press an arrow.' },
         { key: 'animation.bounce', kind: 'range', min: 0, max: 0.8, step: 0.05, def: 0, shared: 'every layout', help: 'How far they overshoot when they glide.' },
         { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },

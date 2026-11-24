@@ -9,7 +9,8 @@
 use std::time::Instant;
 
 use crate::{
-  OverviewCurve, OverviewLayoutMode, OverviewRowSide, OverviewWorkspaceRow,
+  OverviewCurve, OverviewLayoutMode, OverviewRowSide, OverviewStack,
+  OverviewStackDirection, OverviewWorkspaceRow,
 };
 
 /// A rectangle with fractional coordinates.
@@ -630,15 +631,17 @@ pub(crate) fn activities(
   )
 }
 
-/// Space kept free beside a panned strip's picked window, and between the
-/// stack's cards, in logical pixels.
+/// Space kept free beside a panned strip's picked window, in logical
+/// pixels.
 const STACK_MARGIN: f32 = 48.0;
-const STACK_GAP: f32 = 28.0;
 
-/// Every card at scale 1 in a column, the `selected` one in the middle of
-/// the room above the search line. Each card lines up the middle of what
-/// its monitor shows with the middle of the overview, so a strip reaches
-/// past either side as far as its columns do.
+/// Every card in a column (or a row, as `look` has it), the `selected`
+/// one at scale 1 in the middle of the room above the search line, the
+/// others at `look`'s neighbour scale and opacity, `look`'s gap apart. In
+/// a column, each card lines up the middle of what its monitor shows with
+/// the middle of the overview, so a strip reaches past either side as far
+/// as its columns do; in a row, they sit side by side, each as wide as
+/// its strip.
 ///
 /// The selected card is panned `pan` further along its strip, in card
 /// units at scale 1, but only as far as keeps the overview's middle on
@@ -649,58 +652,92 @@ const STACK_GAP: f32 = 28.0;
 /// Every other card rests on what its monitor shows, so a strip slides
 /// back there as another workspace is selected: the pan is the
 /// overview's own, and never the workspace's.
-/// Distance between the middles of two cards stacked one over the other.
-pub(crate) fn stack_step(metrics: &CardMetrics) -> f32 {
-  metrics.height + metrics.px(STACK_GAP)
-}
-
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn stack(
   metrics: &CardMetrics,
   slots: &[CardSlot],
   selected: usize,
   pan: f32,
+  look: &OverviewStack,
 ) -> (Targets, f32) {
   let view_width = metrics.view.0;
   let margin = metrics.px(STACK_MARGIN);
+  let gap = metrics.px(look.clamped_gap());
+  let (scale, opacity) = (
+    look.clamped_neighbour_scale(),
+    look.clamped_neighbour_opacity(),
+  );
   let search_y = metrics.bottom_search_y();
   let middle = (view_width / 2.0, (search_y - metrics.px(16.0)) / 2.0);
-  let step = stack_step(metrics);
+
+  // Where the selected card's left edge goes.
+  let mut selected_left = middle.0;
   let mut panned = 0.0;
-
-  let cards = slots
-    .iter()
-    .enumerate()
-    .map(|(index, slot)| {
-      let resting = middle.0 - slot.view_center;
-      let mut left = resting;
-
-      if index == selected {
-        left -=
-          pan.clamp(-slot.view_center, slot.width - slot.view_center);
-
-        let is_strip = slot.width > metrics.width + 0.5;
-        if let Some((from, to)) = slot.keep.filter(|_| is_strip) {
-          left = middle.0 - f32::midpoint(from, to);
-        } else if let Some((from, to)) = slot.keep {
-          let (low, high) = (margin, view_width - margin);
-          if to - from > high - low || left + from < low {
-            left = low - from;
-          } else if left + to > high {
-            left = high - to;
-          }
-        }
-        panned = resting - left;
+  if let Some(slot) = slots.get(selected) {
+    let resting = middle.0 - slot.view_center;
+    let mut left = resting
+      - pan.clamp(-slot.view_center, slot.width - slot.view_center);
+    let is_strip = slot.width > metrics.width + 0.5;
+    if let Some((from, to)) = slot.keep.filter(|_| is_strip) {
+      left = middle.0 - f32::midpoint(from, to);
+    } else if let Some((from, to)) = slot.keep {
+      let (low, high) = (margin, view_width - margin);
+      if to - from > high - low || left + from < low {
+        left = low - from;
+      } else if left + to > high {
+        left = high - to;
       }
+    }
+    panned = resting - left;
+    selected_left = left;
+  }
 
-      let offset = index as f32 - selected as f32;
-      Placement::new(
-        left + slot.width / 2.0,
-        middle.1 + offset * step,
-        1.0,
-      )
-    })
-    .collect();
+  let neighbour = |cx: f32, cy: f32| Placement {
+    opacity,
+    ..Placement::new(cx, cy, scale)
+  };
+  let mut cards = vec![Placement::new(0.0, 0.0, 1.0); slots.len()];
+  if let Some(slot) = slots.get(selected) {
+    cards[selected] =
+      Placement::new(selected_left + slot.width / 2.0, middle.1, 1.0);
+  }
+
+  match look.direction {
+    OverviewStackDirection::Vertical => {
+      // From the selected card's edge to a neighbour's middle, and on to
+      // the next neighbour's.
+      let height = metrics.height;
+      let first = height / 2.0 + gap + height * scale / 2.0;
+      let step = height * scale + gap;
+      for (index, slot) in slots.iter().enumerate() {
+        if index == selected {
+          continue;
+        }
+        let steps = index.abs_diff(selected) as f32 - 1.0;
+        let way = if index < selected { -1.0 } else { 1.0 };
+        // Its monitor's middle on the overview's, at its own scale.
+        let cx = middle.0 - (slot.view_center - slot.width / 2.0) * scale;
+        cards[index] =
+          neighbour(cx, middle.1 + way * (first + steps * step));
+      }
+    }
+    OverviewStackDirection::Horizontal => {
+      let selected_width =
+        slots.get(selected).map_or(0.0, |slot| slot.width);
+      let mut right = selected_left + selected_width + gap;
+      for index in selected + 1..slots.len() {
+        let width = slots[index].width * scale;
+        cards[index] = neighbour(right + width / 2.0, middle.1);
+        right += width + gap;
+      }
+      let mut left = selected_left - gap;
+      for index in (0..selected.min(slots.len())).rev() {
+        let width = slots[index].width * scale;
+        cards[index] = neighbour(left - width / 2.0, middle.1);
+        left -= width + gap;
+      }
+    }
+  }
 
   let spotlight_y = metrics.px(SPOTLIGHT_INSET);
   (
@@ -711,6 +748,42 @@ pub(crate) fn stack(
     },
     panned,
   )
+}
+
+/// How far the stack's cards move, along its way, for a scroll of
+/// `scroll` workspaces from `selected`: that part of the way to the next
+/// one, or the previous one for less than 0, or of a card's size and gap
+/// where there is none.
+pub(crate) fn stack_shift(
+  metrics: &CardMetrics,
+  targets: &Targets,
+  selected: usize,
+  scroll: f32,
+  look: &OverviewStack,
+) -> f32 {
+  let is_horizontal = look.direction == OverviewStackDirection::Horizontal;
+  let along =
+    |card: &Placement| if is_horizontal { card.cx } else { card.cy };
+  let neighbour = if scroll < 0.0 {
+    selected.checked_sub(1)
+  } else {
+    selected.checked_add(1)
+  };
+  let distance = neighbour
+    .and_then(|index| targets.cards.get(index))
+    .zip(targets.cards.get(selected))
+    .map_or_else(
+      || {
+        let size = if is_horizontal {
+          metrics.width
+        } else {
+          metrics.height
+        };
+        size + metrics.px(look.clamped_gap())
+      },
+      |(next, selected)| (along(next) - along(selected)).abs(),
+    );
+  scroll * distance
 }
 
 /// How a workspace's screen space maps onto its card at scale 1.
@@ -1067,6 +1140,27 @@ pub(crate) fn ease_out_back(progress: f32, bounce: f32) -> f32 {
   let c = 4.0 * bounce.clamp(0.0, MAX_BOUNCE);
   let t = progress.clamp(0.0, 1.0) - 1.0;
   1.0 + t * t * ((c + 1.0) * t + c)
+}
+
+/// Part of the way a cascading zoom's card lags per step from the zoomed
+/// one, and most steps it lags.
+const CASCADE_STEP: f32 = 0.16;
+const CASCADE_STEPS: usize = 3;
+
+/// Openness of a card `steps` from the zoomed one on a cascading zoom at
+/// `openness`: it sets off a step later on open, and arrives a step
+/// sooner on close, both ending together.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn cascaded(openness: f32, steps: usize) -> f32 {
+  let delay = CASCADE_STEP * steps.min(CASCADE_STEPS) as f32;
+  ((openness - delay) / (1.0 - delay)).max(0.0)
+}
+
+/// How far the zoom's `travel` reaches for the card lagging most on a
+/// cascade, which is that much further from where it lands as it ends.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn cascade_reach(travel: f32) -> f32 {
+  travel / (1.0 - CASCADE_STEP * CASCADE_STEPS as f32)
 }
 
 /// How strongly the overview's chrome (hints, names, highlights) shows at
@@ -1442,14 +1536,15 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use super::{
-    activities, chrome_opacity, cover_crop, ease_out_back, ease_out_cubic,
-    stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
-    Placement, RectF, SceneChrome, Spring, SpringRect, Targets, Tile,
-    Zoom, LABEL_GAP, LABEL_HEIGHT, STACK_MAX_WIDTHS,
+    activities, cascade_reach, cascaded, chrome_opacity, cover_crop,
+    ease_out_back, ease_out_cubic, stack, stack_shift, Camera, CardLook,
+    CardMetrics, CardSlot, CardView, Mark, Placement, RectF, SceneChrome,
+    Spring, SpringRect, Targets, Tile, Zoom, LABEL_GAP, LABEL_HEIGHT,
+    STACK_MAX_WIDTHS,
   };
   use crate::{
     OverviewCurve, OverviewLayoutMode, OverviewRowSide, OverviewStack,
-    OverviewWorkspaceRow,
+    OverviewStackDirection, OverviewWorkspaceRow,
   };
 
   /// Cards drawn for the stack.
@@ -1510,7 +1605,10 @@ mod tests {
     let metrics = metrics();
     let tiles = metrics.tile_area();
 
-    assert_close(metrics.width, 1920.0 * 0.45);
+    assert_close(
+      metrics.width,
+      1920.0 * OverviewStack::default().clamped_zoom(),
+    );
     assert_close(tiles.w / tiles.h, 1920.0 / 1040.0);
     assert_close(metrics.height, tiles.bottom() + metrics.padding);
   }
@@ -2392,7 +2490,11 @@ mod tests {
   #[test]
   fn the_stack_shows_a_workspace_at_its_zoom_within_bounds() {
     let width = |zoom: f32| {
-      let zoom = OverviewStack { zoom }.clamped_zoom();
+      let zoom = OverviewStack {
+        zoom,
+        ..OverviewStack::default()
+      }
+      .clamped_zoom();
       CardMetrics::new(
         1920.0,
         1040.0,
@@ -2510,7 +2612,13 @@ mod tests {
   #[test]
   fn the_stack_centers_the_selected_card_and_stacks_the_rest() {
     let metrics = metrics();
-    let (targets, pan) = stack(&metrics, &slots(&metrics, 4), 1, 0.0);
+    let (targets, pan) = stack(
+      &metrics,
+      &slots(&metrics, 4),
+      1,
+      0.0,
+      &OverviewStack::default(),
+    );
     let rects = targets
       .cards
       .iter()
@@ -2529,12 +2637,133 @@ mod tests {
     }
   }
 
+  /// Its neighbours sit the gap from the selected card's edges, at their
+  /// own scale and opacity; the selected one shows as ever.
+  #[test]
+  fn the_stack_shrinks_and_fades_its_neighbours_a_gap_apart() {
+    let metrics = metrics();
+    let look = OverviewStack {
+      gap: 60.0,
+      neighbour_scale: 0.8,
+      neighbour_opacity: 0.5,
+      ..OverviewStack::default()
+    };
+    let (targets, _) = stack(&metrics, &slots(&metrics, 4), 1, 0.0, &look);
+    let rects = targets
+      .cards
+      .iter()
+      .map(|card| card.rect(&metrics))
+      .collect::<Vec<_>>();
+
+    assert_close(targets.cards[1].scale, 1.0);
+    assert_close(targets.cards[1].opacity, 1.0);
+    for index in [0, 2, 3] {
+      assert_close(targets.cards[index].scale, 0.8);
+      assert_close(targets.cards[index].opacity, 0.5);
+    }
+    for pair in rects.windows(2) {
+      assert_close(pair[1].y - pair[0].bottom(), 60.0);
+      assert_close(pair[0].center().0, pair[1].center().0);
+    }
+  }
+
+  /// Side by side, cards line up edge to edge the gap apart, each as wide
+  /// as its strip, the selected one's view in the middle.
+  #[test]
+  fn a_horizontal_stack_lines_cards_up_edge_to_edge() {
+    let metrics = metrics();
+    let look = OverviewStack {
+      direction: OverviewStackDirection::Horizontal,
+      neighbour_scale: 0.9,
+      ..OverviewStack::default()
+    };
+    let (strip, _) = strip_slot(&metrics, -2.0, 2.0, None);
+    let slots =
+      vec![CardSlot::new(&metrics), strip, CardSlot::new(&metrics)];
+
+    for selected in 0..slots.len() {
+      let (targets, _) = stack(&metrics, &slots, selected, 0.0, &look);
+      let rects = targets
+        .cards
+        .iter()
+        .zip(&slots)
+        .map(|(card, slot)| {
+          let (w, h) =
+            (slot.width * card.scale, metrics.height * card.scale);
+          RectF::new(card.cx - w / 2.0, card.cy - h / 2.0, w, h)
+        })
+        .collect::<Vec<_>>();
+      for pair in rects.windows(2) {
+        assert_close(pair[1].x - pair[0].right(), 28.0);
+        assert_close(pair[1].center().1, pair[0].center().1);
+      }
+      let chosen = &slots[selected];
+      let card = &targets.cards[selected];
+      assert_close(
+        card.cx - chosen.width / 2.0 + chosen.view_center,
+        960.0,
+      );
+    }
+  }
+
+  /// Scrolling shifts the stack part of the way to the neighbour that
+  /// way, however far that one is.
+  #[test]
+  fn the_stack_scrolls_toward_its_neighbour() {
+    let metrics = metrics();
+    let look = OverviewStack::default();
+    let (targets, _) = stack(&metrics, &slots(&metrics, 3), 1, 0.0, &look);
+    let step = metrics.height + 28.0;
+    assert_close(
+      stack_shift(&metrics, &targets, 1, 0.5, &look),
+      step / 2.0,
+    );
+    assert_close(
+      stack_shift(&metrics, &targets, 1, -0.5, &look),
+      -step / 2.0,
+    );
+    // Past the last, as far as a card and its gap.
+    assert_close(
+      stack_shift(&metrics, &targets, 2, 0.25, &look),
+      step / 4.0,
+    );
+
+    let wide = OverviewStack {
+      direction: OverviewStackDirection::Horizontal,
+      ..look
+    };
+    let (strip, _) = strip_slot(&metrics, -2.0, 2.0, None);
+    let slots = vec![CardSlot::new(&metrics), strip];
+    let (targets, _) = stack(&metrics, &slots, 0, 0.0, &wide);
+    let distance = targets.cards[1].cx - targets.cards[0].cx;
+    assert_close(stack_shift(&metrics, &targets, 0, 1.0, &wide), distance);
+  }
+
+  /// On a cascade, cards further from the zoomed one set off later on
+  /// open and arrive sooner on close, up to three steps, all ending
+  /// together.
+  #[test]
+  fn a_cascade_lags_cards_by_their_distance() {
+    for openness in [0.0, 0.3, 0.7, 1.0] {
+      assert_close(cascaded(openness, 0), openness);
+    }
+    for steps in 0..6 {
+      assert_close(cascaded(1.0, steps), 1.0);
+      assert_close(cascaded(0.0, steps), 0.0);
+    }
+    assert_close(cascaded(0.3, 3), 0.0);
+    assert_close(cascaded(0.3, 5), cascaded(0.3, 3));
+    assert!(cascaded(0.6, 1) > cascaded(0.6, 2));
+    assert!(cascade_reach(100.0) > 190.0);
+  }
+
   #[test]
   fn the_stack_shows_a_strip_at_full_length_around_its_view() {
     let metrics = metrics();
     // Two monitors' worth left of the view, one right of it.
     let (slot, card) = strip_slot(&metrics, -2.0, 2.0, None);
-    let (targets, _) = stack(&metrics, &[slot], 0, 0.0);
+    let (targets, _) =
+      stack(&metrics, &[slot], 0, 0.0, &OverviewStack::default());
     let rect = targets.cards[0].rect(&card);
 
     assert_close(card.tile_area().w, metrics.tile_area().w * 4.0);
@@ -2562,16 +2791,19 @@ mod tests {
     let metrics = metrics();
     let (slot, card) = strip_slot(&metrics, -1.0, 3.0, None);
 
-    let (targets, pan) = stack(&metrics, &[slot], 0, 400.0);
+    let (targets, pan) =
+      stack(&metrics, &[slot], 0, 400.0, &OverviewStack::default());
     assert_close(pan, 400.0);
     let rect = targets.cards[0].rect(&card);
     assert_close(rect.x + slot.view_center + 400.0, 960.0);
 
-    let (targets, pan) = stack(&metrics, &[slot], 0, 1.0e6);
+    let (targets, pan) =
+      stack(&metrics, &[slot], 0, 1.0e6, &OverviewStack::default());
     assert_close(pan, slot.width - slot.view_center);
     assert_close(targets.cards[0].rect(&card).right(), 960.0);
 
-    let (_, pan) = stack(&metrics, &[slot], 0, -1.0e6);
+    let (_, pan) =
+      stack(&metrics, &[slot], 0, -1.0e6, &OverviewStack::default());
     assert_close(pan, -slot.view_center);
   }
 
@@ -2587,7 +2819,8 @@ mod tests {
     {
       let (slot, _) =
         strip_slot(&metrics, 0.0, 4.0, Some((from, from + 200.0)));
-      let (targets, panned) = stack(&metrics, &[slot], 0, pan);
+      let (targets, panned) =
+        stack(&metrics, &[slot], 0, pan, &OverviewStack::default());
       let rect = targets.cards[0].rect(&card);
 
       assert_close(rect.x + from + 100.0, 960.0);
@@ -2605,14 +2838,26 @@ mod tests {
     let other = CardSlot::new(&metrics);
     let at_rest = 960.0 - resting.view_center;
 
-    let (targets, pan) = stack(&metrics, &[picking, other], 0, 0.0);
+    let (targets, pan) = stack(
+      &metrics,
+      &[picking, other],
+      0,
+      0.0,
+      &OverviewStack::default(),
+    );
     assert!(pan > 0.0);
     assert!(targets.cards[0].rect(&card).x < at_rest, "panned along");
 
     // The pan belongs to the selected card: with the other one selected,
     // the strip rests on what its monitor shows again, and the pan
     // starts over.
-    let (targets, pan) = stack(&metrics, &[resting, other], 1, 0.0);
+    let (targets, pan) = stack(
+      &metrics,
+      &[resting, other],
+      1,
+      0.0,
+      &OverviewStack::default(),
+    );
     assert_close(targets.cards[0].rect(&card).x, at_rest);
     assert_close(pan, 0.0);
   }
@@ -2620,14 +2865,22 @@ mod tests {
   #[test]
   fn a_card_no_wider_than_its_monitor_only_shows_what_it_keeps() {
     let metrics = metrics();
-    let at_rest = stack(&metrics, &slots(&metrics, 1), 0, 0.0).0;
+    let at_rest = stack(
+      &metrics,
+      &slots(&metrics, 1),
+      0,
+      0.0,
+      &OverviewStack::default(),
+    )
+    .0;
 
     // In view already, it stays put rather than going to the middle.
     let inside = CardSlot {
       keep: Some((100.0, 300.0)),
       ..CardSlot::new(&metrics)
     };
-    let (targets, pan) = stack(&metrics, &[inside], 0, 0.0);
+    let (targets, pan) =
+      stack(&metrics, &[inside], 0, 0.0, &OverviewStack::default());
     assert_close(pan, 0.0);
     assert_close(targets.cards[0].cx, at_rest.cards[0].cx);
 
@@ -2637,7 +2890,8 @@ mod tests {
       keep: Some((3000.0, 3200.0)),
       ..CardSlot::new(&metrics)
     };
-    let (targets, pan) = stack(&metrics, &[outside], 0, 0.0);
+    let (targets, pan) =
+      stack(&metrics, &[outside], 0, 0.0, &OverviewStack::default());
     let rect = targets.cards[0].rect(&metrics);
     assert!(pan > 0.0);
     assert_close(rect.x + 3200.0, 1920.0 - 48.0);

@@ -22,7 +22,8 @@ use crate::{
     state::{Mode, Toward},
     thumbnails::Picture,
   },
-  OverviewLayoutMode, OverviewStyle, OverviewWindowHighlightStyle,
+  OverviewLayoutMode, OverviewStack, OverviewStackDirection,
+  OverviewStackNames, OverviewStyle, OverviewWindowHighlightStyle,
 };
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
@@ -717,6 +718,11 @@ impl Screen {
   ) -> Vec<Option<(RectF, f32)>> {
     let layout = self.focus.layout;
     let gap = self.metrics.px(LABEL_GAP);
+    let view = context.view;
+    let stack_names =
+      self.style().map_or(OverviewStackNames::Beside, |style| {
+        stack_name_place(&style.stack)
+      });
     let Some(overlays) = &self.overlays else {
       return Vec::new();
     };
@@ -737,10 +743,24 @@ impl Screen {
         let rect =
           context.camera.apply(&card.placement().rect(&card.metrics));
         let (width, height) = to_f32_size(label.picture.size());
-        let (x, y) = if is_stack {
-          (rect.x - gap - width, rect.y + rect.h / 2.0 - height / 2.0)
-        } else {
-          (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap)
+        // Centered across a card, kept on screen however far its strip
+        // reaches.
+        let across = (rect.x + rect.w / 2.0 - width / 2.0)
+          .clamp(gap, (view.w - width - gap).max(gap));
+        let (x, y) = match (is_stack, stack_names) {
+          (false, _) => {
+            (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap)
+          }
+          (true, OverviewStackNames::Beside) => {
+            (rect.x - gap - width, rect.y + rect.h / 2.0 - height / 2.0)
+          }
+          (true, OverviewStackNames::Above) => {
+            (across, rect.y - gap - height)
+          }
+          (true, OverviewStackNames::Below) => {
+            (across, rect.bottom() + gap)
+          }
+          (true, OverviewStackNames::Hidden) => return None,
         };
 
         // In with its card as it pops in.
@@ -754,6 +774,17 @@ impl Screen {
         ))
       })
       .collect()
+  }
+}
+
+/// Where the stack shows its names: `beside` a card is above it in a
+/// horizontal stack, where its neighbour is beside it.
+fn stack_name_place(stack: &OverviewStack) -> OverviewStackNames {
+  match (stack.names, stack.direction) {
+    (OverviewStackNames::Beside, OverviewStackDirection::Horizontal) => {
+      OverviewStackNames::Above
+    }
+    (names, _) => names,
   }
 }
 

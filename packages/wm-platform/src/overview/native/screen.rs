@@ -33,9 +33,9 @@ use crate::{
     },
     effects::{lean_toward, Entrance},
     layout::{
-      activities, chrome_opacity, stack, stack_step, Camera, CardMetrics,
-      CardView, Placement, RectF, SceneChrome, Spring, Zoom,
-      SEARCH_HEIGHT,
+      activities, cascade_reach, cascaded, chrome_opacity, stack,
+      stack_shift, Camera, CardMetrics, CardView, Placement, RectF,
+      SceneChrome, Spring, Zoom, SEARCH_HEIGHT,
     },
     scene::SceneWindow,
     state::{Control, Hit, ScreenFocus, Toward},
@@ -44,9 +44,9 @@ use crate::{
   platform_impl::composition::OverviewBackdrop,
   tab_bar::layout::TabHit,
   BorderOverlayParams, OverviewEffects, OverviewExposeHints,
-  OverviewExposeTitles, OverviewLayoutMode, OverviewStyle,
-  OverviewWallpaperStyle, OverviewWindow, OverviewWorkspace,
-  OverviewZoomStyle,
+  OverviewExposeTitles, OverviewLayoutMode, OverviewStack,
+  OverviewStackDirection, OverviewStyle, OverviewWallpaperStyle,
+  OverviewWindow, OverviewWorkspace, OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -659,14 +659,29 @@ impl Screen {
           .pan
           .filter(|(index, _)| *index == selected)
           .map_or(0.0, |(_, pan)| pan);
+        let look = self
+          .style()
+          .map_or_else(OverviewStack::default, |style| style.stack);
         let (mut targets, pan) =
-          stack(&self.metrics, &slots, selected, pan);
+          stack(&self.metrics, &slots, selected, pan, &look);
         self.pan = Some((selected, pan));
 
         // Scrolled part of the way to the next or previous workspace.
-        let shift = self.scroll * stack_step(&self.metrics);
+        let shift = stack_shift(
+          &self.metrics,
+          &targets,
+          selected,
+          self.scroll,
+          &look,
+        );
+        let is_horizontal =
+          look.direction == OverviewStackDirection::Horizontal;
         for card in &mut targets.cards {
-          card.cy -= shift;
+          if is_horizontal {
+            card.cx -= shift;
+          } else {
+            card.cy -= shift;
+          }
         }
         targets
       }
@@ -1232,7 +1247,8 @@ impl Screen {
 
   /// The camera zooming out of or into card `index` at `openness`.
   fn zoom_camera(&self, index: usize, openness: f32) -> Camera {
-    match self.style().map(|style| style.zoom_style) {
+    let layout = self.focus.layout;
+    match self.style().map(|style| style.zoom_style_of(layout).0) {
       Some(OverviewZoomStyle::Zoom) => {
         self.zoom_rect(index).map_or(Camera::IDENTITY, |rect| {
           Camera::zoom(&rect, &self.work_in_view(), openness)
@@ -1245,11 +1261,37 @@ impl Screen {
     }
   }
 
+  /// The camera each card is seen through on a cascading zoom: those
+  /// further from the zoomed card a step behind it, so they come in after
+  /// it on open and leave before it on close. `None` without one.
+  fn cascade_cameras(&self) -> Option<Vec<Camera>> {
+    let (zoom, _) = self.zoom?;
+    let cascades = self
+      .style()
+      .is_some_and(|style| style.zoom_style_of(self.focus.layout).1);
+    if !cascades {
+      return None;
+    }
+    let openness = self.openness();
+    Some(
+      (0..self.cards.len())
+        .map(|index| {
+          let steps = index.abs_diff(zoom.card);
+          self.zoom_camera(zoom.card, cascaded(openness, steps))
+        })
+        .collect(),
+    )
+  }
+
   /// `zoom`, ending once nothing on screen is more than half a pixel from
   /// where it lands, on a spring.
   fn trimmed(&self, zoom: Zoom) -> Zoom {
     self.style().map_or(zoom, |style| {
-      let travel = self.zoom_camera(zoom.card, 0.0).travel(&self.view());
+      let mut travel =
+        self.zoom_camera(zoom.card, 0.0).travel(&self.view());
+      if style.zoom_style_of(self.focus.layout).1 {
+        travel = cascade_reach(travel);
+      }
       zoom.trimmed(style.zoom_curve(zoom.is_closing), travel)
     })
   }
@@ -1277,9 +1319,9 @@ impl Screen {
 
   /// How strongly it shows over the desktop as a whole.
   fn presence(&self) -> f32 {
-    let fades = self
-      .style()
-      .is_some_and(|style| style.zoom_style == OverviewZoomStyle::Fade);
+    let fades = self.style().is_some_and(|style| {
+      style.zoom_style_of(self.focus.layout).0 == OverviewZoomStyle::Fade
+    });
     if fades && self.zoom.is_some() {
       self.openness().clamp(0.0, 1.0)
     } else {
@@ -1505,8 +1547,14 @@ impl Screen {
       zoom_card: context.zoom_card.filter(|_| !layout.has_scene()),
       ..context
     };
+    let cameras = self.cascade_cameras();
     for (index, card) in self.cards.iter_mut().enumerate() {
-      place_card(card, index, &cards);
+      let camera = cameras
+        .as_ref()
+        .and_then(|cameras| cameras.get(index))
+        .copied()
+        .unwrap_or(cards.camera);
+      place_card(card, index, &PlaceContext { camera, ..cards });
     }
 
     if layout.has_scene() {

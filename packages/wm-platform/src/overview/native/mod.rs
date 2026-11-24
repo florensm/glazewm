@@ -81,7 +81,7 @@ use crate::{
     scene::Scene,
     state::{
       all_workspaces, ExposeKeys, Hit, Interaction, Key, Modifier,
-      RowSides, ScreenFocus, SearchField, ShortcutGroup,
+      Orientation, ScreenFocus, SearchField, ShortcutGroup,
     },
     tab_bars::CardTabBar,
     thumbnails::{Picture, Preview},
@@ -933,7 +933,7 @@ impl Overview {
       .interaction
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
-    self.interaction.row_sides = RowSides::of(&frame.style);
+    self.interaction.orientation = Orientation::of(&frame.style);
     self.interaction.expose_keys = ExposeKeys::of(&frame.style);
     // E.g. the `Alt` of an `Alt` + `W` that opened it.
     self.interaction.opened_holding(held_modifier());
@@ -948,7 +948,7 @@ impl Overview {
     window_icons::forget_closed();
 
     let animate = frame.style.open_duration_ms > 0
-      && frame.style.zoom_style != OverviewZoomStyle::None;
+      && frame.style.zoom_style_of(layout).0 != OverviewZoomStyle::None;
     for (index, screen) in self.screens.iter_mut().enumerate() {
       let focus = self.interaction.focus(index, &self.workspaces);
       screen.open(
@@ -1030,7 +1030,7 @@ impl Overview {
       .interaction
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
-    self.interaction.row_sides = RowSides::of(&frame.style);
+    self.interaction.orientation = Orientation::of(&frame.style);
     self.interaction.expose_keys = ExposeKeys::of(&frame.style);
 
     let mut old_screens = std::mem::take(&mut self.screens);
@@ -1309,7 +1309,10 @@ impl Overview {
     let duration = self
       .frame
       .as_ref()
-      .filter(|frame| frame.style.zoom_style != OverviewZoomStyle::None)
+      .filter(|frame| {
+        frame.style.zoom_style_of(self.interaction.layout).0
+          != OverviewZoomStyle::None
+      })
       .map_or(0, |frame| frame.style.close_duration_ms);
     let cards = (0..self.screens.len())
       .map(|index| self.closing_card(index, action))

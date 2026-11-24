@@ -3432,6 +3432,63 @@ mod tests {
   }
 
   #[test]
+  fn overview_stack_options_read_and_keep_todays_defaults() {
+    use wm_platform::{
+      OverviewStackDirection, OverviewStackNames, OverviewStackOpen,
+    };
+
+    let parse = |value: serde_json::Value| {
+      serde_json::from_value::<OverviewConfig>(value)
+    };
+    let stack = parse(serde_json::json!({
+      "stack": {
+        "direction": "horizontal",
+        "gap": 40,
+        "names": "below",
+        "neighbour_opacity": 0.6,
+        "neighbour_scale": 0.94,
+        "open_style": "cascade",
+      },
+    }))
+    .expect("parses")
+    .stack;
+    assert_eq!(stack.direction, OverviewStackDirection::Horizontal);
+    assert!((stack.clamped_gap() - 40.0).abs() < 1e-6);
+    assert_eq!(stack.names, OverviewStackNames::Below);
+    assert!((stack.clamped_neighbour_opacity() - 0.6).abs() < 1e-6);
+    assert!((stack.clamped_neighbour_scale() - 0.94).abs() < 1e-6);
+    assert_eq!(stack.open_style, OverviewStackOpen::Cascade);
+    assert!((stack.clamped_zoom() - 0.5).abs() < 1e-6, "keeps its zoom");
+
+    // Out of range is held to the range.
+    let wild = parse(serde_json::json!({
+      "stack": { "gap": 999, "neighbour_opacity": 0, "neighbour_scale": 2 },
+    }))
+    .expect("parses")
+    .stack;
+    assert!((wild.clamped_gap() - 200.0).abs() < 1e-6);
+    assert!((wild.clamped_neighbour_opacity() - 0.2).abs() < 1e-6);
+    assert!((wild.clamped_neighbour_scale() - 1.0).abs() < 1e-6);
+
+    for bad in [
+      serde_json::json!({ "stack": { "direction": "diagonal" } }),
+      serde_json::json!({ "stack": { "names": "inside" } }),
+      serde_json::json!({ "stack": { "open_style": "spin" } }),
+      serde_json::json!({ "stack": { "gap": "wide" } }),
+    ] {
+      assert!(parse(bad.clone()).is_err(), "{bad}");
+    }
+
+    let defaults = OverviewConfig::default().stack;
+    assert_eq!(defaults.direction, OverviewStackDirection::Vertical);
+    assert!((defaults.clamped_gap() - 28.0).abs() < 1e-6);
+    assert_eq!(defaults.names, OverviewStackNames::Beside);
+    assert!((defaults.clamped_neighbour_opacity() - 1.0).abs() < 1e-6);
+    assert!((defaults.clamped_neighbour_scale() - 1.0).abs() < 1e-6);
+    assert_eq!(defaults.open_style, OverviewStackOpen::Inherit);
+  }
+
+  #[test]
   fn overview_window_highlight_reads_partial_settings() {
     let config =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({

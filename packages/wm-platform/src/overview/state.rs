@@ -22,8 +22,8 @@ use std::{borrow::Cow, ops::Range};
 use crate::{
   overview::layout::RectF, Direction, OverviewAction, OverviewExposeHints,
   OverviewInput, OverviewLayoutMode, OverviewPeekKey, OverviewRowSide,
-  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
-  Rect,
+  OverviewScreen, OverviewStackDirection, OverviewStyle, OverviewWindow,
+  OverviewWorkspace, Point, Rect,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -441,7 +441,7 @@ pub(crate) struct Interaction {
 
   /// Edge each layout with a scene has its row of miniatures along,
   /// which the arrows follow.
-  pub row_sides: RowSides,
+  pub orientation: Orientation,
 
   /// What the exposé's own modifier keys do.
   pub expose_keys: ExposeKeys,
@@ -495,18 +495,21 @@ impl ExposeKeys {
 /// `Alt` moves with.
 const HINT_LETTERS: &str = "asdfgqwertyuiopzxcvbnm";
 
-/// Edge the exposé's and the activities' rows of miniatures sit along.
+/// Which way each layout's workspaces run: the edge the exposé's and the
+/// activities' rows of miniatures sit along, and the stack's direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RowSides {
+pub(crate) struct Orientation {
   pub expose: OverviewRowSide,
   pub activities: OverviewRowSide,
+  pub stack: OverviewStackDirection,
 }
 
-impl RowSides {
+impl Orientation {
   pub fn of(style: &OverviewStyle) -> Self {
     Self {
       expose: style.row(OverviewLayoutMode::Expose).1,
       activities: style.row(OverviewLayoutMode::Activities).1,
+      stack: style.stack.direction,
     }
   }
 }
@@ -542,7 +545,7 @@ impl Interaction {
       drag_threshold,
       digit_workspaces: Vec::new(),
       nav: Vec::new(),
-      row_sides: RowSides::default(),
+      orientation: Orientation::default(),
       expose_keys: ExposeKeys::default(),
       opener: None,
       shows_hints: false,
@@ -1347,7 +1350,7 @@ impl Interaction {
   /// them apart, or else the screen that way. With nothing that way, it
   /// bumps.
   fn geometry(&self) -> Geometry {
-    geometry(self.layout, self.row_sides)
+    geometry(self.layout, self.orientation)
   }
 
   fn arrow(&mut self, toward: Toward, workspaces: &[OverviewWorkspace]) {
@@ -2137,13 +2140,17 @@ impl Geometry {
 
 /// How the arrows go in `layout`, its row of miniatures along `side`
 /// where it has one: along the row, and from it into the windows.
-fn geometry(layout: OverviewLayoutMode, sides: RowSides) -> Geometry {
+fn geometry(layout: OverviewLayoutMode, sides: Orientation) -> Geometry {
   let side = match layout {
     OverviewLayoutMode::Expose => sides.expose,
     OverviewLayoutMode::Activities => sides.activities,
     OverviewLayoutMode::Stack => {
+      let forward = match sides.stack {
+        OverviewStackDirection::Vertical => Toward::Down,
+        OverviewStackDirection::Horizontal => Toward::Right,
+      };
       return Geometry {
-        forward: Toward::Down,
+        forward,
         windows: None,
       };
     }
@@ -2355,13 +2362,14 @@ fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
 mod tests {
   use super::{
     all_workspaces, text_score, Control, ExposeKeys, Hit, Interaction,
-    Key, Mode, Modifier, RowSides, SearchField, Toward, BINDINGS,
+    Key, Mode, Modifier, Orientation, SearchField, Toward, BINDINGS,
     LOOSE_MATCH, MAX_RESULTS,
   };
   use crate::{
     overview::layout::RectF, Direction, OverviewAction, OverviewInput,
-    OverviewLayoutMode, OverviewRowSide, OverviewScreen, OverviewWindow,
-    OverviewWorkspace, Point, Rect,
+    OverviewLayoutMode, OverviewRowSide, OverviewScreen,
+    OverviewStackDirection, OverviewWindow, OverviewWorkspace, Point,
+    Rect,
   };
 
   /// ID of the monitor of the screen most tests have.
@@ -3034,9 +3042,10 @@ mod tests {
         [OverviewLayoutMode::Activities, OverviewLayoutMode::Expose]
       {
         let mut state = single(&workspaces(), layout);
-        state.row_sides = RowSides {
+        state.orientation = Orientation {
           expose: side,
           activities: side,
+          ..Orientation::default()
         };
         let case = format!("{side:?} in {layout:?}");
 
@@ -3056,6 +3065,20 @@ mod tests {
         assert_eq!(state.mode, Mode::Spaces, "back to the row: {case}");
       }
     }
+  }
+
+  /// Side by side, the stack goes along with `←` `→`; `↑` `↓` go to no
+  /// workspace.
+  #[test]
+  fn a_horizontal_stack_goes_along_with_left_and_right() {
+    let mut state = single(&workspaces(), OverviewLayoutMode::Stack);
+    state.orientation.stack = OverviewStackDirection::Horizontal;
+    press(&mut state, &[Key::Right]);
+    assert_eq!(state.selected(), 2);
+    press(&mut state, &[Key::Left, Key::Left]);
+    assert_eq!(state.selected(), 0);
+    press(&mut state, &[Key::Down, Key::Up]);
+    assert_eq!((state.selected(), state.mode), (0, Mode::Spaces));
   }
 
   #[test]

@@ -267,6 +267,25 @@ impl OverviewStyle {
     }
   }
 
+  /// How `layout` opens and closes, and whether it cascades: the stack's
+  /// own `open_style`, unless that inherits `animation.style`.
+  #[must_use]
+  pub fn zoom_style_of(
+    &self,
+    layout: OverviewLayoutMode,
+  ) -> (OverviewZoomStyle, bool) {
+    if layout != OverviewLayoutMode::Stack {
+      return (self.zoom_style, false);
+    }
+    match self.stack.open_style {
+      OverviewStackOpen::Inherit => (self.zoom_style, false),
+      OverviewStackOpen::Zoom => (OverviewZoomStyle::Zoom, false),
+      OverviewStackOpen::Fade => (OverviewZoomStyle::Fade, false),
+      OverviewStackOpen::None => (OverviewZoomStyle::None, false),
+      OverviewStackOpen::Cascade => (OverviewZoomStyle::Zoom, true),
+    }
+  }
+
   /// Pace of the close if `is_closing`, else of the open.
   #[must_use]
   pub fn zoom_curve(&self, is_closing: bool) -> &OverviewCurve {
@@ -568,12 +587,72 @@ fn clamped(value: f32, range: (f32, f32), default: f32) -> f32 {
   }
 }
 
+/// Way the stack's workspaces run.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewStackDirection {
+  /// Top to bottom.
+  #[default]
+  Vertical,
+  /// Side by side, each as wide as its strip.
+  Horizontal,
+}
+
+/// Where the stack shows each workspace's name.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewStackNames {
+  /// Left of it; above it in a horizontal stack, where its neighbour is
+  /// beside it.
+  #[default]
+  Beside,
+  Above,
+  Below,
+  Hidden,
+}
+
+/// How the stack opens and closes, apart from the other layouts.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewStackOpen {
+  /// As `animation.style` has it.
+  #[default]
+  Inherit,
+  Zoom,
+  Fade,
+  None,
+  /// A zoom, each workspace starting a step after the one nearer the
+  /// selected.
+  Cascade,
+}
+
 /// How the stack shows the workspaces.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewStack {
   /// How large a workspace shows, as a part of the screen's width.
   pub zoom: f32,
+
+  pub direction: OverviewStackDirection,
+
+  /// Space between workspaces, in logical pixels, from 0 to 200.
+  pub gap: f32,
+
+  pub names: OverviewStackNames,
+
+  /// Opacity of the workspaces but the selected one, from 0.2 to 1.
+  pub neighbour_opacity: f32,
+
+  /// Their scale against the selected one, from 0.7 to 1.
+  pub neighbour_scale: f32,
+
+  pub open_style: OverviewStackOpen,
 }
 
 impl OverviewStack {
@@ -585,11 +664,37 @@ impl OverviewStack {
   pub fn clamped_zoom(&self) -> f32 {
     clamped(self.zoom, Self::ZOOM_RANGE, Self::default().zoom)
   }
+
+  /// `gap`, within 0 to 200 px.
+  #[must_use]
+  pub fn clamped_gap(&self) -> f32 {
+    clamped(self.gap, (0.0, 200.0), Self::default().gap)
+  }
+
+  /// `neighbour_opacity`, within 0.2 to 1.
+  #[must_use]
+  pub fn clamped_neighbour_opacity(&self) -> f32 {
+    clamped(self.neighbour_opacity, (0.2, 1.0), 1.0)
+  }
+
+  /// `neighbour_scale`, within 0.7 to 1.
+  #[must_use]
+  pub fn clamped_neighbour_scale(&self) -> f32 {
+    clamped(self.neighbour_scale, (0.7, 1.0), 1.0)
+  }
 }
 
 impl Default for OverviewStack {
   fn default() -> Self {
-    Self { zoom: 0.5 }
+    Self {
+      zoom: 0.5,
+      direction: OverviewStackDirection::default(),
+      gap: 28.0,
+      names: OverviewStackNames::default(),
+      neighbour_opacity: 1.0,
+      neighbour_scale: 1.0,
+      open_style: OverviewStackOpen::default(),
+    }
   }
 }
 
