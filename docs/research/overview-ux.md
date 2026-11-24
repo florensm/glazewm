@@ -253,6 +253,112 @@ What makes one feel well judged:
 - Immediate, generous hover: a lift of a few percent, the title right
   there.
 
+## What people find useful
+
+Part 2 of the research: what users of these overviews and of window
+switchers say, in bug reports, forums and reviews, and what studies of
+window switching found. Forum posts are the vocal few, not a survey; the
+studies were read from their abstracts only (the full texts are
+paywalled). The feature lab (`overview-ux/lab.html`) lets each of these be
+switched on and tried with the real keys.
+
+### Complaints that keep coming back
+
+- **Previews too small to tell apart.** The single most common complaint.
+  KDE has a confirmed bug for it: since Plasma 6.1's packing layout, the
+  grid view "displays windows extremely small" and "prioritizes background
+  visibility instead of window content"; a KWin contributor traced it to
+  hardcoded margins and gaps, and removing the padding brought back the
+  old size ([KDE bug 513757](https://bugs.kde.org/show_bug.cgi?id=513757)).
+  On macOS: "the preview is just too small to actually see which window
+  you are after", the previews "padded for the looks"
+  ([HN](https://news.ycombinator.com/item?id=47712055)). This is the same
+  cause as GlazeWM's 0.69×: margins stacked on margins.
+- **The desktop shrinking backwards makes people dizzy.** Plasma 6 users
+  on large screens asked for a way to turn it off; KDE's answer was to set
+  the global animation speed to instant
+  ([KDE Discuss](https://discuss.kde.org/t/plasma-6-0-4-new-overview-effect-causing-dizziness/15595)).
+- **Minimized windows left out.** Mission Control doesn't show them, one
+  of the reasons AltTab exists
+  ([AltTab vs Mission Control](https://alt-tab.app/vs/mission-control)).
+- **No keyboard.** Mission Control can barely be driven without a mouse,
+  so people install Mission Control Plus or AltTab
+  ([HN](https://news.ycombinator.com/item?id=4060137)).
+- **Losing spatial awareness.** People who liked Exposé plus Spaces miss
+  zooming and sliding transitions that showed where windows went
+  ([HN](https://news.ycombinator.com/item?id=4236878)).
+- **A mode without a clear job doesn't get used.** About 10% of TidBITS
+  readers used Stage Manager; the most common answer was puzzlement about
+  what it was for ([TidBITS](https://tidbits.com/2023/08/07/do-you-use-it-stage-manager-sees-weak-adoption/)).
+
+### What people praise
+
+- **Getting un-lost.** niri's overview "really fixes the one issue on
+  scrolling/tiling WMs, which is getting lost"
+  ([HN](https://hn.svelte.dev/item/45461500), [LWN](https://lwn.net/Articles/1025866)).
+  Users asked that the usual keybindings keep working inside it rather
+  than learn new ones ([niri #352](https://github.com/YaLTeR/niri/discussions/352)),
+  which GlazeWM already does.
+- **Type to search from anywhere.** GNOME's guidelines make typing, with
+  no field focused, a standard way into search
+  ([GNOME HIG](https://developer.gnome.org/hig/patterns/nav/search.html)),
+  and its users file regressions when it breaks
+  ([gnome-shell #2975](https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/2975)).
+- **One keystroke to a window.** rcmd maps an app's first letter to a
+  chord, "no zooming out or sliding panels, and the app I want simply
+  comes to the front"
+  ([Cult of Mac](https://www.cultofmac.com/reviews/rcmd-mac-app-switcher-review));
+  Hammerspoon's window hints put a letter on every window, as Vimium does
+  for links ([hs.hints](https://www.hammerspoon.org/docs/hs.hints.html)).
+- **Hold, move, release.** AltTab's model: hold the modifier, step, let
+  go; plus close, minimize or full-screen a window from its hover buttons
+  without switching to it ([AltTab features](https://alt-tab.app/features)).
+  Task View's fans like the opposite, that it stays open without holding
+  keys ([Neowin](https://www.neowin.net/editorials/i-hate-my-favorite-windows-feature/)).
+- **Peek before picking.** In Mission Control, the spacebar enlarges the
+  highlighted window and shrinks it back, staying in the overview
+  ([MacFormat](https://medium.com/macformat/mac-tips-take-full-control-of-your-windows-aa8a855536cf)).
+- **Dragging windows to workspaces,** including dropping on the empty end
+  of the Spaces bar to make a new one
+  ([MacMost](https://macmost.com/23-tips-for-using-desktop-spaces-on-your-mac.html)).
+  GlazeWM has both, with its **+**.
+- **Grouping by app** for many windows of one app, as an option
+  ([Apple](https://support.apple.com/guide/mac-help/change-mission-control-preferences-mchlp2345/mac)).
+
+### What the studies found
+
+- **Spatially stable beats recency order.** A longitudinal study of real
+  switching found layouts that keep items in place significantly faster
+  than recency order, which reshuffles
+  ([Tak et al., INTERACT 2009](https://www.researchgate.net/publication/221054425_Improving_Window_Switching_Interfaces)).
+  A follow-up switcher with stable thumbnail zones argues the same against
+  z-order ([Tak et al., INTERACT 2011](https://link.springer.com/chapter/10.1007/978-3-642-23774-4_27)).
+- **A scaled grid makes fewer wrong picks than Exposé.** Comparing Cards,
+  Mosaic (a recency-ordered, scaled grid) and Exposé, Mosaic was faster
+  than Cards and less error-prone than Exposé
+  ([Window Shopping, CHI 2016](https://dl.acm.org/doi/10.1145/2858036.2858526)).
+
+### What this means for GlazeWM
+
+1. **Size first.** Every complaint list starts there. The recommendations
+   above (0.69× to 0.80×) answer it; a **readable floor**, switching to
+   rows below about 0.45×, keeps a crowded workspace legible.
+2. **Keep windows where they are.** The cluster is the right default, and
+   it argues for searching by **dimming in place** rather than respreading
+   the matches, which moves every match to a new spot each keystroke.
+   Keep the respread as an option.
+3. **Offer a calm motion.** A `windows` style (wallpaper stays, only
+   windows move) and an `instant` one, for people the zoom makes dizzy.
+   `animation.style: fade | none` covers part of this already.
+4. **Add the one-keystroke paths:** hint letters while `Alt` is held
+   (plain letters stay the search), and hold-to-pick on release of the
+   binding's modifier.
+5. **Peek and hover buttons** are cheap and loved: enlarge the selected
+   window while a key is held; minimize and maximize beside the existing
+   close button.
+6. **A shelf for minimized windows** instead of mixing them in, so they
+   stay findable without disturbing the layout.
+
 ## Recommendations
 
 Ranked by how much each should help. Numbers are for 1920×1080 at 100%;

@@ -1,0 +1,520 @@
+<title>Overview Feature Lab</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  .lab { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 980px) { .lab { grid-template-columns: minmax(0, 1fr); } }
+  .live { display: flex; flex-direction: column; gap: 10px; min-width: 0; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
+  @media (max-width: 980px) { .live { position: static; } }
+  .screen { outline: none; border-radius: 12px; }
+  .screen:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .keys { display: flex; gap: 6px; flex-wrap: wrap; }
+  .key { font: 600 12px/1 var(--mono); padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line); border-bottom-width: 3px; background: var(--panel); transition: transform .08s, background .12s, color .12s; }
+  .key.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); transform: translateY(2px); border-bottom-width: 1px; }
+  .say { font-size: 13px; color: var(--muted); min-height: 1.5em; }
+  .say b { color: var(--ink); }
+  .opts { display: flex; flex-direction: column; gap: 4px; }
+  .opt { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .opt:last-child { border-bottom: 0; }
+  .opt-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .opt-head h3 { font-size: 14.5px; }
+  .why { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+  .why a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
+  .src { font: 500 10.5px/1 var(--mono); color: var(--muted); white-space: nowrap; }
+  .seg button { font-size: 12.5px; }
+  .recipes { display: flex; gap: 8px; flex-wrap: wrap; }
+  .recipes button { font-size: 13px; padding: 6px 11px; }
+  .recipes button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* Overlays drawn on the mock windows (world pixels, counter-scaled). */
+  .hintk { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(var(--inv)); min-width: 64px; height: 64px; padding: 0 14px; border-radius: 16px; background: #ffd84a; color: #1b1500; font: 800 40px/64px "JetBrains Mono", monospace; text-align: center; box-shadow: 0 6px 22px rgba(0,0,0,.45), 0 0 0 3px rgba(0,0,0,.25); opacity: calc(var(--chrome) * var(--show-hints, 0)); transition: opacity .12s; }
+  .rank { position: absolute; left: 12px; top: 12px; transform-origin: 0 0; transform: scale(var(--inv)); width: 40px; height: 40px; border-radius: 12px; background: rgba(15,16,22,.82); color: #fff; font: 700 22px/40px "JetBrains Mono", monospace; text-align: center; opacity: calc(var(--chrome) * var(--show-rank, 0)); }
+  .badge { position: absolute; left: 0; bottom: 0; transform-origin: 0 100%; transform: translate(-22px, 22px) scale(var(--inv)); width: 58px; height: 58px; border-radius: 16px; box-shadow: 0 6px 18px rgba(0,0,0,.4); display: grid; place-items: center; color: #fff; font: 800 28px/1 system-ui, sans-serif; opacity: calc(var(--chrome) * var(--show-icons, 0)); }
+  .acts { position: absolute; right: 0; top: 0; transform-origin: 100% 0; transform: translate(30%, -30%) scale(var(--inv)); display: flex; gap: 6px; opacity: calc(var(--chrome) * var(--hov) * var(--show-acts, 0)); pointer-events: none; }
+  .acts.live-acts { pointer-events: auto; }
+  .acts button { width: 38px; height: 38px; border-radius: 50%; border: 0; padding: 0; background: rgba(20,21,28,.92); color: #fff; font: 700 18px/38px system-ui, sans-serif; box-shadow: 0 4px 14px rgba(0,0,0,.4); cursor: pointer; }
+  .acts button:hover { background: #e5484d; }
+  .acts button.minb:hover, .acts button.maxb:hover { background: #3b82f6; }
+  .acts button[hidden] { display: none; }
+  .plabel { position: absolute; transform: translate(-50%, 0); padding: 6px 14px; border-radius: 10px; background: rgba(15,16,22,.8); color: #f2f2f5; font: 600 22px/1.2 system-ui, sans-serif; white-space: nowrap; pointer-events: none; transition: opacity .2s; }
+  .shelf { position: absolute; left: 50%; transform: translateX(-50%); height: 0; border-top: 2px dashed rgba(255,255,255,.25); pointer-events: none; transition: opacity .2s; }
+  .shelf span { position: absolute; left: 0; top: -38px; color: rgba(255,255,255,.75); font: 600 20px/1 system-ui, sans-serif; }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="playground.html">Zoom playground</a>
+    <a href="lab.html" aria-current="page">Feature lab</a>
+    <a href="layouts.html">Layout comparison</a>
+    <a href="concepts.html">Design concepts</a>
+    <a href="recommendations.html">Recommendations</a>
+  </nav>
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">GlazeWM overview · what people like</span>
+    <h1>Feature lab</h1>
+    <p class="lede">One live overview with the features people praise in Mission Control, GNOME, KDE, niri, AltTab and rcmd. Each switch on the right says why, with its source. Click the desktop, then use it with the real keys: type to search, arrows, <span class="kbd">Enter</span>, <span class="kbd">Alt</span>+letter, hold <span class="kbd">Ctrl</span> to peek, <span class="kbd">Delete</span>, <span class="kbd">Esc</span>.</p>
+  </header>
+
+  <div class="recipes" id="recipes" role="group" aria-label="Recipes"></div>
+
+  <div class="lab">
+    <div class="live">
+      <div class="screen" id="screen" tabindex="0" aria-label="Mock desktop. Focus it and press Space or Alt+W to open the overview."></div>
+      <div class="bar">
+        <button class="primary" id="openBtn">Open</button>
+        <button id="tour">Play tour</button>
+        <button id="reset">Bring windows back</button>
+        <div class="keys" id="keys" aria-hidden="true"></div>
+      </div>
+      <p class="say" id="say">Click the desktop, then press <b>Space</b> or <b>Alt+W</b>.</p>
+      <div class="chips" id="chips"></div>
+    </div>
+    <section class="panel opts" id="opts" aria-label="Features"></section>
+  </div>
+</div>
+
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, APPS, W, H, WORK } = OverviewStage;
+  const L = OverviewLayouts;
+  const $ = (id) => document.getElementById(id);
+
+  // The desktop: two Code, two Firefox, a terminal, a chat, and two minimized.
+  const RECTS = [
+    { x: 8, y: 8, w: 1000, h: 1016 }, { x: 1016, y: 8, w: 896, h: 600 }, { x: 1016, y: 616, w: 896, h: 408 },
+    { x: 300, y: 190, w: 900, h: 620 }, { x: 1180, y: 150, w: 640, h: 520 }, { x: 110, y: 560, w: 560, h: 420 },
+    { x: 600, y: 300, w: 700, h: 460 }, { x: 1300, y: 500, w: 520, h: 420 },
+  ];
+  const APP_OF = [0, 1, 2, 0, 1, 3, 4, 6];
+  const TITLES = ['layout.rs — glazewm', 'Mission Control — Apple Support', 'cargo test --workspace', 'expose.rs — glazewm',
+    'niri/wiki/Overview — GitHub', '#window-managers', 'Now playing', 'overview ideas.md'];
+  const MINIMIZED = [6, 7];
+  const HAYSTACK = TITLES.map((t, i) => (APPS[APP_OF[i]].name + ' ' + t).toLowerCase());
+  const HINT_KEYS = 'asdfgqwertyuiopzxcvbnm'.split('');
+
+  const FEATURES = [
+    { key: 'motion', title: 'How it opens', options: [['zoom', 'Zoom onto a slab'], ['windows', 'Only windows move'], ['fade', 'Fade'], ['instant', 'Instant']],
+      why: 'KDE users found the desktop "shrinking backwards" dizzying on large screens; KDE\'s answer was "set animations to instant". macOS moves only the windows.',
+      src: [['KDE Discuss', 'https://discuss.kde.org/t/plasma-6-0-4-new-overview-effect-causing-dizziness/15595']] },
+    { key: 'arrange', title: 'Where windows go', options: [['spatial', 'Where they are'], ['byapp', 'Piles by app'], ['recent', 'Most recent first'], ['rows', 'Rows']],
+      why: 'Studies found spatially stable switchers faster than recency order, which reshuffles. macOS offers grouping by app; AltTab and Windows order by recency.',
+      src: [['Tak et al. 2009', 'https://www.researchgate.net/publication/221054425_Improving_Window_Switching_Interfaces'], ['Apple', 'https://support.apple.com/guide/mac-help/change-mission-control-preferences-mchlp2345/mac']] },
+    { key: 'floor', title: 'Readable size floor', range: [0, 0.7, 0.05], fmt: (v) => (v ? Math.round(v * 100) + '%' : 'off'),
+      why: 'The top complaint everywhere: previews "too small to see which window you are after". KDE has a confirmed bug for it. Below this scale, the windows switch to rows, which use the room better.',
+      src: [['KDE bug 513757', 'https://bugs.kde.org/show_bug.cgi?id=513757'], ['HN', 'https://news.ycombinator.com/item?id=47712055']] },
+    { key: 'search', title: 'Typing', options: [['spread', 'Matches spread out'], ['stable', 'Dim in place'], ['shelf', 'Matches gather, rest on a shelf'], ['off', 'Off']],
+      why: 'GNOME\'s guidelines make typing anywhere start a search. "Dim in place" keeps every window where your memory put it, which the switching studies favour.',
+      src: [['GNOME HIG', 'https://developer.gnome.org/hig/patterns/nav/search.html'], ['SCOTZ 2011', 'https://link.springer.com/chapter/10.1007/978-3-642-23774-4_27']] },
+    { key: 'hints', title: 'Hint letters', options: [['off', 'Off'], ['alt', 'While Alt is held'], ['always', 'Always']],
+      why: 'Vimium-style labels, as Hammerspoon\'s window hints and rcmd\'s letter-per-app switching do: one keystroke to any window. Behind Alt here, since plain letters search.',
+      src: [['Hammerspoon hints', 'https://www.hammerspoon.org/docs/hs.hints.html'], ['rcmd review', 'https://www.cultofmac.com/reviews/rcmd-mac-app-switcher-review']] },
+    { key: 'peek', title: 'Peek', options: [['off', 'Off'], ['ctrl', 'Hold Ctrl']],
+      why: 'Mission Control\'s spacebar enlarges the highlighted window to check it, then shrinks it back, staying in the overview. Here: hold Ctrl.',
+      src: [['MacFormat', 'https://medium.com/macformat/mac-tips-take-full-control-of-your-windows-aa8a855536cf']] },
+    { key: 'titles', title: 'Titles', options: [['hover', 'On hover'], ['always', 'Always'], ['never', 'Never']],
+      why: 'Windows Task View shows every title; GNOME and macOS only the hovered one. Always-on helps with many similar windows, at the cost of clutter.' },
+    { key: 'icons', title: 'App icons', options: [['on', 'On'], ['off', 'Off']],
+      why: 'GNOME pins a 64 px icon to every preview; AltTab can drop previews entirely for icon and title. Icons are found faster than tiny content.',
+      src: [['AltTab', 'https://alt-tab.app/features']] },
+    { key: 'actions', title: 'Hover buttons', options: [['none', 'None'], ['close', 'Close'], ['all', 'Close, minimize, maximize']],
+      why: 'AltTab lets you close, minimize or full-screen a hovered window without switching to it. GlazeWM has the close button.',
+      src: [['AltTab', 'https://alt-tab.app/features']] },
+    { key: 'minimized', title: 'Minimized windows', options: [['inline', 'With the others'], ['shelf', 'On a shelf'], ['hidden', 'Hidden']],
+      why: 'Mission Control leaves minimized windows out, one of the reasons people install AltTab. A shelf keeps them findable without mixing them in.',
+      src: [['AltTab vs Mission Control', 'https://alt-tab.app/vs/mission-control']] },
+    { key: 'release', title: 'Hold to pick', options: [['off', 'Off'], ['on', 'Release Alt picks']],
+      why: 'AltTab and Windows\' Alt+Tab: hold the modifier, move, let go. Task View, by contrast, stays open without holding: both have fans.',
+      src: [['AltTab', 'https://alt-tab.app/features'], ['Neowin', 'https://www.neowin.net/editorials/i-hate-my-favorite-windows-feature/']] },
+  ];
+
+  const RECIPES = {
+    today: { label: 'GlazeWM today', motion: 'zoom', arrange: 'spatial', floor: 0, search: 'spread', hints: 'off', peek: 'off', titles: 'hover', icons: 'off', actions: 'close', minimized: 'inline', release: 'off', preset: 'glazewm' },
+    proposed: { label: 'Proposed', motion: 'zoom', arrange: 'spatial', floor: 0.45, search: 'stable', hints: 'alt', peek: 'ctrl', titles: 'hover', icons: 'on', actions: 'all', minimized: 'shelf', release: 'on', preset: 'proposed' },
+    mac: { label: 'Mission Control-ish', motion: 'windows', arrange: 'spatial', floor: 0, search: 'off', hints: 'off', peek: 'ctrl', titles: 'hover', icons: 'on', actions: 'none', minimized: 'hidden', release: 'off', preset: 'macos' },
+    keys: { label: 'Keyboard first', motion: 'fade', arrange: 'recent', floor: 0, search: 'shelf', hints: 'always', peek: 'ctrl', titles: 'always', icons: 'on', actions: 'none', minimized: 'shelf', release: 'on', preset: 'proposed' },
+    calm: { label: 'Big and calm', motion: 'windows', arrange: 'rows', floor: 0.6, search: 'stable', hints: 'off', peek: 'ctrl', titles: 'always', icons: 'on', actions: 'close', minimized: 'shelf', release: 'off', preset: 'proposed' },
+  };
+
+  const cfg = { ...RECIPES.proposed };
+  const st = { query: '', sel: -1, peeking: false, alt: false, moved: false, closed: new Set(), mru: [2, 0, 1, 3, 5, 4, 6, 7], usedRows: false };
+
+  const presetFor = () => {
+    const p = { ...PRESETS[cfg.preset] };
+    if (cfg.motion === 'windows') Object.assign(p, { wallpaper: 'dim', padding: 0 });
+    if (cfg.motion === 'zoom') Object.assign(p, { wallpaper: 'slab' });
+    p.motion = cfg.motion === 'fade' ? 'fade' : 'move';
+    if (cfg.motion === 'fade') Object.assign(p, { wallpaper: 'dim', open: { kind: 'bezier', ms: 220, curve: [0.2, 0.8, 0.2, 1] }, close: { kind: 'bezier', ms: 160, curve: [0.2, 0.8, 0.2, 1] } });
+    if (cfg.motion === 'instant') Object.assign(p, { wallpaper: 'dim', open: { kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] }, close: { kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] } });
+    p.titles = cfg.titles; p.strip = cfg.preset === 'macos' ? 'names' : 'compact';
+    p.chromeFrom = cfg.motion === 'instant' ? 0 : p.chromeFrom;
+    return p;
+  };
+
+  const visible = () => RECTS.map((_, i) => i).filter((i) => !st.closed.has(i) && !(cfg.minimized === 'hidden' && MINIMIZED.includes(i)));
+  const matches = () => {
+    if (!st.query || cfg.search === 'off') return null;
+    const q = st.query.toLowerCase();
+    const fuzzy = (s) => { let k = 0; for (const c of s) if (c === q[k]) k++; return k === q.length; };
+    const hits = visible().filter((i) => HAYSTACK[i].includes(q) || fuzzy(HAYSTACK[i]));
+    return hits.sort((a, b) => (HAYSTACK[a].includes(q) ? 0 : 1) - (HAYSTACK[b].includes(q) ? 0 : 1));
+  };
+
+  // Places windows by `cfg`, as the stage's layout hook.
+  function layout(t) {
+    const room = t.room, out = RECTS.map((r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2, w: 1, h: 1 }));
+    let shown = visible();
+    const hits = matches();
+    const shelfRow = [];
+    let area = { ...room };
+    if (cfg.minimized === 'shelf') shown.filter((i) => MINIMIZED.includes(i)).forEach((i) => shelfRow.push(i));
+    if (hits && cfg.search === 'shelf' && hits.length) {
+      shown.filter((i) => !hits.includes(i) && !shelfRow.includes(i)).forEach((i) => shelfRow.push(i));
+    }
+    if (shelfRow.length) area = { ...room, h: room.h - 210 };
+    let main = shown.filter((i) => !shelfRow.includes(i));
+    if (hits && cfg.search === 'spread' && hits.length) main = main.filter((i) => hits.includes(i));
+    st.usedRows = false; st.piles = null;
+    const rectsOf = (ids) => ids.map((i) => RECTS[i]);
+    let placed;
+    if (!main.length) placed = [];
+    else if (cfg.arrange === 'recent') {
+      const order = st.mru.filter((i) => main.includes(i)), cols = Math.ceil(Math.sqrt(order.length * 1.4));
+      const fake = order.map((i, k) => ({ ...RECTS[i], x: (k % cols) * 4000, y: Math.floor(k / cols) * 4000 }));
+      const g = L.grid(fake, area, { gap: 36, maxScale: 0.9 });
+      placed = main.map((i) => g[order.indexOf(i)]);
+    } else if (cfg.arrange === 'byapp') {
+      placed = piles(main, area);
+    } else if (cfg.arrange === 'rows') {
+      placed = L.rows(rectsOf(main), area, { spacing: 28, maxScale: 0.95, monitorH: WORK.h }); st.usedRows = true;
+    } else {
+      placed = L.cluster(rectsOf(main), area, { gap: stage.params.gap, largest: stage.params.largest });
+      const small = Math.min(...placed.map((r, k) => r.w / RECTS[main[k]].w));
+      if (cfg.floor && small < cfg.floor) { placed = L.rows(rectsOf(main), area, { spacing: 28, maxScale: 0.95, monitorH: WORK.h }); st.usedRows = true; }
+    }
+    main.forEach((i, k) => { out[i] = placed[k]; });
+    // Non-matches left in place keep their spot (dimmed by the caller); spread mode drops them.
+    if (hits && cfg.search === 'spread' && hits.length) {
+      const all = L.cluster(rectsOf(shown), area, { gap: stage.params.gap, largest: stage.params.largest });
+      shown.forEach((i, k) => { if (!hits.includes(i)) out[i] = all[k]; });
+    }
+    if (shelfRow.length) {
+      const hgt = 110, gap = 22, ws = shelfRow.map((i) => RECTS[i].w / RECTS[i].h * hgt);
+      let x = W / 2 - (ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1)) / 2;
+      shelfRow.forEach((i, k) => { out[i] = { x, y: room.y + room.h - hgt + 10, w: ws[k], h: hgt }; x += ws[k] + gap; });
+      st.shelf = { y: room.y + room.h - hgt - 40, w: Math.max(...[0, ...ws]) * 0 + (ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1)) + 60, label: cfg.search === 'shelf' && hits && hits.length ? 'Not matching' : 'Minimized' };
+    } else st.shelf = null;
+    st.base = out.map((r) => ({ ...r })); st.shelfIds = new Set(shelfRow);
+    if (st.peeking && st.sel >= 0 && !st.closed.has(st.sel)) {
+      const r = RECTS[st.sel], s = Math.min((W * 0.84) / r.w, (H * 0.8) / r.h, 1.1);
+      out[st.sel] = { x: (W - r.w * s) / 2, y: (H - r.h * s) / 2 + 20, w: r.w * s, h: r.h * s };
+    }
+    return out;
+  }
+
+  // Piles: each app's windows stacked, piles placed where their first window is.
+  function piles(main, area) {
+    const groups = new Map();
+    for (const i of main) { const a = APP_OF[i]; if (!groups.has(a)) groups.set(a, []); groups.get(a).push(i); }
+    const keys = [...groups.keys()];
+    const bases = keys.map((a) => { const ids = groups.get(a); const big = ids.reduce((m, i) => (RECTS[i].w * RECTS[i].h > RECTS[m].w * RECTS[m].h ? i : m), ids[0]); return { ...RECTS[big], extra: ids.length - 1 }; });
+    const padded = bases.map((b) => ({ x: b.x, y: b.y, w: b.w + b.extra * 60, h: b.h + b.extra * 50 + 60 }));
+    const spots = L.cluster(padded, area, { gap: 60, largest: 0.92 });
+    const out = new Array(main.length);
+    st.piles = []; st.pileTop = new Set();
+    keys.forEach((a, g) => {
+      const spot = spots[g], s = spot.w / padded[g].w, ids = groups.get(a);
+      ids.forEach((i, k) => {
+        const r = RECTS[i], w = r.w * s, h = r.h * s;
+        const ox = spot.x + (ids.length - 1 - k) * 60 * s, oy = spot.y + k * 50 * s;
+        out[main.indexOf(i)] = { x: ox + (bases[g].w * s - w) / 2, y: oy + (bases[g].h * s - h) / 2, w, h };
+      });
+      st.pileTop.add(ids[ids.length - 1]);
+      st.piles.push({ x: spot.x + spot.w / 2, y: spot.y + spot.h - 30 * s, label: `${APPS[a].name}${ids.length > 1 ? ' · ' + ids.length : ''}` });
+    });
+    return out;
+  }
+
+  $('screen').style.setProperty('--ovs-search-top', '150px');
+  const stage = new Stage($('screen'), { params: presetFor(), windows: RECTS, apps: APP_OF, titles: TITLES, minimized: MINIMIZED, layout, onChange: onStage });
+
+  // Overlays per window: hint letter, recency rank, app badge, hover buttons.
+  function decorate() {
+    stage.wins.forEach((w, i) => {
+      const app = APPS[APP_OF[i]];
+      w.deco.innerHTML = `<div class="hintk"></div><div class="rank"></div><div class="badge" style="background:${app.tint}">${app.name[0]}</div>
+        <div class="acts"><button class="closeb" title="Close" aria-label="Close window">✕</button><button class="minb" title="Minimize" aria-label="Minimize window">–</button><button class="maxb" title="Maximize" aria-label="Maximize window">⤢</button></div>`;
+      const acts = w.deco.querySelector('.acts');
+      acts.querySelector('.closeb').onclick = (e) => { e.stopPropagation(); closeWindow(i); };
+      acts.querySelector('.minb').onclick = (e) => { e.stopPropagation(); say('<b>Minimized</b> without switching to it.'); flashWindow(i); };
+      acts.querySelector('.maxb').onclick = (e) => { e.stopPropagation(); say('<b>Maximized</b> without switching to it.'); flashWindow(i); };
+    });
+    overlay = document.createElement('div'); overlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:70';
+    stage.world.append(overlay);
+  }
+  let overlay;
+
+  function paintDeco() {
+    const hits = matches();
+    const order = visible().filter((i) => !(cfg.minimized === 'shelf' && MINIMIZED.includes(i)))
+      .sort((a, b) => { const A = (st.base || stage.t.rects)[a], B = (st.base || stage.t.rects)[b]; return Math.round((A.y + A.h / 2) / 120) - Math.round((B.y + B.h / 2) / 120) || A.x - B.x; });
+    st.hintOf = new Map();
+    const pool = hits && hits.length ? [...hits, ...order.filter((i) => !hits.includes(i))] : order;
+    pool.forEach((i, k) => st.hintOf.set(HINT_KEYS[k], i));
+    const showHints = cfg.hints === 'always' || (cfg.hints === 'alt' && st.alt);
+    stage.wins.forEach((w, i) => {
+      const letter = [...st.hintOf].find(([, j]) => j === i)?.[0];
+      w.deco.querySelector('.hintk').textContent = letter ? letter.toUpperCase() : '';
+      w.el.style.setProperty('--show-hints', showHints && letter && !st.closed.has(i) ? 1 : 0);
+      const rank = st.mru.filter((j) => visible().includes(j)).indexOf(i);
+      w.deco.querySelector('.rank').textContent = rank + 1;
+      w.el.style.setProperty('--show-rank', cfg.arrange === 'recent' && rank >= 0 ? 1 : 0);
+      w.el.classList.toggle('notag', !!st.shelfIds?.has(i));
+      w.el.style.setProperty('--show-icons', cfg.icons === 'on' && (cfg.arrange !== 'byapp' || !st.pileTop || st.pileTop.has(i) || MINIMIZED.includes(i)) ? 1 : 0);
+      w.el.style.setProperty('--show-acts', cfg.actions === 'none' ? 0 : 1);
+      const acts = w.deco.querySelector('.acts');
+      acts.classList.toggle('live-acts', cfg.actions !== 'none' && stage.hover === i && stage.isOpen);
+      acts.querySelector('.minb').hidden = cfg.actions !== 'all';
+      acts.querySelector('.maxb').hidden = cfg.actions !== 'all';
+      const dimmed = (hits && hits.length && !hits.includes(i) && cfg.search !== 'shelf') || (st.peeking && i !== st.sel);
+      const target = st.closed.has(i) || !visible().includes(i) ? 0 : dimmed ? (cfg.search === 'spread' && hits && !st.peeking ? 0 : 0.22) : 1;
+      if (Math.abs(w.fade.to - target) > 1e-3) stage.fadeWindow(i, target);
+    });
+    overlay.innerHTML = '';
+    if (stage.isOpen && st.piles && cfg.arrange === 'byapp' && !st.peeking) for (const p of st.piles) {
+      const d = document.createElement('div'); d.className = 'plabel'; d.style.left = p.x + 'px'; d.style.top = p.y + 44 + 'px'; d.textContent = p.label; overlay.append(d);
+    }
+    if (stage.isOpen && st.shelf) {
+      const d = document.createElement('div'); d.className = 'shelf'; d.style.top = st.shelf.y + 'px'; d.style.width = st.shelf.w + 'px';
+      d.innerHTML = `<span>${st.shelf.label}</span>`; overlay.append(d);
+    }
+    overlay.style.opacity = stage.isOpen ? 1 : 0;
+    const n = hits ? hits.length : null;
+    stage.setSearch(st.query && cfg.search !== 'off' ? st.query : null, n == null ? null : n ? `${Math.max(1, (hits.indexOf(st.sel) + 1) || 1)} of ${n}` : 'no match');
+    chips();
+  }
+
+  function chips() {
+    const scales = visible().map((i) => stage.t.rects[i].w / RECTS[i].w).filter((s) => s > 0.02);
+    const big = scales.length ? Math.max(...scales) : 0;
+    $('chips').innerHTML = `<span class="chip">${visible().length} windows</span>` +
+      (stage.isOpen ? `<span class="chip ${big >= 0.6 ? 'good' : 'warn'}">largest <b>${big.toFixed(2)}×</b></span>` : '') +
+      (st.usedRows && cfg.arrange !== 'rows' ? '<span class="chip warn">below the floor: <b>rows</b></span>' : '') +
+      (st.closed.size ? `<span class="chip">${st.closed.size} closed</span>` : '');
+  }
+
+  const relayout = (stagger = 0) => { if (stage.isOpen) stage.relayout(undefined, stagger); paintDeco(); };
+  const say = (html) => { $('say').innerHTML = html; };
+  const flashWindow = (i) => { stage.fadeWindow(i, 0.4); setTimeout(() => stage.fadeWindow(i, 1), 180); };
+
+  function select(i, why) {
+    if (i == null || i < 0) return;
+    if (st.sel !== i) st.moved = true;
+    st.sel = i; stage.setHover(i);
+    if (st.peeking) relayout(); else paintDeco();
+    if (why) say(why);
+  }
+
+  function pick(i, how) {
+    if (i == null || i < 0) return;
+    st.mru = [i, ...st.mru.filter((j) => j !== i)];
+    st.query = ''; st.peeking = false; paintDeco();
+    stage.close(i);
+    say(`<b>${TITLES[i]}</b> picked ${how}.`);
+  }
+
+  function closeWindow(i) {
+    st.closed.add(i); say(`<b>Closed</b> ${TITLES[i]}; the rest close the gap.`);
+    if (st.sel === i) st.sel = -1;
+    stage.setHover(-1); relayout(14);
+  }
+
+  function open() {
+    if (stage.isOpen) return;
+    st.query = ''; st.sel = -1; st.moved = false; st.peeking = false;
+    stage.open(); paintDeco();
+    say(helpText());
+  }
+
+  function helpText() {
+    return (cfg.search !== 'off' ? 'Type to search · ' : '') + 'arrows · <b>Enter</b> · ' + (cfg.hints !== 'off' ? '<b>Alt</b>+letter · ' : '') + (cfg.peek !== 'off' ? 'hold <b>Ctrl</b> to peek · ' : '') + '<b>Delete</b> · <b>Esc</b>';
+  }
+
+  function cancel() { st.query = ''; st.peeking = false; paintDeco(); stage.close(-1); say('Closed without a pick.'); }
+
+  // Spatial arrows: nearest window that way from the selected one's middle.
+  function arrow(dir) {
+    const ids = visible().filter((i) => (stage.wins[i].fade.to > 0.5));
+    const c = (i) => { const r = stage.t.rects[i]; return [r.x + r.w / 2, r.y + r.h / 2]; };
+    if (st.sel < 0 || !ids.includes(st.sel)) { select(ids.sort((a, b) => c(a)[1] - c(b)[1] || c(a)[0] - c(b)[0])[0]); return; }
+    const [x, y] = c(st.sel);
+    const v = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[dir];
+    let best = -1, bestD = Infinity;
+    for (const i of ids) {
+      if (i === st.sel) continue;
+      const [ix, iy] = c(i), dx = ix - x, dy = iy - y, along = dx * v[0] + dy * v[1];
+      if (along <= 4) continue;
+      const d = along + 2 * Math.abs(dx * v[1] + dy * v[0]);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best >= 0) select(best);
+    else { const w = stage.wins[st.sel]; w.hover.v += 3; stage.kick(); }
+  }
+
+  // Keys, from the keyboard or the tour.
+  function key(e, down) {
+    showKey(e, down);
+    const letter = e.code && e.code.startsWith('Key') ? e.code.slice(3).toLowerCase() : (e.key || '').toLowerCase();
+    if (e.key === 'Alt') {
+      st.alt = down;
+      if (!down && cfg.release === 'on' && stage.isOpen && st.openedByAlt && st.moved && st.sel >= 0) { pick(st.sel, 'by letting go of Alt'); return true; }
+      if (stage.isOpen) paintDeco();
+      return true;
+    }
+    if (e.key === 'Control') {
+      if (cfg.peek === 'ctrl' && stage.isOpen && st.sel >= 0 && st.peeking !== down) { st.peeking = down; relayout(); if (down) say('<b>Peeking</b> at ' + TITLES[st.sel] + '. Let go of Ctrl to put it back.'); }
+      return true;
+    }
+    if (!down) return false;
+    if (!stage.isOpen) {
+      if (e.key === ' ' || (e.altKey && letter === 'w')) { st.openedByAlt = e.altKey; open(); return true; }
+      return false;
+    }
+    if (e.altKey && letter === 'w') { cancel(); return true; }
+    if (e.altKey && cfg.hints !== 'off' && letter.length === 1) {
+      const i = st.hintOf?.get(letter);
+      if (i != null) { select(i); pick(i, `with Alt+${letter.toUpperCase()}`); }
+      return true;
+    }
+    if (e.key.startsWith('Arrow')) { arrow(e.key); return true; }
+    if (e.key === 'Enter') {
+      const hits = matches();
+      const i = st.sel >= 0 && (!hits || hits.includes(st.sel)) ? st.sel : hits && hits[0];
+      if (i != null && i >= 0) pick(i, 'with Enter');
+      return true;
+    }
+    if (e.key === 'Escape') { if (st.query) { st.query = ''; relayout(); say('Search cleared.'); } else cancel(); return true; }
+    if (e.key === 'Delete') { if (st.sel >= 0) closeWindow(st.sel); return true; }
+    if (e.key === 'Backspace') { st.query = st.query.slice(0, -1); relayout(); return true; }
+    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey && cfg.search !== 'off' && (e.key !== ' ' || st.query)) {
+      st.query += e.key; relayout(10);
+      const hits = matches();
+      if (hits && hits.length) { st.sel = hits[0]; stage.setHover(hits[0]); paintDeco(); }
+      return true;
+    }
+    return false;
+  }
+
+  const KEYCAPS = ['Alt', 'Ctrl', 'Space', '←', '→', '↑', '↓', 'Enter', 'Del', 'Esc'];
+  $('keys').innerHTML = KEYCAPS.map((k) => `<span class="key" data-k="${k}">${k}</span>`).join('') + '<span class="key" data-k="letter" style="min-width:26px;text-align:center"> </span>';
+  function showKey(e, down) {
+    const name = { Alt: 'Alt', Control: 'Ctrl', ' ': 'Space', ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Enter: 'Enter', Delete: 'Del', Escape: 'Esc' }[e.key];
+    const el = name ? document.querySelector(`.key[data-k="${name}"]`) : (e.key.length === 1 ? document.querySelector('.key[data-k="letter"]') : null);
+    if (!el) return;
+    if (!name) el.textContent = e.key.toUpperCase();
+    el.classList.toggle('on', down);
+  }
+
+  const screen = $('screen');
+  screen.addEventListener('keydown', (e) => { if (e.repeat && (e.key === 'Alt' || e.key === 'Control')) { e.preventDefault(); return; } stopTour(); if (key(e, true)) e.preventDefault(); });
+  screen.addEventListener('keyup', (e) => { if (key(e, false)) e.preventDefault(); });
+  screen.addEventListener('blur', () => { if (st.alt) key({ key: 'Alt' }, false); if (st.peeking) key({ key: 'Control' }, false); });
+  screen.addEventListener('pointermove', () => { if (stage.isOpen && stage.hover >= 0 && stage.hover !== st.sel) { st.sel = stage.hover; paintDeco(); } });
+  screen.addEventListener('pointerdown', () => { stopTour(); screen.focus(); }, true);
+  screen.addEventListener('click', () => {
+    // The stage's own click opens it or picks the window under the cursor.
+    setTimeout(() => {
+      if (stage.isOpen && stage.openness < 0.05) { st.openedByAlt = false; paintDeco(); }
+      if (!stage.isOpen && stage.picked >= 0) { const i = stage.picked; st.mru = [i, ...st.mru.filter((j) => j !== i)]; say(`<b>${TITLES[i]}</b> picked with a click.`); }
+      else if (!stage.isOpen) say('Closed without a pick.');
+      else say(helpText());
+      st.query = ''; paintDeco();
+    }, 0);
+  });
+  function onStage(s) { $('openBtn').textContent = stage.isOpen ? 'Close' : 'Open'; if (s === 'opened' || s === 'closed') paintDeco(); }
+  $('openBtn').onclick = () => { stopTour(); stage.isOpen ? cancel() : open(); screen.focus(); };
+  $('reset').onclick = () => { st.closed.clear(); relayout(10); say('All windows are back.'); };
+
+  // Feature switches.
+  function buildOpts() {
+    const host = $('opts'); host.innerHTML = '';
+    for (const f of FEATURES) {
+      const d = document.createElement('div'); d.className = 'opt';
+      const src = (f.src || []).map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener">${n}</a>`).join(' · ');
+      d.innerHTML = `<div class="opt-head"><h3>${f.title}</h3>${f.range ? `<output class="mono small"></output>` : ''}</div>`;
+      if (f.range) {
+        const inp = document.createElement('input'); inp.type = 'range'; inp.id = 'opt-' + f.key; inp.min = f.range[0]; inp.max = f.range[1]; inp.step = f.range[2]; inp.value = cfg[f.key];
+        inp.setAttribute('aria-label', f.title); inp.style.accentColor = 'var(--accent)';
+        const out = d.querySelector('output'); out.textContent = f.fmt(cfg[f.key]);
+        inp.oninput = () => { cfg[f.key] = +inp.value; out.textContent = f.fmt(cfg[f.key]); markRecipe(); relayout(); };
+        d.append(inp);
+      } else {
+        const seg = document.createElement('div'); seg.className = 'seg'; seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', f.title);
+        for (const [v, label] of f.options) {
+          const b = document.createElement('button'); b.textContent = label; b.setAttribute('aria-pressed', String(cfg[f.key] === v));
+          b.onclick = () => { cfg[f.key] = v; seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); markRecipe(); applyCfg(f.key); };
+          seg.append(b);
+        }
+        d.append(seg);
+      }
+      const why = document.createElement('p'); why.className = 'why'; why.innerHTML = f.why + (src ? ` <span class="src">${src}</span>` : ''); d.append(why);
+      host.append(d);
+    }
+  }
+
+  function applyCfg(changed) {
+    if (changed === 'motion' || changed === 'titles' || changed == null) {
+      const was = stage.isOpen;
+      stage.setParams(presetFor());
+      decorate();
+      if (was) { stage.isOpen = false; stage.retarget(true); open(); }
+    }
+    relayout(changed === 'arrange' ? 16 : 0);
+  }
+
+  function buildRecipes() {
+    $('recipes').innerHTML = '';
+    for (const [k, r] of Object.entries(RECIPES)) {
+      const b = document.createElement('button'); b.textContent = r.label; b.dataset.k = k;
+      b.onclick = () => { Object.assign(cfg, r); buildOpts(); markRecipe(); applyCfg(null); say(`Recipe: <b>${r.label}</b>. Open it and try the keys.`); if (!stage.isOpen) { open(); screen.focus(); } };
+      $('recipes').append(b);
+    }
+    markRecipe();
+  }
+  function markRecipe() {
+    for (const b of $('recipes').children) {
+      const r = RECIPES[b.dataset.k];
+      b.setAttribute('aria-pressed', String(Object.keys(r).every((k) => k === 'label' || cfg[k] === r[k])));
+    }
+  }
+
+  // A scripted run through whatever is switched on.
+  let tourToken = 0;
+  function stopTour() { tourToken++; }
+  async function tour() {
+    const t = ++tourToken;
+    const wait = (ms) => new Promise((res, rej) => setTimeout(() => (t === tourToken ? res() : rej(0)), ms));
+    const press = async (k, opts = {}, hold = 120) => { key({ key: k, ...opts }, true); await wait(hold); key({ key: k, ...opts }, false); };
+    try {
+      screen.focus();
+      if (stage.isOpen) { cancel(); await wait(500); }
+      st.openedByAlt = true; key({ key: 'Alt' }, true); await wait(150); key({ key: 'w', altKey: true }, true); await wait(700);
+      if (cfg.hints === 'alt') { say('Holding <b>Alt</b> shows a letter on every window.'); await wait(1200); }
+      key({ key: 'Alt' }, false); st.moved = false; await wait(300);
+      for (const d of ['ArrowRight', 'ArrowDown', 'ArrowLeft']) { await press(d); await wait(450); }
+      if (cfg.peek === 'ctrl') { key({ key: 'Control' }, true); await wait(1300); key({ key: 'Control' }, false); await wait(700); }
+      if (cfg.search !== 'off') { for (const c of 'niri') { await press(c, {}, 60); await wait(220); } await wait(1300); await press('Escape'); await wait(600); }
+      if (cfg.arrange !== 'byapp') { cfg.arrange = 'byapp'; buildOpts(); markRecipe(); relayout(16); say('Grouped <b>by app</b>.'); await wait(1600); cfg.arrange = 'spatial'; buildOpts(); markRecipe(); relayout(16); await wait(900); }
+      if (cfg.hints !== 'off') { key({ key: 'Alt' }, true); await wait(700); const letter = [...st.hintOf].find(([, i]) => i === 2)?.[0] || 'a'; await press(letter, { altKey: true }); key({ key: 'Alt' }, false); }
+      else await press('Enter');
+    } catch { /* stopped */ }
+  }
+  $('tour').onclick = () => tour();
+
+  decorate(); buildOpts(); buildRecipes(); paintDeco();
+})();
+</script>

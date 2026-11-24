@@ -242,6 +242,8 @@ const OverviewStage = (() => {
   .ovs-ring{position:absolute;inset:calc(-1 * var(--ovs-ring-gap,0px));border-radius:inherit;box-shadow:0 0 0 var(--ovs-ring-w,5px) var(--ovs-accent,#5aa9ff);opacity:0;pointer-events:none}
   .ovs-icon{position:absolute;left:50%;top:50%;width:84px;height:84px;margin:-42px 0 0 -42px;border-radius:22px;opacity:0;box-shadow:0 8px 24px rgba(0,0,0,.35);pointer-events:none}
   .ovs-tag{position:absolute;left:50%;top:100%;transform:translate(-50%,0);margin-top:14px;padding:7px 14px;border-radius:9px;background:rgba(18,18,24,.86);color:#f2f2f5;font:500 26px/1.2 system-ui,sans-serif;white-space:nowrap;opacity:0;pointer-events:none}
+  .ovs-win.notag .ovs-tag{display:none}
+  .ovs-deco{position:absolute;inset:0;pointer-events:none;z-index:3}
   .ovs-strip{position:absolute;left:0;right:0;display:flex;justify-content:center;gap:16px;pointer-events:none}
   .ovs-mini{position:relative;border-radius:8px;overflow:hidden;background:rgba(255,255,255,.08);box-shadow:0 0 0 2px rgba(255,255,255,.08)}
   .ovs-mini.on{box-shadow:0 0 0 3px var(--ovs-accent,#5aa9ff)}
@@ -254,7 +256,7 @@ const OverviewStage = (() => {
   .ovs-cursor.down{scale:.86}
   .ovs-ripple{position:absolute;width:40px;height:40px;margin:-20px 0 0 -20px;border-radius:50%;border:5px solid var(--ovs-accent,#5aa9ff);pointer-events:none;z-index:90;animation:ovs-ripple .7s cubic-bezier(.2,.7,.3,1) forwards}
   @keyframes ovs-ripple{from{transform:scale(.4);opacity:.9}to{transform:scale(9);opacity:0}}
-  .ovs-search{position:absolute;left:50%;top:40px;transform:translateX(-50%);min-width:420px;padding:16px 24px;border-radius:18px;background:rgba(16,17,24,.88);color:#f2f2f5;font:500 30px/1 system-ui,sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.45),0 0 0 2px rgba(255,255,255,.08);z-index:80;opacity:0;pointer-events:none;display:flex;gap:14px;align-items:center;white-space:nowrap}
+  .ovs-search{position:absolute;left:50%;top:var(--ovs-search-top,40px);transform:translateX(-50%);min-width:420px;padding:16px 24px;border-radius:18px;background:rgba(16,17,24,.88);color:#f2f2f5;font:500 30px/1 system-ui,sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.45),0 0 0 2px rgba(255,255,255,.08);z-index:80;opacity:0;pointer-events:none;display:flex;gap:14px;align-items:center;white-space:nowrap}
   .ovs-search .q::after{content:"";display:inline-block;width:3px;height:30px;background:var(--ovs-accent,#5aa9ff);margin-left:3px;vertical-align:-5px;animation:ovs-blink 1s steps(1) infinite}
   .ovs-search .n{margin-left:auto;font-size:22px;opacity:.6}
   @keyframes ovs-blink{50%{opacity:0}}
@@ -268,6 +270,10 @@ const OverviewStage = (() => {
       this.el = el; this.el.classList.add('ovs');
       this.params = { ...PRESETS.glazewm, ...(opts.params || {}) };
       this.windows = opts.windows || scenario(4, 'tiled');
+      this.apps = opts.apps || null;
+      this.minimized = new Set(opts.minimized || []);
+      this.titles = opts.titles || null;
+      this.layoutHook = opts.layout || null;
       this.onChange = opts.onChange || (() => {});
       this.interactive = opts.interactive !== false;
       this.openness = 0; this.isOpen = false; this.picked = -1; this.hover = -1;
@@ -338,20 +344,21 @@ const OverviewStage = (() => {
 
       // Windows.
       this.wins = this.windows.map((r, i) => {
-        const app = APPS[i % APPS.length];
+        const app = APPS[(this.apps ? this.apps[i] : i) % APPS.length];
         const el = document.createElement('div'); el.className = 'ovs-win' + (['editor', 'terminal', 'music'].includes(app.kind) ? ' ovs-dark' : '');
         el.style.width = r.w + 'px'; el.style.height = r.h + 'px';
         el.style.setProperty('--ovs-wr', (8 / Math.max(0.3, (t.rects[i]?.w ?? r.w) / r.w)) + 'px');
         const frame = document.createElement('div'); frame.className = 'ovs-frame';
-        frame.innerHTML = `<div class="ovs-title"><span class="ico" style="background:${app.tint}"></span>${app.title}<span class="ctl">—▢✕</span></div>`;
+        frame.innerHTML = `<div class="ovs-title"><span class="ico" style="background:${app.tint}"></span>${this.titles?.[i] ?? app.title}<span class="ctl">—▢✕</span></div>`;
         frame.append(windowBody(app));
         const ring = document.createElement('div'); ring.className = 'ovs-ring';
         const icon = document.createElement('div'); icon.className = 'ovs-icon'; icon.style.background = app.tint;
-        const tag = document.createElement('div'); tag.className = 'ovs-tag'; tag.textContent = app.title;
-        el.append(frame, ring, icon, tag);
+        const tag = document.createElement('div'); tag.className = 'ovs-tag'; tag.textContent = this.titles?.[i] ?? app.title;
+        const deco = document.createElement('div'); deco.className = 'ovs-deco';
+        el.append(frame, ring, icon, tag, deco);
         el.dataset.index = i;
         this.world.append(el);
-        return { el, ring, icon, tag, app, real: r, motion: new Motion(this.openness), hover: new Motion(0), fade: new Motion(1), scale: 1 };
+        return { el, ring, icon, tag, deco, app, real: r, motion: new Motion(this.openness), hover: new Motion(0), fade: new Motion(1), scale: 1 };
       });
       this.hint = document.createElement('div'); this.hint.className = 'ovs-hint'; this.world.append(this.hint);
       this.cursor = document.createElement('div'); this.cursor.className = 'ovs-cursor';
@@ -364,7 +371,7 @@ const OverviewStage = (() => {
     }
 
     retarget(snap) {
-      this.t = targets(this.params, this.windows);
+      this.t = this.computeTargets();
       this.slabFrom = null; this.wins.forEach((w) => { w.morphFrom = null; });
       if (snap) {
         const v = this.isOpen ? 1 : 0;
@@ -390,7 +397,7 @@ const OverviewStage = (() => {
     open() {
       if (this.isOpen) return;
       this.isOpen = true; this.picked = -1;
-      this.t = targets(this.params, this.windows);
+      this.t = this.computeTargets();
       const delays = this.staggerDelays();
       this.slabMotion.aim(1, this.params.open);
       this.wins.forEach((w, i) => w.motion.aim(1, this.params.open, delays[i]));
@@ -402,7 +409,7 @@ const OverviewStage = (() => {
       this.isOpen = false; this.picked = pick; this.setHover(-1);
       this.wins.forEach((w) => { if (w.fade.x < 1 || w.fade.to < 1) w.fade.aim(1, this.params.close); });
       if (this.wins.some((w) => w.morphFrom)) {
-        const base = targets(this.params, this.windows).rects;
+        const base = this.computeTargets().rects;
         this.wins.forEach((w, i) => { w.morphFrom = this.targetOf(w, i); w.morphM = new Motion(0); w.morphM.aim(1, this.params.close); });
         this.t = { ...this.t, rects: base };
       }
@@ -413,13 +420,23 @@ const OverviewStage = (() => {
 
     toggle() { this.isOpen ? this.close() : this.open(); }
 
+    // Where everything settles: the preset's layout, or the page's own.
+    computeTargets() {
+      const t = targets(this.params, this.windows);
+      if (this.layoutHook) t.rects = this.layoutHook(t, this);
+      return t;
+    }
+
+    // Re-runs the layout and moves to it from wherever things are.
+    relayout(anim, staggerMs = 0) { this.morphRects(this.computeTargets().rects, anim, staggerMs); }
+
     // Moves to `params`' layout from wherever things are now, on `anim`,
     // each window `staggerMs` after the one before.
     morph(params, anim = { kind: 'spring', stiffness: 420, damping: 0.82 }, staggerMs = 18) {
       const before = this.wins.map((w, i) => this.targetOf(w, i));
       const slabBefore = this.slabTarget();
       this.params = { ...this.params, ...params };
-      this.t = targets(this.params, this.windows);
+      this.t = this.computeTargets();
       this.wins.forEach((w, i) => {
         w.morphFrom = before[i]; w.morphM = new Motion(0); w.morphM.aim(1, anim, (i * staggerMs) / 1000);
       });
@@ -544,7 +561,12 @@ const OverviewStage = (() => {
       this.wins.forEach((w, i) => {
         const target = this.targetOf(w, i);
         const m = w.motion.x;
-        const r = lerpRect(w.real, target, m);
+        let r = lerpRect(w.real, target, m);
+        let appear = this.minimized.has(i) ? Math.max(0, Math.min(1, m)) : 1;
+        if (p.motion === 'fade') {
+          if (m < 0.5) { r = w.real; appear *= this.minimized.has(i) ? 0 : 1 - 2 * Math.max(m, 0); }
+          else { const g = 1 + 0.06 * (1 - m) * 2; r = { x: target.x - target.w * (g - 1) / 2, y: target.y - target.h * (g - 1) / 2, w: target.w * g, h: target.h * g }; appear *= Math.min(1, 2 * m - 1); }
+        }
         const lift = 1 + (p.lift || 0) * w.hover.x;
         const k = r.w / w.real.w * lift;
         const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
@@ -552,11 +574,14 @@ const OverviewStage = (() => {
         w.el.style.transform = `translate(${x}px,${y}px) scale(${k})`;
         w.el.style.zIndex = i === this.picked ? 50 : i === this.hover ? 40 : 10 + i;
         const dimmed = anyHover && i !== this.hover ? (p.dim || 0) * chrome : 0;
-        w.el.style.opacity = (1 - dimmed) * Math.max(0, Math.min(1, w.fade.x));
+        w.el.style.opacity = appear * (1 - dimmed) * Math.max(0, Math.min(1, w.fade.x));
+        w.el.style.setProperty('--inv', 1 / Math.max(k, 0.05));
+        w.el.style.setProperty('--chrome', chrome);
+        w.el.style.setProperty('--hov', Math.max(0, Math.min(1, w.hover.x)));
         const ringW = (p.ringWidth ?? 2.5) / Math.max(k * this.k, 0.01);
         w.ring.style.setProperty('--ovs-ring-w', ringW + 'px');
         w.ring.style.opacity = Math.max(w.hover.x, 0) * chrome;
-        w.tag.style.opacity = Math.max(w.hover.x, 0) * chrome;
+        w.tag.style.opacity = (p.titles === 'always' ? 1 : p.titles === 'never' ? 0 : Math.max(w.hover.x, 0)) * chrome;
         w.tag.style.transform = `translate(-50%,0) scale(${1 / Math.max(k, 0.05)})`;
         w.tag.style.transformOrigin = '50% 0';
         w.icon.style.opacity = p.icons ? chrome : 0;
@@ -566,7 +591,7 @@ const OverviewStage = (() => {
 
     // Final scale of each window, and how much of the slab they fill.
     readout() {
-      const t = targets(this.params, this.windows);
+      const t = this.computeTargets();
       const scales = t.rects.map((r, i) => r.w / this.windows[i].w);
       const b = L.bounds(t.rects);
       return { scales, slab: t.slab.w / W, cluster: b, fill: Math.max(b.w / t.slab.w, b.h / t.slab.h) };
