@@ -744,6 +744,11 @@ struct Screen {
   /// while it runs.
   zoom: Option<(Zoom, Instant)>,
 
+  /// When the frame being drawn shows, which the zoom and the entrance
+  /// are timed by: the vblank estimate while animating, so they advance
+  /// evenly however late each wake-up is.
+  frame_time: Instant,
+
   /// Whether something changed that the next tick has to place.
   is_dirty: bool,
 
@@ -826,6 +831,9 @@ struct Overview {
 
   last_tick: Instant,
 
+  /// When the overview started opening, until its first frame is logged.
+  first_frame: Option<Instant>,
+
   /// Set once a pick or cancel is sent, after which input is ignored
   /// until the WM closes the overview.
   is_done: bool,
@@ -862,6 +870,7 @@ impl Overview {
       closing: Vec::new(),
       open_cursor: (0, 0),
       last_tick: Instant::now(),
+      first_frame: None,
       is_done: false,
       pending_pick: None,
       vsync: None,
@@ -877,6 +886,7 @@ impl Overview {
     layout: OverviewLayoutMode,
   ) {
     tracing::debug!("Overview opening, session {session}.");
+    let opening = Instant::now();
     self.close();
     self.session = session;
     self.is_done = false;
@@ -956,6 +966,20 @@ impl Overview {
           Duration::from_micros(waiter.frame_period_us())
         }),
     );
+
+    // Timed from here rather than from each screen's `open`, so setting
+    // every screen up doesn't eat into the zoom: its first frame shows
+    // it barely open, on every monitor alike.
+    let started = Instant::now();
+    for screen in &mut self.screens {
+      screen.start_clocks(started);
+    }
+    self.last_tick = started;
+    tracing::debug!(
+      "Overview set up in {:.1} ms.",
+      started.saturating_duration_since(opening).as_secs_f64() * 1000.0
+    );
+    self.first_frame = Some(opening);
   }
 
   /// Shows a new `frame` in the open overview, keeping the selection.
@@ -1338,10 +1362,19 @@ impl Overview {
     // after input.
     let now = Instant::now();
     let now = self.clock.vblank_at(now).unwrap_or(now);
-    let dt = now
-      .saturating_duration_since(self.last_tick)
-      .as_secs_f32()
-      .min(1.0 / 30.0);
+    let since_last = now.saturating_duration_since(self.last_tick);
+    if let Some(opening) = self.first_frame.take() {
+      tracing::debug!(
+        "Overview's first frame {:.1} ms after the open.",
+        now.saturating_duration_since(opening).as_secs_f64() * 1000.0
+      );
+    } else if since_last > self.clock.period().mul_f32(1.5) {
+      tracing::debug!(
+        "Overview missed a frame: {:.1} ms since the last.",
+        since_last.as_secs_f64() * 1000.0
+      );
+    }
+    let dt = since_last.as_secs_f32().min(1.0 / 30.0);
     self.last_tick = self.last_tick.max(now);
 
     // The WM hasn't carried out the pick in time: zoom anyway, so the
@@ -1358,7 +1391,7 @@ impl Overview {
     let was_closing = self.is_closing();
     let mut is_moving = self.pending_pick.is_some();
     for screen in &mut self.screens {
-      is_moving |= screen.tick(dt);
+      is_moving |= screen.tick(dt, now);
     }
 
     if was_closing

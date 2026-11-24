@@ -151,6 +151,7 @@ impl Screen {
       scrolled_at: None,
       nav: Vec::new(),
       zoom: None,
+      frame_time: Instant::now(),
       is_dirty: false,
       is_gliding: false,
       plain_cards: false,
@@ -228,10 +229,12 @@ impl Screen {
       effects.reset();
     }
 
+    // Restarted by `start_clocks` once every screen is set up.
+    self.frame_time = Instant::now();
     self.zoom = animate.then(|| {
       (
         Zoom::open(self.focus.selected, open_duration),
-        Instant::now(),
+        self.frame_time,
       )
     });
     self.entrance = (animate && stagger_ms > 0).then(|| {
@@ -241,7 +244,7 @@ impl Screen {
         to_ms(open_duration),
         bounce,
       );
-      (entrance, Instant::now())
+      (entrance, self.frame_time)
     });
 
     self.show_backdrop();
@@ -273,6 +276,27 @@ impl Screen {
     }
 
     self.is_dirty = true;
+  }
+
+  /// Starts the open's zoom and entrance at `at`, the overview's first
+  /// frame, so setting up doesn't eat into them.
+  pub(super) fn start_clocks(&mut self, at: Instant) {
+    self.frame_time = at;
+    if let Some((_, started)) = &mut self.zoom {
+      *started = at;
+    }
+    if let Some((_, started)) = &mut self.entrance {
+      *started = at;
+    }
+  }
+
+  /// Milliseconds from `started` to the frame being drawn.
+  fn since(&self, started: Instant) -> f32 {
+    self
+      .frame_time
+      .saturating_duration_since(started)
+      .as_secs_f32()
+      * 1000.0
   }
 
   /// Shows a new `frame` as `focus` has it.
@@ -1125,7 +1149,7 @@ impl Screen {
       return 1.0;
     };
     self.style().map_or(1.0, |style| {
-      zoom.openness(elapsed_ms(started), &style.zoom_curve)
+      zoom.openness(self.since(started), &style.zoom_curve)
     })
   }
 
@@ -1137,7 +1161,7 @@ impl Screen {
   /// Whether its zoom into the workspace it closes on has ended.
   pub(super) fn is_zoomed_in(&self) -> bool {
     self.zoom.is_some_and(|(zoom, started)| {
-      zoom.is_closing && zoom.is_finished(elapsed_ms(started))
+      zoom.is_closing && zoom.is_finished(self.since(started))
     })
   }
 
@@ -1220,7 +1244,10 @@ impl Screen {
     self.hold();
     self.entrance = None;
     let zoom = Zoom::close(index, self.openness(), duration_ms);
-    self.zoom = Some((zoom, Instant::now()));
+    // The last frame's time is stale while nothing moved.
+    let now = Instant::now();
+    self.frame_time = self.frame_time.max(now);
+    self.zoom = Some((zoom, now));
     // Spread windows head back to where they really are.
     if self.focus.layout.spreads_windows() {
       self.retarget_scenes(false);
@@ -1306,18 +1333,19 @@ impl Screen {
       presence: self.presence(),
       entrance: self
         .entrance
-        .map(|(entrance, started)| (entrance, elapsed_ms(started))),
+        .map(|(entrance, started)| (entrance, self.since(started))),
       view: self.view(),
       zoom_card: self.zoom.map(|(zoom, _)| zoom.card),
     }
   }
 
-  /// Steps its animations by `dt` seconds and places what moved. Returns
-  /// whether anything is still moving.
-  pub(super) fn tick(&mut self, dt: f32) -> bool {
+  /// Steps its animations by `dt` seconds to the frame shown at `now`,
+  /// and places what moved. Returns whether anything is still moving.
+  pub(super) fn tick(&mut self, dt: f32, now: Instant) -> bool {
     if self.frame.is_none() {
       return false;
     }
+    self.frame_time = self.frame_time.max(now);
 
     let mut is_moving = false;
     for card in &mut self.cards {
@@ -1338,7 +1366,7 @@ impl Screen {
     is_moving |= self.search_y.step(dt);
 
     if let Some((entrance, started)) = self.entrance {
-      if elapsed_ms(started) < entrance.length_ms(self.cards.len()) {
+      if self.since(started) < entrance.length_ms(self.cards.len()) {
         is_moving = true;
       } else {
         self.entrance = None;
@@ -1364,9 +1392,7 @@ impl Screen {
 
     if let Some((zoom, started)) = self.zoom {
       is_moving = true;
-      let elapsed = elapsed_ms(started);
-
-      if zoom.is_finished(elapsed) {
+      if zoom.is_finished(self.since(started)) {
         // Zoomed in, it stays as it is until the overview hides.
         if zoom.is_closing {
           return false;
