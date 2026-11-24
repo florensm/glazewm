@@ -1955,6 +1955,8 @@ fn is_shifted() -> bool {
 /// it. Typed characters arrive as `WM_CHAR` instead.
 fn to_key(key: VIRTUAL_KEY, is_shifted: bool) -> Option<Key> {
   match key {
+    VK_LEFT if is_shifted => Some(Key::ShiftLeft),
+    VK_RIGHT if is_shifted => Some(Key::ShiftRight),
     VK_LEFT => Some(Key::Left),
     VK_RIGHT => Some(Key::Right),
     VK_UP => Some(Key::Up),

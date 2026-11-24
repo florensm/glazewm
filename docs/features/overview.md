@@ -178,6 +178,7 @@ An arrow goes to what lies that way on screen:
 | `Alt`+`1`–`9`, `0` | Switch to that workspace and close. | Same. | Drop it there. |
 | `Alt`+`Shift`+`1`–`9`, `0` | | Send the selected window there; the next window gets selected. | Drop it there. |
 | `Alt`+`-`, `Alt`+`Shift`+`-` | The same two, for the [special workspace](#special-workspace). | Same. | Same. |
+| `Shift`+`←` / `→` | | Send the selected window to the workspace before / after this one on the monitor, and follow it there. | Drop it there, and follow it. |
 | `Space` | Look inside the selected workspace. | Pick up the selected window. | Drop it on the selected workspace. |
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `Delete` | | Close the selected window. | |

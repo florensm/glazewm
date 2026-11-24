@@ -56,6 +56,10 @@ pub(crate) enum Key {
 
   /// `Tab` with `Shift` held.
   BackTab,
+
+  /// `←` and `→` with `Shift` held.
+  ShiftLeft,
+  ShiftRight,
   Escape,
   F1,
 
@@ -85,6 +89,8 @@ impl Key {
       Self::Delete => "Del".into(),
       Self::Tab => "Tab".into(),
       Self::BackTab => "\u{21e7}Tab".into(),
+      Self::ShiftLeft => "\u{21e7}\u{2190}".into(),
+      Self::ShiftRight => "\u{21e7}\u{2192}".into(),
       Self::Escape => "Esc".into(),
       Self::F1 => "F1".into(),
       Self::Text(text) => text.to_string(),
@@ -127,6 +133,10 @@ enum Command {
 
   /// Send the picked or carried window to the workspace of a digit.
   SendToWorkspace(u8),
+
+  /// Send the picked or carried window to the next workspace on its
+  /// screen (or the previous one, `false`), following it there.
+  SendAlong(bool),
 }
 
 /// The keys of every command but those of a digit, which `Alt` and
@@ -149,6 +159,8 @@ const BINDINGS: &[(Command, &[Key])] = &[
   (Command::Enter, &[Key::Enter]),
   (Command::Special, &[Key::Alt('-')]),
   (Command::SendToSpecial, &[Key::AltShift('-')]),
+  (Command::SendAlong(false), &[Key::ShiftLeft]),
+  (Command::SendAlong(true), &[Key::ShiftRight]),
 ];
 
 impl Command {
@@ -726,6 +738,9 @@ impl Interaction {
         let (name, monitor) = self.special_workspace(workspaces)?;
         return self.send_to(name, monitor, workspaces);
       }
+      Command::SendAlong(is_next) => {
+        return self.send_along(is_next, workspaces);
+      }
     }
 
     None
@@ -764,7 +779,8 @@ impl Interaction {
       Command::Enter
       | Command::CloseWindow
       | Command::SendToWorkspace(_)
-      | Command::SendToSpecial => {
+      | Command::SendToSpecial
+      | Command::SendAlong(_) => {
         if let Some(index) = self.match_position() {
           self.goto_nth_match(index);
         }
@@ -842,6 +858,42 @@ impl Interaction {
         action
       }
     }
+  }
+
+  /// Sends the picked or carried window to the workspace after the
+  /// selected one on its screen (before it, unless `is_next`), the
+  /// special one aside, and selects it there.
+  fn send_along(
+    &mut self,
+    is_next: bool,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
+    let hwnd = match self.mode {
+      Mode::Spaces => return None,
+      Mode::Windows => self.selected_window?,
+      Mode::Carrying => self.carried?,
+    };
+    let selected = self.selected();
+    let cards = self.active_cards();
+    let target = if is_next {
+      (selected + 1..cards.end)
+        .find(|&index| !is_special(workspaces, index))
+    } else {
+      (cards.start..selected)
+        .rev()
+        .find(|&index| !is_special(workspaces, index))
+    }?;
+
+    let name = workspaces.get(target)?.name.clone();
+    let monitor = self.monitor_of(Some(target));
+    let action = move_action(hwnd, name, monitor, workspaces)?;
+    if self.mode == Mode::Carrying {
+      self.put_down();
+    }
+    self.select(target);
+    self.mode = Mode::Windows;
+    self.selected_window = Some(hwnd);
+    Some(action)
   }
 
   /// Whether a search is on, which typed characters and the keys that
@@ -1640,6 +1692,11 @@ impl Interaction {
       Command::SendToWorkspace(1).label(),
       Command::SendToSpecial.label()
     );
+    let send_along = format!(
+      "{} {}",
+      Command::SendAlong(false).label(),
+      Command::SendAlong(true).label()
+    );
     let matches =
       format!("{} {}", Command::Next.label(), Command::Previous.label());
 
@@ -1649,6 +1706,7 @@ impl Interaction {
       Shortcut::new(&Command::Enter.label(), "go to it"),
       Shortcut::new(&Command::CloseWindow.label(), "close it"),
       Shortcut::new(&send, "send it there"),
+      Shortcut::new(&send_along, "send it along"),
       Shortcut::new(&Command::Back.label(), "back"),
     ];
 
@@ -2412,6 +2470,33 @@ mod tests {
       press(&mut state, &[Key::Alt('3')]),
       Some(focus_workspace("3"))
     );
+  }
+
+  /// Shift and an arrow send the picked window to the workspace beside
+  /// its own, selected there, and do nothing past the last one.
+  #[test]
+  fn shifted_arrows_send_the_picked_window_along_and_follow_it() {
+    let mut state = interaction();
+    assert_eq!(press(&mut state, &[Key::ShiftRight]), None, "browsing");
+
+    press(&mut state, &[Key::Left, Key::Space]);
+    assert_eq!(state.selected_window, Some(11));
+    assert_eq!(
+      press(&mut state, &[Key::ShiftRight]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 11,
+        workspace: "2".to_string(),
+        monitor: MONITOR,
+      })
+    );
+    assert_eq!(state.selected(), 1);
+    assert_eq!(state.mode, Mode::Windows);
+    assert_eq!(state.selected_window, Some(11), "follows it");
+
+    let mut state = interaction();
+    press(&mut state, &[Key::Left, Key::Space]);
+    assert_eq!(press(&mut state, &[Key::ShiftLeft]), None, "the first");
+    assert_eq!(state.selected(), 0);
   }
 
   #[test]
