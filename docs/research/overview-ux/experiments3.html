@@ -1,0 +1,480 @@
+<title>Overview Experiments III</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  :root { --exp: #b4419b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --exp: #e57cc8; } }
+  :root[data-theme="dark"] { --exp: #e57cc8; }
+  .banner { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 14px; border-radius: 12px; border: 1px dashed var(--exp); font-size: 13.5px; }
+  .banner b { color: var(--exp); font: 700 11px/1 var(--mono); letter-spacing: .1em; }
+  .concept { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .concept { grid-template-columns: minmax(0, 1fr); } }
+  .demo { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .demo .stage, .demo .md { outline: none; border-radius: 10px; touch-action: none; }
+  .demo .stage:focus-visible, .demo .md:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+  .demo-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .demo-bar .status { margin-left: auto; font: 500 12px/1 var(--mono); color: var(--muted); }
+  .copy { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .copy h2 { font-size: 26px; }
+  .num { font: 700 12px/1 var(--mono); color: var(--exp); letter-spacing: .1em; }
+  .pitch { font-size: 16px; line-height: 1.45; }
+  .try { font-size: 13px; color: var(--muted); }
+  .try b { color: var(--ink); }
+  dl { margin: 0; display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 6px 10px; font-size: 13px; }
+  dt { font: 600 10.5px/1.7 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  dd { margin: 0; }
+  dd a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
+  .cost { display: inline-block; font: 700 10.5px/1 var(--mono); letter-spacing: .06em; padding: 3px 6px; border-radius: 5px; margin-right: 6px; }
+  .cost.l { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+  .cost.m { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  /* A light multi-workspace renderer for 1 and 2. */
+  .md { position: relative; overflow: hidden; aspect-ratio: 16/9; width: 100%; background: #111216; user-select: none; }
+  .md-world { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+  .mws { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; will-change: transform, opacity; overflow: hidden; }
+  .mw { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform, opacity; border-radius: 10px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,.4);
+    background: linear-gradient(#e9ebf0 0 34px, transparent 34px), repeating-linear-gradient(180deg, transparent 0 22px, #d5d8e0 22px 31px) 5% 60px / 62% 100% no-repeat, #f6f7fa; cursor: pointer; }
+  .mw.dark { background: linear-gradient(#1f2230 0 34px, transparent 34px), repeating-linear-gradient(180deg, transparent 0 22px, #3b4261 22px 31px) 5% 60px / 58% 100% no-repeat, #1a1b26; }
+  .mw::before { content: ""; position: absolute; left: 14px; top: 9px; width: 16px; height: 16px; border-radius: 4px; background: var(--t); }
+  .mw .tt { position: absolute; left: 40px; top: 9px; font: 500 15px/16px system-ui, sans-serif; color: #333; white-space: nowrap; }
+  .mw.dark .tt { color: #c0c4d6; }
+  .mw .ring { position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 calc(5px * var(--inv, 1)) #6ea2ff; opacity: 0; transition: opacity .12s; }
+  .mw.hov .ring { opacity: 1; }
+  .mw .wsb { position: absolute; left: 8px; bottom: 8px; transform-origin: 0 100%; transform: scale(var(--inv, 1)); padding: 6px 12px; border-radius: 10px; color: #fff; font: 700 22px/1 system-ui, sans-serif; opacity: var(--wsb, 0); }
+  .mlabel { position: absolute; left: 0; top: 0; color: #f2f2f5; font: 600 30px/1 system-ui, sans-serif; white-space: nowrap; will-change: transform, opacity; pointer-events: none; }
+  .mlabel span { opacity: .6; font-weight: 400; margin-left: 10px; }
+  .zoomhud { position: absolute; right: 30px; top: 30px; display: flex; flex-direction: column; gap: 10px; z-index: 10; }
+  .zoomhud i { width: 18px; height: 18px; border-radius: 50%; background: rgba(255,255,255,.25); transition: background .15s, transform .15s; }
+  .zoomhud i.on { background: #e57cc8; transform: scale(1.3); }
+  .search3 { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); min-width: 460px; padding: 16px 24px; border-radius: 18px; background: rgba(16,17,24,.9); color: #fff; font: 500 30px/1 system-ui, sans-serif; z-index: 20; transition: opacity .2s; display: flex; gap: 14px; }
+  .search3 small { margin-left: auto; opacity: .6; font-size: 22px; }
+  /* Overlays on the Stage-based demos (world px). */
+  .ov { position: absolute; inset: 0; pointer-events: none; z-index: 70; }
+  .trail { position: absolute; left: 0; top: 0; overflow: visible; }
+  .stepn { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; background: #e57cc8; color: #2a0d22; font: 800 32px/64px "JetBrains Mono", monospace; text-align: center; box-shadow: 0 6px 20px rgba(0,0,0,.45); transition: transform .2s; }
+  .stepn.now { background: #fff; }
+  .eq { position: absolute; right: 0; top: 0; transform-origin: 100% 0; transform: translate(-14px, 44px) scale(var(--inv)); display: flex; gap: 6px; align-items: flex-end; padding: 12px 14px; height: 70px; border-radius: 16px; background: rgba(15,16,22,.85); pointer-events: auto; cursor: pointer; opacity: var(--chrome); }
+  .eq i { width: 8px; border-radius: 3px; background: #1db954; animation: eq .9s ease-in-out infinite alternate; }
+  .eq i:nth-child(2) { animation-delay: -.3s; } .eq i:nth-child(3) { animation-delay: -.6s; } .eq i:nth-child(4) { animation-delay: -.15s; }
+  @keyframes eq { from { height: 10px; } to { height: 46px; } }
+  .eq.muted i { animation: none; height: 8px; background: #888; }
+  .eq b { color: #fff; font: 700 22px/46px system-ui, sans-serif; margin-left: 8px; }
+  .urgent { position: absolute; inset: -10px; border-radius: 16px; box-shadow: 0 0 0 calc(5px * var(--inv)) #ff6b4a, 0 0 calc(40px * var(--inv)) rgba(255,107,74,.6); opacity: calc(var(--chrome) * var(--urg, 0)); animation: urg 1.1s ease-in-out infinite; }
+  @keyframes urg { 50% { box-shadow: 0 0 0 calc(9px * var(--inv)) #ff6b4a, 0 0 calc(70px * var(--inv)) rgba(255,107,74,.8); } }
+  .dot { position: absolute; right: 0; top: 0; transform-origin: 100% 0; transform: translate(14px, -14px) scale(var(--inv)); width: 40px; height: 40px; border-radius: 50%; background: #ff6b4a; color: #fff; font: 800 24px/40px system-ui; text-align: center; opacity: calc(var(--chrome) * var(--urg, 0)); }
+  .shelf3 { position: absolute; left: 50%; top: 22px; transform: translateX(-50%); display: flex; gap: 18px; padding: 14px 18px; border-radius: 22px; background: rgba(16,17,24,.72); pointer-events: auto; }
+  .shelf3 .pin { position: relative; width: 210px; height: 128px; border-radius: 12px; overflow: hidden; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.4); transition: transform .18s cubic-bezier(.3,.7,.2,1.3); }
+  .shelf3 .pin:hover { transform: translateY(4px) scale(1.06); }
+  .shelf3 .pin em { position: absolute; left: 8px; bottom: 8px; padding: 4px 8px; border-radius: 7px; background: rgba(15,16,22,.85); color: #fff; font: 600 16px/1 system-ui; font-style: normal; }
+  .shelf3 .pin u { position: absolute; right: 8px; top: 8px; padding: 4px 8px; border-radius: 7px; background: #e57cc8; color: #2a0d22; font: 700 15px/1 system-ui; text-decoration: none; }
+  .shelf3 .empty { width: 210px; height: 128px; border-radius: 12px; border: 3px dashed rgba(255,255,255,.3); color: rgba(255,255,255,.6); display: grid; place-items: center; font: 500 18px/1.3 system-ui; text-align: center; }
+  .pinb { position: absolute; right: 0; top: 0; transform-origin: 100% 0; transform: translate(30%, -30%) scale(var(--inv)); width: 46px; height: 46px; border-radius: 50%; border: 0; background: rgba(20,21,28,.92); color: #fff; font: 700 22px/46px system-ui; cursor: pointer; pointer-events: auto; opacity: calc(var(--chrome) * var(--hov)); }
+  .pinb.on { background: #e57cc8; color: #2a0d22; opacity: var(--chrome); }
+  .toast3 { position: absolute; left: 50%; bottom: 46px; transform: translateX(-50%); padding: 16px 26px; border-radius: 18px; background: rgba(16,17,24,.92); color: #fff; font: 500 26px/1 system-ui; transition: opacity .25s; pointer-events: none; }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="playground.html">Zoom playground</a>
+    <a href="lab.html">Feature lab</a>
+    <a href="experiments.html">Experiments</a>
+    <a href="experiments2.html">Experiments II</a>
+    <a href="experiments3.html" aria-current="page">Experiments III</a>
+    <a href="layouts.html">Layout comparison</a>
+    <a href="concepts.html">Design concepts</a>
+    <a href="recommendations.html">Recommendations</a>
+  </nav>
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow" style="color:var(--exp)">GlazeWM overview · experiments, round three</span>
+    <h1>More ways to see your windows</h1>
+    <p class="lede">Only overview ideas this time: ways of looking at and getting to windows, none about setting up layouts. Each says what it would cost to run, since lighter is the goal. Each demo plays itself; click into one to take over.</p>
+  </header>
+  <p class="banner"><b>EXPERIMENTAL</b> None of these exist in GlazeWM. <span class="cost l">LIGHT</span> moves no more than today's overview. <span class="cost m">MEDIUM</span> adds thumbnails or per-frame work.</p>
+  <div id="cards" style="display:flex;flex-direction:column;gap:16px"></div>
+</div>
+
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, APPS, scenario, Motion, W, H, WORK } = OverviewStage;
+  const L = OverviewLayouts;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const lerpRect = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), w: lerp(a.w, b.w, t), h: lerp(a.h, b.h, t) });
+  const center = (r) => [r.x + r.w / 2, r.y + r.h / 2];
+  const inside = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  const fitIn = (r, box) => { const s = Math.min(box.w / r.w, box.h / r.h); return { x: box.x + (box.w - r.w * s) / 2, y: box.y + (box.h - r.h * s) / 2, w: r.w * s, h: r.h * s }; };
+  const map = (r, from, to) => { const s = to.w / from.w; return { x: to.x + (r.x - from.x) * s, y: to.y + (r.y - from.y) * (to.h / from.h), w: r.w * s, h: r.h * (to.h / from.h) }; };
+  const base = { ...PRESETS.proposed, titles: 'hover' };
+  const springy = { kind: 'spring', stiffness: 460, damping: 0.84 };
+
+  function card({ num, title, pitch, tryIt, good, risk, cost, touch, src, host = 'stage', controls = '' }) {
+    const sec = document.createElement('section'); sec.className = 'concept panel';
+    sec.innerHTML = `<div class="demo"><div class="${host}" tabindex="0"></div>
+        <div class="demo-bar">${controls}<button data-replay>Replay</button><span class="status" data-status></span></div></div>
+      <div class="copy"><span class="num">${num}</span><h2>${title}</h2><p class="pitch">${pitch}</p><p class="try">${tryIt}</p>
+        <dl><dt>Good</dt><dd>${good}</dd><dt>Risk</dt><dd>${risk}</dd><dt>Cost</dt><dd>${cost}</dd><dt>Touches</dt><dd><code>${touch}</code></dd>${src ? `<dt>Seen in</dt><dd>${src}</dd>` : ''}</dl></div>`;
+    document.getElementById('cards').append(sec);
+    return sec;
+  }
+
+  function director(sec, script, reset) {
+    let token = 0, visible = false, taken = false;
+    const status = sec.querySelector('[data-status]');
+    const sleep = (ms, t) => new Promise((res, rej) => setTimeout(() => (t === token ? res() : rej(0)), ms));
+    async function loop() { const t = ++token; try { while (true) { reset(); await sleep(500, t); await script((ms) => sleep(ms, t)); await sleep(1100, t); } } catch { /* stopped */ } }
+    const start = () => { if (visible && !taken && !reduce) { status.textContent = 'playing'; loop(); } };
+    const stop = () => { token++; };
+    new IntersectionObserver(([e]) => { visible = e.isIntersecting; visible ? start() : stop(); }, { threshold: 0.3 }).observe(sec);
+    const host = sec.querySelector('.stage, .md');
+    const takeOver = (e) => { if (e.target.closest?.('[data-replay]')) return; if (!taken) { taken = true; stop(); reset(); status.textContent = 'your turn'; } };
+    host.addEventListener('pointerdown', takeOver, true); host.addEventListener('keydown', takeOver, true); host.addEventListener('wheel', takeOver, { capture: true, passive: true });
+    sec.querySelector('[data-replay]').onclick = () => { taken = false; stop(); start(); };
+    if (reduce) status.textContent = 'motion reduced: click to try';
+  }
+
+  const worldOf = (k, el, e) => { const b = el.getBoundingClientRect(); return [(e.clientX - b.left) / k, (e.clientY - b.top) / k]; };
+  const hitAt = (stage, x, y) => { let best = -1, z = -1; stage.t.rects.forEach((r, i) => { if (stage.wins[i].fade.to < 0.5) return; if (inside(x, y, r)) { const zi = +stage.wins[i].el.style.zIndex || 0; if (zi > z) { z = zi; best = i; } } }); return best; };
+  const overlayOf = (stage) => { const o = document.createElement('div'); o.className = 'ov'; stage.world.append(o); return o; };
+  const glide = async (show, sleep, from, to, ms, each) => {
+    const steps = Math.max(4, Math.round(ms / 40));
+    for (let k = 1; k <= steps; k++) { const t = k / steps, e = t * t * (3 - 2 * t); const p = [lerp(from[0], to[0], e), lerp(from[1], to[1], e)]; show(p); each?.(p); await sleep(40); }
+  };
+
+  // Four workspaces for the multi-workspace demos.
+  const WALLS = [
+    'radial-gradient(60% 80% at 20% 25%,#3c5d8f,transparent 60%),radial-gradient(55% 70% at 85% 75%,#c2643f,transparent 62%),linear-gradient(160deg,#1d2b45,#4a3340)',
+    'radial-gradient(70% 70% at 70% 30%,#2f7f78,transparent 60%),linear-gradient(200deg,#0f2a2e,#1d3b4f)',
+    'radial-gradient(60% 70% at 30% 70%,#7b4fa8,transparent 60%),linear-gradient(140deg,#1c1530,#3b2342)',
+    'radial-gradient(60% 70% at 60% 40%,#b8873a,transparent 60%),linear-gradient(170deg,#2a2016,#3e2b23)',
+  ];
+  const WS_COLORS = ['#3b82f6', '#14b8a6', '#a855f7', '#eab308'];
+  const SPACES = [
+    { name: '1', label: 'code', wins: scenario(3, 'tiled').map((r, i) => ({ ...r, app: [0, 2, 1][i] })) },
+    { name: '2', label: 'web', wins: scenario(2, 'tiled').map((r, i) => ({ ...r, app: [1, 7][i] })) },
+    { name: '3', label: 'chat', wins: scenario(3, 'floating').map((r, i) => ({ ...r, app: [3, 6, 5][i] })) },
+    { name: '4', label: 'music', wins: scenario(1, 'tiled').map((r) => ({ ...r, app: 4 })) },
+  ];
+
+  // A light renderer: workspaces as wallpaper slabs, windows as boxes.
+  function multiDesk(host) {
+    host.classList.add('md');
+    const world = document.createElement('div'); world.className = 'md-world'; host.append(world);
+    const wsEls = SPACES.map((sp, i) => { const d = document.createElement('div'); d.className = 'mws'; d.style.background = WALLS[i]; world.append(d); return d; });
+    const winEls = []; const labels = [];
+    SPACES.forEach((sp, s) => sp.wins.forEach((w, j) => {
+      const a = APPS[w.app], el = document.createElement('div');
+      el.className = 'mw' + (['editor', 'terminal', 'music'].includes(a.kind) ? ' dark' : '');
+      el.style.setProperty('--t', a.tint); el.style.width = w.w + 'px'; el.style.height = w.h + 'px';
+      el.innerHTML = `<span class="tt">${a.title}</span><div class="ring"></div><div class="wsb" style="background:${WS_COLORS[s]}">${sp.name}</div>`;
+      el.dataset.s = s; el.dataset.j = j; world.append(el); winEls.push({ el, s, j, real: w, app: a });
+    }));
+    SPACES.forEach((sp, s) => { const d = document.createElement('div'); d.className = 'mlabel'; d.innerHTML = `${sp.name} · ${sp.label}<span>${sp.wins.length}</span>`; world.append(d); labels.push(d); });
+    let k = 1;
+    const fit = () => { k = host.clientWidth / W; world.style.transform = `scale(${k})`; };
+    new ResizeObserver(fit).observe(host); fit();
+    return {
+      host, world, wsEls, winEls, labels, k: () => k,
+      paint(ws, wins, lab) {
+        ws.forEach((r, i) => { const el = wsEls[i]; el.style.transform = `translate(${r.x}px,${r.y}px) scale(${r.w / W},${r.h / H})`; el.style.opacity = r.o ?? 1; el.style.borderRadius = (r.rad ?? 0) / (r.w / W) + 'px'; el.style.zIndex = r.z ?? 1; });
+        wins.forEach((r, i) => { const { el, real } = winEls[i]; const s = r.w / real.w; el.style.transform = `translate(${r.x}px,${r.y}px) scale(${s})`; el.style.opacity = r.o ?? 1; el.style.setProperty('--inv', 1 / Math.max(s, 0.05)); el.style.setProperty('--wsb', r.badge ?? 0); el.style.zIndex = r.z ?? 5; });
+        (lab || []).forEach((r, i) => { labels[i].style.transform = `translate(${r.x}px,${r.y}px)`; labels[i].style.opacity = r.o ?? 0; });
+      },
+    };
+  }
+
+  // A tiny animation loop over a set of `Motion`s.
+  function animator(onFrame) {
+    let running = false, last = 0;
+    const motions = new Set();
+    const frame = (now) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; let busy = false; for (const m of motions) busy = m.step(dt) || busy; onFrame(); if (busy) requestAnimationFrame(frame); else running = false; };
+    return { add: (m) => { motions.add(m); return m; }, kick: () => { if (!running) { running = true; last = performance.now(); requestAnimationFrame(frame); } } };
+  }
+
+  /* 1. Zoom levels: desktop → exposé → every workspace, by the wheel. */
+  {
+    const sec = card({ num: '01 · SEMANTIC ZOOM', title: 'Zoom levels', host: 'md',
+      pitch: 'One continuous zoom with three stops: the desktop, this workspace\'s exposé, and every workspace side by side. The wheel moves between them and follows your hand; clicking a workspace zooms back into it.',
+      tryIt: 'Wheel over the demo (or <b>↑</b> <b>↓</b> after clicking it). At the far stop, click a workspace.',
+      good: 'niri users asked for exactly this ("zoom stages, more workspaces the more you zoom out"). One gesture replaces choosing between the exposé and the stack.', risk: 'Three levels to keep consistent with the keyboard; the far stop needs readable names.',
+      cost: '<span class="cost l">LIGHT</span>The far stop shows workspaces as they are, without spreading anything; the same thumbnails the strip already has.',
+      touch: 'overview layouts as levels of one zoom; wheel hook', src: '<a href="https://github.com/YaLTeR/niri/discussions/352" target="_blank" rel="noopener">niri #352</a>' });
+    const md = multiDesk(sec.querySelector('.md'));
+    const hud = document.createElement('div'); hud.className = 'zoomhud'; hud.innerHTML = '<i></i><i></i><i></i>'; md.host.append(hud);
+    const st = { cur: 0, z: new Motion(0), hover: -1 };
+    const anim = animator(paint); anim.add(st.z);
+    const room = { x: 48, y: 60, w: W - 96, h: H - 120 };
+    const expo = () => { const sp = SPACES[st.cur]; return L.cluster(sp.wins, { x: 120, y: 120, w: W - 240, h: H - 220 }, { gap: 28, largest: 0.94 }); };
+    const cell = (s) => { const cw = (room.w - 40) / 2, ch = (room.h - 120) / 2; const c = { x: room.x + (s % 2) * (cw + 40), y: room.y + Math.floor(s / 2) * (ch + 60), w: cw, h: ch }; return fitIn({ x: 0, y: 0, w: W, h: H }, c); };
+    function paint() {
+      const z = Math.max(0, Math.min(2, st.z.x)), ws = [], wins = [], lab = [];
+      const ex = expo();
+      const slab1 = { x: 90, y: 70, w: W - 180, h: (W - 180) * H / W };
+      SPACES.forEach((sp, s) => {
+        const c2 = cell(s), isCur = s === st.cur;
+        const r0 = isCur ? { x: 0, y: 0, w: W, h: H } : { ...c2, x: c2.x + (c2.x > W / 2 ? 400 : -400) };
+        const r1 = isCur ? slab1 : r0;
+        const r = z <= 1 ? lerpRect(r0, r1, z) : lerpRect(r1, c2, z - 1);
+        const o = isCur ? 1 : Math.max(0, z - 1);
+        ws.push({ ...r, o, rad: z * 12, z: isCur ? 2 : 1 });
+        lab.push({ x: c2.x, y: c2.y + c2.h + 14, o: Math.max(0, z - 1.4) / 0.6 });
+      });
+      md.winEls.forEach((w, i) => {
+        const c2 = cell(w.s), isCur = w.s === st.cur;
+        const at2 = map(w.real, { x: 0, y: 0, w: W, h: H }, c2);
+        const r0 = isCur ? w.real : map(w.real, { x: 0, y: 0, w: W, h: H }, { ...c2, x: c2.x + (c2.x > W / 2 ? 400 : -400) });
+        const r1 = isCur ? ex[w.j] : r0;
+        const r = z <= 1 ? lerpRect(r0, r1, z) : lerpRect(r1, at2, z - 1);
+        wins.push({ ...r, o: isCur ? 1 : Math.max(0, z - 1), z: isCur ? 6 : 3 });
+        w.el.classList.toggle('hov', st.hover === i && z > 0.9);
+      });
+      md.paint(ws, wins, lab);
+      [...hud.children].forEach((d, i) => d.classList.toggle('on', Math.round(z) === i));
+    }
+    const goTo = (z, anim2 = springy) => { st.z.aim(Math.max(0, Math.min(2, z)), anim2); anim.kick(); };
+    let wheelT = 0;
+    md.host.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const v = Math.max(0, Math.min(2, st.z.x - e.deltaY * 0.004));
+      st.z.x = v; st.z.v = 0; st.z.anim = null; paint();
+      clearTimeout(wheelT); wheelT = setTimeout(() => goTo(Math.round(st.z.x)), 140);
+    }, { passive: false });
+    md.host.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp' || e.key === '-') goTo(Math.round(st.z.to) + 1); else if (e.key === 'ArrowDown' || e.key === '+' || e.key === 'Escape') goTo(Math.round(st.z.to) - 1); else return; e.preventDefault();
+    });
+    md.host.addEventListener('pointermove', (e) => { const [x, y] = worldOf(md.k(), md.host, e); st.hover = md.winEls.findIndex((w) => { const b = w.el.getBoundingClientRect(), h = md.host.getBoundingClientRect(); return e.clientX >= b.left && e.clientX <= b.right && e.clientY >= b.top && e.clientY <= b.bottom; }); void x; void y; paint(); });
+    md.host.addEventListener('click', (e) => {
+      md.host.focus();
+      const [x, y] = worldOf(md.k(), md.host, e);
+      if (st.z.to >= 1.5) { const s = SPACES.findIndex((_, i) => inside(x, y, cell(i))); if (s >= 0) { st.cur = s; paint(); goTo(0, { kind: 'spring', stiffness: 520, damping: 0.9 }); } }
+      else if (st.z.to >= 0.5) goTo(0); else goTo(1);
+    });
+    paint();
+    director(sec, async (sleep) => {
+      goTo(1); await sleep(1300); goTo(2); await sleep(1600);
+      st.cur = 2; paint(); goTo(0, { kind: 'spring', stiffness: 520, damping: 0.9 }); await sleep(1300);
+      goTo(2); await sleep(1500); st.cur = 0; paint(); goTo(0); await sleep(1000);
+    }, () => { st.cur = 0; st.z.x = 0; st.z.to = 0; st.z.anim = null; paint(); });
+  }
+
+  /* 2. Every window, every workspace, one search. */
+  {
+    const sec = card({ num: '02 · ALL AT ONCE', title: 'Every window', host: 'md',
+      pitch: 'One exposé of all windows on all workspaces, a band per workspace with its name, the current one first. Type to search everything at once; picking a window takes you to its workspace.',
+      tryIt: 'Click to open, type <b>a</b> word like <b>chat</b>, click a window.',
+      good: 'People missed exactly this when Mission Control replaced Exposé + Spaces: seeing every window everywhere at once. And it is what window search already wants to be.', risk: 'Many windows get small; needs the readable floor (rows) and search to stay useful past ~20.',
+      cost: '<span class="cost m">MEDIUM</span>A live thumbnail for every window on every workspace while open; today the other workspaces only have their small miniatures.',
+      touch: 'a new layout over every workspace; search already spans monitors', src: '<a href="https://news.ycombinator.com/item?id=4236878" target="_blank" rel="noopener">HN on Exposé + Spaces</a>' });
+    const md = multiDesk(sec.querySelector('.md'));
+    const sb = document.createElement('div'); sb.className = 'search3'; sb.style.opacity = 0; sb.innerHTML = '<span>⌕</span><span data-q></span><small data-n></small>'; md.host.append(sb);
+    const st = { o: new Motion(0), q: '', hover: -1 };
+    const anim = animator(paint); anim.add(st.o);
+    const bands = () => {
+      const top = 50, gap = 26, n = SPACES.length, bh = (H - top - 140 - gap * (n - 1)) / n;
+      return SPACES.map((_, s) => ({ x: 260, y: top + s * (bh + gap), w: W - 330, h: bh }));
+    };
+    const match = (w) => !st.q || (w.app.name + ' ' + w.app.title).toLowerCase().includes(st.q);
+    function paint() {
+      const o = Math.max(0, Math.min(1.05, st.o.x)), B = bands(), ws = [], wins = [], lab = [];
+      SPACES.forEach((sp, s) => {
+        ws.push(s === 0 ? { ...lerpRect({ x: 0, y: 0, w: W, h: H }, { x: 0, y: 0, w: W, h: H }, o), o: 1, z: 0 } : { x: 0, y: 0, w: W, h: H, o: 0 });
+        lab.push({ x: 60, y: B[s].y + B[s].h / 2 - 16, o: Math.max(0, (o - 0.6) / 0.4) });
+      });
+      const placed = SPACES.map((sp, s) => L.rows(sp.wins, B[s], { spacing: 24, maxScale: 0.9, monitorH: WORK.h }));
+      md.winEls.forEach((w, i) => {
+        const to = placed[w.s][w.j];
+        const from = w.s === 0 ? w.real : { ...to, x: to.x + 120, y: to.y + 300, w: to.w * 0.8, h: to.h * 0.8 };
+        const r = lerpRect(from, to, o);
+        const m = match(w);
+        wins.push({ ...r, o: (w.s === 0 ? 1 : Math.min(1, o * 1.4)) * (m ? 1 : 0.18), badge: Math.max(0, (o - 0.6) / 0.4), z: 5 });
+        w.el.classList.toggle('hov', st.hover === i && o > 0.9);
+      });
+      md.wsEls[0].style.filter = `brightness(${1 - 0.55 * o})`;
+      md.paint(ws, wins, lab);
+      const n = md.winEls.filter(match).length;
+      sb.style.opacity = st.q ? 1 : 0; sb.querySelector('[data-q]').textContent = st.q; sb.querySelector('[data-n]').textContent = `${n} match${n === 1 ? '' : 'es'}`;
+    }
+    const open = () => { st.o.aim(1, base.open); anim.kick(); };
+    const close = (pick = -1) => { st.q = ''; st.hover = -1; st.o.aim(0, base.close); anim.kick(); if (pick >= 0) flashPick(pick); };
+    const flashPick = (i) => { const w = md.winEls[i]; const t = document.createElement('div'); t.className = 'toast3'; t.textContent = `Workspace ${SPACES[w.s].name} · ${w.app.title}`; md.world.append(t); setTimeout(() => { t.style.opacity = 0; }, 900); setTimeout(() => t.remove(), 1300); };
+    const hit = (e) => md.winEls.findIndex((w) => { const b = w.el.getBoundingClientRect(); return e.clientX >= b.left && e.clientX <= b.right && e.clientY >= b.top && e.clientY <= b.bottom && match(w); });
+    md.host.addEventListener('pointermove', (e) => { if (st.o.to > 0.5) { st.hover = hit(e); paint(); } });
+    md.host.addEventListener('click', (e) => { md.host.focus(); if (st.o.to < 0.5) open(); else close(hit(e)); });
+    md.host.addEventListener('keydown', (e) => {
+      if (st.o.to < 0.5) { if (e.key === ' ' || e.key === 'Enter') { open(); e.preventDefault(); } return; }
+      if (e.key === 'Escape') { if (st.q) st.q = ''; else close(); } else if (e.key === 'Backspace') st.q = st.q.slice(0, -1);
+      else if (e.key === 'Enter') { const i = md.winEls.findIndex(match); close(i); }
+      else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) st.q += e.key.toLowerCase(); else return;
+      e.preventDefault(); paint();
+    });
+    paint();
+    director(sec, async (sleep) => {
+      open(); await sleep(1500);
+      for (const c of 'chat') { st.q += c; paint(); await sleep(230); } await sleep(1200);
+      const i = md.winEls.findIndex(match); st.hover = i; paint(); await sleep(600); close(i); await sleep(1300);
+    }, () => { st.q = ''; st.hover = -1; st.o.x = 0; st.o.to = 0; st.o.anim = null; paint(); });
+  }
+
+  /* 3. Local exposé: only the windows under the pointer fan out. */
+  {
+    const sec = card({ num: '03 · LIGHTEST', title: 'Local exposé',
+      pitch: 'Press the key over a pile of floating windows and only the windows under the pointer fan out around it; everything else stays put. Pick one, or let go to fold them back.',
+      tryIt: 'Hold <b>Space</b> with the pointer over the overlapping windows (or press on them and hold).',
+      good: 'Finds the window buried under others without leaving the desktop or moving anything else: the smallest possible overview.', risk: 'Only useful for overlapping (floating) windows; tiles never overlap.',
+      cost: '<span class="cost l">LIGHT</span>Two to four windows move; no backdrop, strip or chrome at all.',
+      touch: 'a new overview mode scoped to windows at a point' });
+    const ws = [
+      { x: 360, y: 180, w: 980, h: 640 }, { x: 520, y: 260, w: 860, h: 560 }, { x: 640, y: 330, w: 700, h: 500 },
+      { x: 740, y: 380, w: 620, h: 420 }, { x: 1440, y: 120, w: 420, h: 340 },
+    ];
+    const st = { at: null };
+    const layout = () => {
+      const out = ws.map((r) => ({ ...r }));
+      if (!st.at) return out;
+      const under = ws.map((r, i) => i).filter((i) => inside(st.at[0], st.at[1], ws[i]));
+      st.under = under;
+      const n = under.length, R = 360;
+      under.forEach((i, k) => {
+        const a = -Math.PI / 2 + (k / n) * Math.PI * 2 + 0.4, r = ws[i], s = Math.min(420 / r.w, 300 / r.h);
+        const cx = Math.min(Math.max(st.at[0] + Math.cos(a) * R, 260), W - 260), cy = Math.min(Math.max(st.at[1] + Math.sin(a) * R * 0.7, 190), H - 230);
+        out[i] = { x: cx - r.w * s / 2, y: cy - r.h * s / 2, w: r.w * s, h: r.h * s };
+      });
+      return out;
+    };
+    const stage = new Stage(sec.querySelector('.stage'), { params: { ...base, wallpaper: 'dim', strip: 'none', staggerMs: 18, open: { kind: 'spring', stiffness: 620, damping: 0.8 } }, windows: ws, apps: [0, 1, 3, 2, 6], layout, interactive: false });
+    const baseRender = stage.render.bind(stage);
+    stage.render = () => { baseRender(); stage.slab.style.transform = 'none'; stage.dimmer.style.opacity = stage.isOpen || stage.openness > 0.01 ? Math.min(1, stage.openness) * 0.25 : 0; stage.task.style.opacity = 1; };
+    stage.render();
+    const fan = (p) => { if (stage.isOpen) return; st.at = p; stage.params.staggerFrom = p; stage.open(); stage.relayout({ kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] }); };
+    const fold = (pick = -1) => { if (!stage.isOpen) return; stage.close(pick); };
+    const el = stage.el;
+    let pointer = null;
+    el.addEventListener('pointermove', (e) => { pointer = worldOf(stage.k, el, e); if (stage.isOpen) stage.setHover(hitAt(stage, ...pointer)); });
+    el.addEventListener('pointerdown', (e) => { el.focus(); const p = worldOf(stage.k, el, e); if (stage.isOpen) { const i = hitAt(stage, ...p); fold(i); } else fan(p); });
+    el.addEventListener('keydown', (e) => { if (e.key === ' ' && !e.repeat) { e.preventDefault(); fan(pointer || [900, 500]); } });
+    el.addEventListener('keyup', (e) => { if (e.key === ' ') { e.preventDefault(); fold(stage.hover); } });
+    director(sec, async (sleep) => {
+      stage.showCursor(300, 900, 10); await sleep(300);
+      await glide((p) => stage.showCursor(p[0], p[1], 40), sleep, [300, 900], [900, 520], 600);
+      fan([900, 520]); await sleep(900);
+      const i = st.under?.[st.under.length - 1] ?? 0; const [x, y] = center(stage.t.rects[i]);
+      await glide((p) => stage.showCursor(p[0], p[1], 40), sleep, [900, 520], [x, y], 500); stage.setHover(i); await sleep(500);
+      stage.press(); fold(i); stage.hideCursor(); await sleep(1000);
+    }, () => { stage.hideCursor(); if (stage.isOpen) stage.close(-1); });
+  }
+
+  /* 4. Focus trail. */
+  {
+    const sec = card({ num: '04 · WHERE WAS I', title: 'Focus trail',
+      pitch: 'The overview draws the path of your last few focused windows, numbered, newest first. <b>Tab</b> walks back along it, so "the one before the one before" is two taps, with its position in plain view.',
+      tryIt: 'Click to open, press <b>Tab</b> a few times, <b>Enter</b>.',
+      good: 'Combines what Alt+Tab is good at (recency) with what the exposé is good at (positions stay put); the studies favour keeping positions, and this does.', risk: '<b>Tab</b> switches layouts in the overview today; this would need another key or replace that.',
+      cost: '<span class="cost l">LIGHT</span>A few lines and numbers drawn once on open; nothing extra moves.',
+      touch: 'focus history in the WM; overview chrome', src: '<a href="https://www.researchgate.net/publication/221054425_Improving_Window_Switching_Interfaces" target="_blank" rel="noopener">Tak et al. 2009</a>' });
+    const ws = scenario(6, 'tiled');
+    const TRAIL = [2, 0, 4, 1];
+    const st = { step: 0 };
+    const stage = new Stage(sec.querySelector('.stage'), { params: base, windows: ws, interactive: false });
+    const ov = overlayOf(stage);
+    const paint = () => {
+      if (!stage.isOpen) { ov.innerHTML = ''; return; }
+      const pts = TRAIL.map((i) => center(stage.t.rects[i]));
+      const path = pts.map((p, k) => (k ? 'L' : 'M') + p[0] + ' ' + p[1]).join(' ');
+      ov.innerHTML = `<svg class="trail" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><path d="${path}" fill="none" stroke="#e57cc8" stroke-width="6" stroke-dasharray="18 14" stroke-linecap="round" opacity="${stage.chrome}"/></svg>` +
+        pts.map((p, k) => `<div class="stepn ${k === st.step ? 'now' : ''}" style="left:${p[0]}px;top:${p[1]}px;opacity:${stage.chrome};transform:scale(${k === st.step ? 1.2 : 1})">${k === 0 ? '●' : k}</div>`).join('');
+    };
+    const baseRender = stage.render.bind(stage);
+    stage.render = () => { baseRender(); paint(); };
+    const walk = () => { st.step = (st.step + 1) % TRAIL.length; stage.setHover(TRAIL[st.step]); paint(); };
+    const el = stage.el;
+    el.addEventListener('pointerdown', (e) => { el.focus(); if (!stage.isOpen) { st.step = 0; stage.open(); return; } stage.close(hitAt(stage, ...worldOf(stage.k, el, e))); });
+    el.addEventListener('pointermove', (e) => { if (stage.isOpen) stage.setHover(hitAt(stage, ...worldOf(stage.k, el, e))); });
+    el.addEventListener('keydown', (e) => {
+      if (!stage.isOpen) { if (e.key === ' ' || e.key === 'Enter') { st.step = 0; stage.open(); e.preventDefault(); } return; }
+      if (e.key === 'Tab') walk(); else if (e.key === 'Enter') stage.close(TRAIL[st.step]); else if (e.key === 'Escape') stage.close(-1); else return; e.preventDefault();
+    });
+    director(sec, async (sleep) => {
+      st.step = 0; stage.open(); await sleep(1100);
+      for (let k = 0; k < 2; k++) { walk(); await sleep(700); }
+      stage.close(TRAIL[st.step]); await sleep(1000);
+    }, () => { st.step = 0; if (stage.isOpen) stage.close(-1); paint(); });
+  }
+
+  /* 5. Sound and attention. */
+  {
+    const sec = card({ num: '05 · AT A GLANCE', title: 'Sound and attention',
+      pitch: 'The window playing sound shows a little equalizer you can click to mute it, as browser tabs do. A window asking for attention glows and comes pre-selected, so <b>Enter</b> goes straight to it.',
+      tryIt: 'Click to open. Click the equalizer to mute; press <b>Enter</b>.',
+      good: '"Which window is making that noise" and "who pinged me" are two of the most common reasons to look for a window.', risk: 'Sound needs Windows\' audio session API, which GlazeWM doesn\'t call today: a new Windows API to call out for the Defender test build.',
+      cost: '<span class="cost l">LIGHT</span>A badge and a glow; the audio sessions are read once on open, not per frame.',
+      touch: 'urgency (exists in the WM); audio sessions (new)', src: '<a href="https://github.com/florensm/glazewm/blob/test/overview-config/docs/features/dynamic-workspaces-and-urgency.md" target="_blank" rel="noopener">GlazeWM urgency</a>' });
+    const ws = scenario(5, 'tiled');
+    const MUSIC = 4, URGENT = 3;
+    const st = { muted: false };
+    const stage = new Stage(sec.querySelector('.stage'), { params: base, windows: ws, interactive: false });
+    stage.wins.forEach((w, i) => {
+      w.deco.innerHTML = (i === MUSIC ? '<div class="eq" title="Mute"><i></i><i></i><i></i><i></i><b>♪</b></div>' : '') + (i === URGENT ? '<div class="urgent"></div><div class="dot">!</div>' : '');
+      w.el.style.setProperty('--urg', i === URGENT ? 1 : 0);
+    });
+    const eq = stage.wins[MUSIC].deco.querySelector('.eq');
+    const toggleMute = () => { st.muted = !st.muted; eq.classList.toggle('muted', st.muted); eq.querySelector('b').textContent = st.muted ? '🔇' : '♪'; };
+    eq.addEventListener('pointerdown', (e) => { e.stopPropagation(); toggleMute(); });
+    const open = () => { stage.open(); stage.setHover(URGENT); };
+    const el = stage.el;
+    el.addEventListener('pointerdown', (e) => { el.focus(); if (!stage.isOpen) { open(); return; } stage.close(hitAt(stage, ...worldOf(stage.k, el, e))); });
+    el.addEventListener('pointermove', (e) => { if (stage.isOpen) { const i = hitAt(stage, ...worldOf(stage.k, el, e)); if (i >= 0) stage.setHover(i); } });
+    el.addEventListener('keydown', (e) => { if (!stage.isOpen) { if (e.key === ' ' || e.key === 'Enter') { open(); e.preventDefault(); } return; } if (e.key === 'Enter') stage.close(stage.hover); else if (e.key === 'Escape') stage.close(-1); else return; e.preventDefault(); });
+    director(sec, async (sleep) => {
+      open(); await sleep(1400);
+      const r = stage.t.rects[MUSIC]; stage.showCursor(r.x + 60, r.y + 50, 700); await sleep(900); stage.press(); toggleMute(); await sleep(1100);
+      stage.hideCursor(); stage.close(URGENT); await sleep(900);
+    }, () => { if (st.muted) toggleMute(); stage.hideCursor(); if (stage.isOpen) stage.close(-1); });
+  }
+
+  /* 6. Pinned shelf. */
+  {
+    const sec = card({ num: '06 · ANYWHERE', title: 'Pinned shelf',
+      pitch: 'Pin a few windows you go back to all day; they sit on a shelf at the top of every workspace\'s overview, wherever they live. One click from anywhere, without moving them.',
+      tryIt: 'Click to open; point at a window and click its 📌, or click a pinned card.',
+      good: 'A chat or music window on a far workspace stays one click away, without the special workspace or moving it.', risk: 'Overlaps with the special workspace\'s job; the shelf should stay short (three or four).',
+      cost: '<span class="cost l">LIGHT</span>A few small extra thumbnails, the same size as the strip\'s.',
+      touch: 'a pinned list in the WM state; overview chrome' });
+    const ws = scenario(4, 'tiled');
+    const st = { pins: [{ app: 3, ws: '3' }, { app: 4, ws: '4' }], toast: null };
+    const stage = new Stage(sec.querySelector('.stage'), { params: { ...base, strip: 'none' }, windows: ws, interactive: false, layout: (t) => L.cluster(ws, { ...t.room, y: t.room.y + 150, h: t.room.h - 150 }, { gap: 24, largest: 0.94 }) });
+    const ov = overlayOf(stage); ov.style.pointerEvents = 'none';
+    const shelf = document.createElement('div'); shelf.className = 'shelf3'; stage.world.append(shelf); shelf.style.zIndex = 80;
+    shelf.addEventListener('pointerdown', (e) => e.stopPropagation());
+    const pinned = new Set();
+    const paint = () => {
+      shelf.style.opacity = stage.chrome; shelf.style.pointerEvents = stage.isOpen ? 'auto' : 'none';
+      const items = [...st.pins, ...[...pinned].map((i) => ({ app: i, ws: '1', here: true }))].slice(0, 4);
+      shelf.innerHTML = items.map((p, k) => { const a = APPS[p.app]; return `<div class="pin" data-k="${k}" style="background:${['editor', 'terminal', 'music'].includes(a.kind) ? '#1a1b26' : '#f3f4f7'};border-top:22px solid ${a.tint}"><em>${a.name}</em>${p.here ? '' : `<u>ws ${p.ws}</u>`}</div>`; }).join('') + (items.length < 4 ? '<div class="empty">Pin a window<br>to keep it here</div>' : '');
+      shelf.querySelectorAll('.pin').forEach((c) => { c.onclick = () => { const p = items[+c.dataset.k]; say(`${APPS[p.app].name}${p.here ? '' : ' on workspace ' + p.ws}`); stage.close(p.here ? p.app : -1); }; });
+      stage.wins.forEach((w, i) => { const b = w.deco.querySelector('.pinb'); if (b) b.classList.toggle('on', pinned.has(i)); });
+    };
+    const say = (t) => { const d = document.createElement('div'); d.className = 'toast3'; d.textContent = t; stage.world.append(d); setTimeout(() => { d.style.opacity = 0; }, 900); setTimeout(() => d.remove(), 1300); };
+    stage.wins.forEach((w, i) => {
+      w.deco.innerHTML = '<button class="pinb" aria-label="Pin window">📌</button>';
+      const b = w.deco.querySelector('.pinb');
+      b.addEventListener('pointerdown', (e) => { e.stopPropagation(); pinned.has(i) ? pinned.delete(i) : pinned.add(i); paint(); });
+    });
+    const baseRender = stage.render.bind(stage);
+    stage.render = () => { baseRender(); shelf.style.opacity = stage.chrome; };
+    const el = stage.el;
+    el.addEventListener('pointerdown', (e) => { el.focus(); if (!stage.isOpen) { stage.open(); paint(); return; } stage.close(hitAt(stage, ...worldOf(stage.k, el, e))); });
+    el.addEventListener('pointermove', (e) => { if (stage.isOpen) stage.setHover(hitAt(stage, ...worldOf(stage.k, el, e))); });
+    paint();
+    director(sec, async (sleep) => {
+      stage.open(); paint(); await sleep(1100);
+      const r = stage.t.rects[1]; stage.showCursor(r.x + r.w - 40, r.y + 60, 600); stage.setHover(1); await sleep(700);
+      stage.showCursor(r.x + r.w + 4, r.y - 4, 250); await sleep(350); stage.press(); pinned.add(1); paint(); await sleep(900);
+      const pin = shelf.querySelector('.pin').getBoundingClientRect(), sbx = stage.el.getBoundingClientRect();
+      stage.showCursor((pin.left + pin.width / 2 - sbx.left) / stage.k, (pin.top + pin.height / 2 - sbx.top) / stage.k, 700); await sleep(900);
+      stage.press(); say('Chat on workspace 3'); stage.close(-1); stage.hideCursor(); await sleep(1100);
+    }, () => { pinned.clear(); stage.hideCursor(); if (stage.isOpen) stage.close(-1); paint(); });
+  }
+})();
+</script>
