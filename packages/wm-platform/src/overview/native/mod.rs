@@ -331,6 +331,11 @@ fn run(
   });
   let _ = ready.send(Ok(control.0));
 
+  // Scheduled as the WM's animation thread is, so a busy machine doesn't
+  // hold up its frames. While closed it waits for messages, costing
+  // nothing.
+  let _mmcss = crate::try_set_thread_mmcss();
+
   let mut msg = MSG::default();
   loop {
     // SAFETY: `msg` outlives each call and is only read after a message
