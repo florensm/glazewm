@@ -213,7 +213,7 @@
       { title: 'Large view', items: [
         { key: 'activities.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space around the large view.' },
         { key: 'animation.switch', kind: 'enum', options: ['slide', 'fade', 'miniature'], def: 'slide', help: 'How a newly picked workspace comes in. Click another miniature in the preview.' },
-        { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', help: 'About how long that takes.' },
+        { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', shared: 'activities and stack', help: 'About how long that takes; in the stack, how long workspaces glide.' },
         { key: 'strip_view', kind: 'enum', options: ['visible', 'whole'], def: 'visible', np: true, help: 'How much of a scrolling-layout workspace shows large: the columns on screen, or the whole strip. The preview\'s workspaces don\'t scroll, so nothing changes there.' },
       ] },
     ] },
@@ -227,6 +227,9 @@
         { key: 'stack.neighbour_scale', kind: 'range', min: 0.7, max: 1, step: 0.01, def: 1, isNew: true, fmt: (v) => v.toFixed(2) + '×', help: 'How much smaller they are than the selected one, as GNOME\'s side workspaces are (0.94).' },
       ] },
       { title: 'Motion', items: [
+        { key: 'stack.open_style', kind: 'enum', options: ['inherit', 'zoom', 'fade', 'none', 'cascade'], def: 'inherit', isNew: true, help: 'How the stack opens and closes, apart from the other layouts: "inherit" uses animation.style; cascade brings the workspaces in one after another, outward from the selected one.' },
+        { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', shared: 'activities and stack', help: 'How long workspaces glide when you scroll or press an arrow.' },
+        { key: 'animation.bounce', kind: 'range', min: 0, max: 0.8, step: 0.05, def: 0, shared: 'every layout', help: 'How far they overshoot when they glide.' },
         { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },
         { key: 'animation.easing', kind: 'easing', def: 'spring', shared: 'every layout', help: 'Pace of the open and close. A spring ignores the lengths; spring(damping, stiffness) tunes it. More in the Shared tab.' },
         { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
@@ -302,7 +305,7 @@
     side: { label: 'Side row, even sizes', v: { ...PROPOSED, 'workspace_row': 'shown', 'expose.workspace_row_position': 'left', 'activities.workspace_row_position': 'left', 'expose.small_window_boost': 0.35, 'expose.titles': 'always' } },
     keys: { label: 'Keyboard first', v: { ...PROPOSED, 'expose.hints': 'alt', 'expose.peek_key': 'ctrl', 'expose.release_picks': true, 'expose.search_mode': 'shelf', 'expose.titles': 'always', 'expose.minimized': 'shelf', 'animation.style': 'fade', 'animation.easing': 'ease_out_cubic', 'animation.open_ms': 200, 'animation.close_ms': 160 } },
     fun: { label: 'Everything fun', v: { ...PROPOSED, 'effects.ripples': true, 'effects.glow': true, 'effects.pulse': true, 'effects.jelly': true, 'effects.lean': 10, 'effects.squash': 0.6, 'effects.trail': 5, 'effects.drop_particles': ['sparks', 'confetti'], 'effects.close_particles': ['dust'], 'effects.open_particles': ['glints'], 'effects.exit_particles': ['embers'], 'animation.bounce': 0.35 } },
-    ribbon: { label: 'Stack as a ribbon', v: { ...PROPOSED, 'layout': 'stack', 'stack.direction': 'horizontal', 'stack.zoom': 0.62, 'stack.gap': 60, 'stack.names': 'below', 'stack.neighbour_opacity': 0.6, 'stack.neighbour_scale': 0.86 } },
+    ribbon: { label: 'Stack as a ribbon', v: { ...PROPOSED, 'layout': 'stack', 'stack.direction': 'horizontal', 'stack.zoom': 0.62, 'stack.gap': 60, 'stack.names': 'below', 'stack.neighbour_opacity': 0.6, 'stack.neighbour_scale': 0.86, 'stack.open_style': 'cascade', 'animation.bounce': 0.25 } },
   };
 
   const STORE = 'glazewm-overview-config-v2';
@@ -346,6 +349,7 @@
   };
   const bouncy = (stiffness) => ({ kind: 'spring', stiffness, damping: Math.max(0.3, 1 - state['animation.bounce'] * 0.8) });
   const previewLayout = () => (tab === 'shared' ? state.layout : tab);
+  const stackStyle = () => (state['stack.open_style'] === 'inherit' ? state['animation.style'] : state['stack.open_style']);
 
   // The preview's desktop: four workspaces; Notes on the first is minimized.
   let arrangement = 'tiled';
@@ -757,21 +761,25 @@
     const fit = () => { world.style.transform = `scale(${host.clientWidth / W})`; };
     new ResizeObserver(() => { fit(); render(); }).observe(host);
     function render() {
-      const v = state, z = v['stack.zoom'], raw = Math.max(0, Math.min(1.05, st.open.x)), fade = v['animation.style'] === 'fade';
-      const o = fade ? 1 : raw, grow = fade ? 1 + 0.05 * (1 - Math.min(1, raw)) : 1;
+      const v = state, z = v['stack.zoom'], raw = Math.max(0, Math.min(1.05, st.open.x)), style = stackStyle(), fade = style === 'fade';
+      const oAll = fade ? 1 : raw, grow = fade ? 1 + 0.05 * (1 - Math.min(1, raw)) : 1;
       const horiz = v['stack.direction'] === 'horizontal', gap = v['stack.gap'];
-      const size = 1 + (z - 1) * o, step = horiz ? W * z + gap : H * z + gap;
+      const step = horiz ? W * z + gap : H * z + gap;
       host.style.background = cssColor(v['wallpaper.color']) || '#141416';
       host.style.setProperty('--sk-accent', accentColor());
       els.forEach(({ d, name }, i) => {
         const di = i - st.pos.x, ad = Math.min(Math.abs(di), 1);
+        // Cascade: each workspace a step behind the one nearer the selected.
+        const lag = style === 'cascade' && st.open.to > 0.5 ? Math.min(Math.abs(di), 3) * 0.16 : 0;
+        const o = style === 'cascade' ? Math.max(0, Math.min(1.05, (raw - lag) / (1 - 0.48))) : oAll;
+        const size = 1 + (z - 1) * o;
         const s = size * grow * (1 - (1 - v['stack.neighbour_scale']) * ad * o);
         const off = di * (o * step + (1 - o) * (horiz ? W : H) * 1.05);
         const cx = W / 2 + (horiz ? off : 0), cy = H / 2 + (horiz ? 0 : off);
         d.style.transform = `translate(${cx - (W * s) / 2}px,${cy - (H * s) / 2}px) scale(${s})`;
         d.style.setProperty('--s', s);
         d.style.borderRadius = (v['look.corner_radius'] * o) / Math.max(s, 0.05) + 'px';
-        d.style.opacity = (1 - (1 - v['stack.neighbour_opacity']) * ad * o) * (fade ? Math.min(1, raw) : 1);
+        d.style.opacity = (1 - (1 - v['stack.neighbour_opacity']) * ad * o) * (fade ? Math.min(1, raw) : style === 'cascade' && Math.abs(di) > 0.5 ? Math.min(1, o * 1.5) : 1);
         d.classList.toggle('sel', o > 0.5 && Math.round(st.pos.to) === i);
         const w = W * s, h = H * s, pos = v['stack.names'];
         const nx = pos === 'beside' ? (horiz ? cx - w / 2 : cx - w / 2 - 28) : cx - w / 2;
@@ -784,9 +792,11 @@
     }
     const frame = (now) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; const busy = st.pos.step(dt) | st.open.step(dt); render(); if (busy) requestAnimationFrame(frame); else { running = false; onStage(st.open.to > 0.5 ? 'opened' : 'closed'); } };
     const kick = () => { if (!running) { running = true; last = performance.now(); requestAnimationFrame(frame); } };
-    const go = (i) => { st.pos.aim(Math.max(0, Math.min(desk.length - 1, i)), bouncy(380)); kick(); };
-    const open = () => { st.pos.x = st.pos.to = cur; st.open.aim(1, anims().open); kick(); onStage('open'); };
-    const close = () => { cur = Math.round(st.pos.to); st.open.aim(0, anims().close); kick(); onStage('close'); };
+    const glide = () => { const ms = state['animation.switch_ms']; return ms <= 0 ? instant : { kind: 'spring', stiffness: Math.pow(6.6 / (ms / 1000), 2), damping: Math.max(0.3, 1 - state['animation.bounce'] * 0.8) }; };
+    const go = (i) => { st.pos.aim(Math.max(0, Math.min(desk.length - 1, i)), glide()); kick(); };
+    const stackAnims = () => { const a = anims(), s2 = stackStyle(); if (s2 === 'none') return { open: instant, close: instant }; if (s2 !== 'inherit' && state['animation.style'] === 'none') { const c = parseEasing(state['animation.easing'], state['animation.close_ms']) || { kind: 'spring', stiffness: 800, damping: 1 }; return { open: parseEasing(state['animation.open_easing'] || state['animation.easing'], state['animation.open_ms']) || c, close: c }; } return a; };
+    const open = () => { st.pos.x = st.pos.to = cur; st.open.aim(1, stackAnims().open); kick(); onStage('open'); };
+    const close = () => { cur = Math.round(st.pos.to); st.open.aim(0, stackAnims().close); kick(); onStage('close'); };
     host.addEventListener('wheel', (e) => { if (st.open.to < 0.5) return; e.preventDefault(); go(Math.round(st.pos.to) + Math.sign(e.deltaY || e.deltaX)); }, { passive: false });
     wrap.addEventListener('keydown', (e) => {
       if (previewLayout() !== 'stack') return;
