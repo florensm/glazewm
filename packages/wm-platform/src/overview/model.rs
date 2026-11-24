@@ -527,9 +527,9 @@ impl OverviewExpose {
 impl Default for OverviewExpose {
   fn default() -> Self {
     Self {
-      gap: 28.0,
-      largest: 0.85,
-      margin: 48.0,
+      gap: 24.0,
+      largest: 0.94,
+      margin: 32.0,
       workspace_row: OverviewExposeRow::default(),
       workspace_row_position: OverviewRowSide::default(),
       arrange: OverviewExposeArrange::default(),
@@ -999,10 +999,13 @@ impl OverviewEffects {
 
 impl Default for OverviewEffects {
   fn default() -> Self {
-    // Calm, as an OS's own overview: nothing but the picked window
-    // growing a little. The rest is there to turn on.
+    // Calm, as an OS's own overview: the picked window growing a
+    // little, the other cards dimming a little under the cursor, and the
+    // windows flying out just apart. The rest is there to turn on.
     Self {
-      window_lift: 0.025,
+      window_lift: 0.04,
+      dim: 0.12,
+      stagger_ms: 10,
       ..Self::NONE
     }
   }

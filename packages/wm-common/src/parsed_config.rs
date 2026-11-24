@@ -793,7 +793,7 @@ impl Default for OverviewWallpaperConfig {
     Self {
       style: OverviewWallpaperStyle::default(),
       color: BorderColorSource::Value("#141416ff".to_string()),
-      padding: 24.0,
+      padding: 16.0,
       shadow: true,
       blur: 40.0,
       tint: rgba(0x0000_0066),
@@ -908,14 +908,19 @@ impl Default for OverviewAnimationConfig {
     Self {
       style: OverviewZoomStyle::default(),
       easing: EasingFunction::Spring(SpringParams::default()),
-      open_easing: None,
+      // Landing with a little give.
+      open_easing: Some(EasingFunction::Spring(SpringParams {
+        damping_ratio: 0.85,
+        stiffness: 520.,
+        ..SpringParams::default()
+      })),
       open_ms: 280,
       close_ms: 220,
       switch: OverviewSwitchStyle::default(),
       switch_ms: 260,
       highlight_ms: 140,
       bounce: 0.0,
-      chrome_from: 0.8,
+      chrome_from: 0.6,
     }
   }
 }
@@ -3191,7 +3196,7 @@ mod tests {
   }
 
   #[test]
-  fn overview_sizes_and_motion_read_and_keep_todays_defaults() {
+  fn overview_sizes_and_motion_read_and_default_to_the_proposed_values() {
     let parse = |value: serde_json::Value| {
       serde_json::from_value::<OverviewConfig>(value)
     };
@@ -3207,7 +3212,7 @@ mod tests {
 
     assert!((config.expose.clamped_largest() - 0.94).abs() < 1e-6);
     assert!((config.expose.clamped_margin() - 32.0).abs() < 1e-6);
-    assert!((config.expose.gap - 28.0).abs() < 1e-6, "keeps the gap");
+    assert!((config.expose.gap - 24.0).abs() < 1e-6, "keeps the gap");
     assert!((config.activities.clamped_margin() - 24.0).abs() < 1e-6);
     assert!((config.animation.clamped_chrome_from() - 0.6).abs() < 1e-6);
     assert!(matches!(
@@ -3249,15 +3254,27 @@ mod tests {
     .is_err());
 
     let defaults = OverviewConfig::default();
-    assert!((defaults.expose.clamped_largest() - 0.85).abs() < 1e-6);
-    assert!((defaults.expose.clamped_margin() - 48.0).abs() < 1e-6);
+    assert!((defaults.expose.clamped_largest() - 0.94).abs() < 1e-6);
+    assert!((defaults.expose.clamped_margin() - 32.0).abs() < 1e-6);
+    assert!((defaults.expose.gap - 24.0).abs() < 1e-6);
     assert!((defaults.activities.clamped_margin() - 48.0).abs() < 1e-6);
-    assert!((defaults.animation.clamped_chrome_from() - 0.8).abs() < 1e-6);
-    assert_eq!(defaults.animation.open_easing, None);
+    assert!((defaults.wallpaper.padding - 16.0).abs() < 1e-6);
+    assert!((defaults.animation.clamped_chrome_from() - 0.6).abs() < 1e-6);
     assert_eq!(
       defaults.animation.open_easing(),
-      &defaults.animation.easing
+      &easing("spring(0.85, 520)").expect("parses"),
+      "as the docs write it"
     );
+    assert!((defaults.effects.window_lift - 0.04).abs() < 1e-6);
+    assert!((defaults.effects.dim - 0.12).abs() < 1e-6);
+    assert_eq!(defaults.effects.stagger_ms, 10);
+
+    // Unset, the open takes the close's pace.
+    let unset = parse(serde_json::json!({
+      "animation": { "open_easing": null },
+    }))
+    .expect("parses");
+    assert_eq!(unset.animation.open_easing(), &unset.animation.easing);
   }
 
   #[test]

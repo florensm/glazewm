@@ -68,7 +68,7 @@ strips at full length, to move windows between them.
   cluster in the middle of the room, as macOS's Mission Control does:
   each about where it sits on screen relative to the others, all scaled
   alike, pushed apart only where they'd be under `expose.gap` apart. The
-  cluster takes at most `expose.largest` (85%) of the room either way, and
+  cluster takes at most `expose.largest` (94%) of the room either way, and
   shows no window larger than it is, so a few windows stay close together
   rather than spread to the edges. Every tab of its stacks shows too, each
   a window of its own. `expose.arrange` lays them out otherwise: `grid`
@@ -129,7 +129,7 @@ on screen tinted. A card lifts under the cursor and sinks while held
 down, and an arrow or wheel step with nowhere to go bumps the selection
 that way. A dragged window pops up under the cursor and trails it, and
 once let go of flies into the card it lands on, or back home if it moved
-nowhere. Flourishes can join in, all off by default (see
+nowhere. Flourishes can join in, most off by default (see
 [Experimental effects](#experimental-effects)): a ripple and a burst of particles out of the card
 a window lands on, a soft glow following the selection, and more. In the
 activities, a newly shown workspace slides in from the side its miniature
@@ -492,9 +492,9 @@ keybindings:
 | `strip_view` | `"visible"` | How much of a scrolling workspace the activities show large: `visible` (the columns on screen) or `whole` (the strip, scaled to fit). |
 | `hot_corner.corner` | `"none"` | Corner that opens the overview as the cursor rests in it: `none`, `top_left`, `top_right`, `bottom_left` or `bottom_right`. Once per visit, and not while a mouse button is held. |
 | `hot_corner.delay_ms` | `300` | How long the cursor rests there first; `0` opens it at once. |
-| `expose.gap` | `28` | Least space between the exposé's windows, in logical pixels. |
-| `expose.largest` | `0.85` | Most of the room's width and height the exposé's windows take together: `0.6` to `1`. |
-| `expose.margin` | `48` | Space the exposé keeps free along the screen's edges, in logical pixels: `8` to `120`. |
+| `expose.gap` | `24` | Least space between the exposé's windows, in logical pixels. |
+| `expose.largest` | `0.94` | Most of the room's width and height the exposé's windows take together: `0.6` to `1`. |
+| `expose.margin` | `32` | Space the exposé keeps free along the screen's edges, in logical pixels: `8` to `120`. |
 | `activities.margin` | `48` | Space the activities keep free around the large view, in logical pixels: `8` to `120`. |
 | `expose.arrange` | `"cluster"` | How the exposé lays out the windows: `cluster`, `grid` or `rows` (see [Layouts](#layouts)). |
 | `expose.small_window_boost` | `0` | How much the cluster grows small windows against large ones before placing them: `0` (off) to `0.6`. |
@@ -540,7 +540,7 @@ keybindings:
 | --- | --- | --- |
 | `style` | `"framed"` | `framed` or `blurred` (see [Wallpaper](#wallpaper)). |
 | `color` | `"#141416ff"` | Around the framed panel, like a border. |
-| `padding` | `24` | Wallpaper around the shown workspace's windows on the framed panel, in logical pixels. |
+| `padding` | `16` | Wallpaper around the shown workspace's windows on the framed panel, in logical pixels. |
 | `shadow` | `true` | Whether the framed panel casts a soft shadow. |
 | `blur` | `40` | Blur radius of the blurred wallpaper. |
 | `tint` | `"#00000066"` | Tint over the blurred wallpaper; its alpha is how dark it gets. |
@@ -551,14 +551,14 @@ keybindings:
 | --- | --- | --- |
 | `style` | `"zoom"` | How it opens and closes: `zoom`, `fade` or `none` (see [Zoom](#zoom)). |
 | `easing` | `"spring"` | Pace of the open and close: any animation easing. A spring ignores the two lengths below. |
-| `open_easing` | unset | Pace of the open alone, e.g. `"spring(0.85, 520)"`; unset opens at `easing`'s. The close keeps `easing`. |
+| `open_easing` | `"spring(0.85, 520)"` | Pace of the open alone, landing with a little give; `null` opens at `easing`'s. The close keeps `easing`. |
 | `open_ms` | `280` | Length of the open; `0` opens it at once. |
 | `close_ms` | `220` | Length of the close, into the picked workspace; `0` closes it at once. |
 | `switch` | `"slide"` | How the activities change the workspace they show large: `slide`, `fade` or `miniature`. |
 | `switch_ms` | `260` | About how long cards and windows take to move to a new selection or layout; `0` moves them at once. |
 | `highlight_ms` | `140` | How long highlights take to settle onto what they mark next and to fade; `0` snaps them. |
 | `bounce` | `0` | How far cards and windows overshoot before settling: `0` (not at all) to `0.8` (wobbly). The zooms go by `easing` instead. |
-| `chrome_from` | `0.8` | How far open the zoom is when names and highlights start to fade in: `0` (at once) to `0.95`. |
+| `chrome_from` | `0.6` | How far open the zoom is when names and highlights start to fade in: `0` (at once) to `0.95`. |
 
 For flourishes such as a glow around the selection or particles where a
 window lands, see [Experimental effects](#experimental-effects).
@@ -675,9 +675,9 @@ Not in this version:
 
 ## Experimental effects
 
-Flourishes under `overview.effects`, left out of the sample config. They
-still work, but aren't part of the overview's settled look and may
-change. All are off but `window_lift`.
+Flourishes under `overview.effects`. They still work, but aren't part of
+the overview's settled look and may change. All are off but
+`window_lift`, `dim` and `stagger_ms`, which the sample config sets too.
 
 | Option | Default | |
 | --- | --- | --- |
@@ -689,9 +689,9 @@ change. All are off but `window_lift`.
 | `open_particles` | `"none"` | Off the shown workspace as the overview settles open. |
 | `exit_particles` | `"none"` | Off the windows of each workspace zoomed into on close. |
 | `jelly` | `false` | A card wobbling as a window lands on it. |
-| `stagger_ms` | `0` | Delay between cards popping in on open, and between the exposé's windows flying out from the focused one, each popping as it goes. All start within half of `animation.open_ms`. |
+| `stagger_ms` | `10` | Delay between cards popping in on open, and between the exposé's windows flying out from the focused one, each popping as it goes. All start within half of `animation.open_ms`. |
 | `lean` | `0` | How far a hovered card leans toward the cursor, in logical pixels. |
-| `dim` | `0` | How much other cards dim while one is hovered: `0` to `1`. |
+| `dim` | `0.12` | How much other cards dim while one is hovered: `0` to `1`. |
 | `squash` | `0` | How much a dragged window stretches with its speed: `0` to `1`. |
 | `trail` | `0` | Fading outlines trailing a dragged window: `0` to `8`. |
-| `window_lift` | `0.025` | How much the picked window grows in the large view: `0` to `0.15`. |
+| `window_lift` | `0.04` | How much the picked window grows in the large view: `0` to `0.15`. |
