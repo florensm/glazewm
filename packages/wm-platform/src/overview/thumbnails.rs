@@ -430,6 +430,18 @@ impl Preview {
   /// Shows the preview at `dest` on the overview, with its overlays
   /// around it, cut to `clip`.
   pub fn place(&mut self, dest: &RectF, clip: &RectF, opacity: f32) {
+    self.place_faded(dest, clip, opacity, 1.0);
+  }
+
+  /// `place`, its overlays shown at `overlays` of its opacity: hidden at
+  /// `0`, which spares moving them.
+  pub fn place_faded(
+    &mut self,
+    dest: &RectF,
+    clip: &RectF,
+    opacity: f32,
+    overlays: f32,
+  ) {
     if let Some(placeholder) = &mut self.placeholder {
       placeholder.picture.place(dest, clip, opacity * self.alpha);
       return;
@@ -444,12 +456,12 @@ impl Preview {
         continue;
       };
 
-      match mapped {
+      match mapped.filter(|_| opacity * overlays > 0.002) {
         Some((source, mapped)) => thumbnail.place(
           source,
           to_win32(&mapped),
           &clip_rect,
-          to_opacity(opacity),
+          to_opacity(opacity * overlays),
         ),
         None => thumbnail.hide(),
       }

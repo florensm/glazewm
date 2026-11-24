@@ -527,6 +527,8 @@ struct PlaceContext {
   fade: f32,
   /// How strongly names and highlights show at that openness.
   chrome: f32,
+  /// How strongly windows' border and backdrop overlays show.
+  overlays: f32,
   /// How strongly the overview shows over the desktop as a whole: the
   /// openness while it fades in or out, else fully.
   presence: f32,
@@ -544,6 +546,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
     camera,
     fade,
     chrome: _,
+    overlays,
     presence,
     view,
     zoom_card,
@@ -576,7 +579,12 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   for preview in &mut card.previews {
     let dest = camera.apply(&placement.map(&metrics, &preview.tile.rect));
     if is_visible {
-      preview.place(&dest, view, preview.zoomed_opacity(openness) * alpha);
+      preview.place_faded(
+        &dest,
+        view,
+        preview.zoomed_opacity(openness) * alpha,
+        *overlays,
+      );
     } else {
       preview.hide();
     }
@@ -738,6 +746,10 @@ struct Screen {
   spotlight_rows: Vec<(Rect, isize)>,
   spotlight_y: Spring,
   spotlight_alpha: Spring,
+
+  /// How strongly windows' border and backdrop overlays show: not while
+  /// a zoom moves them, fading in once it rests.
+  overlays_alpha: Spring,
 
   /// The sheet of keyboard shortcuts, what it lists while open, and how
   /// far it is faded in.

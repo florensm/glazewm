@@ -164,6 +164,7 @@ impl Screen {
       spotlight_rows: Vec::new(),
       spotlight_y: Spring::new(0.0, 0.0, 0.25),
       spotlight_alpha: Spring::new(0.0, 0.0, 0.002),
+      overlays_alpha: Spring::new(1.0, 0.0, 0.002),
       sheet: None,
       sheet_drawn: None,
       sheet_alpha: Spring::new(0.0, 0.0, 0.002),
@@ -484,6 +485,7 @@ impl Screen {
     self.search_y.retune(switch_ms);
     self.spotlight_y.retune(switch_ms);
     self.spotlight_alpha.retune(highlight_ms);
+    self.overlays_alpha.retune(highlight_ms);
     self.sheet_alpha.retune(highlight_ms);
     if let Some(overlays) = &mut self.overlays {
       overlays.retune(switch_ms, highlight_ms, bounce);
@@ -1491,6 +1493,11 @@ impl Screen {
         self.openness(),
         self.style().map_or(0.0, |style| style.chrome_from),
       ),
+      overlays: if self.zoom.is_some() {
+        0.0
+      } else {
+        self.overlays_alpha.value
+      },
       presence: self.presence(),
       entrance: self
         .entrance
@@ -1556,6 +1563,13 @@ impl Screen {
     is_moving |= self.sheet_alpha.step(dt);
     is_moving |= self.spotlight_y.step(dt);
     is_moving |= self.spotlight_alpha.step(dt);
+    // Hidden while a zoom moves everything, in once it rests.
+    if self.zoom.is_some() {
+      self.overlays_alpha.snap(0.0);
+    } else {
+      self.overlays_alpha.target = 1.0;
+    }
+    is_moving |= self.overlays_alpha.step(dt);
 
     if let Some((zoom, started)) = self.zoom {
       is_moving = true;
@@ -1744,7 +1758,12 @@ impl Screen {
         let opacity = alpha * window.preview.opacity * context.presence;
 
         if opacity > 0.002 {
-          window.preview.place(&rect, &view, opacity);
+          window.preview.place_faded(
+            &rect,
+            &view,
+            opacity,
+            context.overlays,
+          );
         } else {
           window.preview.hide();
           continue;
