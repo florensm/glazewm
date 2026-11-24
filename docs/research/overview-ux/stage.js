@@ -109,11 +109,14 @@ const OverviewStage = (() => {
     const stripH = { compact: Math.min(Math.max(H * 0.07, 44), 96), shown: Math.min(Math.max(H * 0.12, 64), 170), names: 36, thumbs: H * 0.09, bottom: 0, none: 0 }[p.strip] ?? 0;
     const isRow = p.strip === 'compact' || p.strip === 'shown';
     const atBottom = isRow && p.stripPos === 'bottom';
+    const side = isRow && (p.stripPos === 'left' || p.stripPos === 'right') ? p.stripPos : null;
+    const stripW = stripH * 16 / 9;
+    const sideBlock = side ? 18 + stripW + 30 : 0;
     const rowBlock = 18 + stripH + 26 + 22;
     const hint = p.searchHint ? 62 : 0;
-    const stripBlock = isRow && !atBottom ? rowBlock : p.strip === 'none' || p.strip === 'bottom' || atBottom ? p.margin : 16 + stripH + 24;
+    const stripBlock = side ? p.margin : isRow && !atBottom ? rowBlock : p.strip === 'none' || p.strip === 'bottom' || atBottom ? p.margin : 16 + stripH + 24;
     const bottomBlock = (p.strip === 'bottom' ? H * 0.16 : atBottom ? rowBlock : p.margin) + hint;
-    const scene = { x: p.margin, y: Math.max(stripBlock, p.margin), w: W - 2 * p.margin, h: 0 };
+    const scene = { x: p.margin + (side === 'left' ? sideBlock : 0), y: Math.max(stripBlock, p.margin), w: W - 2 * p.margin - sideBlock, h: 0 };
     scene.h = H - bottomBlock - scene.y;
     const pad = p.wallpaper === 'slab' ? p.padding : 0;
     const room = { x: scene.x + pad, y: scene.y + pad, w: scene.w - 2 * pad, h: scene.h - 2 * pad };
@@ -141,7 +144,8 @@ const OverviewStage = (() => {
     }
     if (p.wallpaper !== 'slab') slab = { x: 0, y: 0, w: W, h: H };
     const stripY = p.strip === 'bottom' ? H - bottomBlock + 24 : atBottom ? H - hint - 18 - 26 - stripH : 18;
-    return { rects, slab, room, stripH, stripY, atBottom, hintY: H - 46 - 10 };
+    const stripX = side === 'left' ? 18 : side === 'right' ? W - 18 - stripW : 0;
+    return { rects, slab, room, stripH, stripY, atBottom, side, stripX, stripW, hintY: H - 46 - 10 };
   }
 
   // One animated value, on a spring or a bezier, retargetable mid-flight.
@@ -336,6 +340,9 @@ const OverviewStage = (() => {
       const t = targets(p, this.windows);
       this.t = t;
       this.strip.style.top = t.stripY + 'px';
+      if (t.side) {
+        Object.assign(this.strip.style, { top: '0px', bottom: '48px', left: t.stripX + 'px', right: 'auto', width: t.stripW + 'px', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '46px' });
+      }
       if (p.strip === 'compact' || p.strip === 'shown' || p.strip === 'thumbs' || p.strip === 'bottom') {
         const h = p.strip === 'bottom' ? 120 : t.stripH, w = h * 16 / 9;
         for (let i = 0; i < 4; i++) {
@@ -572,7 +579,7 @@ const OverviewStage = (() => {
       const chrome = smooth(Math.min(1, Math.max(0, (s - from) / (1 - from))));
       this.chrome = chrome;
       this.strip.style.opacity = chrome;
-      this.strip.style.transform = `translateY(${(1 - chrome) * (t.atBottom ? 14 : -14)}px)`;
+      this.strip.style.transform = t.side ? `translateX(${(1 - chrome) * (t.side === 'left' ? -14 : 14)}px)` : `translateY(${(1 - chrome) * (t.atBottom ? 14 : -14)}px)`;
       if (this.searchLine) this.searchLine.style.opacity = chrome;
 
       const anyHover = this.hover >= 0;

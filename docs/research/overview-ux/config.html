@@ -11,13 +11,24 @@
   @media (max-width: 980px) { .builder { grid-template-columns: minmax(0, 1fr); } }
   .left { display: flex; flex-direction: column; gap: 12px; min-width: 0; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
   @media (max-width: 980px) { .left { position: static; } }
-  .screen { position: relative; border-radius: 12px; }
+  .screen { position: relative; border-radius: 12px; outline: none; }
+  .screen:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
   .corner { position: absolute; width: 34px; height: 34px; border: 3px dashed var(--accent); pointer-events: none; opacity: .8; }
   .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .bar .muted { margin-left: auto; }
+  .keys { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); align-items: center; }
+  .key { font: 600 11.5px/1 var(--mono); padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); border-bottom-width: 3px; background: var(--panel); color: var(--ink); transition: background .1s, color .1s; }
+  .key.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .say { font-size: 13px; color: var(--muted); min-height: 1.4em; }
+  .say b { color: var(--ink); }
   .yaml-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
-  pre.yaml { max-height: 46vh; overflow: auto; white-space: pre; }
+  pre.yaml { max-height: 40vh; overflow: auto; white-space: pre; }
   pre.yaml .c { color: var(--new); }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 10px 14px; font: 600 15px/1 var(--display); color: var(--muted); }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+  .tabs button .n { font: 600 11px/1 var(--mono); color: var(--accent); margin-left: 4px; }
+  .tabs .default-mark { font: 600 10px/1 var(--mono); color: var(--muted); margin-left: 6px; letter-spacing: .04em; }
+  .tab-intro { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: space-between; font-size: 13.5px; color: var(--muted); }
   .settings { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
   details.group { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px; }
   details.group[open] { padding-bottom: 10px; }
@@ -25,12 +36,12 @@
   details.group > summary::-webkit-details-marker { display: none; }
   details.group > summary h2 { font-size: 17px; }
   details.group > summary .count { font: 600 11px/1 var(--mono); color: var(--muted); }
-  details.group.new { border-style: dashed; border-color: var(--new); }
   .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
   .row .k { font: 600 12.5px/1.3 var(--mono); overflow-wrap: anywhere; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .row .k i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: inline-block; visibility: hidden; }
   .row.changed .k i { visibility: visible; }
   .row .help { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+  .row .help b { color: var(--ink); font-weight: 600; }
   .row .ctl { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
   .row .ctl input[type=range] { flex: 1 1 140px; min-width: 0; accent-color: var(--accent); }
   .row .ctl output { font: 600 12px/1 var(--mono); min-width: 54px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -40,6 +51,7 @@
   .tag { font: 700 9.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 3px 5px; border-radius: 4px; }
   .tag.new { background: color-mix(in srgb, var(--new) 18%, transparent); color: var(--new); }
   .tag.np { background: var(--chip); color: var(--muted); }
+  .tag.shared { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
   .reset { border: 0; background: none; padding: 2px 6px; font-size: 14px; color: var(--muted); visibility: hidden; }
   .row.changed .reset { visibility: visible; }
   .tog { width: 42px; height: 24px; border-radius: 99px; border: 0; padding: 0; background: var(--line); position: relative; flex: none; }
@@ -50,7 +62,34 @@
   .presets button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
   textarea { width: 100%; min-height: 130px; font: 12.5px/1.5 var(--mono); padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); resize: vertical; }
   .note { font-size: 12.5px; color: var(--muted); }
-  .note b { color: var(--ink); }
+  /* Preview extras, in world pixels on the mock screen. */
+  #screen .ovs-search .q { color: var(--cfg-search, #89b4fa); }
+  #screen .ovs-search .n { color: var(--cfg-subtext, #b4b4bc); opacity: 1; }
+  .cfg-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(var(--inv)); min-width: 64px; height: 64px; padding: 0 14px; border-radius: 16px; background: #ffd84a; color: #1b1500; font: 800 40px/64px "JetBrains Mono", monospace; text-align: center; box-shadow: 0 6px 22px rgba(0,0,0,.45); opacity: calc(var(--chrome) * var(--show-hints, 0)); transition: opacity .12s; }
+  .cfg-min .ovs-frame { background: var(--cfg-surface, #2a2a30) !important; opacity: .92; }
+  .cfg-min .ovs-body, .cfg-min .ovs-title { visibility: hidden; }
+  .cfg-minicon { position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 30px; display: grid; place-items: center; color: #fff; font: 800 56px/1 system-ui, sans-serif; box-shadow: 0 8px 26px rgba(0,0,0,.4); }
+  .ovs-mini.cfg-glow { box-shadow: 0 0 0 3px var(--ovs-accent, #5aa9ff), 0 0 28px 8px color-mix(in srgb, var(--ovs-accent, #5aa9ff) 55%, transparent) !important; }
+  .ovs-mini.cfg-pulse { animation: cfgPulse 2.2s ease-in-out infinite; }
+  @keyframes cfgPulse { 50% { box-shadow: 0 0 0 3px var(--ovs-accent, #5aa9ff), 0 0 44px 16px color-mix(in srgb, var(--ovs-accent, #5aa9ff) 35%, transparent); } }
+  .ovs-mini.cfg-drop { box-shadow: 0 0 0 5px var(--ovs-accent, #5aa9ff) !important; }
+  .ovs-mini.cfg-jelly { animation: cfgJelly .6s cubic-bezier(.3,.7,.2,1); }
+  @keyframes cfgJelly { 20% { scale: 1.16 .86; } 40% { scale: .9 1.1; } 60% { scale: 1.06 .95; } 80% { scale: .98 1.02; } }
+  .ovs-strip .ovs-mini { pointer-events: auto; cursor: pointer; transition: translate .12s ease-out, background .12s; }
+  .cfg-trail { position: absolute; border: 4px solid var(--ovs-accent, #5aa9ff); border-radius: 12px; pointer-events: none; }
+  .cfg-shelf { position: absolute; height: 0; border-top: 2px dashed rgba(255,255,255,.25); pointer-events: none; }
+  .cfg-shelf span { position: absolute; left: 0; top: -36px; color: rgba(255,255,255,.75); font: 600 20px/1 system-ui, sans-serif; }
+  /* The stack preview. */
+  .sk { position: relative; overflow: hidden; aspect-ratio: 16/9; width: 100%; border-radius: 12px; background: #141416; user-select: none; outline: none; }
+  .sk:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+  .sk-world { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+  .sk-ws { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; overflow: hidden; will-change: transform, opacity; cursor: pointer; }
+  .sk-ws.sel { box-shadow: 0 0 0 calc(6px / var(--s, 1)) var(--sk-accent, #5aa9ff); }
+  .sk-w { position: absolute; border-radius: 10px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,.4); background: linear-gradient(#e9ebf0 0 34px, transparent 34px), repeating-linear-gradient(180deg, transparent 0 22px, #d5d8e0 22px 31px) 5% 60px / 62% 100% no-repeat, #f6f7fa; }
+  .sk-w.dark { background: linear-gradient(#1f2230 0 34px, transparent 34px), repeating-linear-gradient(180deg, transparent 0 22px, #3b4261 22px 31px) 5% 60px / 58% 100% no-repeat, #1a1b26; }
+  .sk-w::before { content: ""; position: absolute; left: 14px; top: 9px; width: 16px; height: 16px; border-radius: 4px; background: var(--t); }
+  .sk-name { position: absolute; left: 0; top: 0; color: #f2f2f5; font: 600 30px/1.1 system-ui, sans-serif; white-space: nowrap; will-change: transform, opacity; pointer-events: none; }
+  .sk-name span { opacity: .6; font-weight: 400; margin-left: 10px; }
 </style>
 
 <div class="wrap">
@@ -59,7 +98,6 @@
     <a href="playground.html">Zoom playground</a>
     <a href="lab.html">Feature lab</a>
     <a href="experiments.html">Experiments</a>
-    <a href="experiments2.html">Experiments II</a>
     <a href="experiments3.html">Experiments III</a>
     <a href="layouts.html">Layout comparison</a>
     <a href="concepts.html">Design concepts</a>
@@ -68,26 +106,29 @@
   <header style="display:flex;flex-direction:column;gap:8px">
     <span class="eyebrow">GlazeWM overview · config</span>
     <h1>Config builder</h1>
-    <p class="lede">Every <code>overview:</code> option GlazeWM has, with its default, a live preview and YAML ready to paste into <code>overview.yaml</code>. Settings marked <span class="tag new">new</span> don't exist yet: they're written as comments, so the file stays valid. Paste your own config to see it.</p>
+    <p class="lede">Every <code>overview:</code> option, per layout, with its default, a live preview you can use with the real keys, and YAML ready to paste into <code>overview.yaml</code>. Options without a tag exist in GlazeWM today. Those tagged <span class="tag new">new</span> are proposals: they're written as comments, so the file stays valid. Paste your own config to see it.</p>
   </header>
 
   <div class="presets" id="presets" role="group" aria-label="Presets"></div>
+  <div class="tabs" role="tablist" id="tabs"></div>
 
   <div class="builder">
     <div class="left">
-      <div class="screen" id="screenWrap"><div id="screen"></div></div>
+      <div class="screen" id="screenWrap" tabindex="0" aria-label="Preview. Focus it and use the overview's keys."><div id="screen"></div><div class="sk" id="stack" hidden></div></div>
       <div class="bar">
         <button class="primary" id="play">Open</button>
         <button id="loop" aria-pressed="false">Loop</button>
         <div class="seg" id="arr" role="group" aria-label="Windows on the desktop">
           <button data-v="tiled" aria-pressed="true">Tiled</button><button data-v="floating" aria-pressed="false">Floating</button><button data-v="onebig" aria-pressed="false">One big</button>
         </div>
-        <span class="muted small">Click a window to pick it</span>
+        <button id="resetDesk">Reset desktop</button>
       </div>
+      <div class="keys" id="keys" aria-hidden="true"></div>
+      <p class="say" id="say"></p>
       <section class="panel" style="display:flex;flex-direction:column;gap:10px">
         <div class="yaml-head">
           <h3>overview.yaml</h3>
-          <div class="row" style="border:0;padding:0;display:flex;gap:8px;align-items:center">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <div class="seg" id="scope" role="group" aria-label="What to include">
               <button data-v="changed" aria-pressed="true">Only changes</button><button data-v="all" aria-pressed="false">Everything</button>
             </div>
@@ -95,7 +136,6 @@
           </div>
         </div>
         <pre class="yaml" id="yaml" aria-label="Generated config"></pre>
-        <p class="note">Lines in pink are proposals, commented out. GlazeWM ignores them until they exist.</p>
       </section>
       <details class="panel" id="importBox">
         <summary style="cursor:pointer"><b>Import your config</b> <span class="muted small">paste <code>overview.yaml</code> or just its <code>overview:</code> part</span></summary>
@@ -106,7 +146,10 @@
       </details>
     </div>
 
-    <div class="settings" id="settings"></div>
+    <div class="settings">
+      <div class="tab-intro" id="tabIntro"></div>
+      <div id="settings" style="display:flex;flex-direction:column;gap:14px"></div>
+    </div>
   </div>
 </div>
 
@@ -115,112 +158,154 @@
 <script src="stage.js"></script>
 <script>
 (() => {
-  const { Stage, PRESETS, scenario, W, H } = OverviewStage;
+  const { Stage, PRESETS, scenario, APPS, Motion, W, H, WORK } = OverviewStage;
   const L = OverviewLayouts;
   const $ = (id) => document.getElementById(id);
 
-  // Every option: its YAML key, kind, default and what it does. `isNew` ones
-  // are proposals; `np` ones aren't shown in the preview.
   const CURVES = ['spring', 'linear', 'ease_in', 'ease_out', 'ease_in_out', 'ease_in_cubic', 'ease_out_cubic', 'ease_in_out_cubic', 'ease_out_spring', 'snappy'];
-  const PARTICLES = ['none', 'sparks', 'dust', 'embers', 'confetti', 'glints', 'bubbles'];
-  const GROUPS = [
-    { title: 'Layout and workspaces', items: [
-      { key: 'layout', kind: 'enum', options: ['expose', 'activities', 'stack'], def: 'expose', help: 'Layout it opens on. Exposé gathers the windows; activities shows them as laid out; stack shows every workspace stacked (previewed as one).' },
-      { key: 'workspace_row', kind: 'enum', options: ['compact', 'shown', 'hidden'], def: 'compact', help: 'The row of workspace miniatures: slim, larger, or none.' },
-      { key: 'workspace_row_position', kind: 'enum', options: ['top', 'bottom'], def: 'top', isNew: true, help: 'Where that row sits. Bottom puts it where the taskbar is, as Windows Task View does.' },
-      { key: 'search_hint', kind: 'bool', def: false, help: 'The "Type to search" field along the bottom. Typing searches either way.' },
-      { key: 'strip_view', kind: 'enum', options: ['visible', 'whole'], def: 'visible', np: true, help: 'How much of a scrolling workspace the activities show large.' },
-      { key: 'hot_corner.corner', kind: 'enum', options: ['none', 'top_left', 'top_right', 'bottom_left', 'bottom_right'], def: 'none', help: 'Rest the cursor in this corner to open it. Try it on the preview.' },
-      { key: 'hot_corner.delay_ms', kind: 'range', min: 0, max: 1500, step: 50, def: 300, unit: 'ms', help: 'How long the cursor rests there first.' },
-      { key: 'expose.gap', kind: 'range', min: 0, max: 80, step: 1, def: 28, unit: 'px', help: 'Least space between the exposé\'s windows.' },
-      { key: 'expose.largest', kind: 'range', min: 0.6, max: 1, step: 0.01, def: 0.85, isNew: true, fmt: (v) => Math.round(v * 100) + '%', help: 'Most of the room the windows take. A constant in expose.rs today; 0.94 makes them clearly larger.' },
-      { key: 'expose.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space kept free along the screen\'s edges. A constant in layout.rs today.' },
-      { key: 'stack.zoom', kind: 'range', min: 0.2, max: 0.9, step: 0.01, def: 0.5, fmt: (v) => v.toFixed(2) + '×', help: 'How large the stack shows a workspace.' },
+  const PARTICLES = ['sparks', 'dust', 'embers', 'confetti', 'glints', 'bubbles'];
+  const SIDES = ['top', 'bottom', 'left', 'right'];
+  const pct = (v) => Math.round(v * 100) + '%';
+
+  // Options by tab. `isNew`: a proposal. `np`: the preview can't show it.
+  // `shared`: it applies to more than one layout.
+  const TABS = [
+    { id: 'expose', label: 'Exposé', layout: 'expose', intro: 'The default: this workspace\'s windows gathered in the middle, the other workspaces in a row.', groups: [
+      { title: 'Workspace row', items: [
+        { key: 'workspace_row', kind: 'enum', options: ['compact', 'shown', 'hidden'], def: 'compact', shared: 'exposé and activities', help: 'The row of workspace miniatures: slim, larger, or none.' },
+        { key: 'expose.workspace_row', kind: 'enum', options: ['inherit', 'compact', 'shown', 'hidden'], def: 'inherit', isNew: true, help: 'The row\'s size in the exposé only; "inherit" uses workspace_row.' },
+        { key: 'expose.workspace_row_position', kind: 'enum', options: SIDES, def: 'top', isNew: true, help: 'Which edge the row sits on. Bottom is where Windows Task View has its desktops; left or right keeps the full height for windows.' },
+        { key: 'search_hint', kind: 'bool', def: false, shared: 'every layout', help: 'The "Type to search" field. Typing searches either way.' },
+      ] },
+      { title: 'Windows', items: [
+        { key: 'expose.gap', kind: 'range', min: 0, max: 80, step: 1, def: 28, unit: 'px', help: 'Least space between windows.' },
+        { key: 'expose.arrange', kind: 'enum', options: ['cluster', 'grid', 'rows'], def: 'cluster', isNew: true, help: 'Cluster keeps where windows are relative to each other (today). Grid gives every window an even cell, so sizes stay most alike. Rows are GNOME\'s.' },
+        { key: 'expose.small_window_boost', kind: 'range', min: 0, max: 0.6, step: 0.05, def: 0, isNew: true, fmt: (v) => (v ? '+' + pct(v) : 'off'), help: 'Grows small windows relative to big ones while keeping the cluster: the grid\'s even sizes without losing positions. GNOME bumps small windows by up to 50%.' },
+        { key: 'expose.largest', kind: 'range', min: 0.6, max: 1, step: 0.01, def: 0.85, isNew: true, fmt: pct, help: 'Most of the room the windows take. A constant in expose.rs today; 0.94 makes them clearly larger.' },
+        { key: 'expose.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space kept free along the screen\'s edges. A constant in layout.rs today.' },
+        { key: 'expose.readable_floor', kind: 'range', min: 0, max: 0.7, step: 0.05, def: 0, isNew: true, fmt: (v) => (v ? pct(v) : 'off'), help: 'Below this window scale, a crowded workspace switches to rows. Try it with <b>Floating</b> and 0.5.' },
+        { key: 'expose.titles', kind: 'enum', options: ['hover', 'always'], def: 'hover', isNew: true, help: 'Window titles on the hovered window only, or on every window.' },
+        { key: 'expose.app_icons', kind: 'bool', def: false, isNew: true, help: 'A large app icon in the middle of every window.' },
+        { key: 'expose.minimized', kind: 'enum', options: ['inline', 'shelf'], def: 'inline', isNew: true, help: 'Minimized windows with the others (today), or on a shelf below them. The preview\'s Notes window is minimized.' },
+      ] },
+      { title: 'Search and keys', items: [
+        { key: 'expose.search_mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', isNew: true, help: 'Click the preview and <b>type</b> (try "glaze"): matches spread out (today), non-matches dim where they are, or matches gather in the middle while the rest wait on a shelf.' },
+        { key: 'expose.hints', kind: 'enum', options: ['off', 'alt'], def: 'off', isNew: true, help: 'Hold <b>Alt</b> in the preview: a letter on every window; Alt+letter picks it.' },
+        { key: 'expose.peek_key', kind: 'enum', options: ['none', 'ctrl'], def: 'none', isNew: true, help: 'Select a window with the arrows, then hold <b>Ctrl</b> to enlarge it, as Mission Control\'s spacebar does.' },
+        { key: 'expose.release_picks', kind: 'bool', def: false, isNew: true, help: 'Open with <b>Alt+W</b>, keep Alt held, move with the arrows, let go of Alt to pick, like Alt+Tab.' },
+      ] },
     ] },
-    { title: 'Look', items: [
-      { key: 'look.corner_radius', kind: 'range', min: 0, max: 40, step: 1, def: 14, unit: 'px', help: 'Rounding of the cards and the wallpaper\'s slab.' },
-      { key: 'look.font_family', kind: 'text', def: 'Segoe UI Variable Text', help: 'Font of the overview\'s text.' },
-      { key: 'look.colors.accent', kind: 'accent', def: null, help: 'Highlights and rings. Unset: the focused window\'s border color. "accent": your Windows accent color.' },
-      { key: 'look.colors.card', kind: 'color', def: '#1c1c20e6', help: 'Background of workspace cards and miniatures.' },
-      { key: 'look.colors.surface', kind: 'color', def: '#2a2a30ff', np: true, help: 'Hovered card, and windows without a preview.' },
-      { key: 'look.colors.caption', kind: 'color', def: '#141418c7', help: 'The strip a window\'s title sits on.' },
-      { key: 'look.colors.text', kind: 'color', def: '#f2f2f5ff', help: 'Text.' },
-      { key: 'look.colors.subtext', kind: 'color', def: '#b4b4bcff', np: true, help: 'Secondary text, e.g. the search\'s hit count.' },
-      { key: 'look.colors.search', kind: 'color', def: '#89b4faff', np: true, help: 'What matched, in the search list.' },
-      { key: 'look.window_highlight.style', kind: 'enum', options: ['ring', 'glow', 'none'], def: 'ring', help: 'What marks the hovered or selected window.' },
-      { key: 'look.window_highlight.width', kind: 'range', min: 0, max: 12, step: 0.5, def: 2, unit: 'px', help: 'The ring\'s thickness, or how far the glow reaches.' },
-      { key: 'look.window_highlight.gap', kind: 'range', min: 0, max: 16, step: 1, def: 0, unit: 'px', help: 'Space between the window and its ring.' },
-      { key: 'look.titles', kind: 'enum', options: ['hover', 'always'], def: 'hover', isNew: true, help: 'Window titles only on the hovered window, or on every window.' },
-      { key: 'look.app_icons', kind: 'bool', def: false, isNew: true, help: 'A large app icon in the middle of every window.' },
+    { id: 'activities', label: 'Activities', layout: 'activities', intro: 'This workspace large and as laid out, so a window dropped there lands where it will on screen. Click a miniature to switch workspace.', groups: [
+      { title: 'Workspace row', items: [
+        { key: 'workspace_row', kind: 'enum', options: ['compact', 'shown', 'hidden'], def: 'compact', shared: 'exposé and activities', help: 'The row of workspace miniatures: slim, larger, or none.' },
+        { key: 'activities.workspace_row_position', kind: 'enum', options: SIDES, def: 'top', isNew: true, help: 'Which edge the row sits on in the activities.' },
+      ] },
+      { title: 'Large view', items: [
+        { key: 'activities.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space around the large view.' },
+        { key: 'animation.switch', kind: 'enum', options: ['slide', 'fade', 'miniature'], def: 'slide', help: 'How a newly picked workspace comes in. Click another miniature in the preview.' },
+        { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', help: 'About how long that takes.' },
+        { key: 'strip_view', kind: 'enum', options: ['visible', 'whole'], def: 'visible', np: true, help: 'How much of a scrolling-layout workspace shows large: the columns on screen, or the whole strip. The preview\'s workspaces don\'t scroll, so nothing changes there.' },
+      ] },
     ] },
-    { title: 'Wallpaper', items: [
-      { key: 'wallpaper.style', kind: 'enum', options: ['framed', 'blurred'], def: 'framed', help: 'Framed: the desktop shrinks onto a rounded slab. Blurred: the wallpaper stays and blurs.' },
-      { key: 'wallpaper.color', kind: 'color', def: '#141416ff', help: 'Around the framed slab.' },
-      { key: 'wallpaper.padding', kind: 'range', min: 0, max: 60, step: 1, def: 24, unit: 'px', help: 'Wallpaper around the windows on the slab.' },
-      { key: 'wallpaper.shadow', kind: 'bool', def: true, help: 'The slab casts a soft shadow.' },
-      { key: 'wallpaper.blur', kind: 'range', min: 0, max: 100, step: 1, def: 40, unit: 'px', help: 'Blur of the blurred wallpaper.' },
-      { key: 'wallpaper.tint', kind: 'color', def: '#00000066', help: 'Over the blurred wallpaper; its alpha is how dark it gets.' },
+    { id: 'stack', label: 'Stack', layout: 'stack', intro: 'Every workspace at the same size, one after another, to move windows between them. Wheel or arrows go through them; click one to go there.', groups: [
+      { title: 'Workspaces', items: [
+        { key: 'stack.zoom', kind: 'range', min: 0.2, max: 0.9, step: 0.01, def: 0.5, fmt: (v) => v.toFixed(2) + '×', help: 'How large each workspace shows.' },
+        { key: 'stack.direction', kind: 'enum', options: ['vertical', 'horizontal'], def: 'vertical', isNew: true, help: 'Stacked top to bottom (today, as niri does), or side by side like a ribbon.' },
+        { key: 'stack.gap', kind: 'range', min: 0, max: 200, step: 2, def: 28, unit: 'px', isNew: true, help: 'Space between workspaces. 28 px in layout.rs today.' },
+        { key: 'stack.names', kind: 'enum', options: ['beside', 'above', 'below', 'hidden'], def: 'beside', isNew: true, help: 'Where each workspace\'s name goes.' },
+        { key: 'stack.neighbour_opacity', kind: 'range', min: 0.2, max: 1, step: 0.05, def: 1, isNew: true, fmt: pct, help: 'How strongly the workspaces before and after the selected one show.' },
+        { key: 'stack.neighbour_scale', kind: 'range', min: 0.7, max: 1, step: 0.01, def: 1, isNew: true, fmt: (v) => v.toFixed(2) + '×', help: 'How much smaller they are than the selected one, as GNOME\'s side workspaces are (0.94).' },
+      ] },
     ] },
-    { title: 'Animation', items: [
-      { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', help: 'How it opens and closes.' },
-      { key: 'animation.easing', kind: 'easing', def: 'spring', help: 'Pace of the open and close. A spring ignores the two lengths below; spring(damping, stiffness) tunes it.' },
-      { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, help: 'Its own pace for the open; empty uses the one above. spring(0.85, 520) lands with a little give.' },
-      { key: 'animation.open_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 280, unit: 'ms', help: 'Length of the open, for a curve.' },
-      { key: 'animation.close_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 220, unit: 'ms', help: 'Length of the close, for a curve.' },
-      { key: 'animation.switch', kind: 'enum', options: ['slide', 'fade', 'miniature'], def: 'slide', np: true, help: 'How the activities change the workspace they show.' },
-      { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', np: true, help: 'How long moving to a new selection takes.' },
-      { key: 'animation.highlight_ms', kind: 'range', min: 0, max: 600, step: 10, def: 140, unit: 'ms', help: 'How long highlights take to settle.' },
-      { key: 'animation.bounce', kind: 'range', min: 0, max: 0.8, step: 0.05, def: 0, help: 'How far cards and windows overshoot. Previewed on the hover lift.' },
-      { key: 'animation.chrome_from', kind: 'range', min: 0, max: 0.95, step: 0.05, def: 0.8, isNew: true, fmt: (v) => Math.round(v * 100) + '% open', help: 'When names and highlights start to show. A constant in layout.rs today.' },
-    ] },
-    { title: 'Effects', items: [
-      { key: 'effects.window_lift', kind: 'range', min: 0, max: 0.15, step: 0.005, def: 0.025, fmt: (v) => (v * 100).toFixed(1) + '%', help: 'How much the picked window grows.' },
-      { key: 'effects.dim', kind: 'range', min: 0, max: 1, step: 0.01, def: 0, fmt: (v) => Math.round(v * 100) + '%', help: 'How much the others dim while one is hovered.' },
-      { key: 'effects.stagger_ms', kind: 'range', min: 0, max: 60, step: 1, def: 0, unit: 'ms', help: 'Delay between windows flying out, nearest the focused one first.' },
-      { key: 'effects.ripples', kind: 'bool', def: false, help: 'A ring out of a picked window.' },
-      { key: 'effects.glow', kind: 'bool', def: false, np: true, help: 'Soft glow around the selected workspace.' },
-      { key: 'effects.pulse', kind: 'bool', def: false, np: true, help: 'The glow breathing; keeps it animating every frame.' },
-      { key: 'effects.jelly', kind: 'bool', def: false, np: true, help: 'A card wobbling as a window lands on it.' },
-      { key: 'effects.lean', kind: 'range', min: 0, max: 20, step: 1, def: 0, unit: 'px', np: true, help: 'How far a hovered card leans toward the cursor.' },
-      { key: 'effects.squash', kind: 'range', min: 0, max: 1, step: 0.05, def: 0, np: true, help: 'How much a dragged window stretches with speed.' },
-      { key: 'effects.trail', kind: 'range', min: 0, max: 8, step: 1, def: 0, np: true, help: 'Fading outlines behind a dragged window.' },
-      { key: 'effects.drop_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Particles where a dropped window lands.' },
-      { key: 'effects.close_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Off a window closed from the overview.' },
-      { key: 'effects.open_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Off the shown workspace as it opens.' },
-      { key: 'effects.exit_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Off the windows zoomed into on close.' },
-    ] },
-    { title: 'Proposed behaviour', isNew: true, items: [
-      { key: 'search.mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', isNew: true, np: true, help: 'While typing, in the exposé: matches spread out over the room (today), non-matches dim where they are (every window stays in place), or matches gather in the middle while the rest wait on a shelf along the bottom. Try all three in the Feature lab.' },
-      { key: 'search.hints', kind: 'enum', options: ['off', 'alt'], def: 'off', isNew: true, np: true, help: 'A letter on every window while Alt is held; Alt+letter picks it.' },
-      { key: 'peek_key', kind: 'enum', options: ['none', 'ctrl'], def: 'none', isNew: true, np: true, help: 'Hold it to enlarge the selected window, as Mission Control\'s spacebar does.' },
-      { key: 'release_picks', kind: 'bool', def: false, isNew: true, np: true, help: 'Letting go of the binding\'s modifier picks the selected window, like Alt+Tab.' },
-      { key: 'minimized', kind: 'enum', options: ['inline', 'shelf'], def: 'inline', isNew: true, np: true, help: 'Minimized windows with the others, or on a shelf below them.' },
-      { key: 'expose.readable_floor', kind: 'range', min: 0, max: 0.7, step: 0.05, def: 0, isNew: true, np: true, fmt: (v) => (v ? Math.round(v * 100) + '%' : 'off'), help: 'Below this window scale, switch the crowded workspace to rows.' },
+    { id: 'shared', label: 'Shared', layout: null, intro: 'Everything that applies to every layout: which one opens, the look, the wallpaper, the motion and effects. The preview shows the layout it opens on.', groups: [
+      { title: 'General', items: [
+        { key: 'layout', kind: 'enum', options: ['expose', 'activities', 'stack'], def: 'expose', help: 'The layout toggle-overview opens on. Tab switches while open.' },
+        { key: 'search_hint', kind: 'bool', def: false, shared: 'every layout', help: 'The "Type to search" field. Typing searches either way.' },
+        { key: 'hot_corner.corner', kind: 'enum', options: ['none', 'top_left', 'top_right', 'bottom_left', 'bottom_right'], def: 'none', help: 'Rest the cursor in this corner of the preview to open it.' },
+        { key: 'hot_corner.delay_ms', kind: 'range', min: 0, max: 1500, step: 50, def: 300, unit: 'ms', help: 'How long the cursor rests there first.' },
+      ] },
+      { title: 'Look', items: [
+        { key: 'look.corner_radius', kind: 'range', min: 0, max: 40, step: 1, def: 14, unit: 'px', help: 'Rounding of the cards and the wallpaper\'s slab.' },
+        { key: 'look.font_family', kind: 'text', def: 'Segoe UI Variable Text', help: 'Font of the overview\'s text.' },
+        { key: 'look.colors.accent', kind: 'accent', def: null, help: 'Highlights and rings. Unset: the focused window\'s border color. "accent": your Windows accent color.' },
+        { key: 'look.colors.card', kind: 'color', def: '#1c1c20e6', help: 'Background of workspace cards and miniatures.' },
+        { key: 'look.colors.surface', kind: 'color', def: '#2a2a30ff', help: 'A hovered miniature, and minimized windows (the preview\'s Notes).' },
+        { key: 'look.colors.caption', kind: 'color', def: '#141418c7', help: 'The strip a window\'s title sits on.' },
+        { key: 'look.colors.text', kind: 'color', def: '#f2f2f5ff', help: 'Text.' },
+        { key: 'look.colors.subtext', kind: 'color', def: '#b4b4bcff', help: 'Secondary text: the search\'s hit count. Type in the preview to see it.' },
+        { key: 'look.colors.search', kind: 'color', def: '#89b4faff', help: 'What matched: the typed query in the preview.' },
+        { key: 'look.window_highlight.style', kind: 'enum', options: ['ring', 'glow', 'none'], def: 'ring', help: 'What marks the hovered or selected window.' },
+        { key: 'look.window_highlight.width', kind: 'range', min: 0, max: 12, step: 0.5, def: 2, unit: 'px', help: 'The ring\'s thickness, or how far the glow reaches.' },
+        { key: 'look.window_highlight.gap', kind: 'range', min: 0, max: 16, step: 1, def: 0, unit: 'px', help: 'Space between the window and its ring.' },
+      ] },
+      { title: 'Wallpaper', items: [
+        { key: 'wallpaper.style', kind: 'enum', options: ['framed', 'blurred'], def: 'framed', help: 'Framed: the desktop shrinks onto a rounded slab. Blurred: the wallpaper stays and blurs.' },
+        { key: 'wallpaper.color', kind: 'color', def: '#141416ff', help: 'Around the framed slab.' },
+        { key: 'wallpaper.padding', kind: 'range', min: 0, max: 60, step: 1, def: 24, unit: 'px', help: 'Wallpaper around the windows on the slab.' },
+        { key: 'wallpaper.shadow', kind: 'bool', def: true, help: 'The slab casts a soft shadow.' },
+        { key: 'wallpaper.blur', kind: 'range', min: 0, max: 100, step: 1, def: 40, unit: 'px', help: 'Blur of the blurred wallpaper.' },
+        { key: 'wallpaper.tint', kind: 'color', def: '#00000066', help: 'Over the blurred wallpaper; its alpha is how dark it gets.' },
+      ] },
+      { title: 'Animation', items: [
+        { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', help: 'How it opens and closes.' },
+        { key: 'animation.easing', kind: 'easing', def: 'spring', help: 'Pace of the open and close. A spring ignores the two lengths below; spring(damping, stiffness) tunes it.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, help: 'Its own pace for the open; empty uses the one above. spring(0.85, 520) lands with a little give.' },
+        { key: 'animation.open_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 280, unit: 'ms', help: 'Length of the open, for a curve.' },
+        { key: 'animation.close_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 220, unit: 'ms', help: 'Length of the close, for a curve.' },
+        { key: 'animation.highlight_ms', kind: 'range', min: 0, max: 600, step: 10, def: 140, unit: 'ms', help: 'How long highlights take to settle.' },
+        { key: 'animation.bounce', kind: 'range', min: 0, max: 0.8, step: 0.05, def: 0, help: 'How far cards and windows overshoot: the hover lift, a window dropped back, the stack gliding.' },
+        { key: 'animation.chrome_from', kind: 'range', min: 0, max: 0.95, step: 0.05, def: 0.8, isNew: true, fmt: (v) => pct(v) + ' open', help: 'When names and highlights start to show. A constant in layout.rs today.' },
+      ] },
+      { title: 'Effects', items: [
+        { key: 'effects.window_lift', kind: 'range', min: 0, max: 0.15, step: 0.005, def: 0.025, fmt: (v) => (v * 100).toFixed(1) + '%', help: 'How much the picked window grows.' },
+        { key: 'effects.dim', kind: 'range', min: 0, max: 1, step: 0.01, def: 0, fmt: pct, help: 'How much the others dim while one is hovered.' },
+        { key: 'effects.stagger_ms', kind: 'range', min: 0, max: 60, step: 1, def: 0, unit: 'ms', help: 'Delay between windows flying out, nearest the focused one first.' },
+        { key: 'effects.ripples', kind: 'bool', def: false, help: 'A ring out of a picked window or one dropped on a workspace.' },
+        { key: 'effects.glow', kind: 'bool', def: false, help: 'Soft glow around the selected workspace\'s miniature.' },
+        { key: 'effects.pulse', kind: 'bool', def: false, help: 'The glow breathing; keeps it animating every frame.' },
+        { key: 'effects.jelly', kind: 'bool', def: false, help: 'A miniature wobbling as a window lands on it. <b>Drag</b> a window onto one.' },
+        { key: 'effects.lean', kind: 'range', min: 0, max: 20, step: 1, def: 0, unit: 'px', help: 'How far a hovered miniature leans toward the cursor.' },
+        { key: 'effects.squash', kind: 'range', min: 0, max: 1, step: 0.05, def: 0, help: 'How much a dragged window stretches with its speed. Drag one quickly.' },
+        { key: 'effects.trail', kind: 'range', min: 0, max: 8, step: 1, def: 0, help: 'Fading outlines behind a dragged window.' },
+        { key: 'effects.drop_particles', kind: 'particles', options: PARTICLES, def: [], help: 'Where a dragged window lands on a workspace.' },
+        { key: 'effects.close_particles', kind: 'particles', options: PARTICLES, def: [], help: 'Off a window closed from the overview: select one and press <b>Delete</b>.' },
+        { key: 'effects.open_particles', kind: 'particles', options: PARTICLES, def: [], help: 'Off the shown workspace as it opens.' },
+        { key: 'effects.exit_particles', kind: 'particles', options: PARTICLES, def: [], help: 'Off the window picked as it zooms in.' },
+      ] },
     ] },
   ];
-  const ITEMS = GROUPS.flatMap((g) => g.items);
-  const BY_KEY = Object.fromEntries(ITEMS.map((i) => [i.key, i]));
-  const defaults = () => Object.fromEntries(ITEMS.map((i) => [i.key, i.def]));
+  const ITEMS = [];
+  const BY_KEY = {};
+  for (const t of TABS) for (const g of t.groups) for (const it of g.items) if (!BY_KEY[it.key]) { BY_KEY[it.key] = it; ITEMS.push(it); }
+  const defaults = () => Object.fromEntries(ITEMS.map((i) => [i.key, Array.isArray(i.def) ? [...i.def] : i.def]));
 
+  const PROPOSED = { 'expose.gap': 24, 'expose.largest': 0.94, 'expose.margin': 32, 'wallpaper.padding': 16, 'animation.open_easing': 'spring(0.85, 520)', 'animation.chrome_from': 0.6, 'effects.window_lift': 0.04, 'effects.dim': 0.12, 'effects.stagger_ms': 10 };
   const PRESET_VALUES = {
     defaults: { label: 'GlazeWM default', v: {} },
-    proposed: { label: 'GlazeWM proposed', v: { 'expose.gap': 24, 'expose.largest': 0.94, 'expose.margin': 32, 'wallpaper.padding': 16, 'animation.open_easing': 'spring(0.85, 520)', 'animation.chrome_from': 0.6, 'effects.window_lift': 0.04, 'effects.dim': 0.12, 'effects.stagger_ms': 10 } },
-    bottom: { label: 'Bottom thumbnails', v: { 'workspace_row': 'shown', 'workspace_row_position': 'bottom', 'search.mode': 'shelf', 'expose.gap': 24, 'expose.largest': 0.94, 'expose.margin': 32, 'wallpaper.padding': 16, 'animation.open_easing': 'spring(0.85, 520)', 'animation.chrome_from': 0.6, 'effects.window_lift': 0.04, 'effects.dim': 0.12, 'effects.stagger_ms': 10 } },
-    calm: { label: 'Calm and blurred', v: { 'wallpaper.style': 'blurred', 'animation.style': 'fade', 'animation.easing': 'ease_out_cubic', 'animation.open_ms': 200, 'animation.close_ms': 160, 'look.titles': 'always', 'look.window_highlight.style': 'glow', 'look.window_highlight.width': 6 } },
+    proposed: { label: 'GlazeWM proposed', v: PROPOSED },
+    bottom: { label: 'Bottom thumbnails', v: { ...PROPOSED, 'workspace_row': 'shown', 'expose.workspace_row_position': 'bottom', 'activities.workspace_row_position': 'bottom', 'expose.search_mode': 'shelf' } },
+    side: { label: 'Side row, even sizes', v: { ...PROPOSED, 'workspace_row': 'shown', 'expose.workspace_row_position': 'left', 'activities.workspace_row_position': 'left', 'expose.small_window_boost': 0.35, 'expose.titles': 'always' } },
+    keys: { label: 'Keyboard first', v: { ...PROPOSED, 'expose.hints': 'alt', 'expose.peek_key': 'ctrl', 'expose.release_picks': true, 'expose.search_mode': 'shelf', 'expose.titles': 'always', 'expose.minimized': 'shelf', 'animation.style': 'fade', 'animation.easing': 'ease_out_cubic', 'animation.open_ms': 200, 'animation.close_ms': 160 } },
+    fun: { label: 'Everything fun', v: { ...PROPOSED, 'effects.ripples': true, 'effects.glow': true, 'effects.pulse': true, 'effects.jelly': true, 'effects.lean': 10, 'effects.squash': 0.6, 'effects.trail': 5, 'effects.drop_particles': ['sparks', 'confetti'], 'effects.close_particles': ['dust'], 'effects.open_particles': ['glints'], 'effects.exit_particles': ['embers'], 'animation.bounce': 0.35 } },
+    ribbon: { label: 'Stack as a ribbon', v: { ...PROPOSED, 'layout': 'stack', 'stack.direction': 'horizontal', 'stack.zoom': 0.62, 'stack.gap': 60, 'stack.names': 'below', 'stack.neighbour_opacity': 0.6, 'stack.neighbour_scale': 0.86 } },
   };
 
+  const STORE = 'glazewm-overview-config-v2';
   let state = { ...defaults(), ...PRESET_VALUES.bottom.v };
-  try { const saved = JSON.parse(localStorage.getItem('glazewm-overview-config') || 'null'); if (saved) state = { ...defaults(), ...saved }; } catch { /* no storage */ }
-  const save = () => { try { localStorage.setItem('glazewm-overview-config', JSON.stringify(state)); } catch { /* no storage */ } };
+  try { const saved = JSON.parse(localStorage.getItem(STORE) || 'null'); if (saved) state = { ...defaults(), ...saved }; } catch { /* no storage */ }
+  const save = () => { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch { /* no storage */ } };
+  let tab = 'expose';
+  try { tab = localStorage.getItem(STORE + '-tab') || 'expose'; } catch { /* no storage */ }
+  if (!TABS.some((t) => t.id === tab)) tab = 'expose';
 
-  // Easing text → a stage animation. Named curves approximate GlazeWM's.
+  // Easing text → a preview animation. Named curves approximate GlazeWM's.
   const BEZIERS = { linear: [0, 0, 1, 1], ease_in: [0.42, 0, 1, 1], ease_out: [0, 0, 0.58, 1], ease_in_out: [0.42, 0, 0.58, 1], ease_in_cubic: [0.32, 0, 0.67, 0], ease_out_cubic: [0.33, 1, 0.68, 1], ease_in_out_cubic: [0.65, 0, 0.35, 1], ease_out_spring: [0.34, 1.56, 0.64, 1], snappy: [0.2, 0.9, 0.1, 1] };
   function parseEasing(text, ms) {
     const t = String(text || '').trim().toLowerCase();
     if (!t || t === 'spring') return { kind: 'spring', stiffness: 800, damping: 1 };
     if (BEZIERS[t]) return { kind: 'bezier', ms, curve: BEZIERS[t] };
     let m = t.match(/^cubic_bezier\(([^)]*)\)$/);
-    if (m) { const n = m[1].split(',').map(Number); if (n.length === 4 && n.every(Number.isFinite)) return { kind: 'bezier', ms, curve: n }; return null; }
+    if (m) { const n = m[1].split(',').map(Number); return n.length === 4 && n.every(Number.isFinite) ? { kind: 'bezier', ms, curve: n } : null; }
     m = t.match(/^spring\(([^)]*)\)$/);
     if (m) {
       const s = { damping: 1, stiffness: 800 }, names = ['damping', 'stiffness', 'epsilon'];
@@ -236,90 +321,530 @@
   }
   const hexAlpha = (hex) => { const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex || ''); return m ? (m[2] ? parseInt(m[2], 16) / 255 : 1) : 1; };
   const cssColor = (hex) => { const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex || ''); if (!m) return null; const n = parseInt(m[1], 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${m[2] ? (parseInt(m[2], 16) / 255).toFixed(3) : 1})`; };
-
-  // State → the preview's parameters.
-  function params() {
-    const v = state, layout = { expose: 'cluster', activities: 'asis', stack: 'rigid' }[v.layout];
-    const instant = { kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] };
+  const accentColor = () => { const a = state['look.colors.accent']; return !a ? '#5aa9ff' : a === 'accent' ? '#4cc2ff' : cssColor(a); };
+  const instant = { kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] };
+  const anims = () => {
+    const v = state;
     const close = v['animation.style'] === 'none' ? instant : parseEasing(v['animation.easing'], v['animation.close_ms']) || { kind: 'spring', stiffness: 800, damping: 1 };
     const open = v['animation.style'] === 'none' ? instant : parseEasing(v['animation.open_easing'] || v['animation.easing'], v['animation.open_ms']) || close;
-    const hl = v['animation.highlight_ms'], bounce = v['animation.bounce'];
-    const accent = v['look.colors.accent'];
+    return { open, close };
+  };
+  const bouncy = (stiffness) => ({ kind: 'spring', stiffness, damping: Math.max(0.3, 1 - state['animation.bounce'] * 0.8) });
+  const previewLayout = () => (tab === 'shared' ? state.layout : tab);
+
+  // The preview's desktop: four workspaces; Notes on the first is minimized.
+  let arrangement = 'tiled';
+  const freshDesk = () => [
+    { wins: [...scenario(5, arrangement), { x: 600, y: 300, w: 700, h: 460 }], apps: [0, 1, 2, 3, 4, 6], min: new Set([5]) },
+    { wins: scenario(2, 'tiled'), apps: [1, 7], min: new Set() },
+    { wins: scenario(3, 'floating'), apps: [3, 5, 6], min: new Set() },
+    { wins: scenario(1, 'tiled'), apps: [4], min: new Set() },
+  ];
+  let desk = freshDesk(), cur = 0;
+  const pv = { query: '', sel: -1, alt: false, moved: false, byAlt: false, peeking: false, drag: null, press: null, hintOf: new Map(), lastPick: -1 };
+  const titleOf = (i) => APPS[desk[cur].apps[i] % APPS.length].title;
+  const hay = (i) => (APPS[desk[cur].apps[i] % APPS.length].name + ' ' + titleOf(i)).toLowerCase();
+
+  function params() {
+    const v = state, which = previewLayout(), { open, close } = anims();
+    const hl = v['animation.highlight_ms'];
+    const rowSize = which === 'expose' && v['expose.workspace_row'] !== 'inherit' ? v['expose.workspace_row'] : v.workspace_row;
     return {
       ...PRESETS.glazewm,
-      layout, zoom: v['stack.zoom'], largest: v['expose.largest'], margin: v['expose.margin'], gap: v['expose.gap'],
-      strip: { compact: 'compact', shown: 'shown', hidden: 'none' }[v.workspace_row], stripPos: v.workspace_row_position, searchHint: v.search_hint,
+      layout: which === 'activities' ? 'asis' : 'cluster',
+      largest: v['expose.largest'], margin: which === 'activities' ? v['activities.margin'] : v['expose.margin'], gap: v['expose.gap'],
+      strip: { compact: 'compact', shown: 'shown', hidden: 'none' }[rowSize],
+      stripPos: which === 'activities' ? v['activities.workspace_row_position'] : v['expose.workspace_row_position'], searchHint: v.search_hint,
       wallpaper: v['wallpaper.style'] === 'framed' ? 'slab' : 'blur', padding: v['wallpaper.padding'], shadow: v['wallpaper.shadow'],
       surround: cssColor(v['wallpaper.color']) || '#141416', blurPx: v['wallpaper.blur'], tintAlpha: hexAlpha(v['wallpaper.tint']),
-      radius: v['look.corner_radius'], font: v['look.font_family'] ? `"${v['look.font_family']}"` : null,
-      accent: !accent ? '#5aa9ff' : accent === 'accent' ? '#4cc2ff' : cssColor(accent),
+      radius: v['look.corner_radius'], font: v['look.font_family'] ? `"${v['look.font_family']}"` : null, accent: accentColor(),
       cardColor: cssColor(v['look.colors.card']), captionColor: cssColor(v['look.colors.caption']), textColor: cssColor(v['look.colors.text']),
       ringStyle: v['look.window_highlight.style'], ringWorld: v['look.window_highlight.width'] * 1.6, ringGapWorld: v['look.window_highlight.gap'] * 1.6,
-      titles: v['look.titles'], icons: v['look.app_icons'],
+      titles: which === 'expose' ? v['expose.titles'] : 'hover', icons: which === 'expose' && v['expose.app_icons'],
       motion: v['animation.style'] === 'fade' ? 'fade' : 'move', open, close,
-      hoverAnim: hl <= 0 ? instant : { kind: 'spring', stiffness: Math.pow(6.6 / (hl / 1000), 2), damping: 1 - bounce * 0.7 },
+      hoverAnim: hl <= 0 ? instant : { kind: 'spring', stiffness: Math.pow(6.6 / (hl / 1000), 2), damping: Math.max(0.3, 1 - v['animation.bounce'] * 0.7) },
       chromeFrom: v['animation.chrome_from'], lift: v['effects.window_lift'], dim: v['effects.dim'], staggerMs: v['effects.stagger_ms'],
     };
   }
 
-  // Preview.
-  let arrangement = 'tiled';
-  const stage = new Stage($('screen'), { params: params(), windows: scenario(5, arrangement), interactive: false, onChange: onStage });
-  const apply = () => { stage.setParams(params()); paintCorner(); };
-  function onStage(s) {
-    $('play').textContent = stage.isOpen ? 'Close' : 'Open';
-    if (loop && (s === 'opened' || s === 'closed')) { clearTimeout(loopT); loopT = setTimeout(() => { if (loop) stage.isOpen ? stage.close(1) : stage.open(); }, s === 'opened' ? 1300 : 800); }
+  // Matches of the query, best first; `null` without one.
+  function matches() {
+    if (!pv.query || previewLayout() !== 'expose') return null;
+    const q = pv.query.toLowerCase();
+    const fuzzy = (s) => { let k = 0; for (const c of s) if (c === q[k]) k++; return k === q.length; };
+    return desk[cur].wins.map((_, i) => i).filter((i) => hay(i).includes(q) || fuzzy(hay(i)))
+      .sort((a, b) => (hay(a).includes(q) ? 0 : 1) - (hay(b).includes(q) ? 0 : 1));
   }
-  let loop = false, loopT = 0;
-  $('play').onclick = () => (stage.isOpen ? stage.close(-1) : stage.open());
-  $('loop').onclick = () => { loop = !loop; $('loop').setAttribute('aria-pressed', loop); $('loop').textContent = loop ? 'Looping' : 'Loop'; if (loop) stage.isOpen ? stage.close(1) : stage.open(); };
-  document.querySelectorAll('#arr button').forEach((b) => b.onclick = () => {
-    arrangement = b.dataset.v; document.querySelectorAll('#arr button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-    stage.setWindows(scenario(5, arrangement));
-  });
-  const el = stage.el;
+
+  // Where windows go: the stage's own layout, reshaped by the exposé's options.
+  function arrange(ids, area, ws) {
+    const v = state, rects = ids.map((i) => ws[i]);
+    if (!rects.length) return [];
+    const scaleOf = (out) => Math.min(...out.map((r, k) => r.w / rects[k].w));
+    let out;
+    if (v['expose.arrange'] === 'grid') out = L.grid(rects, area, { gap: v['expose.gap'], maxScale: 0.95 });
+    else if (v['expose.arrange'] === 'rows') out = L.rows(rects, area, { spacing: v['expose.gap'], maxScale: 0.95, monitorH: WORK.h });
+    else {
+      const boost = v['expose.small_window_boost'];
+      const src = boost ? rects.map((r) => { const f = 1 + boost * (1 - Math.min(1, (r.w * r.h) / (WORK.w * WORK.h * 0.5))); return { x: r.x + r.w * (1 - f) / 2, y: r.y + r.h * (1 - f) / 2, w: r.w * f, h: r.h * f }; }) : rects;
+      out = L.cluster(src, area, { gap: v['expose.gap'], largest: v['expose.largest'] });
+      if (boost) out = out.map((r, k) => { const s = Math.min(r.w / rects[k].w, r.h / rects[k].h); const w = rects[k].w * s, h = rects[k].h * s; return { x: r.x + (r.w - w) / 2, y: r.y + (r.h - h) / 2, w, h }; });
+    }
+    if (v['expose.readable_floor'] && v['expose.arrange'] !== 'rows' && scaleOf(out) < v['expose.readable_floor']) out = L.rows(rects, area, { spacing: v['expose.gap'], maxScale: 0.95, monitorH: WORK.h });
+    return out;
+  }
+
+  function layoutHook(t, stg) {
+    const ws = stg.windows, n = ws.length, room = t.room;
+    let out = t.rects.map((r) => ({ ...r }));
+    pv.shelf = null;
+    if (previewLayout() === 'expose') {
+      const hits = matches(), mode = state['expose.search_mode'];
+      const shelfIds = [];
+      if (state['expose.minimized'] === 'shelf') for (const i of stg.minimized) shelfIds.push(i);
+      if (hits && hits.length && mode === 'shelf') for (let i = 0; i < n; i++) if (!hits.includes(i) && !shelfIds.includes(i)) shelfIds.push(i);
+      let main = [...Array(n).keys()].filter((i) => !shelfIds.includes(i));
+      const area = shelfIds.length ? { ...room, h: room.h - 200 } : room;
+      const full = arrange(main, area, ws);
+      if (hits && hits.length && mode === 'spread') {
+        const spread = arrange(hits.filter((i) => main.includes(i)), area, ws);
+        main.forEach((i, k) => { out[i] = full[k]; });
+        hits.filter((i) => main.includes(i)).forEach((i, k) => { out[i] = spread[k]; });
+      } else main.forEach((i, k) => { out[i] = full[k]; });
+      if (shelfIds.length) {
+        const hgt = 110, gap = 22, wsz = shelfIds.map((i) => ws[i].w / ws[i].h * hgt);
+        const total = wsz.reduce((a, b) => a + b, 0) + gap * (wsz.length - 1);
+        let x = room.x + room.w / 2 - total / 2;
+        shelfIds.forEach((i, k) => { out[i] = { x, y: room.y + room.h - hgt, w: wsz[k], h: hgt }; x += wsz[k] + gap; });
+        pv.shelf = { x: room.x + room.w / 2 - total / 2 - 30, y: room.y + room.h - hgt - 34, w: total + 60, label: hits && hits.length && mode === 'shelf' ? 'Not matching' : 'Minimized' };
+      }
+    }
+    pv.base = out.map((r) => ({ ...r }));
+    if (pv.peeking && pv.sel >= 0 && pv.sel < n) {
+      const r = ws[pv.sel], s = Math.min((W * 0.84) / r.w, (H * 0.8) / r.h, 1.1);
+      out[pv.sel] = { x: (W - r.w * s) / 2, y: (H - r.h * s) / 2 + 20, w: r.w * s, h: r.h * s };
+    }
+    if (pv.drag && pv.drag.i < n) {
+      const r = pv.base[pv.drag.i], f = 0.72, [px, py] = pv.drag.at;
+      out[pv.drag.i] = { x: px - r.w * f / 2, y: py - r.h * f / 2, w: r.w * f, h: r.h * f };
+    }
+    return out;
+  }
+
+  const stage = new Stage($('screen'), { params: params(), windows: desk[0].wins, apps: desk[0].apps, minimized: [...desk[0].min], interactive: false, layout: layoutHook, onChange: onStage });
+
+  // Extras that live in the stage's world, re-added after every rebuild.
+  let overlay, canvas, ctx;
+  function afterBuild() {
+    overlay = document.createElement('div'); overlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:70';
+    canvas = document.createElement('canvas'); canvas.width = 960; canvas.height = 540;
+    canvas.style.cssText = 'position:absolute;left:0;top:0;width:1920px;height:1080px;pointer-events:none;z-index:95';
+    ctx = canvas.getContext('2d');
+    stage.world.append(overlay, canvas);
+    const t = stage.t, rowTop = t.stripH && !t.atBottom && !t.side && stage.params.strip !== 'none';
+    $('screen').style.setProperty('--ovs-search-top', (rowTop ? t.stripY + t.stripH + 40 : 40) + 'px');
+    stage.wins.forEach((w, i) => {
+      w.el.classList.toggle('cfg-min', stage.minimized.has(i));
+      const app = w.app;
+      w.deco.innerHTML = (stage.minimized.has(i) ? `<div class="cfg-minicon" style="background:${app.tint}">${app.name[0]}</div>` : '') + '<div class="cfg-hint"></div>';
+    });
+    [...stage.strip.children].forEach((m, k) => {
+      m.classList.toggle('on', k === cur);
+      m.onpointerenter = () => { m.style.background = cssColor(state['look.colors.surface']); };
+      m.onpointerleave = () => { m.style.background = ''; m.style.translate = ''; };
+    });
+    paint();
+  }
+  function rebuild() { stage.setParams(params()); afterBuild(); }
+  function setDesk() {
+    stage.apps = desk[cur].apps; stage.minimized = new Set(desk[cur].min);
+    stage.setWindows(desk[cur].wins.map((r) => ({ ...r })));
+    afterBuild();
+  }
+
+  // Per-frame state the stage doesn't keep: fades, hints, glow, shelf line, colors.
+  function paint() {
+    const v = state, hits = matches(), mode = v['expose.search_mode'];
+    const el = $('screen');
+    el.style.setProperty('--cfg-surface', cssColor(v['look.colors.surface']));
+    el.style.setProperty('--cfg-subtext', cssColor(v['look.colors.subtext']));
+    el.style.setProperty('--cfg-search', cssColor(v['look.colors.search']));
+    const showHints = v['expose.hints'] === 'alt' && pv.alt && stage.isOpen && previewLayout() === 'expose';
+    const order = stage.wins.map((_, i) => i).sort((a, b) => { const A = (pv.base || stage.t.rects)[a], B = (pv.base || stage.t.rects)[b]; return Math.round((A.y + A.h / 2) / 120) - Math.round((B.y + B.h / 2) / 120) || A.x - B.x; });
+    pv.hintOf = new Map(order.map((i, k) => ['asdfgqwertyuiopzxcvbnm'[k], i]));
+    stage.wins.forEach((w, i) => {
+      const letter = [...pv.hintOf].find(([, j]) => j === i)?.[0] || '';
+      w.deco.querySelector('.cfg-hint').textContent = letter.toUpperCase();
+      w.el.style.setProperty('--show-hints', showHints ? 1 : 0);
+      const dim = hits && hits.length && !hits.includes(i) && mode !== 'shelf' ? (mode === 'spread' ? 0 : 0.22) : pv.peeking && i !== pv.sel ? 0.22 : 1;
+      if (Math.abs(w.fade.to - dim) > 1e-3) stage.fadeWindow(i, dim);
+    });
+    [...stage.strip.children].forEach((m, k) => {
+      m.classList.toggle('cfg-glow', v['effects.glow'] && k === cur);
+      m.classList.toggle('cfg-pulse', v['effects.glow'] && v['effects.pulse'] && k === cur);
+    });
+    overlay.innerHTML = stage.isOpen && pv.shelf ? `<div class="cfg-shelf" style="left:${pv.shelf.x}px;top:${pv.shelf.y}px;width:${pv.shelf.w}px"><span>${pv.shelf.label}</span></div>` : '';
+    stage.setSearch(pv.query && previewLayout() === 'expose' ? pv.query : null, hits ? (hits.length ? `${Math.max(1, hits.indexOf(pv.sel) + 1)} of ${hits.length}` : 'no match') : null);
+  }
+
+  // Particles, on a canvas over the preview.
+  const parts = [];
+  let partsRunning = false, partsLast = 0;
+  const COLORS = { sparks: ['#ffd166', '#ff9f1c', '#fff3b0'], dust: ['#c8c8d0', '#9a9aa6'], embers: ['#ff7a18', '#ffb347', '#ff4e00'], confetti: ['#f94144', '#f9c74f', '#43aa8b', '#577590', '#f9844a', '#b5179e'], glints: ['#ffffff'], bubbles: ['#9ad1ff', '#c4e7ff'] };
+  function burst(styles, r, count = 36) {
+    for (const style of styles || []) {
+      for (let k = 0; k < count; k++) {
+        const side = Math.floor(Math.random() * 4), t = Math.random();
+        const x = side < 2 ? r.x + t * r.w : side === 2 ? r.x : r.x + r.w, y = side >= 2 ? r.y + t * r.h : side === 0 ? r.y : r.y + r.h;
+        const [cx, cy] = [r.x + r.w / 2, r.y + r.h / 2], a = Math.atan2(y - cy, x - cx) + (Math.random() - 0.5) * 0.6;
+        const sp = { sparks: 500, dust: 80, embers: 60, confetti: 380, glints: 0, bubbles: 40 }[style] * (0.5 + Math.random());
+        parts.push({ style, x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (style === 'confetti' ? 220 : 0), life: 0, max: { sparks: 0.55, dust: 1.2, embers: 1.5, confetti: 1.5, glints: 0.7, bubbles: 1.7 }[style] * (0.7 + Math.random() * 0.6), size: 4 + Math.random() * 10, rot: Math.random() * 6, color: COLORS[style][Math.floor(Math.random() * COLORS[style].length)], seed: Math.random() * 6 });
+      }
+    }
+    if (!partsRunning && parts.length) { partsRunning = true; partsLast = performance.now(); requestAnimationFrame(stepParts); }
+  }
+  function stepParts(now) {
+    const dt = Math.min(0.05, (now - partsLast) / 1000); partsLast = now;
+    ctx.clearRect(0, 0, 960, 540);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i]; p.life += dt;
+      if (p.life >= p.max) { parts.splice(i, 1); continue; }
+      const g = { sparks: 900, dust: -10, embers: -120, confetti: 700, glints: 0, bubbles: -160 }[p.style];
+      p.vy += g * dt; p.vx *= p.style === 'dust' ? 0.96 : 0.99;
+      if (p.style === 'bubbles' || p.style === 'embers') p.vx += Math.sin(p.life * 6 + p.seed) * 20 * dt * 10;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.rot += dt * 8;
+      const a = 1 - p.life / p.max, x = p.x / 2, y = p.y / 2;
+      ctx.save(); ctx.globalAlpha = Math.max(0, a); ctx.fillStyle = ctx.strokeStyle = p.color;
+      if (p.style === 'sparks') { ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - p.vx * 0.012, y - p.vy * 0.012); ctx.stroke(); }
+      else if (p.style === 'dust') { ctx.globalAlpha = a * 0.35; ctx.beginPath(); ctx.arc(x, y, p.size * (0.4 + p.life), 0, 7); ctx.fill(); }
+      else if (p.style === 'embers') { ctx.globalAlpha = a * (0.6 + 0.4 * Math.sin(p.life * 30 + p.seed)); ctx.beginPath(); ctx.arc(x, y, p.size * 0.18, 0, 7); ctx.fill(); }
+      else if (p.style === 'confetti') { ctx.translate(x, y); ctx.rotate(p.rot); ctx.fillRect(-2, -3.5, 4, 7); }
+      else if (p.style === 'glints') { const s = p.size * 0.4 * Math.sin(Math.PI * p.life / p.max); ctx.translate(x, y); ctx.beginPath(); for (let k = 0; k < 8; k++) { const r2 = k % 2 ? s * 0.25 : s; ctx.lineTo(Math.cos(k * Math.PI / 4) * r2, Math.sin(k * Math.PI / 4) * r2); } ctx.fill(); }
+      else { ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x, y, p.size * 0.35, 0, 7); ctx.stroke(); }
+      ctx.restore();
+    }
+    if (parts.length) requestAnimationFrame(stepParts); else partsRunning = false;
+  }
+
+  // Trail and squash of a dragged window.
+  const trail = [];
+  function dragFx() {
+    const d = pv.drag; if (!d) return;
+    const w = stage.wins[d.i], frame = w.el.querySelector('.ovs-frame');
+    const sq = state['effects.squash'], speed = Math.hypot(d.vx, d.vy), k = Math.min(1, speed / 3000) * sq * 0.45;
+    const horiz = Math.abs(d.vx) > Math.abs(d.vy);
+    frame.style.transform = k ? `scale(${horiz ? 1 + k : 1 - k * 0.6},${horiz ? 1 - k * 0.6 : 1 + k})` : '';
+    const n = state['effects.trail'];
+    const r = stage.targetOf(w, d.i);
+    trail.push({ ...r }); while (trail.length > n) trail.shift();
+    overlay.querySelectorAll('.cfg-trail').forEach((x) => x.remove());
+    trail.forEach((t, j) => { const el = document.createElement('div'); el.className = 'cfg-trail'; Object.assign(el.style, { left: t.x + 'px', top: t.y + 'px', width: t.w + 'px', height: t.h + 'px', opacity: ((j + 1) / (n + 1)) * 0.5 }); overlay.append(el); });
+  }
+  function endDragFx(i) { stage.wins[i]?.el.querySelector('.ovs-frame')?.style.removeProperty('transform'); trail.length = 0; overlay.querySelectorAll('.cfg-trail').forEach((x) => x.remove()); }
+
+  // Picks, closes, moves, switches.
+  const say = (h) => { $('say').innerHTML = h; };
+  const helpText = () => previewLayout() === 'stack' ? 'Wheel or <b>← →</b> / <b>↑ ↓</b> go through workspaces; click one to go there.'
+    : 'Click a window to pick it · drag it onto a workspace · <b>type</b> to search · arrows · <b>Delete</b> · <b>Esc</b>' + (state['expose.hints'] === 'alt' ? ' · hold <b>Alt</b>' : '') + (state['expose.peek_key'] === 'ctrl' ? ' · hold <b>Ctrl</b> to peek' : '');
+  function pick(i, how) {
+    if (i == null || i < 0) return;
+    const r = stage.targetOf(stage.wins[i], i);
+    if (state['effects.ripples']) stage.ripple(r.x + r.w / 2, r.y + r.h / 2);
+    burst(state['effects.exit_particles'], r, 28);
+    pv.query = ''; pv.peeking = false; pv.lastPick = i; paint();
+    stage.close(i); say(`<b>${titleOf(i)}</b> picked ${how}.`);
+  }
+  function cancel() { pv.query = ''; pv.peeking = false; paint(); stage.close(-1); say('Closed without a pick.'); }
+  function open(byAlt = false) { if (stage.isOpen) return; pv.query = ''; pv.sel = -1; pv.moved = false; pv.byAlt = byAlt; pv.peeking = false; stage.open(); paint(); say(helpText()); }
+  function closeWindow(i) {
+    const r = stage.targetOf(stage.wins[i], i);
+    burst(state['effects.close_particles'], r, 30);
+    stage.fadeWindow(i, 0);
+    const d = desk[cur];
+    setTimeout(() => {
+      d.wins.splice(i, 1); d.apps.splice(i, 1);
+      d.min = new Set([...d.min].filter((x) => x !== i).map((x) => (x > i ? x - 1 : x)));
+      pv.sel = -1; setDesk(); stage.relayout(bouncy(420), 12); paint();
+    }, 220);
+    say(`<b>Closed</b> ${titleOf(i)}.`);
+  }
+  function miniRect(k) {
+    const m = stage.strip.children[k]; if (!m) return null;
+    const b = m.getBoundingClientRect(), sb = stage.el.getBoundingClientRect();
+    return { x: (b.left - sb.left) / stage.k, y: (b.top - sb.top) / stage.k, w: b.width / stage.k, h: b.height / stage.k, el: m };
+  }
+  function moveTo(i, k) {
+    const m = miniRect(k); if (!m) return;
+    const r = desk[cur].wins[i];
+    const s = Math.min(m.w / W, m.h / H), dest = { x: m.x + r.x * s, y: m.y + r.y * s, w: r.w * s, h: r.h * s };
+    const w = stage.wins[i]; w.morphFrom = stage.targetOf(w, i); w.morphM = new Motion(0); w.morphM.aim(1, bouncy(500));
+    stage.t.rects[i] = dest; stage.fadeWindow(i, 0); stage.kick();
+    if (state['effects.ripples']) stage.ripple(m.x + m.w / 2, m.y + m.h / 2);
+    burst(state['effects.drop_particles'], m, 26);
+    if (state['effects.jelly']) { m.el.classList.remove('cfg-jelly'); void m.el.offsetWidth; m.el.classList.add('cfg-jelly'); }
+    const d = desk[cur], to = desk[k];
+    setTimeout(() => {
+      to.wins.push({ ...d.wins[i] }); to.apps.push(d.apps[i]);
+      if (d.min.has(i)) to.min.add(to.wins.length - 1);
+      d.wins.splice(i, 1); d.apps.splice(i, 1);
+      d.min = new Set([...d.min].filter((x) => x !== i).map((x) => (x > i ? x - 1 : x)));
+      setDesk(); stage.relayout(bouncy(420), 12);
+    }, 380);
+    say(`<b>${titleOf(i)}</b> moved to workspace ${k + 1}.`);
+  }
+  // Activities: show workspace `k` large, coming in as animation.switch says.
+  function switchTo(k) {
+    if (k === cur) return;
+    const style = state['animation.switch'], ms = state['animation.switch_ms'], dir = Math.sign(k - cur);
+    const anim = ms <= 0 ? instant : { kind: 'bezier', ms, curve: [0.2, 0.8, 0.2, 1] };
+    const fromMini = miniRect(k), toMini = miniRect(cur);
+    stage.wins.forEach((w, i) => {
+      const r = stage.targetOf(w, i);
+      w.morphFrom = r; w.morphM = new Motion(0); w.morphM.aim(1, anim);
+      stage.t.rects[i] = style === 'slide' ? { ...r, x: r.x - dir * W } : style === 'miniature' && toMini ? { x: toMini.x + (r.x / W) * toMini.w, y: toMini.y + (r.y / H) * toMini.h, w: r.w * toMini.w / W, h: r.h * toMini.h / H } : r;
+      stage.fadeWindow(i, 0, anim);
+    });
+    stage.kick();
+    setTimeout(() => {
+      cur = k; setDesk();
+      stage.wins.forEach((w, i) => {
+        const to = stage.t.rects[i];
+        w.morphFrom = style === 'slide' ? { ...to, x: to.x + dir * W } : style === 'miniature' && fromMini ? { x: fromMini.x + (desk[cur].wins[i].x / W) * fromMini.w, y: fromMini.y + (desk[cur].wins[i].y / H) * fromMini.h, w: to.w * 0.2, h: to.h * 0.2 } : { ...to };
+        w.morphM = new Motion(0); w.morphM.aim(1, anim);
+        w.fade = new Motion(style === 'fade' || style === 'miniature' ? 0 : 1); w.fade.aim(1, anim);
+      });
+      stage.kick(); paint();
+    }, Math.max(60, ms * 0.6));
+    say(`Workspace <b>${k + 1}</b>, coming in with <b>${style}</b>.`);
+  }
+
+  // Pointer.
+  const el = stage.el, wrap = $('screenWrap');
   const toWorld = (e) => { const b = el.getBoundingClientRect(); return [(e.clientX - b.left) / stage.k, (e.clientY - b.top) / stage.k]; };
-  const hit = (x, y) => { let best = -1; stage.t.rects.forEach((r, i) => { if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) best = i; }); return best; };
-  let cornerT = 0;
+  const hit = (x, y) => { let best = -1, z = -1; stage.t.rects.forEach((r, i) => { if (stage.wins[i].fade.to < 0.5) return; if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { const zi = +stage.wins[i].el.style.zIndex || 0; if (zi > z) { z = zi; best = i; } } }); return best; };
+  const miniAt = (e) => [...stage.strip.children].findIndex((m) => { const b = m.getBoundingClientRect(); return e.clientX >= b.left && e.clientX <= b.right && e.clientY >= b.top && e.clientY <= b.bottom; });
+  let cornerT = 0, raf = 0;
+  const liveRelayout = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; stage.relayout({ kind: 'spring', stiffness: 1400, damping: 0.95 }); dragFx(); }); };
+  el.addEventListener('pointerdown', (e) => {
+    wrap.focus();
+    if (!stage.isOpen) return;
+    const [x, y] = toWorld(e), m = miniAt(e);
+    if (m >= 0) { pv.press = { mini: m }; return; }
+    pv.press = { i: hit(x, y), x, y, t: performance.now() };
+    if (pv.press.i >= 0) el.setPointerCapture(e.pointerId);
+  });
   el.addEventListener('pointermove', (e) => {
     const [x, y] = toWorld(e);
-    if (stage.isOpen) stage.setHover(hit(x, y));
+    if (stage.isOpen && !pv.drag) {
+      const i = hit(x, y); if (i !== stage.hover) { stage.setHover(i); if (i >= 0) { pv.sel = i; pv.moved = true; } }
+      const lean = state['effects.lean'];
+      [...stage.strip.children].forEach((m) => {
+        const b = m.getBoundingClientRect();
+        const inside = e.clientX >= b.left && e.clientX <= b.right && e.clientY >= b.top && e.clientY <= b.bottom;
+        if (inside && lean) { const dx = (e.clientX - (b.left + b.width / 2)) / (b.width / 2), dy = (e.clientY - (b.top + b.height / 2)) / (b.height / 2); m.style.translate = `${dx * lean}px ${dy * lean}px`; } else m.style.translate = '';
+      });
+    }
+    const p = pv.press;
+    if (p && p.i >= 0 && stage.isOpen && (pv.drag || Math.hypot(x - p.x, y - p.y) > 12)) {
+      const now = performance.now();
+      if (!pv.drag) { pv.drag = { i: p.i, at: [x, y], vx: 0, vy: 0, t: now }; stage.setHover(-1); }
+      const d = pv.drag, dt = Math.max(1, now - d.t) / 1000;
+      d.vx = d.vx * 0.6 + ((x - d.at[0]) / dt) * 0.4; d.vy = d.vy * 0.6 + ((y - d.at[1]) / dt) * 0.4; d.at = [x, y]; d.t = now;
+      const m = miniAt(e); [...stage.strip.children].forEach((el2, k) => el2.classList.toggle('cfg-drop', k === m && k !== cur));
+      liveRelayout();
+    }
     const c = state['hot_corner.corner'];
     const inCorner = c !== 'none' && (c.includes('left') ? x < 40 : x > W - 40) && (c.includes('top') ? y < 40 : y > H - 40);
-    if (inCorner && !cornerT && !stage.isOpen) cornerT = setTimeout(() => { cornerT = 0; if (!stage.isOpen) stage.open(); }, state['hot_corner.delay_ms']);
+    if (inCorner && !cornerT && !stage.isOpen) cornerT = setTimeout(() => { cornerT = 0; open(); }, state['hot_corner.delay_ms']);
     if (!inCorner && cornerT) { clearTimeout(cornerT); cornerT = 0; }
   });
-  el.addEventListener('pointerleave', () => { stage.setHover(-1); clearTimeout(cornerT); cornerT = 0; });
-  el.addEventListener('click', (e) => {
-    if (!stage.isOpen) { stage.open(); return; }
+  el.addEventListener('pointerup', (e) => {
+    const p = pv.press; pv.press = null;
+    if (!stage.isOpen) { open(); return; }
+    if (pv.drag) {
+      const { i } = pv.drag, m = miniAt(e); pv.drag = null;
+      [...stage.strip.children].forEach((x) => x.classList.remove('cfg-drop'));
+      endDragFx(i);
+      if (m >= 0 && m !== cur) moveTo(i, m);
+      else { stage.relayout(bouncy(500)); say('Dropped nowhere: back home.'); }
+      return;
+    }
+    if (p && p.mini != null) { if (p.mini === cur) return; if (previewLayout() === 'activities') switchTo(p.mini); else { cancel(); setTimeout(() => { cur = p.mini; setDesk(); }, 30); say(`Went to workspace <b>${p.mini + 1}</b>.`); } return; }
     const [x, y] = toWorld(e), i = hit(x, y);
-    if (i >= 0 && state['effects.ripples']) { const r = stage.t.rects[i]; stage.ripple(r.x + r.w / 2, r.y + r.h / 2); }
-    stage.close(i);
+    if (i >= 0) pick(i, 'with a click'); else cancel();
   });
+  el.addEventListener('pointerleave', () => { if (!pv.drag) stage.setHover(-1); clearTimeout(cornerT); cornerT = 0; });
+
+  // Keys.
+  const KEYCAPS = [['Alt', 'Alt'], ['Control', 'Ctrl'], ['ArrowLeft', '←'], ['ArrowRight', '→'], ['ArrowUp', '↑'], ['ArrowDown', '↓'], ['Enter', 'Enter'], ['Delete', 'Del'], ['Escape', 'Esc']];
+  $('keys').innerHTML = 'Keys: ' + KEYCAPS.map(([k, l]) => `<span class="key" data-k="${k}">${l}</span>`).join('');
+  const flash = (k, on) => document.querySelector(`.key[data-k="${k}"]`)?.classList.toggle('on', on);
+  function arrow(dir) {
+    const ids = stage.wins.map((_, i) => i).filter((i) => stage.wins[i].fade.to > 0.5);
+    const c = (i) => { const r = stage.t.rects[i]; return [r.x + r.w / 2, r.y + r.h / 2]; };
+    if (pv.sel < 0 || !ids.includes(pv.sel)) { pv.sel = ids.sort((a, b) => c(a)[1] - c(b)[1] || c(a)[0] - c(b)[0])[0]; stage.setHover(pv.sel); return; }
+    const [x, y] = c(pv.sel), v = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[dir];
+    let best = -1, bd = Infinity;
+    for (const i of ids) { if (i === pv.sel) continue; const [ix, iy] = c(i), dx = ix - x, dy = iy - y, al = dx * v[0] + dy * v[1]; if (al <= 4) continue; const d = al + 2 * Math.abs(dx * v[1] + dy * v[0]); if (d < bd) { bd = d; best = i; } }
+    if (best >= 0) { pv.sel = best; pv.moved = true; stage.setHover(best); if (pv.peeking) stage.relayout(); }
+  }
+  wrap.addEventListener('keydown', (e) => {
+    flash(e.key, true);
+    if (previewLayout() === 'stack') return;
+    const letter = e.code && e.code.startsWith('Key') ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
+    if (e.key === 'Alt') { e.preventDefault(); if (!pv.alt) { pv.alt = true; paint(); } return; }
+    if (e.key === 'Control') { e.preventDefault(); if (state['expose.peek_key'] === 'ctrl' && stage.isOpen && pv.sel >= 0 && !pv.peeking) { pv.peeking = true; stage.relayout(); paint(); say(`<b>Peeking</b> at ${titleOf(pv.sel)}.`); } return; }
+    if (!stage.isOpen) { if (e.key === ' ' || e.key === 'Enter' || (e.altKey && letter === 'w')) { e.preventDefault(); open(e.altKey); } return; }
+    if (e.altKey && letter === 'w') { e.preventDefault(); cancel(); return; }
+    if (e.altKey && state['expose.hints'] === 'alt') { const i = pv.hintOf.get(letter); e.preventDefault(); if (i != null) pick(i, `with Alt+${letter.toUpperCase()}`); return; }
+    if (e.key.startsWith('Arrow')) { e.preventDefault(); arrow(e.key); return; }
+    if (e.key === 'Enter') { e.preventDefault(); const hits = matches(); const i = pv.sel >= 0 && (!hits || hits.includes(pv.sel)) ? pv.sel : hits && hits[0]; if (i != null && i >= 0) pick(i, 'with Enter'); return; }
+    if (e.key === 'Escape') { e.preventDefault(); if (pv.query) { pv.query = ''; stage.relayout(); paint(); } else cancel(); return; }
+    if (e.key === 'Delete') { e.preventDefault(); if (pv.sel >= 0) closeWindow(pv.sel); return; }
+    if (e.key === 'Backspace') { e.preventDefault(); pv.query = pv.query.slice(0, -1); stage.relayout(bouncy(460), 10); paint(); return; }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && previewLayout() === 'expose' && (e.key !== ' ' || pv.query)) {
+      e.preventDefault(); pv.query += e.key; stage.relayout(bouncy(460), 10);
+      const hits = matches(); if (hits && hits.length) { pv.sel = hits[0]; stage.setHover(hits[0]); }
+      paint();
+    }
+  });
+  wrap.addEventListener('keyup', (e) => {
+    flash(e.key, false);
+    if (e.key === 'Alt') { pv.alt = false; paint(); if (state['expose.release_picks'] && stage.isOpen && pv.byAlt && pv.moved && pv.sel >= 0) pick(pv.sel, 'by letting go of Alt'); }
+    if (e.key === 'Control' && pv.peeking) { pv.peeking = false; stage.relayout(); paint(); }
+  });
+  wrap.addEventListener('blur', () => { pv.alt = false; if (pv.peeking) { pv.peeking = false; stage.relayout(); } KEYCAPS.forEach(([k]) => flash(k, false)); paint(); });
+
+  // The stack preview: four workspaces in a column or a row.
+  const sk = (() => {
+    const host = $('stack');
+    const world = document.createElement('div'); world.className = 'sk-world'; host.append(world);
+    const WALLS = [
+      'radial-gradient(60% 80% at 20% 25%,#3c5d8f,transparent 60%),radial-gradient(55% 70% at 85% 75%,#c2643f,transparent 62%),linear-gradient(160deg,#1d2b45,#4a3340)',
+      'radial-gradient(70% 70% at 70% 30%,#2f7f78,transparent 60%),linear-gradient(200deg,#0f2a2e,#1d3b4f)',
+      'radial-gradient(60% 70% at 30% 70%,#7b4fa8,transparent 60%),linear-gradient(140deg,#1c1530,#3b2342)',
+      'radial-gradient(60% 70% at 60% 40%,#b8873a,transparent 60%),linear-gradient(170deg,#2a2016,#3e2b23)',
+    ];
+    const LABELS = ['code', 'web', 'chat', 'music'];
+    let els = [];
+    const st = { pos: new Motion(0), open: new Motion(0) };
+    function draw() {
+      world.innerHTML = '';
+      els = desk.map((ws, i) => {
+        const d = document.createElement('div'); d.className = 'sk-ws'; d.style.background = WALLS[i];
+        d.innerHTML = ws.wins.map((r, j) => (ws.min.has(j) ? '' : (() => { const a = APPS[ws.apps[j] % APPS.length]; return `<div class="sk-w ${['editor', 'terminal', 'music'].includes(a.kind) ? 'dark' : ''}" style="--t:${a.tint};left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px"></div>`; })())).join('');
+        const name = document.createElement('div'); name.className = 'sk-name'; name.innerHTML = `${i + 1} · ${LABELS[i]}<span>${ws.wins.length}</span>`;
+        d.onclick = () => { if (st.open.to < 0.5) open(); else if (i === Math.round(st.pos.to)) close(); else go(i); };
+        world.append(d, name); return { d, name };
+      });
+    }
+    let running = false, last = 0;
+    const fit = () => { world.style.transform = `scale(${host.clientWidth / W})`; };
+    new ResizeObserver(() => { fit(); render(); }).observe(host);
+    function render() {
+      const v = state, z = v['stack.zoom'], o = Math.max(0, Math.min(1.05, st.open.x));
+      const horiz = v['stack.direction'] === 'horizontal', gap = v['stack.gap'];
+      const size = 1 + (z - 1) * o, step = horiz ? W * z + gap : H * z + gap;
+      host.style.background = cssColor(v['wallpaper.color']) || '#141416';
+      host.style.setProperty('--sk-accent', accentColor());
+      els.forEach(({ d, name }, i) => {
+        const di = i - st.pos.x, ad = Math.min(Math.abs(di), 1);
+        const s = size * (1 - (1 - v['stack.neighbour_scale']) * ad * o);
+        const off = di * (o * step + (1 - o) * (horiz ? W : H) * 1.05);
+        const cx = W / 2 + (horiz ? off : 0), cy = H / 2 + (horiz ? 0 : off);
+        d.style.transform = `translate(${cx - (W * s) / 2}px,${cy - (H * s) / 2}px) scale(${s})`;
+        d.style.setProperty('--s', s);
+        d.style.borderRadius = (v['look.corner_radius'] * o) / Math.max(s, 0.05) + 'px';
+        d.style.opacity = 1 - (1 - v['stack.neighbour_opacity']) * ad * o;
+        d.classList.toggle('sel', o > 0.5 && Math.round(st.pos.to) === i);
+        const w = W * s, h = H * s, pos = v['stack.names'];
+        const nx = pos === 'beside' ? (horiz ? cx - w / 2 : cx - w / 2 - 28) : cx - w / 2;
+        const ny = pos === 'above' ? cy - h / 2 - 44 : pos === 'below' ? cy + h / 2 + 14 : (horiz ? cy - h / 2 - 44 : cy - 16);
+        name.style.transform = `translate(${nx}px,${ny}px)` + (pos === 'beside' && !horiz ? ' translateX(-100%)' : '');
+        name.style.opacity = pos === 'hidden' ? 0 : Math.max(0, (o - 0.7) / 0.3) * (1 - 0.5 * ad);
+        name.style.color = cssColor(v['look.colors.text']) || '#f2f2f5';
+        name.style.fontFamily = v['look.font_family'] ? `"${v['look.font_family']}", system-ui, sans-serif` : '';
+      });
+    }
+    const frame = (now) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; const busy = st.pos.step(dt) | st.open.step(dt); render(); if (busy) requestAnimationFrame(frame); else { running = false; onStage(st.open.to > 0.5 ? 'opened' : 'closed'); } };
+    const kick = () => { if (!running) { running = true; last = performance.now(); requestAnimationFrame(frame); } };
+    const go = (i) => { st.pos.aim(Math.max(0, Math.min(desk.length - 1, i)), bouncy(380)); kick(); };
+    const open = () => { st.pos.x = st.pos.to = cur; st.open.aim(1, anims().open); kick(); onStage('open'); };
+    const close = () => { cur = Math.round(st.pos.to); st.open.aim(0, anims().close); kick(); onStage('close'); };
+    host.addEventListener('wheel', (e) => { if (st.open.to < 0.5) return; e.preventDefault(); go(Math.round(st.pos.to) + Math.sign(e.deltaY || e.deltaX)); }, { passive: false });
+    wrap.addEventListener('keydown', (e) => {
+      if (previewLayout() !== 'stack') return;
+      const fwd = ['ArrowDown', 'ArrowRight'].includes(e.key), back = ['ArrowUp', 'ArrowLeft'].includes(e.key);
+      if (fwd || back) { if (st.open.to > 0.5) go(Math.round(st.pos.to) + (fwd ? 1 : -1)); e.preventDefault(); }
+      else if (e.key === 'Enter' || e.key === ' ') { st.open.to > 0.5 ? close() : open(); e.preventDefault(); }
+      else if (e.key === 'Escape' && st.open.to > 0.5) { close(); e.preventDefault(); }
+    });
+    fit(); draw(); render();
+    return { open, close, render, draw, isOpen: () => st.open.to > 0.5, go };
+  })();
+
+  // Preview controls.
+  const isStack = () => previewLayout() === 'stack';
+  const previewOpen = () => (isStack() ? sk.isOpen() : stage.isOpen);
+  const togglePreview = () => { if (isStack()) previewOpen() ? sk.close() : sk.open(); else stage.isOpen ? cancel() : open(); };
+  function showPreview() {
+    const st = isStack();
+    $('screen').hidden = st; $('stack').hidden = !st; $('arr').hidden = st; $('keys').hidden = st;
+    if (!st) { rebuild(); paintCorner(); } else { sk.draw(); sk.render(); }
+    say(helpText());
+  }
+  function onStage(s) {
+    $('play').textContent = previewOpen() ? 'Close' : 'Open';
+    if (s === 'opened' && !isStack()) { burst(state['effects.open_particles'], stage.t.slab, 40); paint(); }
+    if (s === 'closed' && !isStack()) paint();
+    if (loop && (s === 'opened' || s === 'closed')) {
+      clearTimeout(loopT);
+      loopT = setTimeout(() => {
+        if (!loop) return;
+        if (isStack()) { if (sk.isOpen()) { sk.go(2); setTimeout(() => loop && sk.close(), 900); } else sk.open(); }
+        else stage.isOpen ? pick(1, 'by the loop') : open();
+      }, s === 'opened' ? 1300 : 800);
+    }
+  }
+  let loop = false, loopT = 0;
+  $('play').onclick = () => { togglePreview(); wrap.focus(); };
+  $('loop').onclick = () => { loop = !loop; $('loop').setAttribute('aria-pressed', loop); $('loop').textContent = loop ? 'Looping' : 'Loop'; if (loop) togglePreview(); };
+  document.querySelectorAll('#arr button').forEach((b) => b.onclick = () => {
+    arrangement = b.dataset.v; document.querySelectorAll('#arr button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    desk = freshDesk(); cur = 0; setDesk();
+  });
+  $('resetDesk').onclick = () => { desk = freshDesk(); cur = 0; if (isStack()) { sk.draw(); sk.render(); } else setDesk(); say('Desktop reset.'); };
   function paintCorner() {
-    $('screenWrap').querySelectorAll('.corner').forEach((c) => c.remove());
+    wrap.querySelectorAll('.corner').forEach((c) => c.remove());
     const c = state['hot_corner.corner']; if (c === 'none') return;
     const d = document.createElement('div'); d.className = 'corner'; d.title = 'Hot corner: rest the cursor here';
     d.style[c.includes('left') ? 'left' : 'right'] = '4px'; d.style[c.includes('top') ? 'top' : 'bottom'] = '4px';
     d.style.borderRadius = { top_left: '10px 0 0 0', top_right: '0 10px 0 0', bottom_left: '0 0 0 10px', bottom_right: '0 0 10px 0' }[c];
-    $('screenWrap').append(d);
+    wrap.append(d);
   }
 
   // Settings form.
+  const rows = [];
   function control(item) {
     const row = document.createElement('div'); row.className = 'row'; row.dataset.key = item.key;
-    const tags = (item.isNew ? '<span class="tag new">new</span>' : '') + (item.np ? '<span class="tag np">not in preview</span>' : '');
-    row.innerHTML = `<label class="k" for="c-${item.key}"><i></i>${item.key}${tags}</label><button class="reset" title="Back to the default" aria-label="Reset ${item.key}">↺</button><div class="ctl"></div><p class="help">${item.help} <span class="mono">Default: ${item.def === null ? 'unset' : item.def === '' ? 'empty' : Array.isArray(item.def) ? 'none' : item.def}</span></p>`;
-    const ctl = row.querySelector('.ctl'), id = 'c-' + item.key;
-    const set = (v) => { state[item.key] = v; changed(item.key); };
+    const tags = (item.isNew ? '<span class="tag new">new</span>' : '') + (item.shared ? `<span class="tag shared">shared: ${item.shared}</span>` : '') + (item.np ? '<span class="tag np">not in preview</span>' : '');
+    const id = `c-${tab}-${item.key}`;
+    const defText = item.def === null ? 'unset' : item.def === '' ? 'empty' : Array.isArray(item.def) ? 'none' : item.def;
+    row.innerHTML = `<label class="k" for="${id}"><i></i>${item.key}${tags}</label><button class="reset" title="Back to the default" aria-label="Reset ${item.key}">↺</button><div class="ctl"></div><p class="help">${item.help} <span class="mono">Default: ${defText}</span></p>`;
+    const ctl = row.querySelector('.ctl');
+    const set = (v) => { state[item.key] = v; changed(); };
     if (item.kind === 'enum') {
-      const seg = document.createElement('div'); seg.className = 'seg'; seg.id = id; seg.setAttribute('role', 'group');
       if (item.options.length > 4) {
         const sel = document.createElement('select'); sel.id = id; item.options.forEach((o) => sel.add(new Option(o, o))); sel.onchange = () => set(sel.value); ctl.append(sel); row.sync = () => { sel.value = state[item.key]; };
       } else {
+        const seg = document.createElement('div'); seg.className = 'seg'; seg.id = id; seg.setAttribute('role', 'group');
         item.options.forEach((o) => { const b = document.createElement('button'); b.textContent = o; b.dataset.v = o; b.onclick = () => set(o); seg.append(b); });
         ctl.append(seg); row.sync = () => seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === state[item.key])));
       }
+    } else if (item.kind === 'particles') {
+      const seg = document.createElement('div'); seg.className = 'seg'; seg.id = id; seg.setAttribute('role', 'group');
+      item.options.forEach((o) => { const b = document.createElement('button'); b.textContent = o; b.dataset.v = o; b.onclick = () => { const curv = state[item.key] || []; set(curv.includes(o) ? curv.filter((x) => x !== o) : [...curv, o]); if (!curv.includes(o)) burst([o], { x: W / 2 - 300, y: H / 2 - 200, w: 600, h: 400 }, 30); }; seg.append(b); });
+      ctl.append(seg); row.sync = () => seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String((state[item.key] || []).includes(b.dataset.v))));
     } else if (item.kind === 'bool') {
       const t = document.createElement('button'); t.className = 'tog'; t.id = id; t.setAttribute('aria-label', item.key); t.onclick = () => set(!state[item.key]); ctl.append(t);
       row.sync = () => t.setAttribute('aria-pressed', String(!!state[item.key]));
@@ -329,14 +854,6 @@
       const fmt = item.fmt || ((v) => v + (item.unit ? ' ' + item.unit : ''));
       r.oninput = () => { o.textContent = fmt(+r.value); set(+r.value); };
       ctl.append(r, o); row.sync = () => { r.value = state[item.key]; o.textContent = fmt(+state[item.key]); };
-    } else if (item.kind === 'particles') {
-      const seg = document.createElement('div'); seg.className = 'seg'; seg.id = id; seg.setAttribute('role', 'group');
-      item.options.forEach((o) => {
-        const b = document.createElement('button'); b.textContent = o; b.dataset.v = o;
-        b.onclick = () => { const cur = state[item.key] || []; set(cur.includes(o) ? cur.filter((x) => x !== o) : [...cur, o]); };
-        seg.append(b);
-      });
-      ctl.append(seg); row.sync = () => seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String((state[item.key] || []).includes(b.dataset.v))));
     } else if (item.kind === 'text') {
       const t = document.createElement('input'); t.type = 'text'; t.id = id; t.onchange = () => set(t.value); ctl.append(t); row.sync = () => { t.value = state[item.key]; };
     } else if (item.kind === 'color' || item.kind === 'accent') {
@@ -346,16 +863,16 @@
         [['unset', 'Focused border color'], ['accent', 'Windows accent'], ['custom', 'Custom']].forEach(([v, l]) => mode.add(new Option(l, v)));
         mode.onchange = () => set(mode.value === 'unset' ? null : mode.value === 'accent' ? 'accent' : '#5aa9ffff'); ctl.append(mode);
       }
-      const pick = document.createElement('input'); pick.type = 'color'; pick.setAttribute('aria-label', item.key + ' color');
+      const pick2 = document.createElement('input'); pick2.type = 'color'; pick2.setAttribute('aria-label', item.key + ' color');
       const txt = document.createElement('input'); txt.type = 'text'; if (!mode) txt.id = id; txt.setAttribute('aria-label', item.key + ' hex'); txt.placeholder = '#rrggbbaa';
-      pick.oninput = () => { const a = (/^#[0-9a-f]{8}$/i.test(state[item.key] || '') ? state[item.key].slice(7) : 'ff'); set(pick.value + a); };
+      pick2.oninput = () => { const a = /^#[0-9a-f]{8}$/i.test(state[item.key] || '') ? state[item.key].slice(7) : 'ff'; set(pick2.value + a); };
       txt.onchange = () => { const ok = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(txt.value); txt.classList.toggle('bad', !ok); if (ok) set(txt.value.toLowerCase()); };
-      ctl.append(pick, txt);
+      ctl.append(pick2, txt);
       row.sync = () => {
         const v = state[item.key], custom = v && v !== 'accent';
         if (mode) mode.value = !v ? 'unset' : v === 'accent' ? 'accent' : 'custom';
-        pick.hidden = txt.hidden = mode ? !custom : false;
-        if (custom) { pick.value = v.slice(0, 7); txt.value = v; txt.classList.remove('bad'); }
+        pick2.hidden = txt.hidden = mode ? !custom : false;
+        if (custom) { pick2.value = v.slice(0, 7); txt.value = v; txt.classList.remove('bad'); }
       };
     } else if (item.kind === 'easing') {
       const sel = document.createElement('select'); sel.id = id;
@@ -367,33 +884,53 @@
       ctl.append(sel, txt);
       row.sync = () => { const v = state[item.key] ?? ''; const known = v === '' ? item.def === '' : CURVES.includes(v); sel.value = known ? v : '__custom'; txt.hidden = known; if (!known) { txt.value = v; txt.classList.remove('bad'); } };
     }
-    row.querySelector('.reset').onclick = () => set(item.def);
+    row.querySelector('.reset').onclick = () => set(Array.isArray(item.def) ? [] : item.def);
+    rows.push({ key: item.key, row });
     return row;
   }
 
-  const rows = {};
+  const isChanged = (k) => JSON.stringify(state[k]) !== JSON.stringify(BY_KEY[k].def);
+  function buildTabs() {
+    const host = $('tabs'); host.innerHTML = '';
+    for (const t of TABS) {
+      const b = document.createElement('button'); b.setAttribute('role', 'tab'); b.dataset.tab = t.id;
+      b.onclick = () => { tab = t.id; try { localStorage.setItem(STORE + '-tab', tab); } catch { /* no storage */ } paintTabs(); buildForm(); showPreview(); setTimeout(() => { if (!previewOpen()) togglePreview(); }, 150); };
+      host.append(b);
+    }
+    paintTabs();
+  }
+  function paintTabs() {
+    for (const b of $('tabs').children) {
+      const t = TABS.find((x) => x.id === b.dataset.tab);
+      const n = new Set(t.groups.flatMap((g) => g.items).map((i) => i.key).filter(isChanged)).size;
+      b.innerHTML = `${t.label}${n ? `<span class="n">${n}</span>` : ''}${t.layout && state.layout === t.layout ? '<span class="default-mark">opens on</span>' : ''}`;
+      b.setAttribute('aria-selected', String(t.id === tab));
+    }
+  }
   function buildForm() {
-    const host = $('settings'); host.innerHTML = '';
-    GROUPS.forEach((g, gi) => {
-      const d = document.createElement('details'); d.className = 'group' + (g.isNew ? ' new' : ''); d.open = gi < 2 || g.isNew === undefined && gi < 4;
+    rows.length = 0;
+    const t = TABS.find((x) => x.id === tab), host = $('settings'); host.innerHTML = '';
+    $('tabIntro').innerHTML = `<span>${t.intro}</span>` + (t.layout ? (state.layout === t.layout ? '<span class="tag shared">opens on this layout</span>' : `<button id="makeDefault">Open on ${t.label}</button>`) : '');
+    $('makeDefault')?.addEventListener('click', () => { state.layout = t.layout; changed(); buildForm(); });
+    t.groups.forEach((g) => {
+      const d = document.createElement('details'); d.className = 'group'; d.open = true;
       d.innerHTML = `<summary><h2>${g.title}</h2><span class="count" data-count></span></summary>`;
-      g.items.forEach((item) => { const r = control(item); rows[item.key] = r; d.append(r); });
+      g.items.forEach((item) => d.append(control(item)));
+      d.dataset.keys = g.items.map((i) => i.key).join(' ');
       host.append(d);
     });
     syncAll();
   }
-  const isChanged = (k) => JSON.stringify(state[k]) !== JSON.stringify(BY_KEY[k].def);
   function syncAll() {
-    for (const [k, r] of Object.entries(rows)) { r.sync(); r.classList.toggle('changed', isChanged(k)); }
-    document.querySelectorAll('details.group').forEach((d, i) => { const n = GROUPS[i].items.filter((it) => isChanged(it.key)).length; d.querySelector('[data-count]').textContent = n ? `${n} changed` : ''; });
-    markPreset(); yaml();
+    for (const { key, row } of rows) { row.sync(); row.classList.toggle('changed', isChanged(key)); }
+    document.querySelectorAll('#settings details.group').forEach((d) => { const n = d.dataset.keys.split(' ').filter(isChanged).length; d.querySelector('[data-count]').textContent = n ? `${n} changed` : ''; });
+    paintTabs(); markPreset(); yaml();
   }
-  function changed(key) {
-    rows[key]?.sync(); rows[key]?.classList.toggle('changed', isChanged(key));
-    save(); apply(); syncAll();
-  }
+  function changed() { save(); if (isStack()) sk.render(); else { rebuild(); paintCorner(); } syncAll(); say(helpText()); }
 
-  // YAML out: real options as YAML, proposals as comments.
+  // YAML: one tree in GlazeWM's order; proposals sit commented beside
+  // their real siblings, so removing a line's "# " never duplicates a key.
+  const ORDER = ['layout', 'workspace_row', 'search_hint', 'strip_view', 'hot_corner', 'expose', 'activities', 'stack', 'look', 'wallpaper', 'animation', 'effects'];
   let scope = 'changed';
   const fmtVal = (item, v) => {
     if (item.kind === 'particles') return v.length === 0 ? '"none"' : v.length === 1 ? JSON.stringify(v[0]) : JSON.stringify(v).replace(/,/g, ', ');
@@ -401,40 +938,33 @@
     if (typeof v === 'number') return String(+v.toFixed(4));
     return JSON.stringify(v);
   };
-  // One tree: proposals sit beside their real siblings, commented out, so
-  // removing a line's "# " never duplicates a key.
   function yaml() {
     const tree = {};
-    for (const item of ITEMS) {
+    const sorted = [...ITEMS].sort((a, b) => ORDER.indexOf(a.key.split('.')[0]) - ORDER.indexOf(b.key.split('.')[0]));
+    for (const item of sorted) {
       const v = state[item.key];
       if (v === null || v === '' || v === undefined) continue;
       if (scope === 'changed' && !isChanged(item.key)) continue;
-      const parts = item.key.split('.'); let node = tree;
-      parts.slice(0, -1).forEach((p) => { node = node[p] = node[p] || {}; });
-      node[parts[parts.length - 1]] = { item, v };
+      const parts2 = item.key.split('.'); let node = tree;
+      parts2.slice(0, -1).forEach((p) => { node = node[p] = node[p] || {}; });
+      node[parts2[parts2.length - 1]] = { item, v };
     }
     const allNew = (node) => Object.values(node).every((val) => (val.item ? val.item.isNew : allNew(val)));
     const lines = [];
     const walk = (node, depth, inNew) => {
       for (const [k, val] of Object.entries(node)) {
         const pad = '  '.repeat(depth);
-        if (val.item) {
-          const c = inNew || val.item.isNew;
-          lines.push({ text: `${pad}${c ? '# ' : ''}${k}: ${fmtVal(val.item, val.v)}`, c });
-        } else {
-          const c = inNew || allNew(val);
-          lines.push({ text: `${pad}${c ? '# ' : ''}${k}:`, c });
-          walk(val, depth + 1, c);
-        }
+        if (val.item) { const c = inNew || val.item.isNew; lines.push({ text: `${pad}${c ? '# ' : ''}${k}: ${fmtVal(val.item, val.v)}`, c }); }
+        else { const c = inNew || allNew(val); lines.push({ text: `${pad}${c ? '# ' : ''}${k}:`, c }); walk(val, depth + 1, c); }
       }
     };
     walk(tree, 1, false);
     const head = lines.some((l) => l.c) ? [{ text: '  # Lines starting with "# " are proposals, not in GlazeWM yet.', c: true }] : [];
     const all = [{ text: 'overview:', c: false }, ...head, ...(lines.length ? lines : [{ text: '  # Everything at its default.', c: false }])];
-    $('yaml').innerHTML = all.map((l) => (l.c ? `<span class="c">${escapeHtml(l.text)}</span>` : escapeHtml(l.text))).join('\n');
+    $('yaml').innerHTML = all.map((l) => (l.c ? `<span class="c">${esc(l.text)}</span>` : esc(l.text))).join('\n');
     $('yaml').dataset.text = all.map((l) => l.text).join('\n') + '\n';
   }
-  const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   document.querySelectorAll('#scope button').forEach((b) => b.onclick = () => { scope = b.dataset.v; document.querySelectorAll('#scope button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); yaml(); });
   $('copy').onclick = async () => {
     try { await navigator.clipboard.writeText($('yaml').dataset.text); $('copy').textContent = 'Copied'; }
@@ -442,7 +972,7 @@
     setTimeout(() => { $('copy').textContent = 'Copy'; }, 1400);
   };
 
-  // Import.
+  // Import, proposals included once uncommented.
   $('importBtn').onclick = () => {
     const msg = $('importMsg');
     let doc;
@@ -457,24 +987,29 @@
       const item = BY_KEY[k]; if (!item) { unknown.push(k); continue; }
       if (item.kind === 'range') next[k] = Number(v);
       else if (item.kind === 'bool') next[k] = v === true || v === 'true';
-      else if (item.kind === 'particles') next[k] = (Array.isArray(v) ? v : [v]).map(String).filter((x) => x !== 'none' && item.options.includes(x));
+      else if (item.kind === 'particles') next[k] = (Array.isArray(v) ? v : [v]).map(String).filter((x) => item.options.includes(x));
       else next[k] = v == null ? item.def : String(v);
     }
-    state = next; save(); apply(); syncAll();
-    msg.innerHTML = `Loaded ${Object.keys(flat).length - unknown.length} setting${Object.keys(flat).length - unknown.length === 1 ? '' : 's'}.` + (unknown.length ? ` Not recognised: <code>${unknown.join('</code>, <code>')}</code>.` : '');
+    state = next; changed(); buildForm();
+    const n = Object.keys(flat).length - unknown.length;
+    msg.innerHTML = `Loaded ${n} setting${n === 1 ? '' : 's'}.` + (unknown.length ? ` Not recognised: <code>${unknown.join('</code>, <code>')}</code>.` : '');
   };
 
   // Presets.
   for (const [k, p] of Object.entries(PRESET_VALUES)) {
     const b = document.createElement('button'); b.textContent = p.label; b.dataset.k = k;
-    b.onclick = () => { state = { ...defaults(), ...p.v }; save(); apply(); syncAll(); if (!stage.isOpen) stage.open(); };
+    b.onclick = () => {
+      state = { ...defaults(), ...p.v }; save();
+      if (k === 'ribbon') tab = 'stack'; else if (tab === 'stack') tab = 'expose';
+      paintTabs(); buildForm(); showPreview(); setTimeout(() => { if (!previewOpen()) togglePreview(); }, 150);
+    };
     $('presets').append(b);
   }
   function markPreset() {
     for (const b of $('presets').children) { const p = { ...defaults(), ...PRESET_VALUES[b.dataset.k].v }; b.setAttribute('aria-pressed', String(ITEMS.every((i) => JSON.stringify(p[i.key]) === JSON.stringify(state[i.key])))); }
   }
 
-  buildForm(); paintCorner();
-  setTimeout(() => stage.open(), 500);
+  buildTabs(); buildForm(); showPreview();
+  setTimeout(() => { if (!previewOpen()) togglePreview(); }, 500);
 })();
 </script>
