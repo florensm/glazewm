@@ -266,11 +266,14 @@ impl Preview {
   }
 
   /// Draws its placeholder, if it shows one, titled `title`, for a screen
-  /// at `scale_factor`, unless it shows that already.
+  /// at `scale_factor`, unless it shows that already: no larger than
+  /// `shown`, the pixel size it shows at, if known, so it is as sharp as
+  /// it shows without taking more memory than that.
   pub fn draw_placeholder(
     &mut self,
     title: &str,
     scale_factor: f32,
+    shown: Option<(f32, f32)>,
     style: &OverviewStyle,
     notify: (HWND, u32),
   ) {
@@ -279,10 +282,14 @@ impl Preview {
     };
 
     // In its window's proportions, so the icon isn't stretched.
-    let (largest_w, largest_h) = (
+    let (mut largest_w, mut largest_h) = (
       PLACEHOLDER_SIZE.0 * scale_factor,
       PLACEHOLDER_SIZE.1 * scale_factor,
     );
+    if let Some((shown_w, shown_h)) = shown {
+      largest_w = largest_w.min(shown_w.ceil().max(1.0));
+      largest_h = largest_h.min(shown_h.ceil().max(1.0));
+    }
     let (window_w, window_h) = (self.screen_rect.w, self.screen_rect.h);
     let (w, h) = if window_w > 0.0 && window_h > 0.0 {
       let fit = (largest_w / window_w).min(largest_h / window_h).min(1.0);

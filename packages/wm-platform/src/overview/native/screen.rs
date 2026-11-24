@@ -1017,6 +1017,7 @@ impl Screen {
       })
       .collect::<Vec<_>>();
     let (scale_factor, notify) = (self.metrics.scale_factor, self.notify);
+    let spreads = self.focus.layout.spreads_windows();
 
     for (scene, titles) in self.scenes.iter_mut().zip(&titles) {
       for window in scene.windows.iter_mut().filter(|w| w.is_minimized) {
@@ -1028,9 +1029,11 @@ impl Screen {
         if force {
           window.preview.forget_placeholder_drawn();
         }
+        let target = window.target();
+        let shown = spreads.then_some((target.w, target.h));
         window
           .preview
-          .draw_placeholder(title, scale_factor, style, notify);
+          .draw_placeholder(title, scale_factor, shown, style, notify);
       }
     }
   }

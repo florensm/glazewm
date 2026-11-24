@@ -220,7 +220,7 @@ impl Ghost {
   ) {
     self
       .preview
-      .draw_placeholder(title, scale_factor, style, notify);
+      .draw_placeholder(title, scale_factor, None, style, notify);
 
     #[allow(clippy::cast_possible_truncation)]
     let size = (
