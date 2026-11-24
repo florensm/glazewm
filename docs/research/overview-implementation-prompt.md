@@ -46,25 +46,34 @@ layout code is Rust in `wm-platform/src/overview/`.
 ## 2. Branches: ask before touching any
 
 `CLAUDE.md` says to develop on `tryout/<name>` and cut `test/<name>` from
-it. But for this feature the newest overview code is on
-`origin/test/overview-config`, about 20 commits ahead of
-`origin/tryout/overview-config`, which is an older, diverged copy. The test
-branch is also missing the benchmark and automation files `CLAUDE.md` says
-test builds strip.
+it. For this feature the newest overview code is on
+`origin/test/overview-config`, 37 commits ahead of
+`origin/tryout/overview-config`, an older, diverged copy whose 6 own
+commits are superseded: ignore them. Test branches lack the benchmark and
+automation files `CLAUDE.md` says test builds strip; as `CLAUDE.md` says,
+those live on `origin/tryout/one-surface`.
 
-Propose this to the user and wait for a yes:
+The user sets the branch up (or tells you to). The steps:
 
-1. Create `tryout/overview-styling` from `origin/test/overview-config`.
-2. Put back what test builds strip, from `origin/tryout/overview-config`:
-   `packages/wm-cli/examples/perf_bench/`,
-   `packages/wm-platform/examples/uncloak_all.rs`,
-   `resources/scripts/package.ps1`, and `wm-cli`'s two dev-dependency
-   tables. One commit: `chore: restore benchmarks for the tryout branch`.
-3. Develop there. Cut `test/overview-styling` from it per `CLAUDE.md` when
-   the user wants a laptop build.
+```bash
+git fetch origin test/overview-config tryout/one-surface
+git checkout -b tryout/overview-styling origin/test/overview-config
+git checkout origin/tryout/one-surface -- packages/wm-cli/examples/perf_bench packages/wm-platform/examples/uncloak_all.rs resources/scripts/package.ps1
+```
 
-Never push to a test branch except by cutting it. Commit at the end of each
-phase; push only when the user asks.
+Then put back `wm-cli`'s `[dev-dependencies]` and
+`[target.'cfg(windows)'.dev-dependencies]` tables in
+`packages/wm-cli/Cargo.toml`, copied from the same file on
+`origin/tryout/one-surface` (only those two tables; keep the rest of this
+branch's file), run `cargo build` to update `Cargo.lock`, and
+`cargo test --workspace`. `perf_bench` was written against the
+one-surface branch: if it no longer builds here, stop and ask rather than
+change it. Commit as `chore: restore benchmarks for the tryout branch`.
+
+Develop on `tryout/overview-styling`. Cut `test/overview-styling` from it
+per `CLAUDE.md` when the user wants a laptop build. Never push to a test
+branch except by cutting it. Commit at the end of each phase; push only
+when the user asks.
 
 ## 3. Ground rules for this work
 
