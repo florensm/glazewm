@@ -240,6 +240,22 @@ impl Scene {
     order
   }
 
+  /// Whether any of its windows shows or is fading in.
+  pub fn is_seen(&self) -> bool {
+    self
+      .windows
+      .iter()
+      .any(|window| window.alpha.value > 0.0 || window.alpha.target > 0.0)
+  }
+
+  /// Leaves its windows hidden where they are headed.
+  pub fn keep_hidden(&mut self, snap: bool) {
+    for window in &mut self.windows {
+      let target = window.target();
+      window.retarget(&target, 0.0, snap);
+    }
+  }
+
   /// Advances every window by `dt` seconds. Returns whether any is still
   /// moving.
   pub fn step(&mut self, dt: f32) -> bool {
@@ -252,7 +268,7 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
-  use super::SceneWindow;
+  use super::{Scene, SceneWindow};
   use crate::overview::{
     layout::{RectF, Tile},
     thumbnails::Preview,
@@ -267,6 +283,25 @@ mod tests {
       },
     );
     SceneWindow::new(preview, (0.0, 0.0), 300.0, 0.0)
+  }
+
+  /// A scene is seen while any window shows or fades in, and kept
+  /// hidden it stays where it was headed.
+  #[test]
+  fn a_scene_is_seen_while_a_window_shows_or_fades_in() {
+    let mut scene = Scene {
+      name: String::new(),
+      windows: vec![window(), window()],
+    };
+    assert!(!scene.is_seen());
+
+    let target = RectF::new(10.0, 20.0, 300.0, 200.0);
+    scene.windows[1].retarget(&target, 1.0, false);
+    assert!(scene.is_seen());
+
+    scene.keep_hidden(true);
+    assert!(!scene.is_seen());
+    assert_eq!(scene.windows[1].target(), target);
   }
 
   /// A held window stays where it is until its turn, then pops on its

@@ -334,6 +334,14 @@ impl Screen {
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
     {
+      // Out of sight and staying so: where it would settle is worked out
+      // once it's selected, and spreading every workspace's windows on
+      // each open held up the zoom's start.
+      if index != selected && !scene.is_seen() {
+        scene.keep_hidden(snap);
+        continue;
+      }
+
       let offset = match index.cmp(&selected) {
         Ordering::Less => -slide,
         Ordering::Equal => 0.0,
