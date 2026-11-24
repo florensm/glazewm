@@ -580,18 +580,24 @@ moves things around and never redraws pixels:
 - Under the preview of each window on screen are thumbnails of its own
   backdrop and border overlays, placed and scaled as the window is, and
   every preview takes its window's `transparency`, which DWM's thumbnails
-  don't carry. The overlays of windows off screen are hidden, which DWM
+  don't carry. They hide while a zoom moves everything, sparing DWM half
+  the thumbnails in motion, and fade in once it rests. The overlays of
+  windows off screen are hidden, which DWM
   composes for no thumbnail; cloaked instead, they showed in previews as
   small, stale boxes.
 - The card backgrounds, captions, borders, labels and the search are drawn
   once into hidden layered windows, and shown as thumbnails of those, so
   they scale with their card. Their text is laid out and rasterized by
-  DirectWrite (grayscale, since the pictures are translucent).
+  DirectWrite (grayscale, since the pictures are translucent). Cards keep
+  their pictures from one open to the next (up to 12), so an open draws
+  only the cards whose content changed.
 - Highlights are one small picture each, its corners shown as drawn and
   its edges stretched, so they resize without being redrawn.
   Moving the selection or the cursor therefore redraws nothing.
 - Thumbnails are registered on open and on switching layouts, and
-  otherwise only again when windows come, go or move: a window's title
+  otherwise only again when windows come, go or move. On open, only the
+  shown workspace's previews, which are what zooms, register before the
+  first frame; the rest follow on the next. A window's title
   changing redraws its title, nothing else. The thumbnails shown stay up
   until their replacements are placed, so nothing blinks out in between.
 - Each monitor's overview window covers the whole monitor, the space
@@ -651,6 +657,13 @@ monitor onto the whole screen, so windows, cards, names and highlights
 move as one, and the pointer is mapped back through it. The overview only hides once the
 zoom ends, so the OS never picks a window to activate in between, and the
 real windows are already where their previews end up.
+
+With `GLAZEWM_PERF` set, each open and close logs one line, e.g.
+`Overview open perf: first frame 9.8 ms, 31 frames, work p50 0.42 ms /
+p95 1.10 ms / max 2.30 ms, 0 missed (period 6.9 ms).`: how soon its
+first frame showed, how long each frame's work took, and how many frames
+came over 1.5 periods apart. Open and close the overview by hand a few
+times and compare the lines between builds.
 
 ## Follow-ups
 
