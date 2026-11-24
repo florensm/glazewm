@@ -750,6 +750,10 @@ struct Screen {
   /// Whether a highlight was still gliding when last placed.
   is_gliding: bool,
 
+  /// Its cards drawn plainly, as from opening until the zoom lands:
+  /// drawing them in full would hold up the zoom's first frame.
+  plain_cards: bool,
+
   is_tracking_leave: bool,
 
   /// Bumped as window icons arrive.

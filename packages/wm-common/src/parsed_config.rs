@@ -2450,7 +2450,8 @@ pub enum ResizeStyle {
 /// interchangeably with `cubic_bezier(x1, y1, x2, y2)` notation:
 /// `linear`, `ease_in`, `ease_out`, `ease_in_out`,
 /// `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`,
-/// `ease_out_spring`. A physical spring is written
+/// `ease_out_spring`, `snappy` (a fast start and a crisp stop, no
+/// overshoot). A physical spring is written
 /// `spring(damping_ratio, stiffness, epsilon)`, or just `spring`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EasingFunction {
@@ -2666,6 +2667,7 @@ impl<'de> Deserialize<'de> for EasingFunction {
         Ok(EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0))
       }
       "ease_out_spring" => Ok(EasingFunction::EaseOutSpring),
+      "snappy" => Ok(EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0)),
       "spring" => Ok(EasingFunction::Spring(SpringParams::default())),
       s if s.starts_with("spring(") => parse_spring(s)
         .map(EasingFunction::Spring)
@@ -2703,7 +2705,7 @@ impl<'de> Deserialize<'de> for EasingFunction {
           Err(serde::de::Error::custom(format!(
             "unknown easing function '{s}'; valid values: linear, \
              ease_in, ease_out, ease_in_out, ease_in_cubic, \
-             ease_out_cubic, ease_in_out_cubic, ease_out_spring, \
+             ease_out_cubic, ease_in_out_cubic, ease_out_spring, snappy, \
              cubic_bezier(x1, y1, x2, y2), spring, \
              spring(damping_ratio, stiffness, epsilon)"
           )))
@@ -2745,6 +2747,8 @@ impl Serialize for EasingFunction {
           "ease_in_cubic".to_string()
         } else if *x1 == 0.33 && *y1 == 1.0 && *x2 == 0.68 && *y2 == 1.0 {
           "ease_out_cubic".to_string()
+        } else if *x1 == 0.16 && *y1 == 1.0 && *x2 == 0.3 && *y2 == 1.0 {
+          "snappy".to_string()
         } else {
           format!("cubic_bezier({x1}, {y1}, {x2}, {y2})")
         };
@@ -3140,6 +3144,11 @@ mod tests {
     ));
     // The rest of the group keeps its defaults.
     assert_eq!(config.animation.open_duration_ms, 280);
+
+    assert_eq!(
+      easing("snappy").ok(),
+      Some(EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0))
+    );
 
     // As the sample config and the docs write the default.
     assert_eq!(

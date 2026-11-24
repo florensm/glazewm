@@ -377,7 +377,7 @@ show it.
 | `none` | At once. | At once. |
 
 `animation.zoom_easing` paces both, as any animation's `easing` does: a named curve
-(`ease_out`, `ease_in_out_cubic`, ...), `cubic_bezier(x1, y1, x2, y2)`,
+(`ease_out`, `ease_in_out_cubic`, `snappy` for a fast start and a crisp stop, ...), `cubic_bezier(x1, y1, x2, y2)`,
 or `spring(damping_ratio, stiffness, epsilon)`, which takes as long as it
 needs to settle whatever `animation.open_duration_ms` and `animation.close_duration_ms` say.
 A curve or spring overshooting makes the zoom swing past and back; the
@@ -584,8 +584,10 @@ overview:
     exit_particles: "none"
     # Whether a card wobbles as a window lands on it.
     jelly: false
-    # Delay between one card and the next as they pop in on open, in
-    # milliseconds; 0 brings them in together.
+    # Delay between one card and the next as they pop in on open, and
+    # between the exposé's windows flying out, out from the focused one,
+    # in milliseconds; 0 brings them in together. However many windows,
+    # all start within half of `animation.open_duration_ms`.
     stagger_ms: 0
     # How far a hovered card leans toward the cursor, in logical pixels.
     lean: 0

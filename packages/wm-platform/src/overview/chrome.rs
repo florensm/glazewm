@@ -185,6 +185,44 @@ pub(crate) fn picture_size(metrics: &CardMetrics) -> (i32, i32) {
   padded_size(&drawn_metrics(metrics).0)
 }
 
+/// Part of its full size a plain card's picture is drawn at: a flat color
+/// scaled up by DWM looks the same, for a fraction of the memory.
+const PLAIN_CARD_SCALE: f32 = 0.25;
+
+/// The metrics a plain card's picture is drawn at.
+fn plain_metrics(metrics: &CardMetrics) -> CardMetrics {
+  drawn_metrics(metrics).0.scaled(PLAIN_CARD_SCALE)
+}
+
+/// Pixel size of a plain card's picture, which shows where its full
+/// picture would.
+pub(crate) fn plain_picture_size(metrics: &CardMetrics) -> (i32, i32) {
+  padded_size(&plain_metrics(metrics))
+}
+
+/// Draws a card as a plain rounded rect of the card color, without its
+/// shadow or contents, into `surface`, which must be `plain_picture_size`
+/// big: quick to draw, it shows while the card itself waits to be drawn.
+pub(crate) fn draw_plain_card(
+  surface: &mut Surface,
+  metrics: &CardMetrics,
+  style: &OverviewStyle,
+) {
+  let metrics = plain_metrics(metrics);
+  let (width, height) = card_size(&metrics);
+  let margin = shadow_margin(&metrics);
+  let units = Units {
+    scale_factor: metrics.scale_factor * metrics.chrome,
+  };
+
+  surface.pixels().fill(0);
+  surface.canvas().fill_rounded_rect(
+    &Rect::from_xy(margin, margin, width, height),
+    round(units.px(style.card_corner_radius)),
+    style.card,
+  );
+}
+
 /// Where a card's picture goes, shadow and all, for the card to show
 /// where `placement` puts it.
 pub(crate) fn picture_rect(

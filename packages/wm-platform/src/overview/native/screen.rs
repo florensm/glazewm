@@ -25,8 +25,9 @@ use crate::{
   dwm_thumbnail::Thumbnail,
   overview::{
     chrome::{
-      draw_card, draw_search, draw_sheet, draw_spotlight, picture_size,
-      sheet_size, spotlight_margin, spotlight_size,
+      draw_card, draw_plain_card, draw_search, draw_sheet, draw_spotlight,
+      picture_size, plain_picture_size, sheet_size, spotlight_margin,
+      spotlight_size,
     },
     effects::{lean_toward, Entrance},
     layout::{
@@ -152,6 +153,7 @@ impl Screen {
       zoom: None,
       is_dirty: false,
       is_gliding: false,
+      plain_cards: false,
       is_tracking_leave: false,
       icons: 0,
       notify,
@@ -245,6 +247,7 @@ impl Screen {
     self.show_backdrop();
     self.retarget(true);
     self.register_thumbnails();
+    self.plain_cards = self.zoom.is_some();
     self.refresh_pictures(true);
     self.is_gliding = self.place();
 
@@ -922,6 +925,17 @@ impl Screen {
         bar.draw(hover, self.icons, notify);
       }
 
+      if self.plain_cards {
+        let metrics = card.metrics;
+        let size = plain_picture_size(&metrics);
+        if card.picture.size() != size {
+          card.picture.draw(size, |surface| {
+            draw_plain_card(surface, &metrics, &style);
+          });
+          place_card(card, index, &context);
+        }
+        continue;
+      }
       if !force && card.drawn.as_ref() == Some(&picture) {
         continue;
       }
@@ -1352,6 +1366,10 @@ impl Screen {
         }
         self.zoom = None;
         self.celebrate_open();
+        if self.plain_cards {
+          self.plain_cards = false;
+          self.refresh_pictures(false);
+        }
       }
       self.show_backdrop();
     }

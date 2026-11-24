@@ -334,6 +334,14 @@ impl Screen {
     let scene_area = self.scene_area;
     let spread_as = self.spread_as(frame);
 
+    // Opening, they fly out one after another, out from the focused one.
+    let stagger = flies_out.then(|| {
+      (
+        to_ms(frame.style.effects.stagger_ms),
+        to_ms(frame.style.open_duration_ms) / 2.0,
+      )
+    });
+
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
     {
@@ -399,6 +407,26 @@ impl Screen {
           }
         }
       }
+
+      if let (Some((stagger_ms, within_ms)), true) =
+        (stagger, index == selected)
+      {
+        let centers = scene
+          .windows
+          .iter()
+          .map(|window| window.preview.screen_rect.center())
+          .collect::<Vec<_>>();
+        let from = frame.focused_window.and_then(|hwnd| {
+          scene
+            .windows
+            .iter()
+            .position(|window| window.preview.hwnd == hwnd)
+        });
+        let delays = ripple_delays(&centers, from, stagger_ms, within_ms);
+        for (window, delay) in scene.windows.iter_mut().zip(delays) {
+          window.hold_for(delay / 1000.0);
+        }
+      }
     }
 
     // Once its windows head where they settle, so that is where they come
@@ -448,9 +476,50 @@ impl Screen {
   }
 }
 
+/// How long, in ms, each window whose middle is at `centers` holds still
+/// before flying out: `stagger_ms` after the one before, from window
+/// `from` outward (else from their middle), all within `within_ms`.
+fn ripple_delays(
+  centers: &[(f32, f32)],
+  from: Option<usize>,
+  stagger_ms: f32,
+  within_ms: f32,
+) -> Vec<f32> {
+  if centers.len() < 2 || stagger_ms <= 0.0 {
+    return vec![0.0; centers.len()];
+  }
+  #[allow(clippy::cast_precision_loss)]
+  let count = centers.len() as f32;
+  let origin = from.map_or_else(
+    || {
+      let (x, y) = centers
+        .iter()
+        .fold((0.0, 0.0), |(sx, sy), (x, y)| (sx + x, sy + y));
+      (x / count, y / count)
+    },
+    |index| centers[index],
+  );
+  let distance = |(x, y): (f32, f32)| (x - origin.0).hypot(y - origin.1);
+
+  let mut order = (0..centers.len()).collect::<Vec<_>>();
+  order.sort_by(|&a, &b| {
+    distance(centers[a])
+      .total_cmp(&distance(centers[b]))
+      .then(a.cmp(&b))
+  });
+  let step = stagger_ms.min(within_ms.max(0.0) / (count - 1.0));
+  let mut delays = vec![0.0; centers.len()];
+  for (rank, index) in order.into_iter().enumerate() {
+    #[allow(clippy::cast_precision_loss)]
+    let rank = rank as f32;
+    delays[index] = rank * step;
+  }
+  delays
+}
+
 #[cfg(test)]
 mod tests {
-  use super::scene_window_shown;
+  use super::{ripple_delays, scene_window_shown};
   use crate::overview::{
     layout::{RectF, Tile},
     scene::SceneWindow,
@@ -484,5 +553,26 @@ mod tests {
 
     // Not landing, it shows where it is.
     assert_eq!(scene_window_shown(&window, None).0, window.rect());
+  }
+
+  /// The focused window flies first, the others by how far they are from
+  /// it, and many of them still all start within the time given.
+  #[test]
+  fn windows_ripple_out_from_the_focused_one() {
+    let centers = [(1500.0, 500.0), (100.0, 500.0), (900.0, 500.0)];
+    let delays = ripple_delays(&centers, Some(2), 20.0, 140.0);
+    assert_eq!(delays, vec![20.0, 40.0, 0.0]);
+
+    let many = (0..15)
+      .map(|index| {
+        #[allow(clippy::cast_precision_loss)]
+        let x = index as f32 * 100.0;
+        (x, 0.0)
+      })
+      .collect::<Vec<_>>();
+    let delays = ripple_delays(&many, Some(0), 20.0, 140.0);
+    assert!((delays[14] - 140.0).abs() < 1e-3, "{delays:?}");
+
+    assert_eq!(ripple_delays(&centers, None, 0.0, 140.0), vec![0.0; 3]);
   }
 }

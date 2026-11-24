@@ -88,10 +88,12 @@ overview:
     # How it opens and closes: 'zoom' (everything zooms out of the
     # workspace on screen, and back into the one picked), 'fade' or 'none'.
     zoom_style: "zoom"
-    # A quick start and a long, soft landing. Any animation easing works,
-    # e.g. "ease_out" or "spring(1.0, 400, 0.0001)" (which ignores the
-    # durations below).
-    zoom_easing: "cubic_bezier(0.22, 1, 0.36, 1)"
+    # A spring, settling as fast as it can without overshooting. Any
+    # animation easing works: "snappy" (a fast start, a crisp stop),
+    # "ease_out", "spring(0.8, 500)" (some overshoot), or
+    # "cubic_bezier(0.22, 1, 0.36, 1)". A spring ignores the durations
+    # below. For a ripple, set `effects.stagger_ms` too.
+    zoom_easing: "spring"
     open_duration_ms: 280
     close_duration_ms: 220
     # How the large view changes workspace: 'slide', 'fade' or 'miniature'.
@@ -118,7 +120,9 @@ overview:
     exit_particles: "none"
     # A card wobbling as a window lands on it.
     jelly: false
-    # Delay between cards appearing on open, in ms.
+    # Delay between cards appearing on open, and between the exposé's
+    # windows flying out, out from the focused one, in ms. All of them
+    # still start within half of `open_duration_ms`. E.g. 15.
     stagger_ms: 0
     # A hovered card leaning toward the cursor, in pixels.
     lean: 0

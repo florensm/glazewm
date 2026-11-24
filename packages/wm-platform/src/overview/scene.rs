@@ -28,6 +28,10 @@ pub(crate) struct SceneWindow {
   /// Minimized: only the exposé shows it, as a placeholder where it would
   /// be restored to.
   pub is_minimized: bool,
+
+  /// Seconds it still holds still before it moves, e.g. flying out after
+  /// the windows nearer the focused one.
+  hold: f32,
 }
 
 impl SceneWindow {
@@ -50,6 +54,7 @@ impl SceneWindow {
       lift: Spring::new(0.0, settle_ms, 0.0005),
       is_hidden_tab: false,
       is_minimized: false,
+      hold: 0.0,
     }
   }
 
@@ -107,8 +112,17 @@ impl SceneWindow {
     self.rect.kick(dx, dy);
   }
 
+  /// Holds still for `seconds` before it moves on.
+  pub fn hold_for(&mut self, seconds: f32) {
+    self.hold = seconds;
+  }
+
   /// Advances by `dt` seconds. Returns whether it is still moving.
   pub fn step(&mut self, dt: f32) -> bool {
+    if self.hold > 0.0 {
+      self.hold -= dt;
+      return true;
+    }
     self.rect.step(dt) | self.alpha.step(dt) | self.lift.step(dt)
   }
 }
