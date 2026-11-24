@@ -41,8 +41,8 @@ use crate::{
   },
   platform_impl::composition::OverviewBackdrop,
   tab_bar::layout::TabHit,
-  BorderOverlayParams, OverviewBackdropStyle, OverviewEffects,
-  OverviewLayoutMode, OverviewStyle, OverviewWorkspace, OverviewZoomStyle,
+  BorderOverlayParams, OverviewEffects, OverviewLayoutMode, OverviewStyle,
+  OverviewWallpaperStyle, OverviewWorkspace, OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -1031,9 +1031,13 @@ impl Screen {
         }
         let target = window.target();
         let shown = spreads.then_some((target.w, target.h));
-        window
-          .preview
-          .draw_placeholder(title, scale_factor, shown, style, notify);
+        window.preview.draw_placeholder(
+          title,
+          scale_factor,
+          shown,
+          style,
+          notify,
+        );
       }
     }
   }
@@ -1509,7 +1513,7 @@ impl Screen {
 
     let scale_factor = self.metrics.scale_factor;
     let fade = context.fade.clamp(0.0, 1.0);
-    let radius = style.backdrop_frame.corner_radius * scale_factor * fade;
+    let radius = style.corner_radius * scale_factor * fade;
     let padding = self.frame_padding() * fade;
     if let Err(err) =
       backdrop.place_panel(&panel, padding, radius, scale_factor)
@@ -1524,10 +1528,10 @@ impl Screen {
     self
       .style()
       .filter(|style| {
-        style.backdrop_style == OverviewBackdropStyle::Framed
+        style.wallpaper.style == OverviewWallpaperStyle::Framed
           && self.focus.layout.has_scene()
       })
-      .map_or(0.0, |style| self.metrics.px(style.backdrop_frame.padding))
+      .map_or(0.0, |style| self.metrics.px(style.wallpaper.padding))
   }
 
   /// Where the framed backdrop's panel shows now: where the workspace

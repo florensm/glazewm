@@ -275,12 +275,13 @@ pub fn toggle_overview(
   let overview = &config.value.overview;
   let open = OpenOverview {
     accent: overview
+      .look
       .colors
       .accent
       .as_ref()
       .unwrap_or(&config.value.window_effects.focused_window.border.color)
       .resolve(),
-    frame_color: overview.backdrop.frame.color.resolve(),
+    frame_color: overview.wallpaper.color.resolve(),
   };
   let frame = overview_frame(state, &open, config);
   if frame.screens.is_empty() {

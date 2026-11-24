@@ -138,7 +138,7 @@ const SHADOW: (f32, f32) = (22.0, 5.0);
 const MAX_PICTURE_PIXELS: f32 = 8_388_608.0;
 
 /// Corner radius of a card at scale 1, in pixels, rounded by `radius`
-/// logical pixels (see `OverviewStyle::card_corner_radius`).
+/// logical pixels (see `OverviewStyle::corner_radius`).
 pub(crate) fn card_radius(metrics: &CardMetrics, radius: f32) -> f32 {
   radius * metrics.scale_factor * metrics.chrome
 }
@@ -218,7 +218,7 @@ pub(crate) fn draw_plain_card(
   surface.pixels().fill(0);
   surface.canvas().fill_rounded_rect(
     &Rect::from_xy(margin, margin, width, height),
-    round(units.px(style.card_corner_radius)),
+    round(units.px(style.corner_radius)),
     style.card,
   );
 }
@@ -294,7 +294,7 @@ pub(crate) fn draw_card(
     scale_factor: metrics.scale_factor * metrics.chrome,
   };
   let margin = shadow_margin(&metrics);
-  let radius = round(units.px(style.card_corner_radius));
+  let radius = round(units.px(style.corner_radius));
   let (blur, drop) = SHADOW;
 
   surface.pixels().fill(0);
@@ -329,7 +329,7 @@ fn draw_face(
 
   surface.pixels().fill(0);
   let card = Rect::from_xy(0, 0, surface.width, surface.height);
-  let radius = round(units.px(style.card_corner_radius));
+  let radius = round(units.px(style.corner_radius));
 
   let is_inviting = picture.is_special && picture.is_receiving;
 
@@ -413,7 +413,7 @@ fn draw_face(
     CardLook::Classic => 4.0_f32,
     CardLook::Clean => 6.0,
   }
-  .min(style.card_corner_radius);
+  .min(style.corner_radius);
   for tile in &picture.tiles {
     draw_tile(
       surface,
@@ -1006,7 +1006,7 @@ pub(crate) fn draw_placeholder(
 
   // Gray, with the wallpaper showing through a little, as it isn't really
   // there; a faint title bar and a light edge make it read as a window.
-  let radius = round(units.px(style.card_corner_radius));
+  let radius = round(units.px(style.corner_radius));
   let bar = units.px(26.0).min(height / 4.0);
   surface.pixels().fill(0);
   {
@@ -1972,18 +1972,17 @@ mod tests {
       a: 255,
     };
     let style = OverviewStyle {
-      backdrop_blur: 30.0,
-      backdrop_tint: color,
-      backdrop_style: crate::OverviewBackdropStyle::default(),
-      backdrop_frame: crate::OverviewBackdropFrame {
+      wallpaper: crate::OverviewWallpaper {
+        style: crate::OverviewWallpaperStyle::default(),
         color,
-        corner_radius: 16.0,
         padding: 32.0,
         shadow: true,
+        blur: 30.0,
+        tint: color,
       },
       accent: color,
       card: color,
-      card_corner_radius: 14.0,
+      corner_radius: 14.0,
       surface: color,
       caption: color,
       text: color,

@@ -1,10 +1,12 @@
 # Opened by `toggle-overview`. As set here, it is a calm, OS-like exposé:
-# the desktop zooms out onto a rounded slab of wallpaper, the windows spread
-# out over it, and a slim strip of the other workspaces sits along the top.
+# the desktop zooms out onto a rounded slab of wallpaper, the windows gather
+# in the middle, and a slim strip of the other workspaces sits along the top.
+# Every option, colors and timings included, is in docs/features/overview.md.
 overview:
-  # 'expose' (the shown workspace's windows spread out side by side, every
-  # stack tab included), 'activities' (them as laid out) or 'stack' (every
-  # workspace stacked top to bottom). Tab switches while open.
+  # 'expose' (the shown workspace's windows gathered in the middle, every
+  # stack tab and minimized window included), 'activities' (them as laid
+  # out) or 'stack' (every workspace stacked top to bottom). Tab switches
+  # while open.
   layout: "expose"
 
   # The other workspaces over the large view: 'compact' (a slim strip, as
@@ -12,122 +14,28 @@ overview:
   # (arrows, the wheel and alt+digits still go through them).
   workspace_row: "compact"
 
-  # The "Type to search" field along the bottom. Typing searches anyway,
-  # and F1 shows the shortcuts.
-  search_hint: false
+  # Opening the overview by resting the cursor in a corner: 'top_left',
+  # 'top_right', 'bottom_left' or 'bottom_right', after `delay_ms`.
+  # hot_corner:
+  #   corner: "top_left"
+  #   delay_ms: 300
 
-  # The exposé spreads the windows out over all the room, each about where
-  # it sits on screen, at least `gap` pixels apart. For rows instead, set
-  # `arrangement: "natural"` (or "grid", all of a row as tall) and
-  # optionally `max_per_row`.
-  expose:
-    gap: 28
+  look:
+    # Rounding of the cards, the wallpaper's slab and the windows on them;
+    # 0 for square corners.
+    corner_radius: 14
+    # Rings and highlights. Defaults to the focused window's border
+    # color; "accent" is your Windows accent color.
+    # colors:
+    #   accent: "accent"
 
-  # How large the stack shows a workspace, as a part of the screen's
-  # width: 0.2 to 0.9.
-  stack:
-    zoom: 0.5
-
-  # A scrolling workspace large in the activities: 'visible' (the columns
-  # on screen) or 'whole' (the whole strip, scaled to fit).
-  strip_view: "visible"
-
-  # Rounding of the cards and the windows on them; 0 for square corners.
-  card_corner_radius: 14
-  # Falls back to Segoe UI on Windows 10.
-  font_family: "Segoe UI Variable Text"
-
-  # Opening the overview by resting the cursor in a corner: 'none',
-  # 'top_left', 'top_right', 'bottom_left' or 'bottom_right', after
-  # `delay_ms`.
-  hot_corner:
-    corner: "none"
-    delay_ms: 300
-
-  # What shows behind the cards.
-  backdrop:
-    # 'framed' (the desktop shrinks onto a rounded slab of sharp wallpaper)
-    # or 'blur' (the wallpaper blurred and tinted over the whole screen).
+  wallpaper:
+    # 'framed' (the desktop shrinks onto a rounded slab of sharp
+    # wallpaper) or 'blurred' (the wallpaper blurred and tinted over the
+    # whole screen).
     style: "framed"
-    # For 'framed'.
-    frame:
-      # Around the slab; "accent" for your Windows accent color.
-      color: "#141416ff"
-      corner_radius: 14
-      # Wallpaper showing around the windows on the slab.
-      padding: 24
-      shadow: true
-    # For 'blur': its radius, and a tint whose alpha sets how dark it gets.
-    blur: 40
-    tint: "#00000066"
-
-  colors:
-    # Rings and highlights. Defaults to the focused window's border color;
-    # "accent" is your Windows accent color.
-    # accent: "accent"
-    # Workspace cards, hovered cards and window title strips.
-    card: "#1c1c20e6"
-    surface: "#2a2a30ff"
-    caption: "#141418c7"
-    text: "#f2f2f5ff"
-    subtext: "#b4b4bcff"
-    # What matched, in the search box's list.
-    search: "#89b4faff"
-
-  # Marks the picked window: 'ring', 'glow' or 'none'. Width is the ring's
-  # thickness or the glow's reach; gap is the space to the window.
-  window_highlight:
-    style: "ring"
-    width: 2
-    gap: 0
 
   animation:
     # How it opens and closes: 'zoom' (everything zooms out of the
     # workspace on screen, and back into the one picked), 'fade' or 'none'.
-    zoom_style: "zoom"
-    # A spring, settling as fast as it can without overshooting. Any
-    # animation easing works: "snappy" (a fast start, a crisp stop),
-    # "ease_out", "spring(0.8, 500)" (some overshoot), or
-    # "cubic_bezier(0.22, 1, 0.36, 1)". A spring ignores the durations
-    # below. For a ripple, set `effects.stagger_ms` too.
-    zoom_easing: "spring"
-    open_duration_ms: 280
-    close_duration_ms: 220
-    # How the large view changes workspace: 'slide', 'fade' or 'miniature'.
-    switch_style: "slide"
-    switch_duration_ms: 260
-    # Highlights settling on what they mark next.
-    highlight_duration_ms: 140
-    # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
-    bounce: 0
-
-  # Flourishes, all off but the picked window growing a little.
-  effects:
-    # Accent glow around the selected workspace, optionally breathing.
-    glow: false
-    pulse: false
-    # Rings out of a clicked card, and into a closed window's spot.
-    ripples: false
-    # Particles where a dropped window lands, off a closed window, as it
-    # opens and as it closes: 'none', or styles as for
-    # `animations.particles`.
-    drop_particles: "none"
-    close_particles: "none"
-    open_particles: "none"
-    exit_particles: "none"
-    # A card wobbling as a window lands on it.
-    jelly: false
-    # Delay between cards appearing on open, and between the exposé's
-    # windows flying out, out from the focused one, in ms. All of them
-    # still start within half of `open_duration_ms`. E.g. 15.
-    stagger_ms: 0
-    # A hovered card leaning toward the cursor, in pixels.
-    lean: 0
-    # Other cards dimming while one is hovered: 0 to 1.
-    dim: 0
-    # A dragged window stretching with its speed: 0 to 1.
-    squash: 0
-    # Fading outlines trailing a dragged window: 0 to 8.
-    trail: 0
-    # How much the picked window grows: 0 to 0.15.
-    window_lift: 0.025
+    style: "zoom"

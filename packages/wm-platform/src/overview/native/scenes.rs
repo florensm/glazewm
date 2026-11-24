@@ -16,8 +16,7 @@ use crate::{
     scene::{Scene, SceneWindow},
     state::ScreenFocus,
   },
-  OverviewExposeArrangement, OverviewStripView, OverviewSwitchStyle,
-  OverviewWorkspace,
+  OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -74,9 +73,6 @@ struct Spread {
   area: RectF,
   /// Space between windows, in physical pixels.
   gap: f32,
-  max_scale: f32,
-  max_per_row: usize,
-  arrangement: OverviewExposeArrangement,
 }
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
@@ -128,14 +124,7 @@ fn spread_windows(
     .collect::<Vec<_>>();
   let screen_rects =
     shown.iter().map(|(_, rect)| *rect).collect::<Vec<_>>();
-  let slots = spread(
-    &screen_rects,
-    &how.area,
-    how.gap,
-    how.max_scale,
-    how.max_per_row,
-    how.arrangement,
-  );
+  let slots = spread(&screen_rects, &how.area, how.gap);
 
   let mut rects = vec![None; scene.windows.len()];
   for ((index, _), slot) in shown.iter().zip(slots) {
@@ -440,17 +429,9 @@ impl Screen {
 
   /// How the exposé spreads a scene of `frame` over the scene area.
   fn spread_as(&self, frame: &ScreenFrame) -> Spread {
-    let area = self.scene_area;
-    let monitor = RectF::from_rect(&frame.rect);
-    let expose = frame.style.expose;
     Spread {
-      area,
-      gap: self.metrics.px(expose.gap.max(0.0)),
-      // Never larger than the activities show them.
-      max_scale: (area.w / monitor.w).min(area.h / monitor.h).max(0.0),
-      max_per_row: usize::try_from(expose.max_per_row)
-        .unwrap_or(usize::MAX),
-      arrangement: expose.arrangement,
+      area: self.scene_area,
+      gap: self.metrics.px(frame.style.expose.gap.max(0.0)),
     }
   }
 

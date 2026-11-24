@@ -8,8 +8,8 @@ use wm_common::{
 };
 use wm_platform::{
   NativeBackdropOverlay, NativeBorderOverlay, OverlayParams,
-  OverviewBackdropFrame, OverviewCurve, OverviewFrame, OverviewOverlay,
-  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
+  OverviewCurve, OverviewFrame, OverviewOverlay, OverviewOverlayKind,
+  OverviewScreen, OverviewStyle, OverviewWallpaper, OverviewWindow,
   OverviewWorkspace, Rect, TabFrame,
 };
 
@@ -57,6 +57,9 @@ pub(super) fn overview_frame(
     .collect();
 
   let overview = &config.value.overview;
+  let (look, wallpaper, animation) =
+    (&overview.look, &overview.wallpaper, &overview.animation);
+  let colors = &look.colors;
 
   OverviewFrame {
     screens,
@@ -65,40 +68,33 @@ pub(super) fn overview_frame(
       .and_then(|focused| focused.as_window_container().ok())
       .map(|window| window.native().id().0),
     style: OverviewStyle {
-      backdrop_blur: overview.backdrop.blur,
-      backdrop_tint: overview.backdrop.tint,
-      backdrop_style: overview.backdrop.style,
-      backdrop_frame: OverviewBackdropFrame {
+      wallpaper: OverviewWallpaper {
+        style: wallpaper.style,
         color: open.frame_color,
-        corner_radius: overview.backdrop.frame.corner_radius,
-        padding: overview.backdrop.frame.padding,
-        shadow: overview.backdrop.frame.shadow,
+        padding: wallpaper.padding,
+        shadow: wallpaper.shadow,
+        blur: wallpaper.blur,
+        tint: wallpaper.tint,
       },
       accent: open.accent,
-      card: overview.colors.card,
-      card_corner_radius: overview.card_corner_radius.max(0.0),
-      surface: overview.colors.surface,
-      caption: overview.colors.caption,
-      text: overview.colors.text,
-      subtext: overview.colors.subtext,
-      search: overview.colors.search,
-      font_family: overview.font_family.clone(),
-      zoom_style: overview.animation.zoom_style,
-      zoom_curve: zoom_curve(&overview.animation.zoom_easing),
-      open_duration_ms: overview
-        .animation
-        .zoom_easing
-        .duration_ms(overview.animation.open_duration_ms),
-      close_duration_ms: overview
-        .animation
-        .zoom_easing
-        .duration_ms(overview.animation.close_duration_ms),
-      switch_style: overview.animation.switch_style,
-      switch_duration_ms: overview.animation.switch_duration_ms,
-      highlight_duration_ms: overview.animation.highlight_duration_ms,
-      bounce: overview.animation.bounce,
+      card: colors.card,
+      corner_radius: look.corner_radius.max(0.0),
+      surface: colors.surface,
+      caption: colors.caption,
+      text: colors.text,
+      subtext: colors.subtext,
+      search: colors.search,
+      font_family: look.font_family.clone(),
+      zoom_style: animation.style,
+      zoom_curve: zoom_curve(&animation.easing),
+      open_duration_ms: animation.easing.duration_ms(animation.open_ms),
+      close_duration_ms: animation.easing.duration_ms(animation.close_ms),
+      switch_style: animation.switch,
+      switch_duration_ms: animation.switch_ms,
+      highlight_duration_ms: animation.highlight_ms,
+      bounce: animation.bounce,
       effects: overview.effects,
-      window_highlight: overview.window_highlight,
+      window_highlight: look.window_highlight,
       strip_view: overview.strip_view,
       stack: overview.stack,
       expose: overview.expose,

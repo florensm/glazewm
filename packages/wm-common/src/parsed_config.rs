@@ -4,8 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
-  OpacityValue, OverviewBackdropStyle, OverviewEffects, OverviewExpose,
-  OverviewStack, OverviewStripView, OverviewSwitchStyle,
+  OpacityValue, OverviewEffects, OverviewExpose, OverviewStack,
+  OverviewStripView, OverviewSwitchStyle, OverviewWallpaperStyle,
   OverviewWindowHighlight, OverviewWorkspaceRow, OverviewZoomStyle,
   ParticleEffects, ParticleLook, RectDelta,
 };
@@ -669,8 +669,8 @@ pub struct KeybindingConfig {
   pub cooldown_ms: Option<u32>,
 }
 
-/// Look of the window overview opened by `toggle-overview`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// The window overview opened by `toggle-overview`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewConfig {
   /// Layout `toggle-overview` opens on, unless it names one.
@@ -686,14 +686,6 @@ pub struct OverviewConfig {
   /// How much of a scrolling workspace's strip the activities show.
   pub strip_view: OverviewStripView,
 
-  /// Corner radius of a workspace card, in logical pixels, which the
-  /// windows drawn on it are rounded by too, at most their own few
-  /// pixels: `0` for square ones, e.g. to go with square windows.
-  pub card_corner_radius: f32,
-
-  /// Font of the overview's text; Segoe UI when it isn't installed.
-  pub font_family: String,
-
   /// Opening the overview by resting the cursor in a corner.
   pub hot_corner: OverviewHotCornerConfig,
 
@@ -703,40 +695,18 @@ pub struct OverviewConfig {
   /// How the stack shows the workspaces.
   pub stack: OverviewStack,
 
+  /// Corners, font, colors and the window highlight.
+  pub look: OverviewLookConfig,
+
   /// What shows behind the cards.
-  pub backdrop: OverviewBackdropConfig,
-
-  pub colors: OverviewColorsConfig,
-
-  /// How the selected or hovered window is marked.
-  pub window_highlight: OverviewWindowHighlight,
+  pub wallpaper: OverviewWallpaperConfig,
 
   /// Opening, closing and moving between selections and layouts.
   pub animation: OverviewAnimationConfig,
 
-  /// Glow, ripples and particles, each of which can be turned off.
+  /// Flourishes, all off by default but the picked window growing a
+  /// little. Left out of the sample config and the main docs.
   pub effects: OverviewEffects,
-}
-
-impl Default for OverviewConfig {
-  fn default() -> Self {
-    Self {
-      layout: OverviewLayout::default(),
-      workspace_row: OverviewWorkspaceRow::default(),
-      search_hint: false,
-      strip_view: OverviewStripView::default(),
-      card_corner_radius: 14.0,
-      font_family: "Segoe UI Variable Text".to_string(),
-      hot_corner: OverviewHotCornerConfig::default(),
-      expose: OverviewExpose::default(),
-      stack: OverviewStack::default(),
-      backdrop: OverviewBackdropConfig::default(),
-      colors: OverviewColorsConfig::default(),
-      window_highlight: OverviewWindowHighlight::default(),
-      animation: OverviewAnimationConfig::default(),
-      effects: OverviewEffects::default(),
-    }
-  }
 }
 
 /// Opening the overview by resting the cursor in a corner of a monitor.
@@ -761,30 +731,69 @@ impl Default for OverviewHotCornerConfig {
   }
 }
 
-/// What shows behind the overview's cards.
+/// How the overview's cards, text and highlights look.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
-pub struct OverviewBackdropConfig {
-  /// The blurred wallpaper, or the sharp wallpaper framed on a panel.
-  pub style: OverviewBackdropStyle,
+pub struct OverviewLookConfig {
+  /// Corner radius of the cards and the framed wallpaper's panel, in
+  /// logical pixels, which the windows on them are rounded by too, at
+  /// most their own few pixels: `0` for square ones.
+  pub corner_radius: f32,
 
-  /// Blur radius of the wallpaper behind the cards.
+  /// Font of the overview's text; Segoe UI when it isn't installed.
+  pub font_family: String,
+
+  pub colors: OverviewColorsConfig,
+
+  /// How the selected or hovered window is marked.
+  pub window_highlight: OverviewWindowHighlight,
+}
+
+impl Default for OverviewLookConfig {
+  fn default() -> Self {
+    Self {
+      corner_radius: 14.0,
+      font_family: "Segoe UI Variable Text".to_string(),
+      colors: OverviewColorsConfig::default(),
+      window_highlight: OverviewWindowHighlight::default(),
+    }
+  }
+}
+
+/// The wallpaper behind the overview's cards.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewWallpaperConfig {
+  /// The sharp wallpaper framed on a panel, or the blurred wallpaper.
+  pub style: OverviewWallpaperStyle,
+
+  /// Around the framed panel, given like a border's color (see
+  /// [`BorderColorSource`]), e.g. `"accent"` for the OS accent color.
+  pub color: BorderColorSource,
+
+  /// Wallpaper showing around the shown workspace's windows on the
+  /// framed panel, in logical pixels.
+  pub padding: f32,
+
+  /// Whether the framed panel casts a soft shadow.
+  pub shadow: bool,
+
+  /// Blur radius of the blurred wallpaper.
   pub blur: f32,
 
   /// Tint over the blurred wallpaper; its alpha is how dark it gets.
   pub tint: Color,
-
-  /// Look of the `framed` backdrop.
-  pub frame: OverviewBackdropFrameConfig,
 }
 
-impl Default for OverviewBackdropConfig {
+impl Default for OverviewWallpaperConfig {
   fn default() -> Self {
     Self {
-      style: OverviewBackdropStyle::default(),
+      style: OverviewWallpaperStyle::default(),
+      color: BorderColorSource::Value("#141416ff".to_string()),
+      padding: 24.0,
+      shadow: true,
       blur: 40.0,
       tint: rgba(0x0000_0066),
-      frame: OverviewBackdropFrameConfig::default(),
     }
   }
 }
@@ -835,31 +844,31 @@ impl Default for OverviewColorsConfig {
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewAnimationConfig {
   /// How the overview opens and closes.
-  pub zoom_style: OverviewZoomStyle,
+  pub style: OverviewZoomStyle,
 
   /// Pace of the open and close, written as an animation's `easing`. A
   /// spring takes as long as it needs to settle, whatever the durations.
-  pub zoom_easing: EasingFunction,
+  pub easing: EasingFunction,
 
   /// Length of the open; `0` opens it instantly.
-  pub open_duration_ms: u32,
+  pub open_ms: u32,
 
   /// Length of the close, into the picked workspace; `0` closes it
   /// instantly.
-  pub close_duration_ms: u32,
+  pub close_ms: u32,
 
   /// How the activities change the workspace they show large.
-  pub switch_style: OverviewSwitchStyle,
+  pub switch: OverviewSwitchStyle,
 
   /// About how long cards and windows take to move to a new selection or
   /// layout, e.g. the shown workspace sliding over to the next; `0` moves
   /// them at once.
-  pub switch_duration_ms: u32,
+  pub switch_ms: u32,
 
   /// How long the selection and hover highlights take to settle onto
   /// what they mark next and to fade in or out, as the shortcut sheet
   /// does; `0` snaps them.
-  pub highlight_duration_ms: u32,
+  pub highlight_ms: u32,
 
   /// How far cards and windows overshoot where they head before settling
   /// back, from `0` (not at all) to `0.8` (wobbly).
@@ -869,13 +878,13 @@ pub struct OverviewAnimationConfig {
 impl Default for OverviewAnimationConfig {
   fn default() -> Self {
     Self {
-      zoom_style: OverviewZoomStyle::default(),
-      zoom_easing: EasingFunction::CubicBezier(0.22, 1.0, 0.36, 1.0),
-      open_duration_ms: 280,
-      close_duration_ms: 220,
-      switch_style: OverviewSwitchStyle::default(),
-      switch_duration_ms: 260,
-      highlight_duration_ms: 140,
+      style: OverviewZoomStyle::default(),
+      easing: EasingFunction::Spring(SpringParams::default()),
+      open_ms: 280,
+      close_ms: 220,
+      switch: OverviewSwitchStyle::default(),
+      switch_ms: 260,
+      highlight_ms: 140,
       bounce: 0.0,
     }
   }
@@ -885,36 +894,6 @@ impl Default for OverviewAnimationConfig {
 const fn rgba(hex: u32) -> Color {
   let [r, g, b, a] = hex.to_be_bytes();
   Color { r, g, b, a }
-}
-
-/// Look of the overview's `framed` backdrop.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, rename_all(serialize = "camelCase"))]
-pub struct OverviewBackdropFrameConfig {
-  /// Around the panel, given like a border's color (see
-  /// [`BorderColorSource`]), e.g. `"accent"` for the OS accent color.
-  pub color: BorderColorSource,
-
-  /// Of the panel's corners once open, in logical pixels.
-  pub corner_radius: f32,
-
-  /// Wallpaper showing around the shown workspace's windows, on the
-  /// panel, in logical pixels.
-  pub padding: f32,
-
-  /// Whether the panel casts a soft shadow.
-  pub shadow: bool,
-}
-
-impl Default for OverviewBackdropFrameConfig {
-  fn default() -> Self {
-    Self {
-      color: BorderColorSource::Value("#141416ff".to_string()),
-      corner_radius: 14.0,
-      padding: 24.0,
-      shadow: true,
-    }
-  }
 }
 
 /// How the overview lays out the workspaces.
@@ -2884,9 +2863,10 @@ mod tests {
     BorderGlowConfig, Color, EasingFunction, GapsConfig, GeneralConfig,
     GrabAndMoveConfig, GrabDraw, GrabModifier, HotCorner, LengthValue,
     OverviewConfig, OverviewEffects, OverviewLayout, OverviewSwitchStyle,
-    OverviewZoomStyle, ParticlesConfig, ScrollingLayoutConfig,
-    SpringParams, WindowEffectConfig, WindowEffectsConfig,
-    WorkspaceSwitchAnimationConfig, WorkspaceSwitchStyle,
+    OverviewWallpaperStyle, OverviewZoomStyle, ParticlesConfig,
+    ScrollingLayoutConfig, SpringParams, WindowEffectConfig,
+    WindowEffectsConfig, WorkspaceSwitchAnimationConfig,
+    WorkspaceSwitchStyle,
   };
 
   /// Grabbing is off by default, and only `alt` and `win` are modifiers.
@@ -3126,42 +3106,33 @@ mod tests {
     let config =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({
         "animation": {
-          "zoom_style": "fade",
-          "zoom_easing": "spring(1.0, 600, 0.001)",
-          "switch_style": "miniature",
+          "style": "fade",
+          "easing": "spring(1.0, 600, 0.001)",
+          "switch": "miniature",
         },
       }))
       .expect("parses");
 
-    assert_eq!(config.animation.zoom_style, OverviewZoomStyle::Fade);
-    assert_eq!(
-      config.animation.switch_style,
-      OverviewSwitchStyle::Miniature
-    );
-    assert!(matches!(
-      config.animation.zoom_easing,
-      EasingFunction::Spring(_)
-    ));
+    assert_eq!(config.animation.style, OverviewZoomStyle::Fade);
+    assert_eq!(config.animation.switch, OverviewSwitchStyle::Miniature);
+    assert!(matches!(config.animation.easing, EasingFunction::Spring(_)));
     // The rest of the group keeps its defaults.
-    assert_eq!(config.animation.open_duration_ms, 280);
+    assert_eq!(config.animation.open_ms, 280);
 
     assert_eq!(
       easing("snappy").ok(),
       Some(EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0))
     );
 
-    // As the sample config and the docs write the default.
+    // As the docs write the default.
     assert_eq!(
-      easing("cubic_bezier(0.22, 1, 0.36, 1)").ok(),
-      Some(OverviewConfig::default().animation.zoom_easing)
+      easing("spring").ok(),
+      Some(OverviewConfig::default().animation.easing)
     );
 
     let defaults = OverviewConfig::default();
-    assert_eq!(defaults.animation.zoom_style, OverviewZoomStyle::Zoom);
-    assert_eq!(
-      defaults.animation.switch_style,
-      OverviewSwitchStyle::Slide
-    );
+    assert_eq!(defaults.animation.style, OverviewZoomStyle::Zoom);
+    assert_eq!(defaults.animation.switch, OverviewSwitchStyle::Slide);
   }
 
   #[test]
@@ -3169,46 +3140,46 @@ mod tests {
     let config =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({
         "hot_corner": { "corner": "top_left" },
-        "backdrop": { "blur": 12, "frame": { "padding": 8 } },
-        "colors": { "card": "#ff0000ff" },
+        "wallpaper": { "style": "blurred", "blur": 12, "padding": 8 },
+        "look": { "colors": { "card": "#ff0000ff" } },
       }))
       .expect("parses");
 
     assert_eq!(config.hot_corner.corner, HotCorner::TopLeft);
     assert_eq!(config.hot_corner.delay_ms, 300);
-    assert!((config.backdrop.blur - 12.0).abs() < f32::EPSILON);
-    assert!((config.backdrop.frame.padding - 8.0).abs() < f32::EPSILON);
-    assert_eq!(config.backdrop.tint, rgba(0x0000_0066));
-    assert_eq!(config.colors.card, rgba(0xff00_00ff));
-    assert_eq!(config.colors.text, rgba(0xf2f2_f5ff));
+    assert_eq!(config.wallpaper.style, OverviewWallpaperStyle::Blurred);
+    assert!((config.wallpaper.blur - 12.0).abs() < f32::EPSILON);
+    assert!((config.wallpaper.padding - 8.0).abs() < f32::EPSILON);
+    assert_eq!(config.wallpaper.tint, rgba(0x0000_0066));
+    assert_eq!(config.look.colors.card, rgba(0xff00_00ff));
+    assert_eq!(config.look.colors.text, rgba(0xf2f2_f5ff));
 
     let defaults = OverviewConfig::default();
-    assert!((defaults.card_corner_radius - 14.0).abs() < f32::EPSILON);
-    assert_eq!(defaults.font_family, "Segoe UI Variable Text");
+    assert_eq!(defaults.wallpaper.style, OverviewWallpaperStyle::Framed);
+    assert!((defaults.look.corner_radius - 14.0).abs() < f32::EPSILON);
+    assert_eq!(defaults.look.font_family, "Segoe UI Variable Text");
   }
 
   #[test]
   fn overview_window_highlight_reads_partial_settings() {
     let config =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({
-        "window_highlight": { "style": "glow", "width": 6 },
+        "look": { "window_highlight": { "style": "glow", "width": 6 } },
       }))
       .expect("parses");
 
-    assert_eq!(
-      config.window_highlight.style,
-      OverviewWindowHighlightStyle::Glow
-    );
-    assert!((config.window_highlight.width - 6.0).abs() < f32::EPSILON);
-    assert!(config.window_highlight.gap.abs() < f32::EPSILON);
+    let highlight = config.look.window_highlight;
+    assert_eq!(highlight.style, OverviewWindowHighlightStyle::Glow);
+    assert!((highlight.width - 6.0).abs() < f32::EPSILON);
+    assert!(highlight.gap.abs() < f32::EPSILON);
 
     let none =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({
-        "window_highlight": { "style": "none" },
+        "look": { "window_highlight": { "style": "none" } },
       }))
       .expect("parses");
     assert_eq!(
-      none.window_highlight.style,
+      none.look.window_highlight.style,
       OverviewWindowHighlightStyle::None
     );
   }

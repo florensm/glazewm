@@ -12,12 +12,12 @@ wallpaper, and a slim strip of the other workspaces along the top.
 On open, each monitor's overview zooms out of the workspace it shows, as
 one piece, as hyprexpo and niri do: the windows start exactly where they
 are on screen and fly out into the layout, while the desktop shrinks
-onto a rounded slab of its wallpaper (or, with `backdrop.style: "blur"`,
-the wallpaper blurs; see [Backdrop](#backdrop)); the names and highlights only fade in as it settles, and fade out
+onto a rounded slab of its wallpaper (or, with `wallpaper.style:
+"blurred"`, the wallpaper blurs; see [Wallpaper](#wallpaper)); the names and highlights only fade in as it settles, and fade out
 as soon as it closes. On close, it zooms back into the workspace you
 picked, by keyboard or mouse alike, and on the other monitors (or all of
 them, when cancelled) into the workspace they show, until the windows sit
-where they really are. `animation.zoom_style` picks a fade instead, or neither (see
+where they really are. `animation.style` picks a fade instead, or neither (see
 [Zoom](#zoom)).
 
 Windows look in the overview as they do on screen, with their
@@ -52,19 +52,14 @@ strips at full length, to move windows between them.
   middle, and the wheel turned sideways (or with `Shift`) pans it by hand
   (see [Scrolling workspaces](#scrolling-workspaces)).
 - **Exposé** (default), for finding a window: the activities' row of
-  miniatures, and below it the shown workspace's windows spread out over
-  all the room, as macOS's Mission Control does (`expose.arrangement:
-  "free"`, the default): each about where it sits on screen, all scaled
-  alike (none over 85% of the room), pushed apart where they'd overlap,
-  at least about `gap` apart, and spread out to reach the room's edges.
-  Or in rows each scaled to fill the room's width (but never larger than
-  in the activities): in a row, windows keep their sizes relative to
-  each other, centered on it (`"natural"`), or are all as tall, as a
-  photo grid lays out pictures (`"grid"`). Every tab of its
-  stacks shows too, each a window of its own. Rows follow where the
-  windows sit on screen, top to bottom and left to right, as many as cover
-  the most room; `expose.max_per_row` caps how many go in a row, e.g. to
-  wrap a scrolling workspace's columns onto rows, the left ones on top.
+  miniatures, and below it the shown workspace's windows gathered as one
+  cluster in the middle of the room, as macOS's Mission Control does:
+  each about where it sits on screen relative to the others, all scaled
+  alike, pushed apart only where they'd be under `expose.gap` apart. The
+  cluster takes at most 85% of the room either way, and shows no window
+  larger than it is, so a few windows stay close together rather than
+  spread to the edges. Every tab of its stacks shows too, each a window
+  of its own.
   Opening, they fly out of where they are; closing, they fly back as the
   zoom lands, the picked one over the others and, of a stack, shown on it.
   A window dropped on another lands beside it, on the side nearest the
@@ -102,11 +97,11 @@ down, and an arrow or wheel step with nowhere to go bumps the selection
 that way. A dragged window pops up under the cursor and trails it, and
 once let go of flies into the card it lands on, or back home if it moved
 nowhere. Flourishes can join in, all off by default (see
-`overview.effects`): a ripple and a burst of particles out of the card
+[Experimental effects](#experimental-effects)): a ripple and a burst of particles out of the card
 a window lands on, a soft glow following the selection, and more. In the
 activities, a newly shown workspace slides in from the side its miniature
 is on while the last one slides out the other way, as a workspace switch
-does (`animation.switch_style` picks a fade, or the windows flying out of their
+does (`animation.switch` picks a fade, or the windows flying out of their
 miniature instead). A click on a workspace goes there at once, zooming
 into it as `Enter` does: in the activities, a workspace not shown yet
 starts coming in, and its windows land where they really are as the zoom
@@ -236,7 +231,7 @@ closes.
 ### Monitors
 
 Each monitor shows the workspaces on it, and the keyboard is on one
-monitor at a time: the focused one at first. A ring in `colors.accent`
+monitor at a time: the focused one at first. A ring in `look.colors.accent`
 around its edges shows which.
 
 - An arrow with nothing that way on a monitor goes on to the nearest
@@ -263,7 +258,7 @@ idle, a "Type to search" field sits at the bottom of every monitor; once
 something is typed, a search box takes its place near the top: the
 query, which match it is on (e.g. "2 of 5"), and a list of the matches,
 best first, each with its app's icon, its title and process with what
-matched lit in `colors.search`, and its workspace. The list shows six at
+matched lit in `look.colors.search`, and its workspace. The list shows six at
 a time and scrolls to keep its match in view. Windows that don't match
 fade to a quarter, workspaces with none dim as a whole, and in the
 activities' large view the matches grow a little. In the exposé, the
@@ -370,35 +365,37 @@ show it.
 
 ### Zoom
 
-| `animation.zoom_style` | Open | Close |
+| `animation.style` | Open | Close |
 | --- | --- | --- |
 | `zoom` (default) | Everything zooms out of the workspace on screen as one. | Everything zooms into the picked workspace until it fills the screen. |
 | `fade` | It fades in over the desktop, settling from 5% larger. | It fades out, growing, onto the desktop with the pick carried out. |
 | `none` | At once. | At once. |
 
-`animation.zoom_easing` paces both, as any animation's `easing` does: a named curve
-(`ease_out`, `ease_in_out_cubic`, `snappy` for a fast start and a crisp stop, ...), `cubic_bezier(x1, y1, x2, y2)`,
-or `spring(damping_ratio, stiffness, epsilon)`, which takes as long as it
-needs to settle whatever `animation.open_duration_ms` and `animation.close_duration_ms` say.
+`animation.easing` paces both, as any animation's `easing` does: a
+spring (`spring`, the default, settling as fast as it can without
+overshooting, or `spring(damping_ratio, stiffness, epsilon)`), which
+takes as long as it needs to settle whatever `animation.open_ms` and
+`animation.close_ms` say, a named curve (`ease_out`, `snappy` for a fast
+start and a crisp stop, ...) or `cubic_bezier(x1, y1, x2, y2)`.
 A curve or spring overshooting makes the zoom swing past and back; the
 fades stay within their range.
 
-| `animation.switch_style` | A workspace newly shown in the activities |
+| `animation.switch` | A workspace newly shown in the activities |
 | --- | --- |
 | `slide` (default) | Slides in from the side its miniature is on, the last one sliding out the other way. |
 | `fade` | Fades in in place as the last one fades out. |
 | `miniature` | Its windows fly out of its miniature, the last one's back into theirs. |
 
 
-### Backdrop
+### Wallpaper
 
-| `backdrop.style` | Behind the overview |
+| `wallpaper.style` | Behind the overview |
 | --- | --- |
-| `framed` (default) | The wallpaper, sharp, on a rounded panel over `backdrop.frame.color`: the desktop shrinks as a whole. |
-| `blur` | The wallpaper over the whole screen, blurred by `backdrop.blur` and tinted by `backdrop.tint`. |
+| `framed` (default) | The wallpaper, sharp, on a rounded panel over `wallpaper.color`: the desktop shrinks as a whole. |
+| `blurred` | The wallpaper over the whole screen, blurred by `wallpaper.blur` and tinted by `wallpaper.tint`. |
 
 The framed panel sits where the shown workspace does: in the activities
-and the exposé, behind the large workspace, `backdrop.frame.padding`
+and the exposé, behind the large workspace, `wallpaper.padding`
 past its windows, sliding with it; in the stack, under the
 selected card, whose background then covers it. It starts out over the
 whole screen and shrinks with the zoom, its corners rounding off and its
@@ -406,211 +403,73 @@ shadow fading in as it does, so nothing jumps as it opens or closes.
 
 ## Config
 
-```yaml
-overview:
-  # Layout `toggle-overview` opens on: "expose", "activities" or
-  # "stack".
-  layout: "expose"
-
-  # Whether the activities and the exposé show their row of miniatures:
-  # "compact" (a slim strip, as macOS's Spaces bar and Windows' Task View
-  # show their desktops), "shown" (larger) or "hidden" (see "Layouts"
-  # above).
-  workspace_row: "compact"
-
-  # Whether the "Type to search" field shows along the bottom. Without
-  # it, typing still searches and `F1` still shows the shortcuts.
-  search_hint: false
-
-  # How much of a scrolling workspace the activities show large: "visible"
-  # (the columns on screen) or "whole" (the whole strip, scaled to fit).
-  strip_view: "visible"
-
-  # Corner radius of a workspace card, in logical pixels, which the
-  # windows drawn on it are rounded by too (at most their own few pixels).
-  # 0 makes them square, e.g. to go with square windows.
-  card_corner_radius: 14
-
-  # Font of the overview's text, drawn with DirectWrite. Segoe UI when the
-  # family isn't installed (Segoe UI Variable is Windows 11's).
-  font_family: "Segoe UI Variable Text"
-
-  # Opening the overview by resting the cursor in a corner.
-  hot_corner:
-    # Corner of a monitor that opens the overview as the cursor rests in it:
-    # 'none', 'top_left', 'top_right', 'bottom_left' or 'bottom_right'. It
-    # opens once per visit, and not while a mouse button is held.
-    corner: "none"
-
-    # How long the cursor rests in the hot corner before the overview
-    # opens, in milliseconds; 0 opens it at once.
-    delay_ms: 300
-
-  # How the exposé spreads the windows, `gap` logical pixels apart.
-  #
-  # `arrangement`: "free" (over all the room, each about where it sits on
-  # screen), or rows sized "natural" (as they are against each other,
-  # centered on the row) or "grid" (all as tall). For rows, `max_per_row`
-  # caps how many go side by side before wrapping (0 for as many as shows
-  # them largest).
-  expose:
-    max_per_row: 0
-    gap: 28
-    arrangement: "free"
-
-  # How large the stack shows a workspace, as a part of the screen's
-  # width, from 0.2 to 0.9; each workspace's name shows beside it.
-  stack:
-    zoom: 0.5
-
-  # What shows behind the cards.
-  backdrop:
-    # What shows behind the cards: "blur" (the wallpaper blurred and tinted,
-    # over the whole screen) or "framed" (the wallpaper, sharp, on a rounded
-    # panel where the shown workspace is; see "Backdrop" above).
-    style: "framed"
-
-    # Blur radius of the wallpaper behind the cards.
-    blur: 40
-
-    # Tint over the blurred wallpaper; its alpha is how dark it gets.
-    tint: "#00000066"
-
-    # Look of the "framed" backdrop. `color` is around the panel, given
-    # like `colors.accent` ("accent" for the OS accent color).
-    # `corner_radius` and `padding` (wallpaper around the shown
-    # workspace's windows) are in logical pixels.
-    frame:
-      color: "#141416ff"
-      corner_radius: 14
-      padding: 24
-      shadow: true
-
-  colors:
-    # Selection and highlights: a hex color, "accent" for the OS accent
-    # color, or a `{ file, key }` mapping, as for border colors. Left out, it
-    # is `window_effects.focused_window.border.color`, so the overview
-    # matches your borders.
-    # accent: "accent"
-
-    # Background of a workspace card.
-    card: "#1c1c20e6"
-
-    # Background of a hovered card, and of a window without a preview.
-    surface: "#2a2a30ff"
-
-    # Strip a window's title sits on.
-    caption: "#141418c7"
-
-    text: "#f2f2f5ff"
-
-    # Secondary text, e.g. the search's hit count.
-    subtext: "#b4b4bcff"
-
-    # What matched, in the search box's list.
-    search: "#89b4faff"
-
-  # How the selected or hovered window is marked: "ring" (in the accent
-  # color), "glow" (a soft accent glow fading out from its edge) or
-  # "none" (only the title tag under it shows which it is). `width` is the
-  # ring's thickness or how far the glow reaches, and `gap` the space
-  # between the window and either, in logical pixels.
-  window_highlight:
-    style: "ring"
-    width: 2
-    gap: 0
-
-  animation:
-    # How it opens and closes (see "Zoom" above): "zoom", "fade" or "none".
-    zoom_style: "zoom"
-
-    # Pace of the open and close: any animation easing, e.g. "ease_out",
-    # "cubic_bezier(0.22, 1, 0.36, 1)" or "spring(1.0, 400, 0.0001)",
-    # which ignores the durations below.
-    zoom_easing: "cubic_bezier(0.22, 1, 0.36, 1)"
-
-    # Length of the open; 0 opens it instantly.
-    open_duration_ms: 280
-
-    # Length of the close, into the picked workspace; 0 closes it
-    # instantly.
-    close_duration_ms: 220
-
-    # How the activities change the workspace they show large: "slide",
-    # "fade" or "miniature".
-    switch_style: "slide"
-
-    # About how long cards and windows take to move to a new selection or
-    # layout, e.g. the shown workspace sliding over to the next; 0 moves
-    # them at once.
-    switch_duration_ms: 260
-
-    # How long the selection and hover highlights take to settle onto what
-    # they mark next and to fade in or out, as the shortcut sheet does; 0
-    # snaps them.
-    highlight_duration_ms: 140
-
-    # How far cards and windows overshoot where they head before settling
-    # back, from 0 (not at all) to 0.8 (wobbly). The zooms go by
-    # `zoom_easing` instead.
-    bounce: 0
-
-  # Flourishes. All are off but `window_lift`, for an overview as calm
-  # as an OS's own.
-  effects:
-    # Soft glow of the accent color around the selected workspace.
-    glow: false
-    # Whether the glow slowly breathes. Keeps the overview animating on
-    # every frame while it is open, so it costs a little more.
-    pulse: false
-    # A ring spreading out of a card as it is clicked, or as a window
-    # lands on it, and drawing in on where a window closed from the
-    # overview was, once it is gone.
-    ripples: false
-    # Particles bursting out of where a dropped window lands, and off the
-    # edges of a window closed from the overview once it is gone, both
-    # shown over the overview. Each takes "none", a style, or a list of
-    # styles that burst together, e.g. ["confetti", "glints"]: "sparks",
-    # "dust", "embers", "confetti", "glints" or "bubbles". Their color,
-    # size, density and duration are `animations.particles`'s, with the
-    # accent color unless that sets one.
-    drop_particles: "none"
-    close_particles: "none"
-    # Particles off the shown workspace as the overview settles open, and
-    # off the windows of each workspace it zooms into as it closes, timed
-    # to land with the zoom.
-    open_particles: "none"
-    exit_particles: "none"
-    # Whether a card wobbles as a window lands on it.
-    jelly: false
-    # Delay between one card and the next as they pop in on open, and
-    # between the exposé's windows flying out, out from the focused one,
-    # in milliseconds; 0 brings them in together. However many windows,
-    # all start within half of `animation.open_duration_ms`.
-    stagger_ms: 0
-    # How far a hovered card leans toward the cursor, in logical pixels.
-    lean: 0
-    # How much the cards dim while another is hovered, from 0 to 1.
-    dim: 0
-    # How much a dragged window stretches with its speed, and squashes as
-    # it stops, from 0 to 1.
-    squash: 0
-    # Fading outlines trailing a dragged window; 0 for none, at most 8.
-    trail: 0
-    # How much the picked window grows in the large view of the
-    # activities and the exposé, as a fraction of its size, from 0 to
-    # 0.15.
-    window_lift: 0.025
-```
-
-Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
-values above are the defaults.
+The sample config sets only the main choices. Every option is optional;
+the defaults are below. Colors take an optional alpha (`#rrggbbaa`), and
+those marked "like a border" also take `"accent"` (the OS accent color)
+or a `{ file, key }` mapping, as border colors do.
 
 ```yaml
 keybindings:
   - commands: ["toggle-overview"]
     bindings: ["alt+w"]
 ```
+
+### `overview`
+
+| Option | Default | |
+| --- | --- | --- |
+| `layout` | `"expose"` | Layout `toggle-overview` opens on: `expose`, `activities` or `stack`. |
+| `workspace_row` | `"compact"` | The activities' and the exposé's row of miniatures: `compact`, `shown` or `hidden` (see [Layouts](#layouts)). |
+| `search_hint` | `false` | The "Type to search" field along the bottom. Without it, typing still searches and `F1` still shows the shortcuts. |
+| `strip_view` | `"visible"` | How much of a scrolling workspace the activities show large: `visible` (the columns on screen) or `whole` (the strip, scaled to fit). |
+| `hot_corner.corner` | `"none"` | Corner that opens the overview as the cursor rests in it: `none`, `top_left`, `top_right`, `bottom_left` or `bottom_right`. Once per visit, and not while a mouse button is held. |
+| `hot_corner.delay_ms` | `300` | How long the cursor rests there first; `0` opens it at once. |
+| `expose.gap` | `28` | Least space between the exposé's windows, in logical pixels. |
+| `stack.zoom` | `0.5` | How large the stack shows a workspace, as a part of the screen's width: `0.2` to `0.9`. |
+
+### `overview.look`
+
+| Option | Default | |
+| --- | --- | --- |
+| `corner_radius` | `14` | Of the cards and the framed wallpaper's panel, in logical pixels; the windows on them are rounded by it too, at most their own few pixels. `0` for square. |
+| `font_family` | `"Segoe UI Variable Text"` | Font of the overview's text; Segoe UI when it isn't installed. |
+| `colors.accent` | the focused window's border color | Selection and highlights, like a border. |
+| `colors.card` | `"#1c1c20e6"` | Background of a workspace card. |
+| `colors.surface` | `"#2a2a30ff"` | Background of a hovered card, and of a window without a preview. |
+| `colors.caption` | `"#141418c7"` | Strip a window's title sits on. |
+| `colors.text` | `"#f2f2f5ff"` | Text. |
+| `colors.subtext` | `"#b4b4bcff"` | Secondary text, e.g. the search's hit count. |
+| `colors.search` | `"#89b4faff"` | What matched, in the search box's list. |
+| `window_highlight.style` | `"ring"` | What marks the selected or hovered window: `ring`, `glow` (fading out from its edge) or `none` (only the title tag under it). |
+| `window_highlight.width` | `2` | The ring's thickness, or how far the glow reaches, in logical pixels. |
+| `window_highlight.gap` | `0` | Space between the window and either, in logical pixels. |
+
+### `overview.wallpaper`
+
+| Option | Default | |
+| --- | --- | --- |
+| `style` | `"framed"` | `framed` or `blurred` (see [Wallpaper](#wallpaper)). |
+| `color` | `"#141416ff"` | Around the framed panel, like a border. |
+| `padding` | `24` | Wallpaper around the shown workspace's windows on the framed panel, in logical pixels. |
+| `shadow` | `true` | Whether the framed panel casts a soft shadow. |
+| `blur` | `40` | Blur radius of the blurred wallpaper. |
+| `tint` | `"#00000066"` | Tint over the blurred wallpaper; its alpha is how dark it gets. |
+
+### `overview.animation`
+
+| Option | Default | |
+| --- | --- | --- |
+| `style` | `"zoom"` | How it opens and closes: `zoom`, `fade` or `none` (see [Zoom](#zoom)). |
+| `easing` | `"spring"` | Pace of the open and close: any animation easing. A spring ignores the two lengths below. |
+| `open_ms` | `280` | Length of the open; `0` opens it at once. |
+| `close_ms` | `220` | Length of the close, into the picked workspace; `0` closes it at once. |
+| `switch` | `"slide"` | How the activities change the workspace they show large: `slide`, `fade` or `miniature`. |
+| `switch_ms` | `260` | About how long cards and windows take to move to a new selection or layout; `0` moves them at once. |
+| `highlight_ms` | `140` | How long highlights take to settle onto what they mark next and to fade; `0` snaps them. |
+| `bounce` | `0` | How far cards and windows overshoot before settling: `0` (not at all) to `0.8` (wobbly). The zooms go by `easing` instead. |
+
+For flourishes such as a glow around the selection or particles where a
+window lands, see [Experimental effects](#experimental-effects).
 
 ## How it works
 
@@ -664,7 +523,7 @@ sleeps while nothing moves. Cards and windows move on springs, damped
 by `animation.bounce` (critically at `0`), so a key press mid-animation retargets
 them smoothly. Each step follows the spring's exact motion over the
 frame, so it moves alike at any refresh rate, and even a short
-`animation.switch_duration_ms` can't blow up; a bouncier spring dies away as fast,
+`animation.switch_ms` can't blow up; a bouncier spring dies away as fast,
 only swinging past its target on the way. None of it draws anything: it
 moves and scales the same thumbnails as before.
 
@@ -708,3 +567,26 @@ Not in this version:
 - Minimized windows in the activities' large view: there, only their
   icons show on their card. The exposé shows them (see
   [Layouts](#layouts)).
+
+## Experimental effects
+
+Flourishes under `overview.effects`, left out of the sample config. They
+still work, but aren't part of the overview's settled look and may
+change. All are off but `window_lift`.
+
+| Option | Default | |
+| --- | --- | --- |
+| `glow` | `false` | Soft accent glow around the selected workspace. |
+| `pulse` | `false` | The glow slowly breathing; keeps the overview animating every frame while open. |
+| `ripples` | `false` | A ring out of a clicked card or one a window lands on, and into where a closed window was. |
+| `drop_particles` | `"none"` | Particles where a dropped window lands: `none`, a style (`sparks`, `dust`, `embers`, `confetti`, `glints`, `bubbles`) or a list of them. Look as `animations.particles`. |
+| `close_particles` | `"none"` | Off the edges of a window closed from the overview. |
+| `open_particles` | `"none"` | Off the shown workspace as the overview settles open. |
+| `exit_particles` | `"none"` | Off the windows of each workspace zoomed into on close. |
+| `jelly` | `false` | A card wobbling as a window lands on it. |
+| `stagger_ms` | `0` | Delay between cards popping in on open, and between the exposé's windows flying out from the focused one, each popping as it goes. All start within half of `animation.open_ms`. |
+| `lean` | `0` | How far a hovered card leans toward the cursor, in logical pixels. |
+| `dim` | `0` | How much other cards dim while one is hovered: `0` to `1`. |
+| `squash` | `0` | How much a dragged window stretches with its speed: `0` to `1`. |
+| `trail` | `0` | Fading outlines trailing a dragged window: `0` to `8`. |
+| `window_lift` | `0.025` | How much the picked window grows in the large view: `0` to `0.15`. |

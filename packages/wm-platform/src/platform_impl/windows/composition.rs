@@ -2339,10 +2339,10 @@ fn build_particle_tree(
   })
 }
 
-/// The window overview's background, as `OverviewBackdropStyle` has it:
+/// The window overview's background, as `OverviewWallpaperStyle` has it:
 ///
-/// - `Blur`: the monitor's wallpaper as it is, with a blurred, tinted copy
-///   of it fading in on top.
+/// - `Blurred`: the monitor's wallpaper as it is, with a blurred, tinted
+///   copy of it fading in on top.
 /// - `Framed`: the wallpaper, kept sharp, on a rounded panel that the
 ///   overview places on the shown workspace every frame, over a plain
 ///   color.
@@ -2381,7 +2381,7 @@ pub(crate) struct OverviewBackdrop {
   generation: u64,
 
   blur: f32,
-  framed: Option<crate::OverviewBackdropFrame>,
+  framed: Option<crate::OverviewWallpaper>,
 }
 
 /// The `framed` backdrop's layers: a plain color, over it the shadow of
@@ -2463,7 +2463,7 @@ impl FramedPanel {
   /// Shows it styled by `frame`, or hides it for `None`.
   fn show(
     &self,
-    frame: Option<crate::OverviewBackdropFrame>,
+    frame: Option<crate::OverviewWallpaper>,
   ) -> windows::core::Result<()> {
     self.surround_sprite.SetIsVisible(frame.is_some())?;
     self.panel.SetIsVisible(frame.is_some())?;
@@ -2645,11 +2645,9 @@ impl OverviewBackdrop {
   ) -> crate::Result<Self> {
     let hwnd_raw = hwnd.0;
     let (rect, work) = (bounds.clone(), work.clone());
-    let blur = style.backdrop_blur;
-    let tint = style.backdrop_tint;
-    let framed = (style.backdrop_style
-      == crate::OverviewBackdropStyle::Framed)
-      .then_some(style.backdrop_frame);
+    let blur = style.wallpaper.blur;
+    let tint = style.wallpaper.tint;
+    let framed = style.wallpaper.framed();
 
     let mut backdrop =
       with_composition_thread(move |compositor, queue| {
@@ -2729,7 +2727,7 @@ impl OverviewBackdrop {
   /// Shows the blurred backdrop's layers or the framed one's.
   fn set_framed(
     &mut self,
-    framed: Option<crate::OverviewBackdropFrame>,
+    framed: Option<crate::OverviewWallpaper>,
   ) -> crate::Result<()> {
     for sprite in
       [&self.sharp_sprite, &self.blurred_sprite, &self.tint_sprite]
@@ -2799,12 +2797,12 @@ impl OverviewBackdrop {
     work: &Rect,
     style: &crate::OverviewStyle,
   ) -> crate::Result<()> {
-    let blur = style.backdrop_blur;
-    let framed = (style.backdrop_style
-      == crate::OverviewBackdropStyle::Framed)
-      .then_some(style.backdrop_frame);
+    let blur = style.wallpaper.blur;
+    let framed = style.wallpaper.framed();
 
-    self.tint_brush.SetColor(to_ui_color(style.backdrop_tint))?;
+    self
+      .tint_brush
+      .SetColor(to_ui_color(style.wallpaper.tint))?;
     if framed != self.framed {
       self.set_framed(framed)?;
     }

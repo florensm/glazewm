@@ -158,17 +158,8 @@ pub enum OverviewOverlayKind {
 /// Look of the overview.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OverviewStyle {
-  /// Blur radius of the wallpaper behind the cards.
-  pub backdrop_blur: f32,
-
-  /// Tint over the blurred wallpaper.
-  pub backdrop_tint: Color,
-
   /// What shows behind the cards.
-  pub backdrop_style: OverviewBackdropStyle,
-
-  /// Look of the `framed` backdrop.
-  pub backdrop_frame: OverviewBackdropFrame,
+  pub wallpaper: OverviewWallpaper,
 
   /// Selection and highlights.
   pub accent: Color,
@@ -176,9 +167,9 @@ pub struct OverviewStyle {
   /// Card background.
   pub card: Color,
 
-  /// Corner radius of a card, and at most of the windows drawn on it, in
-  /// logical pixels.
-  pub card_corner_radius: f32,
+  /// Corner radius of a card and of the framed wallpaper's panel, and at
+  /// most of the windows drawn on them, in logical pixels.
+  pub corner_radius: f32,
 
   /// Hovered card background, and behind a window with no preview.
   pub surface: Color,
@@ -284,24 +275,13 @@ pub enum OverviewWorkspaceRow {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewExpose {
-  /// Most windows side by side in a row, before they wrap onto more
-  /// rows; `0` for as many as shows them largest.
-  pub max_per_row: u32,
-
   /// Space between windows, in logical pixels.
   pub gap: f32,
-
-  /// How the windows of a row are sized against each other.
-  pub arrangement: OverviewExposeArrangement,
 }
 
 impl Default for OverviewExpose {
   fn default() -> Self {
-    Self {
-      max_per_row: 0,
-      gap: 28.0,
-      arrangement: OverviewExposeArrangement::default(),
-    }
+    Self { gap: 28.0 }
   }
 }
 
@@ -334,56 +314,49 @@ impl Default for OverviewStack {
   }
 }
 
-/// How the exposé spreads the windows: freely, or in rows each scaled to
-/// fill the room's width.
-#[derive(
-  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum OverviewExposeArrangement {
-  /// Keeping their sizes relative to each other, centered on their row.
-  Natural,
-
-  /// All as tall, as a photo grid lays out pictures.
-  Grid,
-
-  /// Not in rows: each where it sits on screen, all scaled alike, pushed
-  /// apart where they'd overlap and spread out over all the room, as
-  /// macOS's Mission Control does.
-  #[default]
-  Free,
-}
-
 /// What the overview shows behind its cards.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum OverviewBackdropStyle {
-  /// The wallpaper over the whole screen, blurred and tinted.
-  Blur,
-
+pub enum OverviewWallpaperStyle {
   /// The wallpaper kept sharp on a rounded panel where the shown
   /// workspace sits, over a plain color: the desktop shrunk as a whole.
   #[default]
   Framed,
+
+  /// The wallpaper over the whole screen, blurred and tinted.
+  Blurred,
 }
 
-/// Look of the `framed` backdrop.
+/// The wallpaper behind the overview's cards.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OverviewBackdropFrame {
-  /// Around the panel.
+pub struct OverviewWallpaper {
+  pub style: OverviewWallpaperStyle,
+
+  /// Around the framed panel.
   pub color: Color,
 
-  /// Of the panel's corners once open, in logical pixels.
-  pub corner_radius: f32,
-
-  /// Wallpaper showing around the shown workspace's windows, on the
-  /// panel, in logical pixels.
+  /// Wallpaper showing around the shown workspace's windows on the
+  /// framed panel, in logical pixels.
   pub padding: f32,
 
-  /// Whether the panel casts a soft shadow.
+  /// Whether the framed panel casts a soft shadow.
   pub shadow: bool,
+
+  /// Blur radius of the blurred wallpaper.
+  pub blur: f32,
+
+  /// Tint over the blurred wallpaper; its alpha is how dark it gets.
+  pub tint: Color,
+}
+
+impl OverviewWallpaper {
+  /// Itself when framed, `None` when blurred.
+  #[must_use]
+  pub fn framed(&self) -> Option<Self> {
+    (self.style == OverviewWallpaperStyle::Framed).then_some(*self)
+  }
 }
 
 /// How the overview opens and closes.

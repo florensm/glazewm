@@ -218,9 +218,13 @@ impl Ghost {
     style: &OverviewStyle,
     notify: (HWND, u32),
   ) {
-    self
-      .preview
-      .draw_placeholder(title, scale_factor, None, style, notify);
+    self.preview.draw_placeholder(
+      title,
+      scale_factor,
+      None,
+      style,
+      notify,
+    );
 
     #[allow(clippy::cast_possible_truncation)]
     let size = (

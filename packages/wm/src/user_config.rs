@@ -674,8 +674,11 @@ mod tests {
       config.animations.workspace_switch.style,
       WorkspaceSwitchStyle::Slide
     );
-    assert_eq!(config.overview.font_family, "Segoe UI Variable Text");
-    assert_eq!(config.stack.tab_font_family, config.overview.font_family);
+    assert_eq!(config.overview.look.font_family, "Segoe UI Variable Text");
+    assert_eq!(
+      config.stack.tab_font_family,
+      config.overview.look.font_family
+    );
     assert_eq!(
       config.overview.effects,
       wm_platform::OverviewEffects::default()
