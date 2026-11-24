@@ -1,0 +1,480 @@
+<title>Overview Config Builder</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="page.css">
+<style>
+  :root { --new: #b4419b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --new: #e57cc8; } }
+  :root[data-theme="dark"] { --new: #e57cc8; }
+  .builder { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 980px) { .builder { grid-template-columns: minmax(0, 1fr); } }
+  .left { display: flex; flex-direction: column; gap: 12px; min-width: 0; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
+  @media (max-width: 980px) { .left { position: static; } }
+  .screen { position: relative; border-radius: 12px; }
+  .corner { position: absolute; width: 34px; height: 34px; border: 3px dashed var(--accent); pointer-events: none; opacity: .8; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .bar .muted { margin-left: auto; }
+  .yaml-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  pre.yaml { max-height: 46vh; overflow: auto; white-space: pre; }
+  pre.yaml .c { color: var(--new); }
+  .settings { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  details.group { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px; }
+  details.group[open] { padding-bottom: 10px; }
+  details.group > summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; }
+  details.group > summary::-webkit-details-marker { display: none; }
+  details.group > summary h2 { font-size: 17px; }
+  details.group > summary .count { font: 600 11px/1 var(--mono); color: var(--muted); }
+  details.group.new { border-style: dashed; border-color: var(--new); }
+  .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
+  .row .k { font: 600 12.5px/1.3 var(--mono); overflow-wrap: anywhere; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .row .k i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: inline-block; visibility: hidden; }
+  .row.changed .k i { visibility: visible; }
+  .row .help { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+  .row .ctl { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .row .ctl input[type=range] { flex: 1 1 140px; min-width: 0; accent-color: var(--accent); }
+  .row .ctl output { font: 600 12px/1 var(--mono); min-width: 54px; text-align: right; font-variant-numeric: tabular-nums; }
+  .row .ctl input[type=text] { flex: 1 1 160px; min-width: 0; font: 500 12.5px/1 var(--mono); padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
+  .row .ctl input[type=text].bad { border-color: #d14343; }
+  .row .ctl input[type=color] { width: 34px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; }
+  .tag { font: 700 9.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 3px 5px; border-radius: 4px; }
+  .tag.new { background: color-mix(in srgb, var(--new) 18%, transparent); color: var(--new); }
+  .tag.np { background: var(--chip); color: var(--muted); }
+  .reset { border: 0; background: none; padding: 2px 6px; font-size: 14px; color: var(--muted); visibility: hidden; }
+  .row.changed .reset { visibility: visible; }
+  .tog { width: 42px; height: 24px; border-radius: 99px; border: 0; padding: 0; background: var(--line); position: relative; flex: none; }
+  .tog::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .18s cubic-bezier(.3,.7,.2,1.3); }
+  .tog[aria-pressed="true"] { background: var(--accent); }
+  .tog[aria-pressed="true"]::after { transform: translateX(18px); }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+  .presets button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+  textarea { width: 100%; min-height: 130px; font: 12.5px/1.5 var(--mono); padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); resize: vertical; }
+  .note { font-size: 12.5px; color: var(--muted); }
+  .note b { color: var(--ink); }
+</style>
+
+<div class="wrap">
+  <nav class="nav">
+    <a href="config.html" aria-current="page">Config builder</a>
+    <a href="playground.html">Zoom playground</a>
+    <a href="lab.html">Feature lab</a>
+    <a href="experiments.html">Experiments</a>
+    <a href="experiments2.html">Experiments II</a>
+    <a href="experiments3.html">Experiments III</a>
+    <a href="layouts.html">Layout comparison</a>
+    <a href="concepts.html">Design concepts</a>
+    <a href="recommendations.html">Recommendations</a>
+  </nav>
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <span class="eyebrow">GlazeWM overview · config</span>
+    <h1>Config builder</h1>
+    <p class="lede">Every <code>overview:</code> option GlazeWM has, with its default, a live preview and YAML ready to paste into <code>overview.yaml</code>. Settings marked <span class="tag new">new</span> don't exist yet: they're written as comments, so the file stays valid. Paste your own config to see it.</p>
+  </header>
+
+  <div class="presets" id="presets" role="group" aria-label="Presets"></div>
+
+  <div class="builder">
+    <div class="left">
+      <div class="screen" id="screenWrap"><div id="screen"></div></div>
+      <div class="bar">
+        <button class="primary" id="play">Open</button>
+        <button id="loop" aria-pressed="false">Loop</button>
+        <div class="seg" id="arr" role="group" aria-label="Windows on the desktop">
+          <button data-v="tiled" aria-pressed="true">Tiled</button><button data-v="floating" aria-pressed="false">Floating</button><button data-v="onebig" aria-pressed="false">One big</button>
+        </div>
+        <span class="muted small">Click a window to pick it</span>
+      </div>
+      <section class="panel" style="display:flex;flex-direction:column;gap:10px">
+        <div class="yaml-head">
+          <h3>overview.yaml</h3>
+          <div class="row" style="border:0;padding:0;display:flex;gap:8px;align-items:center">
+            <div class="seg" id="scope" role="group" aria-label="What to include">
+              <button data-v="changed" aria-pressed="true">Only changes</button><button data-v="all" aria-pressed="false">Everything</button>
+            </div>
+            <button id="copy" class="primary">Copy</button>
+          </div>
+        </div>
+        <pre class="yaml" id="yaml" aria-label="Generated config"></pre>
+        <p class="note">Lines in pink are proposals, commented out. GlazeWM ignores them until they exist.</p>
+      </section>
+      <details class="panel" id="importBox">
+        <summary style="cursor:pointer"><b>Import your config</b> <span class="muted small">paste <code>overview.yaml</code> or just its <code>overview:</code> part</span></summary>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+          <textarea id="importText" aria-label="Config to import" placeholder="overview:&#10;  workspace_row: &quot;shown&quot;&#10;  ..."></textarea>
+          <div class="bar"><button id="importBtn">Load into the builder</button><span class="note" id="importMsg"></span></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="settings" id="settings"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+<script src="layouts.js"></script>
+<script src="stage.js"></script>
+<script>
+(() => {
+  const { Stage, PRESETS, scenario, W, H } = OverviewStage;
+  const L = OverviewLayouts;
+  const $ = (id) => document.getElementById(id);
+
+  // Every option: its YAML key, kind, default and what it does. `isNew` ones
+  // are proposals; `np` ones aren't shown in the preview.
+  const CURVES = ['spring', 'linear', 'ease_in', 'ease_out', 'ease_in_out', 'ease_in_cubic', 'ease_out_cubic', 'ease_in_out_cubic', 'ease_out_spring', 'snappy'];
+  const PARTICLES = ['none', 'sparks', 'dust', 'embers', 'confetti', 'glints', 'bubbles'];
+  const GROUPS = [
+    { title: 'Layout and workspaces', items: [
+      { key: 'layout', kind: 'enum', options: ['expose', 'activities', 'stack'], def: 'expose', help: 'Layout it opens on. Exposé gathers the windows; activities shows them as laid out; stack shows every workspace stacked (previewed as one).' },
+      { key: 'workspace_row', kind: 'enum', options: ['compact', 'shown', 'hidden'], def: 'compact', help: 'The row of workspace miniatures: slim, larger, or none.' },
+      { key: 'workspace_row_position', kind: 'enum', options: ['top', 'bottom'], def: 'top', isNew: true, help: 'Where that row sits. Bottom puts it where the taskbar is, as Windows Task View does.' },
+      { key: 'search_hint', kind: 'bool', def: false, help: 'The "Type to search" field along the bottom. Typing searches either way.' },
+      { key: 'strip_view', kind: 'enum', options: ['visible', 'whole'], def: 'visible', np: true, help: 'How much of a scrolling workspace the activities show large.' },
+      { key: 'hot_corner.corner', kind: 'enum', options: ['none', 'top_left', 'top_right', 'bottom_left', 'bottom_right'], def: 'none', help: 'Rest the cursor in this corner to open it. Try it on the preview.' },
+      { key: 'hot_corner.delay_ms', kind: 'range', min: 0, max: 1500, step: 50, def: 300, unit: 'ms', help: 'How long the cursor rests there first.' },
+      { key: 'expose.gap', kind: 'range', min: 0, max: 80, step: 1, def: 28, unit: 'px', help: 'Least space between the exposé\'s windows.' },
+      { key: 'expose.largest', kind: 'range', min: 0.6, max: 1, step: 0.01, def: 0.85, isNew: true, fmt: (v) => Math.round(v * 100) + '%', help: 'Most of the room the windows take. A constant in expose.rs today; 0.94 makes them clearly larger.' },
+      { key: 'expose.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space kept free along the screen\'s edges. A constant in layout.rs today.' },
+      { key: 'stack.zoom', kind: 'range', min: 0.2, max: 0.9, step: 0.01, def: 0.5, fmt: (v) => v.toFixed(2) + '×', help: 'How large the stack shows a workspace.' },
+    ] },
+    { title: 'Look', items: [
+      { key: 'look.corner_radius', kind: 'range', min: 0, max: 40, step: 1, def: 14, unit: 'px', help: 'Rounding of the cards and the wallpaper\'s slab.' },
+      { key: 'look.font_family', kind: 'text', def: 'Segoe UI Variable Text', help: 'Font of the overview\'s text.' },
+      { key: 'look.colors.accent', kind: 'accent', def: null, help: 'Highlights and rings. Unset: the focused window\'s border color. "accent": your Windows accent color.' },
+      { key: 'look.colors.card', kind: 'color', def: '#1c1c20e6', help: 'Background of workspace cards and miniatures.' },
+      { key: 'look.colors.surface', kind: 'color', def: '#2a2a30ff', np: true, help: 'Hovered card, and windows without a preview.' },
+      { key: 'look.colors.caption', kind: 'color', def: '#141418c7', help: 'The strip a window\'s title sits on.' },
+      { key: 'look.colors.text', kind: 'color', def: '#f2f2f5ff', help: 'Text.' },
+      { key: 'look.colors.subtext', kind: 'color', def: '#b4b4bcff', np: true, help: 'Secondary text, e.g. the search\'s hit count.' },
+      { key: 'look.colors.search', kind: 'color', def: '#89b4faff', np: true, help: 'What matched, in the search list.' },
+      { key: 'look.window_highlight.style', kind: 'enum', options: ['ring', 'glow', 'none'], def: 'ring', help: 'What marks the hovered or selected window.' },
+      { key: 'look.window_highlight.width', kind: 'range', min: 0, max: 12, step: 0.5, def: 2, unit: 'px', help: 'The ring\'s thickness, or how far the glow reaches.' },
+      { key: 'look.window_highlight.gap', kind: 'range', min: 0, max: 16, step: 1, def: 0, unit: 'px', help: 'Space between the window and its ring.' },
+      { key: 'look.titles', kind: 'enum', options: ['hover', 'always'], def: 'hover', isNew: true, help: 'Window titles only on the hovered window, or on every window.' },
+      { key: 'look.app_icons', kind: 'bool', def: false, isNew: true, help: 'A large app icon in the middle of every window.' },
+    ] },
+    { title: 'Wallpaper', items: [
+      { key: 'wallpaper.style', kind: 'enum', options: ['framed', 'blurred'], def: 'framed', help: 'Framed: the desktop shrinks onto a rounded slab. Blurred: the wallpaper stays and blurs.' },
+      { key: 'wallpaper.color', kind: 'color', def: '#141416ff', help: 'Around the framed slab.' },
+      { key: 'wallpaper.padding', kind: 'range', min: 0, max: 60, step: 1, def: 24, unit: 'px', help: 'Wallpaper around the windows on the slab.' },
+      { key: 'wallpaper.shadow', kind: 'bool', def: true, help: 'The slab casts a soft shadow.' },
+      { key: 'wallpaper.blur', kind: 'range', min: 0, max: 100, step: 1, def: 40, unit: 'px', help: 'Blur of the blurred wallpaper.' },
+      { key: 'wallpaper.tint', kind: 'color', def: '#00000066', help: 'Over the blurred wallpaper; its alpha is how dark it gets.' },
+    ] },
+    { title: 'Animation', items: [
+      { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', help: 'How it opens and closes.' },
+      { key: 'animation.easing', kind: 'easing', def: 'spring', help: 'Pace of the open and close. A spring ignores the two lengths below; spring(damping, stiffness) tunes it.' },
+      { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, help: 'Its own pace for the open; empty uses the one above. spring(0.85, 520) lands with a little give.' },
+      { key: 'animation.open_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 280, unit: 'ms', help: 'Length of the open, for a curve.' },
+      { key: 'animation.close_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 220, unit: 'ms', help: 'Length of the close, for a curve.' },
+      { key: 'animation.switch', kind: 'enum', options: ['slide', 'fade', 'miniature'], def: 'slide', np: true, help: 'How the activities change the workspace they show.' },
+      { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', np: true, help: 'How long moving to a new selection takes.' },
+      { key: 'animation.highlight_ms', kind: 'range', min: 0, max: 600, step: 10, def: 140, unit: 'ms', help: 'How long highlights take to settle.' },
+      { key: 'animation.bounce', kind: 'range', min: 0, max: 0.8, step: 0.05, def: 0, help: 'How far cards and windows overshoot. Previewed on the hover lift.' },
+      { key: 'animation.chrome_from', kind: 'range', min: 0, max: 0.95, step: 0.05, def: 0.8, isNew: true, fmt: (v) => Math.round(v * 100) + '% open', help: 'When names and highlights start to show. A constant in layout.rs today.' },
+    ] },
+    { title: 'Effects', items: [
+      { key: 'effects.window_lift', kind: 'range', min: 0, max: 0.15, step: 0.005, def: 0.025, fmt: (v) => (v * 100).toFixed(1) + '%', help: 'How much the picked window grows.' },
+      { key: 'effects.dim', kind: 'range', min: 0, max: 1, step: 0.01, def: 0, fmt: (v) => Math.round(v * 100) + '%', help: 'How much the others dim while one is hovered.' },
+      { key: 'effects.stagger_ms', kind: 'range', min: 0, max: 60, step: 1, def: 0, unit: 'ms', help: 'Delay between windows flying out, nearest the focused one first.' },
+      { key: 'effects.ripples', kind: 'bool', def: false, help: 'A ring out of a picked window.' },
+      { key: 'effects.glow', kind: 'bool', def: false, np: true, help: 'Soft glow around the selected workspace.' },
+      { key: 'effects.pulse', kind: 'bool', def: false, np: true, help: 'The glow breathing; keeps it animating every frame.' },
+      { key: 'effects.jelly', kind: 'bool', def: false, np: true, help: 'A card wobbling as a window lands on it.' },
+      { key: 'effects.lean', kind: 'range', min: 0, max: 20, step: 1, def: 0, unit: 'px', np: true, help: 'How far a hovered card leans toward the cursor.' },
+      { key: 'effects.squash', kind: 'range', min: 0, max: 1, step: 0.05, def: 0, np: true, help: 'How much a dragged window stretches with speed.' },
+      { key: 'effects.trail', kind: 'range', min: 0, max: 8, step: 1, def: 0, np: true, help: 'Fading outlines behind a dragged window.' },
+      { key: 'effects.drop_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Particles where a dropped window lands.' },
+      { key: 'effects.close_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Off a window closed from the overview.' },
+      { key: 'effects.open_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Off the shown workspace as it opens.' },
+      { key: 'effects.exit_particles', kind: 'particles', options: PARTICLES.slice(1), def: [], np: true, help: 'Off the windows zoomed into on close.' },
+    ] },
+    { title: 'Proposed behaviour', isNew: true, items: [
+      { key: 'search.mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', isNew: true, np: true, help: 'While typing, in the exposé: matches spread out over the room (today), non-matches dim where they are (every window stays in place), or matches gather in the middle while the rest wait on a shelf along the bottom. Try all three in the Feature lab.' },
+      { key: 'search.hints', kind: 'enum', options: ['off', 'alt'], def: 'off', isNew: true, np: true, help: 'A letter on every window while Alt is held; Alt+letter picks it.' },
+      { key: 'peek_key', kind: 'enum', options: ['none', 'ctrl'], def: 'none', isNew: true, np: true, help: 'Hold it to enlarge the selected window, as Mission Control\'s spacebar does.' },
+      { key: 'release_picks', kind: 'bool', def: false, isNew: true, np: true, help: 'Letting go of the binding\'s modifier picks the selected window, like Alt+Tab.' },
+      { key: 'minimized', kind: 'enum', options: ['inline', 'shelf'], def: 'inline', isNew: true, np: true, help: 'Minimized windows with the others, or on a shelf below them.' },
+      { key: 'expose.readable_floor', kind: 'range', min: 0, max: 0.7, step: 0.05, def: 0, isNew: true, np: true, fmt: (v) => (v ? Math.round(v * 100) + '%' : 'off'), help: 'Below this window scale, switch the crowded workspace to rows.' },
+    ] },
+  ];
+  const ITEMS = GROUPS.flatMap((g) => g.items);
+  const BY_KEY = Object.fromEntries(ITEMS.map((i) => [i.key, i]));
+  const defaults = () => Object.fromEntries(ITEMS.map((i) => [i.key, i.def]));
+
+  const PRESET_VALUES = {
+    defaults: { label: 'GlazeWM default', v: {} },
+    proposed: { label: 'GlazeWM proposed', v: { 'expose.gap': 24, 'expose.largest': 0.94, 'expose.margin': 32, 'wallpaper.padding': 16, 'animation.open_easing': 'spring(0.85, 520)', 'animation.chrome_from': 0.6, 'effects.window_lift': 0.04, 'effects.dim': 0.12, 'effects.stagger_ms': 10 } },
+    bottom: { label: 'Bottom thumbnails', v: { 'workspace_row': 'shown', 'workspace_row_position': 'bottom', 'search.mode': 'shelf', 'expose.gap': 24, 'expose.largest': 0.94, 'expose.margin': 32, 'wallpaper.padding': 16, 'animation.open_easing': 'spring(0.85, 520)', 'animation.chrome_from': 0.6, 'effects.window_lift': 0.04, 'effects.dim': 0.12, 'effects.stagger_ms': 10 } },
+    calm: { label: 'Calm and blurred', v: { 'wallpaper.style': 'blurred', 'animation.style': 'fade', 'animation.easing': 'ease_out_cubic', 'animation.open_ms': 200, 'animation.close_ms': 160, 'look.titles': 'always', 'look.window_highlight.style': 'glow', 'look.window_highlight.width': 6 } },
+  };
+
+  let state = { ...defaults(), ...PRESET_VALUES.bottom.v };
+  try { const saved = JSON.parse(localStorage.getItem('glazewm-overview-config') || 'null'); if (saved) state = { ...defaults(), ...saved }; } catch { /* no storage */ }
+  const save = () => { try { localStorage.setItem('glazewm-overview-config', JSON.stringify(state)); } catch { /* no storage */ } };
+
+  // Easing text → a stage animation. Named curves approximate GlazeWM's.
+  const BEZIERS = { linear: [0, 0, 1, 1], ease_in: [0.42, 0, 1, 1], ease_out: [0, 0, 0.58, 1], ease_in_out: [0.42, 0, 0.58, 1], ease_in_cubic: [0.32, 0, 0.67, 0], ease_out_cubic: [0.33, 1, 0.68, 1], ease_in_out_cubic: [0.65, 0, 0.35, 1], ease_out_spring: [0.34, 1.56, 0.64, 1], snappy: [0.2, 0.9, 0.1, 1] };
+  function parseEasing(text, ms) {
+    const t = String(text || '').trim().toLowerCase();
+    if (!t || t === 'spring') return { kind: 'spring', stiffness: 800, damping: 1 };
+    if (BEZIERS[t]) return { kind: 'bezier', ms, curve: BEZIERS[t] };
+    let m = t.match(/^cubic_bezier\(([^)]*)\)$/);
+    if (m) { const n = m[1].split(',').map(Number); if (n.length === 4 && n.every(Number.isFinite)) return { kind: 'bezier', ms, curve: n }; return null; }
+    m = t.match(/^spring\(([^)]*)\)$/);
+    if (m) {
+      const s = { damping: 1, stiffness: 800 }, names = ['damping', 'stiffness', 'epsilon'];
+      const parts = m[1].split(',').map((x) => x.trim()).filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        const [a, b] = parts[i].includes('=') ? parts[i].split('=').map((x) => x.trim()) : [names[i], parts[i]];
+        const v = Number(b); if (!Number.isFinite(v)) return null;
+        if (a === 'damping_ratio' || a === 'damping') s.damping = v; else if (a === 'stiffness') s.stiffness = v;
+      }
+      return s.stiffness > 0 ? { kind: 'spring', stiffness: s.stiffness, damping: s.damping } : null;
+    }
+    return null;
+  }
+  const hexAlpha = (hex) => { const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex || ''); return m ? (m[2] ? parseInt(m[2], 16) / 255 : 1) : 1; };
+  const cssColor = (hex) => { const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex || ''); if (!m) return null; const n = parseInt(m[1], 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${m[2] ? (parseInt(m[2], 16) / 255).toFixed(3) : 1})`; };
+
+  // State → the preview's parameters.
+  function params() {
+    const v = state, layout = { expose: 'cluster', activities: 'asis', stack: 'rigid' }[v.layout];
+    const instant = { kind: 'bezier', ms: 0, curve: [0, 0, 1, 1] };
+    const close = v['animation.style'] === 'none' ? instant : parseEasing(v['animation.easing'], v['animation.close_ms']) || { kind: 'spring', stiffness: 800, damping: 1 };
+    const open = v['animation.style'] === 'none' ? instant : parseEasing(v['animation.open_easing'] || v['animation.easing'], v['animation.open_ms']) || close;
+    const hl = v['animation.highlight_ms'], bounce = v['animation.bounce'];
+    const accent = v['look.colors.accent'];
+    return {
+      ...PRESETS.glazewm,
+      layout, zoom: v['stack.zoom'], largest: v['expose.largest'], margin: v['expose.margin'], gap: v['expose.gap'],
+      strip: { compact: 'compact', shown: 'shown', hidden: 'none' }[v.workspace_row], stripPos: v.workspace_row_position, searchHint: v.search_hint,
+      wallpaper: v['wallpaper.style'] === 'framed' ? 'slab' : 'blur', padding: v['wallpaper.padding'], shadow: v['wallpaper.shadow'],
+      surround: cssColor(v['wallpaper.color']) || '#141416', blurPx: v['wallpaper.blur'], tintAlpha: hexAlpha(v['wallpaper.tint']),
+      radius: v['look.corner_radius'], font: v['look.font_family'] ? `"${v['look.font_family']}"` : null,
+      accent: !accent ? '#5aa9ff' : accent === 'accent' ? '#4cc2ff' : cssColor(accent),
+      cardColor: cssColor(v['look.colors.card']), captionColor: cssColor(v['look.colors.caption']), textColor: cssColor(v['look.colors.text']),
+      ringStyle: v['look.window_highlight.style'], ringWorld: v['look.window_highlight.width'] * 1.6, ringGapWorld: v['look.window_highlight.gap'] * 1.6,
+      titles: v['look.titles'], icons: v['look.app_icons'],
+      motion: v['animation.style'] === 'fade' ? 'fade' : 'move', open, close,
+      hoverAnim: hl <= 0 ? instant : { kind: 'spring', stiffness: Math.pow(6.6 / (hl / 1000), 2), damping: 1 - bounce * 0.7 },
+      chromeFrom: v['animation.chrome_from'], lift: v['effects.window_lift'], dim: v['effects.dim'], staggerMs: v['effects.stagger_ms'],
+    };
+  }
+
+  // Preview.
+  let arrangement = 'tiled';
+  const stage = new Stage($('screen'), { params: params(), windows: scenario(5, arrangement), interactive: false, onChange: onStage });
+  const apply = () => { stage.setParams(params()); paintCorner(); };
+  function onStage(s) {
+    $('play').textContent = stage.isOpen ? 'Close' : 'Open';
+    if (loop && (s === 'opened' || s === 'closed')) { clearTimeout(loopT); loopT = setTimeout(() => { if (loop) stage.isOpen ? stage.close(1) : stage.open(); }, s === 'opened' ? 1300 : 800); }
+  }
+  let loop = false, loopT = 0;
+  $('play').onclick = () => (stage.isOpen ? stage.close(-1) : stage.open());
+  $('loop').onclick = () => { loop = !loop; $('loop').setAttribute('aria-pressed', loop); $('loop').textContent = loop ? 'Looping' : 'Loop'; if (loop) stage.isOpen ? stage.close(1) : stage.open(); };
+  document.querySelectorAll('#arr button').forEach((b) => b.onclick = () => {
+    arrangement = b.dataset.v; document.querySelectorAll('#arr button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    stage.setWindows(scenario(5, arrangement));
+  });
+  const el = stage.el;
+  const toWorld = (e) => { const b = el.getBoundingClientRect(); return [(e.clientX - b.left) / stage.k, (e.clientY - b.top) / stage.k]; };
+  const hit = (x, y) => { let best = -1; stage.t.rects.forEach((r, i) => { if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) best = i; }); return best; };
+  let cornerT = 0;
+  el.addEventListener('pointermove', (e) => {
+    const [x, y] = toWorld(e);
+    if (stage.isOpen) stage.setHover(hit(x, y));
+    const c = state['hot_corner.corner'];
+    const inCorner = c !== 'none' && (c.includes('left') ? x < 40 : x > W - 40) && (c.includes('top') ? y < 40 : y > H - 40);
+    if (inCorner && !cornerT && !stage.isOpen) cornerT = setTimeout(() => { cornerT = 0; if (!stage.isOpen) stage.open(); }, state['hot_corner.delay_ms']);
+    if (!inCorner && cornerT) { clearTimeout(cornerT); cornerT = 0; }
+  });
+  el.addEventListener('pointerleave', () => { stage.setHover(-1); clearTimeout(cornerT); cornerT = 0; });
+  el.addEventListener('click', (e) => {
+    if (!stage.isOpen) { stage.open(); return; }
+    const [x, y] = toWorld(e), i = hit(x, y);
+    if (i >= 0 && state['effects.ripples']) { const r = stage.t.rects[i]; stage.ripple(r.x + r.w / 2, r.y + r.h / 2); }
+    stage.close(i);
+  });
+  function paintCorner() {
+    $('screenWrap').querySelectorAll('.corner').forEach((c) => c.remove());
+    const c = state['hot_corner.corner']; if (c === 'none') return;
+    const d = document.createElement('div'); d.className = 'corner'; d.title = 'Hot corner: rest the cursor here';
+    d.style[c.includes('left') ? 'left' : 'right'] = '4px'; d.style[c.includes('top') ? 'top' : 'bottom'] = '4px';
+    d.style.borderRadius = { top_left: '10px 0 0 0', top_right: '0 10px 0 0', bottom_left: '0 0 0 10px', bottom_right: '0 0 10px 0' }[c];
+    $('screenWrap').append(d);
+  }
+
+  // Settings form.
+  function control(item) {
+    const row = document.createElement('div'); row.className = 'row'; row.dataset.key = item.key;
+    const tags = (item.isNew ? '<span class="tag new">new</span>' : '') + (item.np ? '<span class="tag np">not in preview</span>' : '');
+    row.innerHTML = `<label class="k" for="c-${item.key}"><i></i>${item.key}${tags}</label><button class="reset" title="Back to the default" aria-label="Reset ${item.key}">↺</button><div class="ctl"></div><p class="help">${item.help} <span class="mono">Default: ${item.def === null ? 'unset' : item.def === '' ? 'empty' : Array.isArray(item.def) ? 'none' : item.def}</span></p>`;
+    const ctl = row.querySelector('.ctl'), id = 'c-' + item.key;
+    const set = (v) => { state[item.key] = v; changed(item.key); };
+    if (item.kind === 'enum') {
+      const seg = document.createElement('div'); seg.className = 'seg'; seg.id = id; seg.setAttribute('role', 'group');
+      if (item.options.length > 4) {
+        const sel = document.createElement('select'); sel.id = id; item.options.forEach((o) => sel.add(new Option(o, o))); sel.onchange = () => set(sel.value); ctl.append(sel); row.sync = () => { sel.value = state[item.key]; };
+      } else {
+        item.options.forEach((o) => { const b = document.createElement('button'); b.textContent = o; b.dataset.v = o; b.onclick = () => set(o); seg.append(b); });
+        ctl.append(seg); row.sync = () => seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === state[item.key])));
+      }
+    } else if (item.kind === 'bool') {
+      const t = document.createElement('button'); t.className = 'tog'; t.id = id; t.setAttribute('aria-label', item.key); t.onclick = () => set(!state[item.key]); ctl.append(t);
+      row.sync = () => t.setAttribute('aria-pressed', String(!!state[item.key]));
+    } else if (item.kind === 'range') {
+      const r = document.createElement('input'); r.type = 'range'; r.id = id; r.min = item.min; r.max = item.max; r.step = item.step;
+      const o = document.createElement('output');
+      const fmt = item.fmt || ((v) => v + (item.unit ? ' ' + item.unit : ''));
+      r.oninput = () => { o.textContent = fmt(+r.value); set(+r.value); };
+      ctl.append(r, o); row.sync = () => { r.value = state[item.key]; o.textContent = fmt(+state[item.key]); };
+    } else if (item.kind === 'particles') {
+      const seg = document.createElement('div'); seg.className = 'seg'; seg.id = id; seg.setAttribute('role', 'group');
+      item.options.forEach((o) => {
+        const b = document.createElement('button'); b.textContent = o; b.dataset.v = o;
+        b.onclick = () => { const cur = state[item.key] || []; set(cur.includes(o) ? cur.filter((x) => x !== o) : [...cur, o]); };
+        seg.append(b);
+      });
+      ctl.append(seg); row.sync = () => seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String((state[item.key] || []).includes(b.dataset.v))));
+    } else if (item.kind === 'text') {
+      const t = document.createElement('input'); t.type = 'text'; t.id = id; t.onchange = () => set(t.value); ctl.append(t); row.sync = () => { t.value = state[item.key]; };
+    } else if (item.kind === 'color' || item.kind === 'accent') {
+      let mode = null;
+      if (item.kind === 'accent') {
+        mode = document.createElement('select'); mode.id = id;
+        [['unset', 'Focused border color'], ['accent', 'Windows accent'], ['custom', 'Custom']].forEach(([v, l]) => mode.add(new Option(l, v)));
+        mode.onchange = () => set(mode.value === 'unset' ? null : mode.value === 'accent' ? 'accent' : '#5aa9ffff'); ctl.append(mode);
+      }
+      const pick = document.createElement('input'); pick.type = 'color'; pick.setAttribute('aria-label', item.key + ' color');
+      const txt = document.createElement('input'); txt.type = 'text'; if (!mode) txt.id = id; txt.setAttribute('aria-label', item.key + ' hex'); txt.placeholder = '#rrggbbaa';
+      pick.oninput = () => { const a = (/^#[0-9a-f]{8}$/i.test(state[item.key] || '') ? state[item.key].slice(7) : 'ff'); set(pick.value + a); };
+      txt.onchange = () => { const ok = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(txt.value); txt.classList.toggle('bad', !ok); if (ok) set(txt.value.toLowerCase()); };
+      ctl.append(pick, txt);
+      row.sync = () => {
+        const v = state[item.key], custom = v && v !== 'accent';
+        if (mode) mode.value = !v ? 'unset' : v === 'accent' ? 'accent' : 'custom';
+        pick.hidden = txt.hidden = mode ? !custom : false;
+        if (custom) { pick.value = v.slice(0, 7); txt.value = v; txt.classList.remove('bad'); }
+      };
+    } else if (item.kind === 'easing') {
+      const sel = document.createElement('select'); sel.id = id;
+      if (item.def === '') sel.add(new Option('same as easing', ''));
+      CURVES.forEach((c) => sel.add(new Option(c, c))); sel.add(new Option('custom…', '__custom'));
+      const txt = document.createElement('input'); txt.type = 'text'; txt.setAttribute('aria-label', item.key + ' custom'); txt.placeholder = 'spring(0.85, 520) or cubic_bezier(0.2, 0.8, 0.2, 1)';
+      sel.onchange = () => { if (sel.value === '__custom') { txt.hidden = false; txt.focus(); } else set(sel.value); };
+      txt.onchange = () => { const ok = parseEasing(txt.value, 1) != null; txt.classList.toggle('bad', !ok); if (ok) set(txt.value.trim()); };
+      ctl.append(sel, txt);
+      row.sync = () => { const v = state[item.key] ?? ''; const known = v === '' ? item.def === '' : CURVES.includes(v); sel.value = known ? v : '__custom'; txt.hidden = known; if (!known) { txt.value = v; txt.classList.remove('bad'); } };
+    }
+    row.querySelector('.reset').onclick = () => set(item.def);
+    return row;
+  }
+
+  const rows = {};
+  function buildForm() {
+    const host = $('settings'); host.innerHTML = '';
+    GROUPS.forEach((g, gi) => {
+      const d = document.createElement('details'); d.className = 'group' + (g.isNew ? ' new' : ''); d.open = gi < 2 || g.isNew === undefined && gi < 4;
+      d.innerHTML = `<summary><h2>${g.title}</h2><span class="count" data-count></span></summary>`;
+      g.items.forEach((item) => { const r = control(item); rows[item.key] = r; d.append(r); });
+      host.append(d);
+    });
+    syncAll();
+  }
+  const isChanged = (k) => JSON.stringify(state[k]) !== JSON.stringify(BY_KEY[k].def);
+  function syncAll() {
+    for (const [k, r] of Object.entries(rows)) { r.sync(); r.classList.toggle('changed', isChanged(k)); }
+    document.querySelectorAll('details.group').forEach((d, i) => { const n = GROUPS[i].items.filter((it) => isChanged(it.key)).length; d.querySelector('[data-count]').textContent = n ? `${n} changed` : ''; });
+    markPreset(); yaml();
+  }
+  function changed(key) {
+    rows[key]?.sync(); rows[key]?.classList.toggle('changed', isChanged(key));
+    save(); apply(); syncAll();
+  }
+
+  // YAML out: real options as YAML, proposals as comments.
+  let scope = 'changed';
+  const fmtVal = (item, v) => {
+    if (item.kind === 'particles') return v.length === 0 ? '"none"' : v.length === 1 ? JSON.stringify(v[0]) : JSON.stringify(v).replace(/,/g, ', ');
+    if (typeof v === 'boolean') return String(v);
+    if (typeof v === 'number') return String(+v.toFixed(4));
+    return JSON.stringify(v);
+  };
+  // One tree: proposals sit beside their real siblings, commented out, so
+  // removing a line's "# " never duplicates a key.
+  function yaml() {
+    const tree = {};
+    for (const item of ITEMS) {
+      const v = state[item.key];
+      if (v === null || v === '' || v === undefined) continue;
+      if (scope === 'changed' && !isChanged(item.key)) continue;
+      const parts = item.key.split('.'); let node = tree;
+      parts.slice(0, -1).forEach((p) => { node = node[p] = node[p] || {}; });
+      node[parts[parts.length - 1]] = { item, v };
+    }
+    const allNew = (node) => Object.values(node).every((val) => (val.item ? val.item.isNew : allNew(val)));
+    const lines = [];
+    const walk = (node, depth, inNew) => {
+      for (const [k, val] of Object.entries(node)) {
+        const pad = '  '.repeat(depth);
+        if (val.item) {
+          const c = inNew || val.item.isNew;
+          lines.push({ text: `${pad}${c ? '# ' : ''}${k}: ${fmtVal(val.item, val.v)}`, c });
+        } else {
+          const c = inNew || allNew(val);
+          lines.push({ text: `${pad}${c ? '# ' : ''}${k}:`, c });
+          walk(val, depth + 1, c);
+        }
+      }
+    };
+    walk(tree, 1, false);
+    const head = lines.some((l) => l.c) ? [{ text: '  # Lines starting with "# " are proposals, not in GlazeWM yet.', c: true }] : [];
+    const all = [{ text: 'overview:', c: false }, ...head, ...(lines.length ? lines : [{ text: '  # Everything at its default.', c: false }])];
+    $('yaml').innerHTML = all.map((l) => (l.c ? `<span class="c">${escapeHtml(l.text)}</span>` : escapeHtml(l.text))).join('\n');
+    $('yaml').dataset.text = all.map((l) => l.text).join('\n') + '\n';
+  }
+  const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  document.querySelectorAll('#scope button').forEach((b) => b.onclick = () => { scope = b.dataset.v; document.querySelectorAll('#scope button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); yaml(); });
+  $('copy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('yaml').dataset.text); $('copy').textContent = 'Copied'; }
+    catch { const r = document.createRange(); r.selectNodeContents($('yaml')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); $('copy').textContent = 'Selected'; }
+    setTimeout(() => { $('copy').textContent = 'Copy'; }, 1400);
+  };
+
+  // Import.
+  $('importBtn').onclick = () => {
+    const msg = $('importMsg');
+    let doc;
+    try { doc = jsyaml.load($('importText').value); } catch (e) { msg.textContent = 'That isn\'t valid YAML: ' + e.message.split('\n')[0]; return; }
+    if (!doc || typeof doc !== 'object') { msg.textContent = 'Nothing to import.'; return; }
+    const root = doc.overview && typeof doc.overview === 'object' ? doc.overview : doc;
+    const flat = {};
+    const walk = (o, prefix) => { for (const [k, v] of Object.entries(o)) { const key = prefix ? prefix + '.' + k : k; if (v && typeof v === 'object' && !Array.isArray(v) && !BY_KEY[key]) walk(v, key); else flat[key] = v; } };
+    walk(root, '');
+    const next = defaults(), unknown = [];
+    for (const [k, v] of Object.entries(flat)) {
+      const item = BY_KEY[k]; if (!item) { unknown.push(k); continue; }
+      if (item.kind === 'range') next[k] = Number(v);
+      else if (item.kind === 'bool') next[k] = v === true || v === 'true';
+      else if (item.kind === 'particles') next[k] = (Array.isArray(v) ? v : [v]).map(String).filter((x) => x !== 'none' && item.options.includes(x));
+      else next[k] = v == null ? item.def : String(v);
+    }
+    state = next; save(); apply(); syncAll();
+    msg.innerHTML = `Loaded ${Object.keys(flat).length - unknown.length} setting${Object.keys(flat).length - unknown.length === 1 ? '' : 's'}.` + (unknown.length ? ` Not recognised: <code>${unknown.join('</code>, <code>')}</code>.` : '');
+  };
+
+  // Presets.
+  for (const [k, p] of Object.entries(PRESET_VALUES)) {
+    const b = document.createElement('button'); b.textContent = p.label; b.dataset.k = k;
+    b.onclick = () => { state = { ...defaults(), ...p.v }; save(); apply(); syncAll(); if (!stage.isOpen) stage.open(); };
+    $('presets').append(b);
+  }
+  function markPreset() {
+    for (const b of $('presets').children) { const p = { ...defaults(), ...PRESET_VALUES[b.dataset.k].v }; b.setAttribute('aria-pressed', String(ITEMS.every((i) => JSON.stringify(p[i.key]) === JSON.stringify(state[i.key])))); }
+  }
+
+  buildForm(); paintCorner();
+  setTimeout(() => stage.open(), 500);
+})();
+</script>

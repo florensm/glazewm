@@ -106,9 +106,13 @@ const OverviewStage = (() => {
 
   // Where windows, the slab and the strip settle for `p`, on `windows`.
   function targets(p, windows) {
-    const stripH = { compact: Math.min(Math.max(H * 0.07, 44), 96), names: 36, thumbs: H * 0.09, bottom: 0, none: 0 }[p.strip] ?? 0;
-    const stripBlock = p.strip === 'compact' ? 18 + stripH + 26 + 22 : p.strip === 'none' || p.strip === 'bottom' ? p.margin : 16 + stripH + 24;
-    const bottomBlock = p.strip === 'bottom' ? H * 0.16 : p.margin;
+    const stripH = { compact: Math.min(Math.max(H * 0.07, 44), 96), shown: Math.min(Math.max(H * 0.12, 64), 170), names: 36, thumbs: H * 0.09, bottom: 0, none: 0 }[p.strip] ?? 0;
+    const isRow = p.strip === 'compact' || p.strip === 'shown';
+    const atBottom = isRow && p.stripPos === 'bottom';
+    const rowBlock = 18 + stripH + 26 + 22;
+    const hint = p.searchHint ? 62 : 0;
+    const stripBlock = isRow && !atBottom ? rowBlock : p.strip === 'none' || p.strip === 'bottom' || atBottom ? p.margin : 16 + stripH + 24;
+    const bottomBlock = (p.strip === 'bottom' ? H * 0.16 : atBottom ? rowBlock : p.margin) + hint;
     const scene = { x: p.margin, y: Math.max(stripBlock, p.margin), w: W - 2 * p.margin, h: 0 };
     scene.h = H - bottomBlock - scene.y;
     const pad = p.wallpaper === 'slab' ? p.padding : 0;
@@ -124,6 +128,10 @@ const OverviewStage = (() => {
       const ws = { x: (W - WORK.w * z) / 2, y: (H - WORK.h * z) / 2, w: WORK.w * z, h: WORK.h * z };
       rects = windows.map((r) => ({ x: ws.x + r.x * z, y: ws.y + r.y * z, w: r.w * z, h: r.h * z }));
       slab = ws;
+    } else if (p.layout === 'asis') {
+      const s2 = Math.min(room.w / WORK.w, room.h / WORK.h);
+      const ox = room.x + (room.w - WORK.w * s2) / 2, oy = room.y + (room.h - WORK.h * s2) / 2;
+      rects = windows.map((r) => ({ x: ox + r.x * s2, y: oy + r.y * s2, w: r.w * s2, h: r.h * s2 }));
     } else if (p.layout === 'rows') {
       rects = L.rows(windows, room, { spacing: p.gap, maxScale: p.rowsMax ?? p.maxScale, monitorH: WORK.h });
     } else if (p.layout === 'grid') {
@@ -132,7 +140,8 @@ const OverviewStage = (() => {
       rects = L.cluster(windows, room, { gap: p.gap, largest: p.largest, maxScale: p.maxScale });
     }
     if (p.wallpaper !== 'slab') slab = { x: 0, y: 0, w: W, h: H };
-    return { rects, slab, room, stripH, stripY: p.strip === 'bottom' ? H - bottomBlock + 24 : 18 };
+    const stripY = p.strip === 'bottom' ? H - bottomBlock + 24 : atBottom ? H - hint - 18 - 26 - stripH : 18;
+    return { rects, slab, room, stripH, stripY, atBottom, hintY: H - 46 - 10 };
   }
 
   // One animated value, on a spring or a bezier, retargetable mid-flight.
@@ -241,11 +250,12 @@ const OverviewStage = (() => {
   .ovs-notes{background:#fbfaf7;padding:26px 6%}
   .ovs-ring{position:absolute;inset:calc(-1 * var(--ovs-ring-gap,0px));border-radius:inherit;box-shadow:0 0 0 var(--ovs-ring-w,5px) var(--ovs-accent,#5aa9ff);opacity:0;pointer-events:none}
   .ovs-icon{position:absolute;left:50%;top:50%;width:84px;height:84px;margin:-42px 0 0 -42px;border-radius:22px;opacity:0;box-shadow:0 8px 24px rgba(0,0,0,.35);pointer-events:none}
-  .ovs-tag{position:absolute;left:50%;top:100%;transform:translate(-50%,0);margin-top:14px;padding:7px 14px;border-radius:9px;background:rgba(18,18,24,.86);color:#f2f2f5;font:500 26px/1.2 system-ui,sans-serif;white-space:nowrap;opacity:0;pointer-events:none}
+  .ovs-tag{position:absolute;left:50%;top:100%;transform:translate(-50%,0);margin-top:14px;padding:7px 14px;border-radius:9px;background:var(--ovs-caption,rgba(18,18,24,.86));color:var(--ovs-text,#f2f2f5);font:500 26px/1.2 var(--ovs-font,system-ui),system-ui,sans-serif;white-space:nowrap;opacity:0;pointer-events:none}
   .ovs-win.notag .ovs-tag{display:none}
+  .ovs-searchline{position:absolute;left:50%;transform:translateX(-50%);width:520px;height:46px;border-radius:12px;background:var(--ovs-card,rgba(28,28,32,.9));color:var(--ovs-text,#f2f2f5);opacity:.0;font:400 22px/46px var(--ovs-font,system-ui),system-ui,sans-serif;text-align:center;pointer-events:none}
   .ovs-deco{position:absolute;inset:0;pointer-events:none;z-index:3}
   .ovs-strip{position:absolute;left:0;right:0;display:flex;justify-content:center;gap:16px;pointer-events:none}
-  .ovs-mini{position:relative;border-radius:8px;overflow:hidden;background:rgba(255,255,255,.08);box-shadow:0 0 0 2px rgba(255,255,255,.08)}
+  .ovs-mini{position:relative;border-radius:8px;overflow:hidden;background:var(--ovs-card,rgba(255,255,255,.08));box-shadow:0 0 0 2px rgba(255,255,255,.08)}
   .ovs-mini.on{box-shadow:0 0 0 3px var(--ovs-accent,#5aa9ff)}
   .ovs-mini u{position:absolute;background:rgba(255,255,255,.55);border-radius:2px}
   .ovs-mini em{position:absolute;left:0;right:0;top:calc(100% + 6px);text-align:center;color:#e7e7ee;font:500 18px/1 system-ui,sans-serif;font-style:normal}
@@ -302,6 +312,9 @@ const OverviewStage = (() => {
     build() {
       const p = this.params;
       this.el.style.setProperty('--ovs-surround', p.surround || (p.wallpaper === 'slab' ? '#141416' : '#000'));
+      for (const [prop, value] of [['--ovs-accent', p.accent], ['--ovs-font', p.font], ['--ovs-caption', p.captionColor], ['--ovs-text', p.textColor], ['--ovs-card', p.cardColor]]) {
+        if (value) this.el.style.setProperty(prop, value); else this.el.style.removeProperty(prop);
+      }
       this.world.innerHTML = '';
       this.wallBox = document.createElement('div'); this.wallBox.className = 'ovs-layer'; this.wallBox.style.width = W + 'px'; this.wallBox.style.height = H + 'px';
       this.shadow = document.createElement('div'); this.shadow.className = 'ovs-shadow';
@@ -313,7 +326,8 @@ const OverviewStage = (() => {
       this.task = document.createElement('div'); this.task.className = 'ovs-task'; this.task.style.height = TASKBAR + 'px';
       this.task.innerHTML = APPS.slice(0, 7).map((a) => `<b style="background:${a.tint}"></b>`).join('');
       this.slab.append(this.wall, this.blurWall, this.dimmer, this.task);
-      if (p.wallpaper === 'slab') this.world.append(this.shadow);
+      if (p.wallpaper === 'slab' && p.shadow !== false) this.world.append(this.shadow);
+      if (p.blurPx != null) this.blurWall.style.filter = `blur(${p.blurPx * 0.45}px) saturate(1.15)`;
       this.world.append(this.slab);
 
       // The strip.
@@ -322,7 +336,7 @@ const OverviewStage = (() => {
       const t = targets(p, this.windows);
       this.t = t;
       this.strip.style.top = t.stripY + 'px';
-      if (p.strip === 'compact' || p.strip === 'thumbs' || p.strip === 'bottom') {
+      if (p.strip === 'compact' || p.strip === 'shown' || p.strip === 'thumbs' || p.strip === 'bottom') {
         const h = p.strip === 'bottom' ? 120 : t.stripH, w = h * 16 / 9;
         for (let i = 0; i < 4; i++) {
           const m = document.createElement('div'); m.className = 'ovs-mini' + (i === 0 ? ' on' : '');
@@ -361,6 +375,9 @@ const OverviewStage = (() => {
         return { el, ring, icon, tag, deco, app, real: r, motion: new Motion(this.openness), hover: new Motion(0), fade: new Motion(1), scale: 1 };
       });
       this.hint = document.createElement('div'); this.hint.className = 'ovs-hint'; this.world.append(this.hint);
+      this.searchLine = document.createElement('div'); this.searchLine.className = 'ovs-searchline';
+      this.searchLine.textContent = 'Type to search'; this.searchLine.hidden = !p.searchHint;
+      this.searchLine.style.top = (t.hintY ?? H - 56) + 'px'; this.world.append(this.searchLine);
       this.cursor = document.createElement('div'); this.cursor.className = 'ovs-cursor';
       this.cursor.innerHTML = '<svg viewBox="0 0 24 32" width="34" height="46"><path d="M2 2v24l6.5-6 4.5 10 4-1.8-4.4-9.8H22z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
       this.search = document.createElement('div'); this.search.className = 'ovs-search';
@@ -456,7 +473,7 @@ const OverviewStage = (() => {
     setHover(i) {
       if (i === this.hover) return;
       this.hover = i;
-      const anim = { kind: 'spring', stiffness: 700, damping: 0.8 };
+      const anim = this.params.hoverAnim || { kind: 'spring', stiffness: 700, damping: 0.8 };
       this.wins.forEach((w, j) => w.hover.aim(j === i ? 1 : 0, anim));
       this.kick();
     }
@@ -549,13 +566,14 @@ const OverviewStage = (() => {
       }
       const sc = Math.min(1, Math.max(0, s));
       this.blurWall.style.opacity = p.wallpaper === 'blur' ? sc : 0;
-      this.dimmer.style.opacity = p.wallpaper === 'blur' ? sc * 0.45 : p.wallpaper === 'dim' ? sc * 0.28 : 0;
+      this.dimmer.style.opacity = p.wallpaper === 'blur' ? sc * (p.tintAlpha ?? 0.45) : p.wallpaper === 'dim' ? sc * 0.28 : 0;
       this.task.style.opacity = 1 - sc;
       const from = p.chromeFrom ?? 0.8;
       const chrome = smooth(Math.min(1, Math.max(0, (s - from) / (1 - from))));
       this.chrome = chrome;
       this.strip.style.opacity = chrome;
-      this.strip.style.transform = `translateY(${(1 - chrome) * -14}px)`;
+      this.strip.style.transform = `translateY(${(1 - chrome) * (t.atBottom ? 14 : -14)}px)`;
+      if (this.searchLine) this.searchLine.style.opacity = chrome;
 
       const anyHover = this.hover >= 0;
       this.wins.forEach((w, i) => {
@@ -578,9 +596,11 @@ const OverviewStage = (() => {
         w.el.style.setProperty('--inv', 1 / Math.max(k, 0.05));
         w.el.style.setProperty('--chrome', chrome);
         w.el.style.setProperty('--hov', Math.max(0, Math.min(1, w.hover.x)));
-        const ringW = (p.ringWidth ?? 2.5) / Math.max(k * this.k, 0.01);
+        const ringW = p.ringWorld != null ? p.ringWorld / Math.max(k, 0.01) : (p.ringWidth ?? 2.5) / Math.max(k * this.k, 0.01);
         w.ring.style.setProperty('--ovs-ring-w', ringW + 'px');
-        w.ring.style.opacity = Math.max(w.hover.x, 0) * chrome;
+        if (p.ringGapWorld != null) w.ring.style.setProperty('--ovs-ring-gap', p.ringGapWorld / Math.max(k, 0.01) + 'px');
+        w.ring.style.boxShadow = p.ringStyle === 'glow' ? `0 0 ${ringW * 3}px ${ringW}px var(--ovs-accent,#5aa9ff)` : '';
+        w.ring.style.opacity = p.ringStyle === 'none' ? 0 : Math.max(w.hover.x, 0) * chrome;
         w.tag.style.opacity = (p.titles === 'always' ? 1 : p.titles === 'never' ? 0 : Math.max(w.hover.x, 0)) * chrome;
         w.tag.style.transform = `translate(-50%,0) scale(${1 / Math.max(k, 0.05)})`;
         w.tag.style.transformOrigin = '50% 0';
