@@ -966,14 +966,18 @@ pub(crate) fn draw_stand_in(
   let (width, height) = (to_f32(surface.width), to_f32(surface.height));
   let rect = RectF::new(0.0, 0.0, width, height).to_rect();
 
-  // Glass, as it isn't really there: the wallpaper shows through, under
-  // a faint title bar and a light edge, so it reads as a window outline.
+  // Gray, with the wallpaper showing through a little, as it isn't really
+  // there; a faint title bar and a light edge make it read as a window.
   let radius = round(units.px(style.card_corner_radius));
   let bar = units.px(26.0).min(height / 4.0);
   surface.pixels().fill(0);
   {
     let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(&rect, radius, with_alpha(style.text, 0.08));
+    canvas.fill_rounded_rect(
+      &rect,
+      radius,
+      with_alpha(style.surface, 0.75),
+    );
     canvas.fill_rect_with_corners(
       &RectF::new(0.0, 0.0, width, bar).to_rect(),
       CornerRadii {

@@ -72,8 +72,8 @@ strips at full length, to move windows between them.
 
 Minimized windows show in the exposé too, spread out with the others,
 as large as where they're restored to, so they scale alike with the
-windows around them (a set size when that's a parked sliver): as a glass
-window outline the wallpaper shows through, with its app's icon in the
+windows around them (a set size when that's a parked sliver): as a window of
+the surface color the wallpaper shows through a little, with its app's icon in the
 middle and its title centered
 under it, as Windows draws nothing for them. They fade in rather than fly out of the screen. Picking one, by mouse, the arrows or
 search, restores it. Dragged onto a workspace, one moves there, still
