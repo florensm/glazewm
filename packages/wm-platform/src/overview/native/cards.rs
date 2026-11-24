@@ -29,17 +29,38 @@ pub(super) fn screen_rect(
   workspace: &OverviewWorkspace,
   window: &OverviewWindow,
 ) -> RectF {
-  // A minimized window sits parked off screen, as a sliver: where it is
-  // restored to is what its stand-in shows as.
-  if workspace.is_displayed
-    && !window.is_scrolled_off
-    && !window.is_minimized
-  {
+  if window.is_minimized {
+    return stand_in_rect(
+      &RectF::from_rect(&workspace.content_rect),
+      &RectF::from_rect(&window.rect),
+    );
+  }
+
+  if workspace.is_displayed && !window.is_scrolled_off {
     visible_frame_on_screen(HWND(window.hwnd))
       .unwrap_or_else(|| RectF::from_rect(&window.rect))
   } else {
     RectF::from_rect(&window.rect)
   }
+}
+
+/// Part of its workspace's height a minimized window's stand-in takes.
+const STAND_IN_SHARE: f32 = 0.35;
+
+/// Width of a stand-in against its height.
+const STAND_IN_ASPECT: f32 = 1.6;
+
+/// Where a minimized window shows as its stand-in, on a workspace showing
+/// `area`: all alike in size, so the exposé shares its room evenly among
+/// them, wherever (and however large) each is restored to; and centered
+/// where `restored` is, kept within `area`, so they spread in that order.
+fn stand_in_rect(area: &RectF, restored: &RectF) -> RectF {
+  let height = area.h * STAND_IN_SHARE;
+  let width = (height * STAND_IN_ASPECT).min(area.w);
+  let (cx, cy) = restored.center();
+  let cx = cx.clamp(area.x + width / 2.0, area.right() - width / 2.0);
+  let cy = cy.clamp(area.y + height / 2.0, area.bottom() - height / 2.0);
+  RectF::new(cx - width / 2.0, cy - height / 2.0, width, height)
 }
 
 impl Screen {
@@ -387,5 +408,41 @@ impl Screen {
       }),
       icons: self.icons,
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::stand_in_rect;
+  use crate::overview::layout::RectF;
+
+  fn assert_near(a: (f32, f32), b: (f32, f32)) {
+    assert!(
+      (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01,
+      "{a:?} != {b:?}"
+    );
+  }
+
+  #[test]
+  fn stand_ins_are_alike_in_size_where_their_windows_are_restored_to() {
+    let area = RectF::new(0.0, 0.0, 1920.0, 1000.0);
+    let big = stand_in_rect(&area, &RectF::new(0.0, 0.0, 1900.0, 980.0));
+    let sliver =
+      stand_in_rect(&area, &RectF::new(1500.0, 300.0, 160.0, 4.0));
+
+    assert_near((big.w, big.h), (560.0, 350.0));
+    assert_near((sliver.w, sliver.h), (big.w, big.h));
+    // Centered where restored to, kept within the workspace.
+    assert_near(sliver.center(), (1580.0, 302.0));
+    assert_near(big.center(), (950.0, 490.0));
+  }
+
+  #[test]
+  fn a_stand_in_restored_off_the_workspace_stays_on_it() {
+    let area = RectF::new(0.0, 0.0, 1920.0, 1000.0);
+    let parked =
+      stand_in_rect(&area, &RectF::new(-32000.0, -32000.0, 160.0, 28.0));
+
+    assert_near((parked.x, parked.y), (0.0, 0.0));
   }
 }

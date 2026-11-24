@@ -944,6 +944,9 @@ pub(crate) fn draw_note(
   );
 }
 
+/// Font size of a stand-in's title, in logical pixels.
+const STAND_IN_TITLE: f32 = 12.0;
+
 /// Largest size a stand-in is drawn at, in logical pixels: what shows in
 /// place of a window that renders nothing to a thumbnail, e.g. a
 /// minimized one. It shows smaller, as its window would.
@@ -970,23 +973,33 @@ pub(crate) fn draw_stand_in(
     style.surface,
   );
 
-  let size = units.px(48.0).min(height / 2.0).min(width / 2.0);
-  let icon =
-    RectF::new((width - size) / 2.0, (height - size) / 2.0, size, size);
+  // The icon, and the title centered under it, together in the middle.
+  let font_size = units.px(STAND_IN_TITLE);
+  let title_height = (font_size * 1.6).round();
+  let gap = units.px(8.0);
+  let size = units
+    .px(48.0)
+    .min((height - title_height - gap) * 0.6)
+    .min(width / 2.0)
+    .max(0.0);
+  let top = (height - size - gap - title_height) / 2.0;
+  let icon = RectF::new((width - size) / 2.0, top, size, size);
   draw_window_icon(surface, hwnd, &icon.to_rect(), 0.9, notify);
 
-  draw_caption(
+  let inset = units.px(10.0);
+  draw_text(
     surface,
-    &mut Fonts::new(&style.font_family),
+    &Fonts::new(&style.font_family).get(font_size, false),
     title,
-    &rect,
-    (
-      units.px(TILE_CAPTION.0),
-      units.px(TILE_CAPTION.1),
-      units.px(4.0),
-    ),
-    style,
-    1.0,
+    &RectF::new(
+      inset,
+      top + size + gap,
+      (width - 2.0 * inset).max(0.0),
+      title_height,
+    )
+    .to_rect(),
+    style.text,
+    Align::Center,
   );
 }
 
