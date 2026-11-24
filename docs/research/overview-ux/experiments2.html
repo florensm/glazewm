@@ -99,12 +99,12 @@
   const base = { ...PRESETS.proposed, titles: 'hover' };
 
   // A card: demo on the left, the idea on the right, autoplay until taken over.
-  function card({ num, title, pitch, tryIt, good, risk, touch, src, controls = '' }) {
+  function card({ num, title, pitch, tryIt, good, risk, touch, src, today, controls = '' }) {
     const sec = document.createElement('section'); sec.className = 'concept panel';
     sec.innerHTML = `<div class="demo"><div class="stage" tabindex="0"></div>
         <div class="demo-bar">${controls}<button data-replay>Replay</button><span class="status" data-status></span></div></div>
       <div class="copy"><span class="num">${num}</span><h2>${title}</h2><p class="pitch">${pitch}</p><p class="try">${tryIt}</p>
-        <dl><dt>Good</dt><dd>${good}</dd><dt>Risk</dt><dd>${risk}</dd><dt>Touches</dt><dd><code>${touch}</code></dd>${src ? `<dt>Seen in</dt><dd>${src}</dd>` : ''}</dl></div>`;
+        <dl>${today ? `<dt>Today</dt><dd>${today}</dd>` : ''}<dt>Good</dt><dd>${good}</dd><dt>Risk</dt><dd>${risk}</dd><dt>Touches</dt><dd><code>${touch}</code></dd>${src ? `<dt>Seen in</dt><dd>${src}</dd>` : ''}</dl></div>`;
     document.getElementById('cards').append(sec);
     return sec;
   }
@@ -140,9 +140,10 @@
   /* 1. Compose: drag windows into a layout to build the workspace. */
   {
     const sec = card({ num: '01 · ARRANGE', title: 'Compose',
+      today: 'Mostly there already: dragging a window onto another tiles it beside it, on the side nearest the cursor, with a drop indicator, in every layout and in the overview. Compose would only add a template\'s empty slots, so a workspace can be laid out in one go before anything is in it to drop beside.',
       pitch: 'The overview shows your screen as a frame with a layout\'s slots. Drag windows into them; <b>Apply</b> tiles the workspace that way. The overview becomes where you arrange, not just where you pick.',
       tryIt: 'Drag a window from the tray into a slot. Change the template, then <b>Apply</b>.',
-      good: 'Building a layout by dragging is easier than a chain of move and resize keys, and it previews the result.', risk: 'Two ways to arrange (keys and this) need to agree on what a layout is.',
+      good: 'Laying out a fresh or empty workspace in one go, which drop-beside can\'t do until a first window is there.', risk: 'Two ways to arrange (keys and this) need to agree on what a layout is.',
       touch: 'layout/ split presets, commands/ apply-layout', src: '<a href="https://support.microsoft.com/windows/snap-your-windows-885a9b1e-a983-a3b1-16cd-c531795e6241" target="_blank" rel="noopener">Windows Snap layouts</a>',
       controls: '<label>Template <select data-template><option value="main">Main + 2</option><option value="cols">3 columns</option><option value="grid">2 × 2</option></select></label><button data-apply>Apply</button>' });
     const T = { main: [[0, 0, .5, 1], [.5, 0, .5, .5], [.5, .5, .5, .5]], cols: [[0, 0, 1 / 3, 1], [1 / 3, 0, 1 / 3, 1], [2 / 3, 0, 1 / 3, 1]], grid: [[0, 0, .5, .5], [.5, 0, .5, .5], [0, .5, .5, .5], [.5, .5, .5, .5]] };
@@ -441,10 +442,11 @@
 
   /* 7. Swap. */
   {
-    const sec = card({ num: '07 · ARRANGE', title: 'Swap by dropping',
-      pitch: 'Drag a tile onto another and drop it in its middle: the two trade places, each taking the other\'s size. Today a drop goes beside the window under it; the middle could mean "swap".',
+    const sec = card({ num: '07 · SMALL VARIANT', title: 'Swap by dropping',
+      today: 'Already works, nearly: dropping a tile onto another places it beside that one, on the nearest side, in any layout. The only difference here is that the two also trade sizes, as the <code>swap-window</code> command does. A small option at most, not a new feature.',
+      pitch: 'Drag a tile onto the middle of another: the two trade places, each taking the other\'s size, instead of the drop going beside it.',
       tryIt: 'Drag one tile onto the middle of another.',
-      good: 'The most common rearrangement in a tiled layout, as one drag.', risk: 'The middle and the sides of a tile must read clearly apart while dragging.',
+      good: 'Keeps both sizes, where drop-beside reshapes the split.', risk: 'The middle and the sides of a tile must read clearly apart while dragging.',
       touch: 'layout/ drops: a swap zone in the middle of a tile', src: '<a href="https://github.com/koekeishiya/yabai/wiki/Commands#swap-window" target="_blank" rel="noopener">yabai swap</a>' });
     const HOME = scenario(4, 'tiled');
     const st = { real: HOME.map((r) => ({ ...r })), drag: null, over: -1 };
