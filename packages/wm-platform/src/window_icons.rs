@@ -77,7 +77,7 @@ fn worker() -> Option<&'static Mutex<Sender<Request>>> {
               let _ = PostMessageW(
                 HWND(request.notify),
                 request.notify_msg,
-                WPARAM(0),
+                WPARAM(request.window.cast_unsigned()),
                 LPARAM(0),
               );
             }

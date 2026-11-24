@@ -479,6 +479,10 @@ struct Card {
 
   /// What `picture` shows, to skip redrawing it unchanged.
   drawn: Option<CardPicture>,
+
+  /// Bumped as icons of its windows arrive, so it and its tab bars
+  /// redraw, and no other card.
+  icons: u64,
 }
 
 impl Card {
@@ -763,6 +767,10 @@ struct Screen {
   /// Its cards drawn plainly, as from opening until the zoom lands:
   /// drawing them in full would hold up the zoom's first frame.
   plain_cards: bool,
+
+  /// Whether cards are left to draw in full, a few a frame, so the
+  /// frame the zoom lands on isn't held up drawing them all.
+  cards_behind: bool,
 
   is_tracking_leave: bool,
 
@@ -1845,9 +1853,10 @@ impl Overview {
       }
       WM_HIDE_OVERVIEW => self.on_hide(),
       WM_ICON_READY => {
+        // Posted with the window whose icon arrived.
+        let window = wparam.0.cast_signed();
         for screen in &mut self.screens {
-          screen.icons += 1;
-          screen.refresh_pictures(false);
+          screen.icon_ready(window);
         }
       }
       WM_ACTIVATE => {

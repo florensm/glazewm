@@ -94,6 +94,10 @@ const MAX_WINDOW_LIFT: f32 = 0.15;
 /// ends closing.
 const FADE_GROWTH: f32 = 0.05;
 
+/// Most cards drawn in full in a frame, unless forced: each is a large
+/// software drawing.
+const CARD_DRAWS_PER_FRAME: usize = 2;
+
 impl Screen {
   /// A screen with its window hidden, whose pictures post to `notify`
   /// once an icon they show arrives.
@@ -155,6 +159,7 @@ impl Screen {
       is_dirty: false,
       is_gliding: false,
       plain_cards: false,
+      cards_behind: false,
       is_tracking_leave: false,
       icons: 0,
       notify,
@@ -928,7 +933,14 @@ impl Screen {
     let context = self.place_context();
     let layout = self.focus.layout;
 
-    for index in 0..self.cards.len().min(self.workspaces().len()) {
+    // The selected card first, as the one most looked at.
+    let count = self.cards.len().min(self.workspaces().len());
+    let selected = self.focus.selected.min(count.saturating_sub(1));
+    let order = (selected..count).chain(0..selected);
+    let mut draws = 0;
+    self.cards_behind = false;
+
+    for index in order {
       let picture = self.card_picture(index, &style);
       let Some(card) = self.cards.get_mut(index) else {
         continue;
@@ -946,7 +958,7 @@ impl Screen {
           .and_then(|hwnd| bar.tab_index(hwnd))
           .filter(|index| *index != bar.frame.active_index)
           .map_or(TabHit::Empty, TabHit::Tab);
-        bar.draw(hover, self.icons, notify);
+        bar.draw(hover, card.icons, notify);
       }
 
       if self.plain_cards {
@@ -963,6 +975,11 @@ impl Screen {
       if !force && card.drawn.as_ref() == Some(&picture) {
         continue;
       }
+      if !force && draws == CARD_DRAWS_PER_FRAME {
+        self.cards_behind = true;
+        continue;
+      }
+      draws += 1;
 
       let metrics = card.metrics;
       let old_size = card.picture.size();
@@ -1023,6 +1040,24 @@ impl Screen {
     self.refresh_spotlight(&style, force);
     self.refresh_sheet(&style, force);
     self.is_dirty = true;
+  }
+
+  /// Redraws what shows `window`'s icon, which just arrived: the cards
+  /// it's on, and the tag, search and placeholders, which show any
+  /// window's.
+  pub(super) fn icon_ready(&mut self, window: isize) {
+    self.icons += 1;
+    let showing = self
+      .workspaces()
+      .iter()
+      .map(|workspace| workspace.window(window).is_some())
+      .collect::<Vec<_>>();
+    for (card, is_showing) in self.cards.iter_mut().zip(showing) {
+      if is_showing {
+        card.icons += 1;
+      }
+    }
+    self.refresh_pictures(false);
   }
 
   /// Draws the placeholders of the scenes' minimized windows, unless they
@@ -1405,6 +1440,9 @@ impl Screen {
         }
       }
       self.show_backdrop();
+    } else if self.cards_behind {
+      is_moving = true;
+      self.refresh_pictures(false);
     }
 
     if is_moving || self.is_dirty || self.is_gliding {

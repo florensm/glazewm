@@ -174,6 +174,7 @@ impl Screen {
         tab_bars,
         picture,
         drawn: None,
+        icons: 0,
       });
     }
 
@@ -419,7 +420,7 @@ impl Screen {
       tab_bars: card.map_or_else(Vec::new, |card| {
         card.tab_bars.iter().map(CardTabBar::hole).collect()
       }),
-      icons: self.icons,
+      icons: card.map_or(0, |card| card.icons),
     }
   }
 }
