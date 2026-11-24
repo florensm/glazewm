@@ -25,6 +25,11 @@ overview:
     gap: 28
     arrangement: "natural"
 
+  # How large the stack shows a workspace, as a part of the screen's
+  # width: 0.2 to 0.9.
+  stack:
+    zoom: 0.5
+
   # A scrolling workspace large in the activities: 'visible' (the columns
   # on screen) or 'whole' (the whole strip, scaled to fit).
   strip_view: "visible"

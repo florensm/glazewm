@@ -287,11 +287,12 @@ impl Screen {
     let scale_factor = metrics.scale_factor;
     let notify = self.notify;
 
-    let labels = if layout.has_scene() {
-      self.label_pictures()
-    } else {
-      Vec::new()
-    };
+    let labels =
+      if layout.has_scene() || layout == OverviewLayoutMode::Stack {
+        self.label_pictures()
+      } else {
+        Vec::new()
+      };
     let tag = self.tag_picture();
     let note = self.note_text();
     let max_tag = (560.0 * scale_factor).min(metrics.view.0 * 0.6);
@@ -661,7 +662,7 @@ impl Screen {
   }
 
   /// Where each workspace's name shows now, and how strongly: under its
-  /// miniature, in the activities.
+  /// miniature in the activities, and beside its card in the stack.
   pub(super) fn label_rects(
     &self,
     context: &PlaceContext,
@@ -678,15 +679,21 @@ impl Screen {
       .zip(&overlays.labels)
       .enumerate()
       .map(|(index, (card, label))| {
+        let is_stack = layout == OverviewLayoutMode::Stack;
         // No names without their row.
-        if !layout.has_scene() || !self.scene_chrome().has_row() {
+        if !is_stack
+          && (!layout.has_scene() || !self.scene_chrome().has_row())
+        {
           return None;
         }
         let rect =
           context.camera.apply(&card.placement().rect(&card.metrics));
         let (width, height) = to_f32_size(label.picture.size());
-        let (x, y) =
-          (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap);
+        let (x, y) = if is_stack {
+          (rect.x - gap - width, rect.y + rect.h / 2.0 - height / 2.0)
+        } else {
+          (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap)
+        };
 
         // In with its card as it pops in.
         let appear =
