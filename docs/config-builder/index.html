@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlazeWM Config Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="../research/overview-ux/page.css">
+<style>
+  .builder { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 980px) { .builder { grid-template-columns: minmax(0, 1fr); } }
+  .left { display: flex; flex-direction: column; gap: 12px; min-width: 0; position: sticky; top: 12px; }
+  @media (max-width: 980px) { .left { position: static; } }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .bar label { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+
+  .desk { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; container-type: inline-size;
+    background: radial-gradient(circle at 22% 30%, #f6a15c 0 12%, transparent 30%), radial-gradient(circle at 78% 64%, #5b8cff 0 14%, transparent 34%),
+      radial-gradient(circle at 55% 18%, #b36bd9 0 9%, transparent 26%), linear-gradient(135deg, #263b6a, #0f1a33 60%, #241634); }
+  .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: calc(48 / 1080 * 100%); background: rgba(20, 22, 30, .82); display: flex; gap: .6%; align-items: center; justify-content: center; }
+  .taskbar i { width: 1.6%; aspect-ratio: 1; border-radius: 20%; background: rgba(255, 255, 255, .28); }
+  .win { position: absolute; transform-origin: center; }
+  .win .ring { position: absolute; pointer-events: none; border-style: solid; box-sizing: border-box; }
+  .win .body { position: absolute; inset: 0; overflow: hidden; background: #1d212b; display: flex; flex-direction: column; }
+  .win .title { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 2%; background: #262b37; color: #d8dce6; font: 500 1.1cqw/1 var(--body); }
+  .win .title span:last-child { letter-spacing: .4em; color: #8f97a8; }
+  .win .content { flex: 1; padding: 3% 4%; display: flex; flex-direction: column; gap: 6%; }
+  .win .content i { display: block; height: 4%; min-height: 2px; border-radius: 99px; background: rgba(255, 255, 255, .13); }
+  .win .tint, .win .vignette { position: absolute; inset: 0; pointer-events: none; }
+  .tabbar { position: absolute; display: flex; align-items: center; gap: 2px; padding: 0 2px; overflow: hidden; box-sizing: border-box; }
+  .tabbar .t { height: 82%; display: flex; align-items: center; gap: 5%; padding: 0 6px; box-sizing: border-box; overflow: hidden; white-space: nowrap; flex: none; }
+  .tabbar .t b { flex: none; aspect-ratio: 1; height: 55%; border-radius: 22%; }
+  .tabbar .t span { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .tabbar .t em { font-style: normal; opacity: .75; }
+  .strip { position: relative; height: 10px; border-radius: 99px; background: var(--chip); overflow: hidden; }
+  .strip i { position: absolute; top: 0; bottom: 0; border-radius: 99px; }
+
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 10px 12px; font: 600 15px/1 var(--display); color: var(--muted); }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+  .tabs button .n { font: 600 11px/1 var(--mono); color: var(--accent); margin-left: 4px; }
+  .settings { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  details.group { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px; }
+  details.group[open] { padding-bottom: 10px; }
+  details.group > summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 10px; padding: 12px 0; }
+  details.group > summary::-webkit-details-marker { display: none; }
+  details.group > summary h2 { font-size: 17px; }
+  details.group > summary .count { font: 600 11px/1 var(--mono); color: var(--muted); }
+  .opt { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
+  .opt .k { font: 600 12.5px/1.3 var(--mono); overflow-wrap: anywhere; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .opt .k i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); visibility: hidden; }
+  .opt.changed .k i { visibility: visible; }
+  .opt .help { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+  .opt .ctl { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .opt .ctl input[type=range] { flex: 1 1 140px; min-width: 0; accent-color: var(--accent); }
+  .opt .ctl output { font: 600 12px/1 var(--mono); min-width: 54px; text-align: right; font-variant-numeric: tabular-nums; }
+  .opt .ctl input[type=text] { flex: 1 1 160px; min-width: 0; font: 500 12.5px/1 var(--mono); padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  .opt .ctl input[type=text].bad { border-color: #d14343; }
+  .opt .ctl input[type=color] { width: 34px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; }
+  .opt.off { opacity: .5; }
+  .tag { font: 700 9.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 3px 5px; border-radius: 4px; background: var(--chip); color: var(--muted); }
+  .reset { border: 0; background: none; padding: 2px 6px; font-size: 14px; color: var(--muted); visibility: hidden; }
+  .opt.changed .reset { visibility: visible; }
+  .tog { width: 42px; height: 24px; border-radius: 99px; border: 0; padding: 0; background: var(--line); position: relative; flex: none; }
+  .tog::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px rgba(0, 0, 0, .3); transition: transform .15s; }
+  .tog[aria-pressed="true"] { background: var(--accent); }
+  .tog[aria-pressed="true"]::after { transform: translateX(18px); }
+  pre.yaml { max-height: 42vh; overflow: auto; white-space: pre; margin: 0; }
+  textarea { width: 100%; min-height: 120px; font: 500 12.5px/1.4 var(--mono); padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); box-sizing: border-box; }
+  .yaml-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .say { font-size: 13px; color: var(--muted); min-height: 1.4em; margin: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:6px">
+    <p class="eyebrow">GlazeWM</p>
+    <h1>Config builder</h1>
+    <p class="lede">Gaps, layouts, window effects, stacks and animations, on a desktop drawn to scale. Copy the YAML into your config.
+      The overview has <a href="../research/overview-ux/config.html">its own builder</a>.</p>
+  </header>
+
+  <div class="builder">
+    <div class="left">
+      <div class="bar">
+        <label>Windows <select id="count"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
+        <button id="prevFocus" aria-label="Focus the previous window">◀ Focus</button><button id="nextFocus" aria-label="Focus the next window">Focus ▶</button>
+        <label>Monitor scale <select id="scale"><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select></label>
+        <label><input type="checkbox" id="stacked"> Stack on the first window</label>
+      </div>
+      <div class="bar" id="motions" hidden></div>
+      <div class="desk" id="desk" role="img" aria-label="Preview of the desktop"><div class="taskbar"><i></i><i></i><i></i><i></i><i></i></div></div>
+      <div class="strip" id="strip" hidden aria-hidden="true"></div>
+      <p class="say" id="say"></p>
+      <section class="panel" style="display:flex;flex-direction:column;gap:10px">
+        <div class="yaml-head">
+          <h3>config.yaml</h3>
+          <div class="bar">
+            <div class="seg" id="scope" role="group" aria-label="What to include">
+              <button data-v="changed" aria-pressed="true">Only changes</button><button data-v="all" aria-pressed="false">Everything</button>
+            </div>
+            <button id="copy" class="primary">Copy</button>
+          </div>
+        </div>
+        <pre class="yaml" id="yaml" aria-label="Generated config"></pre>
+        <p class="muted small" style="margin:0">Changes are against the sample config. Each section goes in whichever file holds it in yours (e.g. <code>gaps</code> in config.yaml, <code>window_effects</code> in window_effects.yaml); a setting can't be set twice.</p>
+      </section>
+      <details class="panel">
+        <summary style="cursor:pointer"><b>Import your config</b> <span class="muted small">paste any of your config files</span></summary>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+          <textarea id="importText" aria-label="Config to import" placeholder="gaps:&#10;  inner_gap: &quot;12px&quot;"></textarea>
+          <div class="bar"><button id="importBtn">Load into the builder</button><button id="resetAll">Back to the sample config</button><span class="small muted" id="importMsg"></span></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="settings">
+      <div class="tabs" id="tabs" role="tablist"></div>
+      <p class="muted" id="tabIntro" style="margin:0"></p>
+      <div id="groups" style="display:flex;flex-direction:column;gap:14px"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+<script src="builder.js"></script>
+<script>
+(() => {
+  const B = Builder;
+  const $ = (id) => document.getElementById(id);
+  const STORE = 'glazewm-config-builder-v1';
+
+  let state = B.defaults();
+  let tab = 'gaps';
+  let scope = 'changed';
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
+    if (saved) { state = { ...state, ...saved.state }; tab = saved.tab || tab; scope = saved.scope || scope; }
+  } catch { /* no storage */ }
+  if (!B.TABS.some((t) => t.id === tab)) tab = 'gaps';
+  const save = () => { try { localStorage.setItem(STORE, JSON.stringify({ state, tab, scope })); } catch { /* no storage */ } };
+
+  const view = { count: 3, focused: 0 };
+
+  // --- Colors ---------------------------------------------------------------
+
+  const ACCENT = '#4cc2ff';
+  function rgba(hex) {
+    if (hex === 'accent') hex = ACCENT;
+    const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex || '');
+    if (!m) return [0, 0, 0, 0];
+    const n = parseInt(m[1], 16);
+    return [n >> 16, (n >> 8) & 255, n & 255, m[2] ? parseInt(m[2], 16) / 255 : 1];
+  }
+  const css = ([r, g, b, a]) => `rgba(${r | 0},${g | 0},${b | 0},${a.toFixed(3)})`;
+  const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+  // --- Drawing the desktop ----------------------------------------------------
+
+  // How a window looks: focused (1) or not (0), and blends between.
+  function look(focus) {
+    const pick = (name) => {
+      const f = state[`window_effects.focused_window.${name}`], o = state[`window_effects.other_windows.${name}`];
+      return focus >= 0.5 ? f : o;
+    };
+    const num = (name) => {
+      const f = state[`window_effects.focused_window.${name}`] ?? 0, o = state[`window_effects.other_windows.${name}`] ?? 0;
+      return o + (f - o) * focus;
+    };
+    const color = (name) => mix(rgba(state[`window_effects.other_windows.${name}`]), rgba(state[`window_effects.focused_window.${name}`]), focus);
+    const corner = pick('corner_radius') ?? (pick('corner_style.enabled') ? { square: 0, small_rounded: 4, rounded: 8 }[pick('corner_style.style')] : 8);
+    return {
+      border: pick('border.enabled'), borderColor: color('border.color'), borderWidth: num('border.width'),
+      borderRadius: pick('border.radius'), highlight: num('border.highlight'), rim: num('border.rim'),
+      glow: pick('border.glow.enabled'), glowReach: num('border.glow.reach'), glowOpacity: num('border.glow.opacity'),
+      titleBar: !pick('hide_title_bar.enabled'), corner,
+      opacity: pick('transparency.enabled') ? num('transparency.opacity') / 100 : 1,
+      backdrop: pick('backdrop.enabled'), tint: color('backdrop.tint'), blur: num('backdrop.blur_amount'),
+      saturation: num('backdrop.saturation'), exposure: num('backdrop.exposure'), vignette: num('backdrop.vignette'),
+    };
+  }
+
+  // Widest border either look draws, which `reserve_border_space` keeps
+  // inside the tiles.
+  const reserved = () => {
+    if (!state['window_effects.reserve_border_space']) return 0;
+    const width = (name) => (state[`window_effects.${name}.border.enabled`] ? state[`window_effects.${name}.border.width`] : 0);
+    return Math.max(width('focused_window'), width('other_windows'));
+  };
+
+  function tabBar(el, rect, px, count, active) {
+    const height = state['stack.tab_bar_height'];
+    if (!height) return rect;
+    const bar = document.createElement('div');
+    bar.className = 'tabbar';
+    const top = state['stack.tab_bar_position'] === 'top';
+    Object.assign(bar.style, {
+      left: '0', width: '100%', height: `${height * px}px`, [top ? 'top' : 'bottom']: '0',
+      background: css(rgba(state['stack.tab_bar_background'])),
+      font: `500 ${state['stack.tab_font_size'] * px}px "${state['stack.tab_font_family']}", "Segoe UI", system-ui, sans-serif`,
+    });
+    const barWidth = rect.w * px;
+    const share = (barWidth - 4) / count - 2;
+    const max = state['stack.tab_max_width'] ? state['stack.tab_max_width'] * px : Infinity;
+    const width = Math.max(state['stack.tab_min_width'] * px, Math.min(share, max));
+    const titles = ['Terminal', 'Editor', 'Browser'];
+    for (let i = 0; i < count; i++) {
+      const t = document.createElement('div');
+      t.className = 't';
+      const isActive = i === active, isHover = i === (active + 1) % count;
+      const bg = isActive ? 'stack.tab_active_background' : isHover ? 'stack.tab_hover_background' : 'stack.tab_inactive_background';
+      Object.assign(t.style, {
+        width: `${width}px`, borderRadius: `${state['stack.tab_corner_radius'] * px}px`,
+        background: css(rgba(state[bg])), color: css(rgba(state[isActive ? 'stack.tab_text_color' : 'stack.tab_inactive_text_color'])),
+      });
+      const iconOnly = width < 60 * px;
+      if (state['stack.show_tab_icons'] || iconOnly) {
+        const icon = document.createElement('b');
+        icon.style.background = ['#4fb37a', '#5b8cff', '#f2994a'][i % 3];
+        t.append(icon);
+      }
+      if (!iconOnly) {
+        const label = document.createElement('span');
+        label.textContent = (state['stack.show_tab_numbers'] ? `${i + 1}. ` : '') + titles[i % 3];
+        t.append(label);
+        const close = state['stack.tab_close_button'];
+        if (close === 'always' || (close === 'hover' && isHover)) {
+          const x = document.createElement('em'); x.textContent = '×'; t.append(x);
+        }
+      }
+      bar.append(t);
+    }
+    el.append(bar);
+    return top
+      ? { x: rect.x, y: rect.y + height, w: rect.w, h: rect.h - height }
+      : { x: rect.x, y: rect.y, w: rect.w, h: rect.h - height };
+  }
+
+  // Draws `items`: each `{ x, y, w, h }` (a tile, in the monitor's logical
+  // pixels) with `focus` (0 to 1), and optionally `opacity`, `scale`,
+  // `tabs` (a stack of that many), `top` (drawn over the others).
+  function draw(items) {
+    const desk = $('desk');
+    desk.querySelectorAll('.win').forEach((el) => el.remove());
+    const px = desk.clientWidth / B.MONITOR.w;
+    const inset = reserved();
+    for (const item of items) {
+      if (item.hidden) continue;
+      const l = look(item.focus);
+      const el = document.createElement('div');
+      el.className = 'win';
+      let rect = { x: item.x + inset, y: item.y + inset, w: Math.max(item.w - 2 * inset, 1), h: Math.max(item.h - 2 * inset, 1) };
+      Object.assign(el.style, {
+        left: `${rect.x * px}px`, top: `${rect.y * px}px`, width: `${rect.w * px}px`, height: `${rect.h * px}px`,
+        opacity: String((item.opacity ?? 1) * l.opacity), transform: `scale(${item.scale ?? 1})`, zIndex: item.top ? '5' : item.focus >= 0.5 ? '2' : '1',
+      });
+      const local = { x: 0, y: 0, w: rect.w, h: rect.h };
+      const windowRect = item.tabs ? tabBar(el, local, px, item.tabs, 0) : local;
+
+      const body = document.createElement('div');
+      body.className = 'body';
+      Object.assign(body.style, {
+        top: `${windowRect.y * px}px`, height: `${windowRect.h * px}px`, bottom: 'auto',
+        borderRadius: `${l.corner * px}px`,
+      });
+      if (l.backdrop) {
+        body.style.background = 'rgba(29, 33, 43, .35)';
+        body.style.backdropFilter = `blur(${l.blur * px * 0.6}px) saturate(${l.saturation}) brightness(${2 ** l.exposure})`;
+        const tint = document.createElement('div'); tint.className = 'tint'; tint.style.background = css(l.tint);
+        const vignette = document.createElement('div'); vignette.className = 'vignette';
+        vignette.style.boxShadow = `inset 0 0 ${80 * px}px ${30 * px}px rgba(0,0,0,${l.vignette * 0.8})`;
+        body.append(tint, vignette);
+      }
+      if (l.titleBar) {
+        const title = document.createElement('div');
+        title.className = 'title';
+        title.style.height = `${32 * px}px`;
+        if (l.backdrop) title.style.background = 'rgba(38, 43, 55, .45)';
+        title.innerHTML = `<span>${['Terminal', 'Editor', 'Browser', 'Notes', 'Music'][item.index % 5]}</span><span>— ▢ ✕</span>`;
+        body.append(title);
+      }
+      const content = document.createElement('div');
+      content.className = 'content';
+      content.innerHTML = '<i style="width:60%"></i><i style="width:85%"></i><i style="width:40%"></i><i style="width:70%"></i>';
+      body.append(content);
+      el.append(body);
+
+      if (l.border && l.borderWidth > 0) {
+        const ring = document.createElement('div');
+        ring.className = 'ring';
+        const w = l.borderWidth;
+        const radius = l.borderRadius ?? l.corner + w;
+        const color = l.borderColor;
+        const lit = mix(color, [255, 255, 255, color[3]], l.highlight);
+        Object.assign(ring.style, {
+          left: `${-w * px}px`, top: `${(windowRect.y - w) * px}px`, width: `${(rect.w + 2 * w) * px}px`, height: `${(windowRect.h + 2 * w) * px}px`,
+          borderWidth: `${Math.max(w * px, 0.75)}px`, borderColor: css(color), borderTopColor: css(lit),
+          borderRadius: `${radius * px}px`,
+          boxShadow: [
+            l.glow ? `0 0 ${l.glowReach * px * 1.5}px ${l.glowReach * px * 0.3}px ${css([...color.slice(0, 3), color[3] * l.glowOpacity])}` : '',
+            l.rim ? `inset 0 0 0 ${Math.max(px, 0.5)}px rgba(255,255,255,${l.rim})` : '',
+          ].filter(Boolean).join(', ') || 'none',
+        });
+        el.append(ring);
+      }
+      $('desk').append(el);
+    }
+  }
+
+  // The desktop at rest: the windows as the layout has them.
+  function restItems(count = view.count, focused = view.focused, extra = {}) {
+    const scale = Number($('scale').value);
+    const { windows, strip } = B.layout(state, count, focused, scale);
+    const stacked = $('stacked').checked || tab === 'stack';
+    return {
+      strip,
+      items: windows.map((w, index) => ({
+        ...w, index, focus: index === focused ? 1 : 0,
+        tabs: w.tabs || (stacked && index === 0 ? 3 : undefined),
+        ...(extra[index] || {}),
+      })),
+    };
+  }
+
+  function drawStrip(strip) {
+    const el = $('strip');
+    el.hidden = !strip;
+    if (!strip) return;
+    const total = Math.max(strip.width, strip.view.w) + 1;
+    el.innerHTML = '';
+    const part = (left, width, color) => {
+      const i = document.createElement('i');
+      Object.assign(i.style, { left: `${(left / total) * 100}%`, width: `${(width / total) * 100}%`, background: color });
+      el.append(i);
+    };
+    part(0, strip.width, 'color-mix(in srgb, var(--muted) 45%, transparent)');
+    part(strip.scroll, strip.view.w, 'color-mix(in srgb, var(--accent) 55%, transparent)');
+  }
+
+  function render() {
+    if (playing) return;
+    const { items, strip } = restItems();
+    draw(items);
+    drawStrip(strip);
+  }
+
+  // --- Motions ----------------------------------------------------------------
+
+  let playing = null;
+
+  // Plays `name`'s animation from `from` to `to` (lists of items, matched
+  // by index; a missing one is `enter` or `leave`).
+  function animate(name, from, to, { enter, leave, then } = {}) {
+    const on = state[`animations.${name}.enabled`];
+    const easing = B.parseEasing(state[`animations.${name}.easing`], state[`animations.${name}.duration_ms`]) || B.parseEasing('linear', 0);
+    const ms = on ? easing.ms : 0;
+    const started = performance.now();
+    playing = name;
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const frame = (now) => {
+      const p = ms > 0 ? Math.min((now - started) / ms, 1) : 1;
+      const e = ms > 0 ? easing.at(p) : 1;
+      const n = Math.max(from.length, to.length);
+      const items = [];
+      for (let i = 0; i < n; i++) {
+        const a = from[i], b = to[i];
+        if (a && b) {
+          items.push({ ...b, x: lerp(a.x, b.x, e), y: lerp(a.y, b.y, e), w: lerp(a.w, b.w, e), h: lerp(a.h, b.h, e),
+            focus: lerp(a.focus, b.focus, e), opacity: lerp(a.opacity ?? 1, b.opacity ?? 1, e), scale: lerp(a.scale ?? 1, b.scale ?? 1, e) });
+        } else if (b && enter) items.push(enter(b, e));
+        else if (a && leave) items.push(leave(a, e));
+      }
+      draw(items);
+      if (p < 1) requestAnimationFrame(frame);
+      else { playing = null; then?.(); render(); }
+    };
+    requestAnimationFrame(frame);
+    const settled = !on ? 'off, so at once' : `${Math.round(ms)} ms${/spring/.test(state[`animations.${name}.easing`]) ? ' (a spring, until settled)' : ''}`;
+    say(`<b>${name}</b>: ${settled}.`);
+  }
+
+  // A window coming or going as `style` has it, `amount` of the way in.
+  function transit(item, style, amount, fromOpacity, fromScale) {
+    const away = 1 - Math.max(0, Math.min(amount, 1));
+    const out = { ...item, opacity: fromOpacity + (1 - fromOpacity) * amount, top: true };
+    if (style === 'zoom') out.scale = fromScale + (1 - fromScale) * amount;
+    if (style === 'slide_right') out.x += item.w * away;
+    if (style === 'slide_left') out.x -= item.w * away;
+    if (style === 'slide_top') out.y -= item.h * away;
+    if (style === 'slide_bottom') out.y += item.h * away;
+    return out;
+  }
+
+  const MOTIONS = {
+    'Move': () => {
+      const { items } = restItems();
+      if (items.length < 2) return say('Needs two windows.');
+      const to = items.map((it) => ({ ...it }));
+      [to[0].x, to[0].y, to[0].w, to[0].h, to[1].x, to[1].y, to[1].w, to[1].h] = [items[1].x, items[1].y, items[1].w, items[1].h, items[0].x, items[0].y, items[0].w, items[0].h];
+      animate('window_move', items, to, { then: () => animate('window_move', to, items) });
+    },
+    'Open': () => {
+      if (view.count >= 5) return say('Five windows at most here.');
+      const from = restItems(view.count, view.focused).items;
+      const to = restItems(view.count + 1, view.focused).items;
+      const p = 'animations.window_open';
+      animate('window_open', from, to, {
+        enter: (b, e) => transit(b, state[`${p}.style`], e, state[`${p}.opacity_from`], state[`${p}.zoom_from`]),
+        then: () => { view.count += 1; $('count').value = view.count; },
+      });
+    },
+    'Close': () => {
+      if (view.count <= 1) return say('Keep one window.');
+      const from = restItems(view.count, view.focused).items;
+      const to = restItems(view.count - 1, Math.min(view.focused, view.count - 2)).items;
+      const p = 'animations.window_close';
+      animate('window_close', from, to, {
+        leave: (a, e) => transit(a, state[`${p}.style`], 1 - e, state[`${p}.opacity_to`], state[`${p}.zoom_to`]),
+        then: () => { view.count -= 1; view.focused = Math.min(view.focused, view.count - 1); $('count').value = view.count; },
+      });
+    },
+    'Minimize': () => {
+      const { items } = restItems();
+      const p = 'animations.window_minimize';
+      const last = items.length - 1;
+      animate('window_minimize', items, items.slice(0, last), {
+        leave: (a, e) => transit(a, state[`${p}.style`], 1 - e, state[`${p}.opacity_to`], state[`${p}.zoom_to`]),
+      });
+    },
+    'Resize': () => {
+      const { items } = restItems();
+      const to = items.map((it, i) => (i === 0 ? { ...it, w: it.w * 1.35 } : { ...it }));
+      animate('window_resize', items, to, { then: () => animate('window_resize', to, items) });
+    },
+    'Fullscreen': () => {
+      const { items } = restItems();
+      const to = items.map((it, i) => (i === view.focused ? { ...it, x: 0, y: 0, w: B.MONITOR.w, h: B.MONITOR.h, top: true } : { ...it }));
+      const back = () => setTimeout(() => animate('window_fullscreen', to, items), 500);
+      animate('window_fullscreen', items, to, { then: back });
+    },
+    'Focus next': () => {
+      const from = restItems().items;
+      const next = (view.focused + 1) % view.count;
+      const to = restItems(view.count, next).items;
+      const name = state['general.default_layout'] === 'scrolling' ? 'scroll' : 'focus_change';
+      animate(name, from, to, { then: () => { view.focused = next; } });
+    },
+    'Switch workspace': () => {
+      const p = 'animations.workspace_switch';
+      const style = state[`${p}.style`], vertical = state[`${p}.direction`] === 'vertical';
+      const outgoing = restItems().items;
+      const incoming = restItems(Math.max(1, 4 - view.count), 0).items.map((it, i) => ({ ...it, index: i + 2 }));
+      const span = vertical ? B.MONITOR.h : B.MONITOR.w;
+      const shift = (item, by, opacity, scale) => ({ ...item, [vertical ? 'y' : 'x']: item[vertical ? 'y' : 'x'] + by, opacity, scale });
+      const shrink = (e) => 1 - state[`${p}.zoom_factor`] * Math.sin(Math.PI * e) * 0.5;
+      const moves = {
+        slide: (e) => [outgoing.map((it) => shift(it, -span * e, 1 - (1 - state[`${p}.opacity_outgoing`]) * e, shrink(e))),
+          incoming.map((it) => shift(it, span * (1 - e), state[`${p}.opacity_incoming`] + (1 - state[`${p}.opacity_incoming`]) * e, shrink(e)))],
+        fade: (e) => [outgoing.map((it) => ({ ...it, opacity: 1 - e })), incoming.map((it) => ({ ...it, opacity: e }))],
+        zoom: (e) => [outgoing.map((it) => ({ ...it, opacity: 1 - e, scale: 1 + 0.1 * e })), incoming.map((it) => ({ ...it, opacity: e, scale: 0.9 + 0.1 * e }))],
+        drift: (e) => [outgoing.map((it) => shift(it, -span * 0.08 * e, 1 - e, 1)), incoming.map((it) => shift(it, span * 0.08 * (1 - e), e, 1))],
+        soft_zoom: (e) => [outgoing.map((it) => ({ ...it, opacity: 1 - e, scale: 1 - 0.03 * e })), incoming.map((it) => ({ ...it, opacity: e, scale: 1.03 - 0.03 * e }))],
+        cut: () => [[], incoming],
+      };
+      const on = state[`${p}.enabled`] && style !== 'cut';
+      const easing = B.parseEasing(state[`${p}.easing`], state[`${p}.duration_ms`]) || B.parseEasing('linear', 0);
+      const ms = on ? easing.ms : 0;
+      const started = performance.now();
+      playing = 'workspace_switch';
+      const frame = (now) => {
+        const pr = ms > 0 ? Math.min((now - started) / ms, 1) : 1;
+        const [out, inn] = (moves[style] || moves.slide)(ms > 0 ? easing.at(pr) : 1);
+        draw([...out, ...inn]);
+        if (pr < 1) requestAnimationFrame(frame);
+        else setTimeout(() => { playing = null; render(); }, 700);
+      };
+      requestAnimationFrame(frame);
+      say(`<b>workspace_switch</b> (${style}): ${on ? `${Math.round(ms)} ms` : 'at once'}; back in a moment.`);
+    },
+  };
+
+  function say(html) { $('say').innerHTML = html; }
+
+  // --- Settings ---------------------------------------------------------------
+
+  function control(item) {
+    const row = document.createElement('div');
+    row.className = 'opt';
+    row.dataset.key = item.key;
+    const name = item.key.startsWith('_') ? item.help.split('.')[0] : item.key.split('.').slice(-2).join('.');
+    row.innerHTML = `<div class="k"><i></i><span title="${item.key}">${name}</span>${item.np ? '<span class="tag">not in preview</span>' : ''}</div><button class="reset" title="Back to the sample's value">↺</button><div class="ctl"></div>${item.help && !item.key.startsWith('_') ? `<div class="help">${item.help.replace(/`([^`]+)`/g, '<code>$1</code>')}</div>` : ''}`;
+    const ctl = row.querySelector('.ctl');
+    const set = (value) => { state[item.key] = value; changed(); };
+    row.querySelector('.reset').onclick = () => { state[item.key] = item.def; buildSettings(); changed(); };
+    const value = state[item.key];
+
+    if (item.kind === 'bool') {
+      const b = document.createElement('button');
+      b.className = 'tog'; b.setAttribute('aria-pressed', String(!!value)); b.setAttribute('aria-label', item.key);
+      b.onclick = () => { const v = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', String(v)); set(v); };
+      ctl.append(b);
+    } else if (item.kind === 'enum') {
+      const seg = document.createElement('div');
+      seg.className = 'seg';
+      for (const option of item.options) {
+        const b = document.createElement('button');
+        b.textContent = option; b.setAttribute('aria-pressed', String(option === value));
+        b.onclick = () => { seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); set(option); };
+        seg.append(b);
+      }
+      ctl.append(seg);
+    } else if (['px', 'pct', 'num'].includes(item.kind)) {
+      const unit = { px: 'px', pct: '%', num: '' }[item.kind];
+      if (item.optional) {
+        const b = document.createElement('button');
+        b.className = 'tog'; b.setAttribute('aria-pressed', String(value !== null)); b.setAttribute('aria-label', `Set ${item.key}`);
+        b.onclick = () => { state[item.key] = value === null ? item.min + Math.round((item.max - item.min) / 3) : null; buildSettings(); changed(); };
+        ctl.append(b);
+        if (value === null) { ctl.insertAdjacentHTML('beforeend', '<span class="small muted">unset</span>'); return row; }
+      }
+      const range = document.createElement('input');
+      Object.assign(range, { type: 'range', min: item.min, max: item.max, step: item.step ?? 1, value });
+      range.setAttribute('aria-label', item.key);
+      const out = document.createElement('output');
+      out.textContent = value + unit;
+      range.oninput = () => { out.textContent = range.value + unit; set(Number(range.value)); };
+      ctl.append(range, out);
+    } else if (item.kind === 'color') {
+      const text = document.createElement('input');
+      text.type = 'text'; text.value = value ?? ''; text.placeholder = item.optional ? 'unset' : '#rrggbbaa';
+      text.setAttribute('aria-label', item.key);
+      const pick = document.createElement('input');
+      pick.type = 'color'; pick.setAttribute('aria-label', `${item.key} picker`);
+      const sync = () => { const [r, g, b] = rgba(text.value); pick.value = '#' + [r, g, b].map((c) => c.toString(16).padStart(2, '0')).join(''); };
+      sync();
+      text.oninput = () => {
+        const v = text.value.trim();
+        const ok = B.isColor(v) || (item.optional && v === '');
+        text.classList.toggle('bad', !ok);
+        if (ok) { set(v === '' ? null : v); sync(); }
+      };
+      pick.oninput = () => {
+        const alpha = /^#[0-9a-f]{8}$/i.test(text.value) ? text.value.slice(7) : '';
+        text.value = pick.value + alpha; text.classList.remove('bad'); set(text.value);
+      };
+      ctl.append(pick, text);
+    } else {
+      const text = document.createElement('input');
+      text.type = 'text';
+      text.value = item.kind === 'list' ? value.join(', ') : value;
+      text.setAttribute('aria-label', item.key);
+      if (item.kind === 'easing') text.setAttribute('list', 'curves');
+      text.oninput = () => {
+        if (item.kind === 'list') { set(text.value.split(',').map((x) => x.trim()).filter(Boolean)); return; }
+        const ok = item.kind !== 'easing' || B.parseEasing(text.value, 100) !== null;
+        text.classList.toggle('bad', !ok);
+        if (ok) set(text.value.trim());
+      };
+      ctl.append(text);
+    }
+    return row;
+  }
+
+  function buildTabs() {
+    const el = $('tabs');
+    el.innerHTML = '';
+    for (const t of B.TABS) {
+      const changedCount = t.groups.flatMap((g) => g.items).filter((item) => B.isChanged(state, item.key) && !item.key.startsWith('_')).length;
+      const b = document.createElement('button');
+      b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t.id === tab));
+      b.innerHTML = t.label + (changedCount ? `<span class="n">${changedCount}</span>` : '');
+      b.onclick = () => { tab = t.id; save(); buildTabs(); buildSettings(); render(); };
+      el.append(b);
+    }
+  }
+
+  function buildSettings() {
+    const t = B.TABS.find((x) => x.id === tab);
+    $('tabIntro').textContent = t.intro;
+    const el = $('groups');
+    const open = new Set([...el.querySelectorAll('details[open]')].map((d) => d.dataset.title));
+    el.innerHTML = '';
+    t.groups.forEach((g, i) => {
+      const d = document.createElement('details');
+      d.className = 'group'; d.dataset.title = g.title;
+      d.open = open.size ? open.has(g.title) : i < 2;
+      d.innerHTML = `<summary><h2>${g.title}</h2><span class="count">${g.items.length}</span></summary>`;
+      for (const item of g.items) {
+        const row = control(item);
+        if (item.onlyIf && !state[item.onlyIf]) row.classList.add('off');
+        row.classList.toggle('changed', B.isChanged(state, item.key));
+        d.append(row);
+      }
+      el.append(d);
+    });
+    $('motions').hidden = tab !== 'animations';
+  }
+
+  function renderYaml() {
+    const config = B.configObject(state, scope === 'changed');
+    const text = Object.keys(config).length
+      ? jsyaml.dump(config, { quotingType: '"', forceQuotes: true, lineWidth: -1 })
+      : '# Everything as in the sample config.\n';
+    $('yaml').textContent = text;
+  }
+
+  function changed() {
+    save();
+    document.querySelectorAll('.opt').forEach((row) => {
+      const item = B.BY_KEY[row.dataset.key];
+      row.classList.toggle('changed', B.isChanged(state, item.key));
+      if (item.onlyIf) row.classList.toggle('off', !state[item.onlyIf]);
+    });
+    buildTabs();
+    renderYaml();
+    render();
+  }
+
+  // --- Wiring -----------------------------------------------------------------
+
+  const curves = document.createElement('datalist');
+  curves.id = 'curves';
+  curves.innerHTML = [...B.CURVES, 'spring(0.85, 520)', 'cubic_bezier(0.2, 0.0, 0.0, 1.0)'].map((c) => `<option value="${c}">`).join('');
+  document.body.append(curves);
+
+  for (const name of Object.keys(MOTIONS)) {
+    const b = document.createElement('button');
+    b.textContent = name;
+    b.onclick = () => { if (!playing) MOTIONS[name](); };
+    $('motions').append(b);
+  }
+
+  $('count').onchange = () => { view.count = Number($('count').value); view.focused = Math.min(view.focused, view.count - 1); render(); };
+  $('prevFocus').onclick = () => { view.focused = (view.focused + view.count - 1) % view.count; render(); };
+  $('nextFocus').onclick = () => { view.focused = (view.focused + 1) % view.count; render(); };
+  $('scale').onchange = render;
+  $('stacked').onchange = render;
+  document.querySelectorAll('#scope button').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.v === scope));
+    b.onclick = () => { scope = b.dataset.v; document.querySelectorAll('#scope button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); save(); renderYaml(); };
+  });
+  $('copy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('yaml').textContent); $('copy').textContent = 'Copied'; }
+    catch { const r = document.createRange(); r.selectNodeContents($('yaml')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); $('copy').textContent = 'Selected'; }
+    setTimeout(() => { $('copy').textContent = 'Copy'; }, 1400);
+  };
+  $('importBtn').onclick = () => {
+    try {
+      const config = jsyaml.load($('importText').value) || {};
+      const read = B.importConfig(config, state);
+      $('importMsg').textContent = read.length ? `Read ${read.length} settings.` : 'Found nothing the builder sets.';
+      buildSettings(); changed();
+    } catch (err) { $('importMsg').textContent = `Couldn't read it: ${err.message.split('\n')[0]}`; }
+  };
+  $('resetAll').onclick = () => { state = B.defaults(); buildSettings(); changed(); $('importMsg').textContent = 'Back to the sample config.'; };
+  new ResizeObserver(render).observe($('desk'));
+
+  buildTabs();
+  buildSettings();
+  renderYaml();
+  render();
+})();
+</script>
+</body>
+</html>
