@@ -49,31 +49,23 @@ layout code is Rust in `wm-platform/src/overview/`.
 it. For this feature the newest overview code is on
 `origin/test/overview-config`, 37 commits ahead of
 `origin/tryout/overview-config`, an older, diverged copy whose 6 own
-commits are superseded: ignore them. Test branches lack the benchmark and
-automation files `CLAUDE.md` says test builds strip; as `CLAUDE.md` says,
-those live on `origin/tryout/one-surface`.
+commits are superseded: ignore them.
 
-The user sets the branch up (or tells you to). The steps:
+The user doesn't want the benchmarks back, so the tryout branch is simply
+the test branch's code:
 
 ```bash
-git fetch origin test/overview-config tryout/one-surface
+git fetch origin test/overview-config
 git checkout -b tryout/overview-styling origin/test/overview-config
-git checkout origin/tryout/one-surface -- packages/wm-cli/examples/perf_bench packages/wm-platform/examples/uncloak_all.rs resources/scripts/package.ps1
 ```
 
-Then put back `wm-cli`'s `[dev-dependencies]` and
-`[target.'cfg(windows)'.dev-dependencies]` tables in
-`packages/wm-cli/Cargo.toml`, copied from the same file on
-`origin/tryout/one-surface` (only those two tables; keep the rest of this
-branch's file), run `cargo build` to update `Cargo.lock`, and
-`cargo test --workspace`. `perf_bench` was written against the
-one-surface branch: if it no longer builds here, stop and ask rather than
-change it. Commit as `chore: restore benchmarks for the tryout branch`.
+It then carries none of the files test builds strip, so cutting
+`test/overview-styling` from it later is just a new branch at the same
+commit (check `CLAUDE.md`'s strip list is still empty for it). Don't add
+benchmark or automation scripts in this work.
 
-Develop on `tryout/overview-styling`. Cut `test/overview-styling` from it
-per `CLAUDE.md` when the user wants a laptop build. Never push to a test
-branch except by cutting it. Commit at the end of each phase; push only
-when the user asks.
+Develop on `tryout/overview-styling`. Never push to a test branch except by
+cutting it. Commit at the end of each phase; push only when the user asks.
 
 ## 3. Ground rules for this work
 
@@ -210,8 +202,12 @@ and `animation.bounce`; check it does, and say so in the doc.
 
 ### Phase 6: lighter (from `overview-perf.md`)
 
-In order; measure each before and after with `GLAZEWM_PERF` on the desktop
-(time to first frame, frame times, missed frames), and report the numbers:
+In order; measure each before and after on the desktop, with the profiler
+built into `wm` (`GLAZEWM_PERF`, see `packages/wm-platform/src/perf.rs`)
+and the overview's own logs (`Overview missed a frame`): open and close the
+overview by hand a few times on a workspace with several windows, and
+report time to first frame, frame times and missed frames. No scripted
+benchmarks.
 
 1. Register thumbnails in stages on open: the shown workspace's previews
    before the first frame, the row, cards and other scenes over the next
