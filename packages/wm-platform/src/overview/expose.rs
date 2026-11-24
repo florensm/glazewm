@@ -115,6 +115,10 @@ pub(crate) fn spread(
   rects
 }
 
+/// How much of its own spot on screen a window takes when spread freely:
+/// the rest is room between it and the windows around it.
+const FREE_SHARE: f32 = 0.75;
+
 /// Spreads `windows` over `area` where each sits on screen, all scaled
 /// alike, as large as fits up to `max_scale`, and pushed apart only where
 /// they'd overlap, so they end up at least about `gap` apart.
@@ -124,10 +128,15 @@ fn scatter(
   gap: f32,
   max_scale: f32,
 ) -> Vec<RectF> {
+  // Each shrunk on its own spot, so even tiled windows, which touch on
+  // screen, come apart with room around them.
   let start = windows
     .iter()
     .map(|window| {
-      RectF::new(window.x, window.y, window.w.max(1.0), window.h.max(1.0))
+      let (cx, cy) = window.center();
+      let (w, h) = (window.w.max(1.0), window.h.max(1.0));
+      let (w, h) = (w * FREE_SHARE, h * FREE_SHARE);
+      RectF::new(cx - w / 2.0, cy - h / 2.0, w, h)
     })
     .collect::<Vec<_>>();
 
@@ -469,6 +478,25 @@ mod tests {
     }
     // The tiled right half stays right of the stack.
     assert!(rects[3].center().0 > rects[0].center().0);
+  }
+
+  /// Freely, tiled windows touching on screen come well apart.
+  #[test]
+  fn free_tiled_windows_come_apart() {
+    let windows = [
+      RectF::new(0.0, 0.0, 960.0, 1080.0),
+      RectF::new(960.0, 0.0, 960.0, 540.0),
+      RectF::new(960.0, 540.0, 960.0, 540.0),
+    ];
+    let rects = spread(&windows, &AREA, 0.0, 1.0, 0, FREE);
+
+    for (index, rect) in rects.iter().enumerate() {
+      assert!(within(rect, &AREA), "{rect:?}");
+      for other in &rects[index + 1..] {
+        let room = rect.inset(-40.0);
+        assert!(!overlaps(&room, other), "{rect:?} {other:?}");
+      }
+    }
   }
 
   /// Freely, windows already apart keep their layout, only scaled.
