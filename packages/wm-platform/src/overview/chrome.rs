@@ -988,7 +988,7 @@ const PLACEHOLDER_TITLE: f32 = 12.0;
 /// Largest size a placeholder is drawn at, in logical pixels: what shows
 /// in place of a window that renders nothing to a thumbnail, e.g. a
 /// minimized one. It shows smaller, as its window would.
-pub(crate) const PLACEHOLDER_SIZE: (f32, f32) = (640.0, 400.0);
+pub(crate) const PLACEHOLDER_SIZE: (f32, f32) = (1280.0, 800.0);
 
 /// Draws a placeholder for window `hwnd` titled `title` over all of
 /// `surface`: a glass window outline with its app's icon in the middle.

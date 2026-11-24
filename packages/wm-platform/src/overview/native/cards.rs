@@ -51,9 +51,10 @@ const PLACEHOLDER_SHARE: f32 = 0.35;
 /// Width of such a placeholder against its height.
 const PLACEHOLDER_ASPECT: f32 = 1.6;
 
-/// Least part of its workspace's width and height a restored rect spans
-/// to be taken as the window's size, rather than a parked sliver.
-const PLACEHOLDER_LEAST_SHARE: f32 = 0.15;
+/// Least width and height, in pixels, a restored rect has to be taken as
+/// the window's size rather than a parked sliver: a small dialog still
+/// shows as small as it is.
+const PLACEHOLDER_LEAST_SIZE: f32 = 48.0;
 
 /// Where a minimized window shows as its placeholder, on a workspace
 /// showing `area`: as large as `restored`, the rect it's restored to, so
@@ -61,8 +62,8 @@ const PLACEHOLDER_LEAST_SHARE: f32 = 0.15;
 /// sliver (then a set size); centered where `restored` is, kept within
 /// `area`.
 fn placeholder_rect(area: &RectF, restored: &RectF) -> RectF {
-  let (width, height) = if restored.w >= area.w * PLACEHOLDER_LEAST_SHARE
-    && restored.h >= area.h * PLACEHOLDER_LEAST_SHARE
+  let (width, height) = if restored.w >= PLACEHOLDER_LEAST_SIZE
+    && restored.h >= PLACEHOLDER_LEAST_SIZE
   {
     (restored.w.min(area.w), restored.h.min(area.h))
   } else {
@@ -442,11 +443,14 @@ mod tests {
       placeholder_rect(&area, &RectF::new(0.0, 0.0, 1900.0, 980.0));
     let small =
       placeholder_rect(&area, &RectF::new(100.0, 100.0, 600.0, 400.0));
+    let dialog =
+      placeholder_rect(&area, &RectF::new(800.0, 400.0, 250.0, 150.0));
     let sliver =
       placeholder_rect(&area, &RectF::new(1500.0, 300.0, 160.0, 4.0));
 
     assert_near((big.w, big.h), (1900.0, 980.0));
     assert_near((small.w, small.h), (600.0, 400.0));
+    assert_near((dialog.w, dialog.h), (250.0, 150.0));
     // A sliver says nothing of its size: a set one.
     assert_near((sliver.w, sliver.h), (560.0, 350.0));
     // Centered where restored to, kept within the workspace.
