@@ -11,6 +11,10 @@ use crate::{
   OverviewWindow, OverviewWorkspace,
 };
 
+/// How much larger a window grows for a moment as it sets off after
+/// holding still, as a fraction of its size: a pop marking its turn.
+const POP_LIFT: f32 = 0.06;
+
 /// A window on a scene.
 pub(crate) struct SceneWindow {
   pub preview: Preview,
@@ -112,16 +116,20 @@ impl SceneWindow {
     self.rect.kick(dx, dy);
   }
 
-  /// Holds still for `seconds` before it moves on.
+  /// Holds still for `seconds` before it moves on, popping as it does.
   pub fn hold_for(&mut self, seconds: f32) {
-    self.hold = seconds;
+    // Above 0 however short, so even the first to go pops.
+    self.hold = seconds.max(f32::EPSILON);
   }
 
   /// Advances by `dt` seconds. Returns whether it is still moving.
   pub fn step(&mut self, dt: f32) -> bool {
     if self.hold > 0.0 {
       self.hold -= dt;
-      return true;
+      if self.hold > 0.0 {
+        return true;
+      }
+      self.lift.value += POP_LIFT;
     }
     self.rect.step(dt) | self.alpha.step(dt) | self.lift.step(dt)
   }
@@ -259,6 +267,28 @@ mod tests {
       },
     );
     SceneWindow::new(preview, (0.0, 0.0), 300.0, 0.0)
+  }
+
+  /// A held window stays where it is until its turn, then pops on its
+  /// way: larger for a moment, settling back.
+  #[test]
+  fn a_held_window_waits_its_turn_then_pops() {
+    let mut window = window();
+    let start = window.rect();
+    window.retarget(&RectF::new(500.0, 500.0, 400.0, 300.0), 1.0, false);
+    window.hold_for(0.1);
+
+    window.step(0.05);
+    assert_eq!(window.rect(), start);
+    assert!(window.lift.value.abs() < f32::EPSILON);
+
+    window.step(0.06);
+    assert!(window.lift.value > 0.02);
+    for _ in 0..60 {
+      window.step(1.0 / 60.0);
+    }
+    assert_ne!(window.rect(), start);
+    assert!(window.lift.value < 0.01);
   }
 
   #[test]
