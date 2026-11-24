@@ -17,6 +17,7 @@ mod cards;
 mod effects;
 mod ghost;
 mod overlays;
+mod pacing;
 mod scene_borders;
 mod scenes;
 mod screen;
@@ -63,7 +64,7 @@ use windows::{
 };
 
 use self::{
-  effects::Effects, ghost::Ghost, overlays::Overlays,
+  effects::Effects, ghost::Ghost, overlays::Overlays, pacing::FrameTime,
   scene_borders::SceneBorders,
 };
 use crate::{
@@ -351,16 +352,15 @@ fn run(
     }
 
     let vsync = with_overview(|overview| {
-      overview.tick().then(|| overview.vsync.clone())
+      overview.is_animating = overview.tick();
+      overview.is_animating.then(|| overview.vsync.clone())
     })
     .flatten();
 
     match vsync {
       Some(waiter) => {
         wait_for_frame(waiter.as_ref());
-        with_overview(|overview| {
-          overview.clock.note_vblank(Instant::now());
-        });
+        with_overview(|overview| overview.note_vblank(Instant::now()));
       }
       // SAFETY: No preconditions.
       None => unsafe {
@@ -753,10 +753,8 @@ struct Screen {
   /// while it runs.
   zoom: Option<(Zoom, Instant)>,
 
-  /// When the frame being drawn shows, which the zoom and the entrance
-  /// are timed by: the vblank estimate while animating, so they advance
-  /// evenly however late each wake-up is.
-  frame_time: Instant,
+  /// When the frame being drawn shows.
+  frame_time: FrameTime,
 
   /// Whether something changed that the next tick has to place.
   is_dirty: bool,
@@ -844,8 +842,12 @@ struct Overview {
 
   last_tick: Instant,
 
-  /// When the overview started opening, until its first frame is logged.
+  /// When the overview started opening, until its first frame shows.
   first_frame: Option<Instant>,
+
+  /// Whether the last tick left something moving, so the next is meant
+  /// to come a frame later.
+  is_animating: bool,
 
   /// Set once a pick or cancel is sent, after which input is ignored
   /// until the WM closes the overview.
@@ -884,6 +886,7 @@ impl Overview {
       open_cursor: (0, 0),
       last_tick: Instant::now(),
       first_frame: None,
+      is_animating: false,
       is_done: false,
       pending_pick: None,
       vsync: None,
@@ -988,6 +991,7 @@ impl Overview {
       screen.start_clocks(started);
     }
     self.last_tick = started;
+    self.is_animating = false;
     tracing::debug!(
       "Overview set up in {:.1} ms.",
       started.saturating_duration_since(opening).as_secs_f64() * 1000.0
@@ -1364,6 +1368,18 @@ impl Overview {
     }
   }
 
+  /// Records a wake-up for a vblank at `wake`, the first after an open
+  /// being when its first frame shows.
+  fn note_vblank(&mut self, wake: Instant) {
+    self.clock.note_vblank(wake);
+    if let Some(opening) = self.first_frame.take() {
+      tracing::debug!(
+        "Overview's first frame shown {:.1} ms after the open.",
+        wake.saturating_duration_since(opening).as_secs_f64() * 1000.0
+      );
+    }
+  }
+
   /// Steps animations and places everything. Returns whether anything is
   /// still moving.
   fn tick(&mut self) -> bool {
@@ -1376,12 +1392,9 @@ impl Overview {
     let now = Instant::now();
     let now = self.clock.vblank_at(now).unwrap_or(now);
     let since_last = now.saturating_duration_since(self.last_tick);
-    if let Some(opening) = self.first_frame.take() {
-      tracing::debug!(
-        "Overview's first frame {:.1} ms after the open.",
-        now.saturating_duration_since(opening).as_secs_f64() * 1000.0
-      );
-    } else if since_last > self.clock.period().mul_f32(1.5) {
+    // Only between frames of an animation: a tick on input after a pause
+    // comes as late as the pause is long.
+    if self.is_animating && since_last > self.clock.period().mul_f32(1.5) {
       tracing::debug!(
         "Overview missed a frame: {:.1} ms since the last.",
         since_last.as_secs_f64() * 1000.0

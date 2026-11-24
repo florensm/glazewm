@@ -16,6 +16,7 @@ use super::{
   effects::Effects,
   elapsed_ms,
   overlays::Overlays,
+  pacing::{draw_order, DrawBudget, FrameTime},
   place_card,
   scene_borders::{SceneBorder, SceneBorders},
   scenes::{scene_content, scene_window_shown},
@@ -94,10 +95,6 @@ const MAX_WINDOW_LIFT: f32 = 0.15;
 /// ends closing.
 const FADE_GROWTH: f32 = 0.05;
 
-/// Most cards drawn in full in a frame, unless forced: each is a large
-/// software drawing.
-const CARD_DRAWS_PER_FRAME: usize = 2;
-
 impl Screen {
   /// A screen with its window hidden, whose pictures post to `notify`
   /// once an icon they show arrives.
@@ -155,7 +152,7 @@ impl Screen {
       scrolled_at: None,
       nav: Vec::new(),
       zoom: None,
-      frame_time: Instant::now(),
+      frame_time: FrameTime::new(Instant::now()),
       is_dirty: false,
       is_gliding: false,
       plain_cards: false,
@@ -235,13 +232,10 @@ impl Screen {
     }
 
     // Restarted by `start_clocks` once every screen is set up.
-    self.frame_time = Instant::now();
-    self.zoom = animate.then(|| {
-      (
-        Zoom::open(self.focus.selected, open_duration),
-        self.frame_time,
-      )
-    });
+    let started = Instant::now();
+    self.frame_time = FrameTime::new(started);
+    self.zoom = animate
+      .then(|| (Zoom::open(self.focus.selected, open_duration), started));
     self.entrance = (animate && stagger_ms > 0).then(|| {
       let entrance = Entrance::new(
         self.focus.selected,
@@ -249,7 +243,7 @@ impl Screen {
         to_ms(open_duration),
         bounce,
       );
-      (entrance, self.frame_time)
+      (entrance, started)
     });
 
     self.show_backdrop();
@@ -286,7 +280,7 @@ impl Screen {
   /// Starts the open's zoom and entrance at `at`, the overview's first
   /// frame, so setting up doesn't eat into them.
   pub(super) fn start_clocks(&mut self, at: Instant) {
-    self.frame_time = at;
+    self.frame_time = FrameTime::new(at);
     if let Some((_, started)) = &mut self.zoom {
       *started = at;
     }
@@ -297,11 +291,7 @@ impl Screen {
 
   /// Milliseconds from `started` to the frame being drawn.
   fn since(&self, started: Instant) -> f32 {
-    self
-      .frame_time
-      .saturating_duration_since(started)
-      .as_secs_f32()
-      * 1000.0
+    self.frame_time.since(started)
   }
 
   /// Shows a new `frame` as `focus` has it.
@@ -933,14 +923,10 @@ impl Screen {
     let context = self.place_context();
     let layout = self.focus.layout;
 
-    // The selected card first, as the one most looked at.
     let count = self.cards.len().min(self.workspaces().len());
-    let selected = self.focus.selected.min(count.saturating_sub(1));
-    let order = (selected..count).chain(0..selected);
-    let mut draws = 0;
-    self.cards_behind = false;
+    let mut budget = DrawBudget::new(force);
 
-    for index in order {
+    for index in draw_order(count, self.focus.selected) {
       let picture = self.card_picture(index, &style);
       let Some(card) = self.cards.get_mut(index) else {
         continue;
@@ -975,11 +961,9 @@ impl Screen {
       if !force && card.drawn.as_ref() == Some(&picture) {
         continue;
       }
-      if !force && draws == CARD_DRAWS_PER_FRAME {
-        self.cards_behind = true;
+      if !budget.take() {
         continue;
       }
-      draws += 1;
 
       let metrics = card.metrics;
       let old_size = card.picture.size();
@@ -1039,6 +1023,7 @@ impl Screen {
     self.refresh_search(&style, force);
     self.refresh_spotlight(&style, force);
     self.refresh_sheet(&style, force);
+    self.cards_behind = budget.is_behind();
     self.is_dirty = true;
   }
 
@@ -1279,10 +1264,7 @@ impl Screen {
     self.hold();
     self.entrance = None;
     let zoom = Zoom::close(index, self.openness(), duration_ms);
-    // The last frame's time is stale while nothing moved.
-    let now = Instant::now();
-    self.frame_time = self.frame_time.max(now);
-    self.zoom = Some((zoom, now));
+    self.zoom = Some((zoom, self.frame_time.start(Instant::now())));
     // Spread windows head back to where they really are.
     if self.focus.layout.spreads_windows() {
       self.retarget_scenes(false);
@@ -1380,7 +1362,7 @@ impl Screen {
     if self.frame.is_none() {
       return false;
     }
-    self.frame_time = self.frame_time.max(now);
+    self.frame_time.advance(now);
 
     let mut is_moving = false;
     for card in &mut self.cards {
