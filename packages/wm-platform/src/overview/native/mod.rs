@@ -22,6 +22,7 @@ mod scene_badges;
 mod scene_borders;
 mod scenes;
 mod screen;
+mod stats;
 
 use std::{
   cell::RefCell,
@@ -69,6 +70,7 @@ use windows::{
 use self::{
   effects::Effects, ghost::Ghost, overlays::Overlays, pacing::FrameTime,
   scene_badges::SceneBadges, scene_borders::SceneBorders,
+  stats::MotionStats,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -854,6 +856,9 @@ struct Overview {
   /// When the overview started opening, until its first frame shows.
   first_frame: Option<Instant>,
 
+  /// Timing of the open or close under way, while `GLAZEWM_PERF` is set.
+  motion: Option<MotionStats>,
+
   /// Whether the last tick left something moving, so the next is meant
   /// to come a frame later.
   is_animating: bool,
@@ -895,6 +900,7 @@ impl Overview {
       open_cursor: (0, 0),
       last_tick: Instant::now(),
       first_frame: None,
+      motion: None,
       is_animating: false,
       is_done: false,
       pending_pick: None,
@@ -1010,6 +1016,18 @@ impl Overview {
       started.saturating_duration_since(opening).as_secs_f64() * 1000.0
     );
     self.first_frame = Some(opening);
+    self.start_motion("open", opening);
+  }
+
+  /// Starts timing a motion from `at`, if profiling, logging the one
+  /// before if it hadn't ended.
+  fn start_motion(&mut self, label: &'static str, at: Instant) {
+    if let Some(motion) = self.motion.take() {
+      tracing::info!("{}", motion.summary());
+    }
+    if crate::perf::is_enabled() {
+      self.motion = Some(MotionStats::new(label, at, self.clock.period()));
+    }
   }
 
   /// Shows a new `frame` in the open overview, keeping the selection.
@@ -1306,6 +1324,7 @@ impl Overview {
   /// pick, the overview stays up until the WM hides it once focus has
   /// moved on.
   fn start_closing(&mut self, action: &OverviewAction) {
+    self.start_motion("close", Instant::now());
     let duration = self
       .frame
       .as_ref()
@@ -1390,6 +1409,9 @@ impl Overview {
   /// being when its first frame shows.
   fn note_vblank(&mut self, wake: Instant) {
     self.clock.note_vblank(wake);
+    if let Some(motion) = &mut self.motion {
+      motion.shown(wake);
+    }
     if let Some(opening) = self.first_frame.take() {
       tracing::debug!(
         "Overview's first frame shown {:.1} ms after the open.",
@@ -1398,9 +1420,28 @@ impl Overview {
     }
   }
 
+  /// Steps animations and places everything, timing it while an open or
+  /// close is. Returns whether anything is still moving.
+  fn tick(&mut self) -> bool {
+    let started = Instant::now();
+    let was_animating = self.is_animating;
+    let since_last = started.saturating_duration_since(self.last_tick);
+    let is_moving = self.step_frame();
+
+    if let Some(motion) = &mut self.motion {
+      motion.frame(started.elapsed(), was_animating.then_some(since_last));
+    }
+    if !is_moving {
+      if let Some(motion) = self.motion.take() {
+        tracing::info!("{}", motion.summary());
+      }
+    }
+    is_moving
+  }
+
   /// Steps animations and places everything. Returns whether anything is
   /// still moving.
-  fn tick(&mut self) -> bool {
+  fn step_frame(&mut self) -> bool {
     if self.frame.is_none() {
       return false;
     }
