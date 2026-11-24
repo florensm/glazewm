@@ -181,8 +181,8 @@
         { key: 'expose.gap', kind: 'range', min: 0, max: 80, step: 1, def: 28, unit: 'px', help: 'Least space between windows.' },
         { key: 'expose.arrange', kind: 'enum', options: ['cluster', 'grid', 'rows'], def: 'cluster', isNew: true, help: 'Cluster keeps where windows are relative to each other (today). Grid gives every window an even cell, so sizes stay most alike. Rows are GNOME\'s.' },
         { key: 'expose.small_window_boost', kind: 'range', min: 0, max: 0.6, step: 0.05, def: 0, isNew: true, fmt: (v) => (v ? '+' + pct(v) : 'off'), help: 'Grows small windows relative to big ones while keeping the cluster: the grid\'s even sizes without losing positions. GNOME bumps small windows by up to 50%.' },
-        { key: 'expose.largest', kind: 'range', min: 0.6, max: 1, step: 0.01, def: 0.85, isNew: true, fmt: pct, help: 'Most of the room the windows take. A constant in expose.rs today; 0.94 makes them clearly larger.' },
-        { key: 'expose.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space kept free along the screen\'s edges. A constant in layout.rs today.' },
+        { key: 'expose.largest', kind: 'range', min: 0.6, max: 1, step: 0.01, def: 0.85, fmt: pct, help: 'Most of the room the windows take. A constant in expose.rs today; 0.94 makes them clearly larger.' },
+        { key: 'expose.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', help: 'Space kept free along the screen\'s edges. A constant in layout.rs today.' },
         { key: 'expose.readable_floor', kind: 'range', min: 0, max: 0.7, step: 0.05, def: 0, isNew: true, fmt: (v) => (v ? pct(v) : 'off'), help: 'Below this window scale, a crowded workspace switches to rows. Try it with <b>Floating</b> and 0.5.' },
         { key: 'expose.titles', kind: 'enum', options: ['hover', 'always'], def: 'hover', isNew: true, help: 'Window titles on the hovered window only, or on every window.' },
         { key: 'expose.app_icons', kind: 'bool', def: false, isNew: true, help: 'A large app icon in the middle of every window.' },
@@ -191,7 +191,7 @@
       { title: 'Motion', items: [
         { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },
         { key: 'animation.easing', kind: 'easing', def: 'spring', shared: 'every layout', help: 'Pace of the open and close. A spring ignores the lengths; spring(damping, stiffness) tunes it. More in the Shared tab.' },
-        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
       ] },
       { title: 'Search and keys', items: [
         { key: 'expose.search_mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', isNew: true, help: 'Click the preview and <b>type</b> (try "glaze"): matches spread out (today), non-matches dim where they are, or matches gather in the middle while the rest wait on a shelf.' },
@@ -208,10 +208,10 @@
       { title: 'Motion', items: [
         { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },
         { key: 'animation.easing', kind: 'easing', def: 'spring', shared: 'every layout', help: 'Pace of the open and close. A spring ignores the lengths; spring(damping, stiffness) tunes it. More in the Shared tab.' },
-        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
       ] },
       { title: 'Large view', items: [
-        { key: 'activities.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', isNew: true, help: 'Space around the large view.' },
+        { key: 'activities.margin', kind: 'range', min: 8, max: 120, step: 2, def: 48, unit: 'px', help: 'Space around the large view.' },
         { key: 'animation.switch', kind: 'enum', options: ['slide', 'fade', 'miniature'], def: 'slide', help: 'How a newly picked workspace comes in. Click another miniature in the preview.' },
         { key: 'animation.switch_ms', kind: 'range', min: 0, max: 800, step: 10, def: 260, unit: 'ms', shared: 'activities and stack', help: 'About how long that takes; in the stack, how long workspaces glide.' },
         { key: 'strip_view', kind: 'enum', options: ['visible', 'whole'], def: 'visible', np: true, help: 'How much of a scrolling-layout workspace shows large: the columns on screen, or the whole strip. The preview\'s workspaces don\'t scroll, so nothing changes there.' },
@@ -232,7 +232,7 @@
         { key: 'animation.bounce', kind: 'range', min: 0, max: 0.8, step: 0.05, def: 0, shared: 'every layout', help: 'How far they overshoot when they glide.' },
         { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },
         { key: 'animation.easing', kind: 'easing', def: 'spring', shared: 'every layout', help: 'Pace of the open and close. A spring ignores the lengths; spring(damping, stiffness) tunes it. More in the Shared tab.' },
-        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
       ] },
     ] },
     { id: 'shared', label: 'Shared', layout: null, intro: 'Everything that applies to every layout: which one opens, the look, the wallpaper, the motion and effects. The preview shows the layout it opens on.', groups: [
@@ -267,12 +267,12 @@
       { title: 'Animation', items: [
         { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', help: 'How it opens and closes.' },
         { key: 'animation.easing', kind: 'easing', def: 'spring', help: 'Pace of the open and close. A spring ignores the two lengths below; spring(damping, stiffness) tunes it.' },
-        { key: 'animation.open_easing', kind: 'easing', def: '', isNew: true, help: 'Its own pace for the open; empty uses the one above. spring(0.85, 520) lands with a little give.' },
+        { key: 'animation.open_easing', kind: 'easing', def: '', help: 'Its own pace for the open; empty uses the one above. spring(0.85, 520) lands with a little give.' },
         { key: 'animation.open_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 280, unit: 'ms', help: 'Length of the open, for a curve.' },
         { key: 'animation.close_ms', kind: 'range', min: 0, max: 1000, step: 10, def: 220, unit: 'ms', help: 'Length of the close, for a curve.' },
         { key: 'animation.highlight_ms', kind: 'range', min: 0, max: 600, step: 10, def: 140, unit: 'ms', help: 'How long highlights take to settle.' },
         { key: 'animation.bounce', kind: 'range', min: 0, max: 0.8, step: 0.05, def: 0, help: 'How far cards and windows overshoot: the hover lift, a window dropped back, the stack gliding.' },
-        { key: 'animation.chrome_from', kind: 'range', min: 0, max: 0.95, step: 0.05, def: 0.8, isNew: true, fmt: (v) => pct(v) + ' open', help: 'When names and highlights start to show. A constant in layout.rs today.' },
+        { key: 'animation.chrome_from', kind: 'range', min: 0, max: 0.95, step: 0.05, def: 0.8, fmt: (v) => pct(v) + ' open', help: 'When names and highlights start to show. A constant in layout.rs today.' },
       ] },
       { title: 'Effects', items: [
         { key: 'effects.window_lift', kind: 'range', min: 0, max: 0.15, step: 0.005, def: 0.025, fmt: (v) => (v * 100).toFixed(1) + '%', help: 'How much the picked window grows.' },
