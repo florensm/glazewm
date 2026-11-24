@@ -16,7 +16,8 @@ use crate::{
     scene::{Scene, SceneWindow},
     state::ScreenFocus,
   },
-  OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
+  OverviewRowSide, OverviewStripView, OverviewSwitchStyle,
+  OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -255,7 +256,7 @@ impl Screen {
     &mut self,
     style: OverviewSwitchStyle,
     previous: Option<usize>,
-    slide: f32,
+    slide: (f32, f32),
   ) {
     let selected = self.focus.selected;
     if style == OverviewSwitchStyle::Miniature {
@@ -266,13 +267,9 @@ impl Screen {
     self.scene_shown = Some(selected);
     let offset = match (style, previous) {
       (OverviewSwitchStyle::Slide, Some(previous)) => {
-        match selected.cmp(&previous) {
-          Ordering::Less => -slide,
-          Ordering::Equal => 0.0,
-          Ordering::Greater => slide,
-        }
+        slide_offset(slide, selected.cmp(&previous))
       }
-      _ => 0.0,
+      _ => (0.0, 0.0),
     };
 
     let Some(scene) = self.scenes.get_mut(selected) else {
@@ -280,7 +277,7 @@ impl Screen {
     };
     for window in &mut scene.windows {
       if window.alpha.value <= 0.05 {
-        let from = window.target().translate(offset, 0.0);
+        let from = window.target().translate(offset.0, offset.1);
         window.appear_from(&from);
       }
     }
@@ -297,14 +294,7 @@ impl Screen {
 
     let selected = self.focus.selected;
     let previous = self.scene_shown;
-    // A full slide clears the scene; a fade stays in place.
-    let slide = match style {
-      OverviewSwitchStyle::Slide => {
-        self.scene_area.w + self.metrics.px(SLIDE_GAP)
-      }
-      OverviewSwitchStyle::Fade => 0.0,
-      OverviewSwitchStyle::Miniature => self.metrics.view.0 * 0.12,
-    };
+    let slide = self.slide(style);
 
     let is_switched = previous != Some(selected);
     if snap {
@@ -344,11 +334,7 @@ impl Screen {
         continue;
       }
 
-      let offset = match index.cmp(&selected) {
-        Ordering::Less => -slide,
-        Ordering::Equal => 0.0,
-        Ordering::Greater => slide,
-      };
+      let offset = slide_offset(slide, index.cmp(&selected));
       let alpha = if index == selected { 1.0 } else { 0.0 };
 
       let content = scene_content(workspace, frame);
@@ -377,11 +363,19 @@ impl Screen {
           // Nowhere on screen to fly out of: it fades in where it
           // settles.
           if let (true, Some(rect)) = (flies_out, rect) {
-            window.retarget(&rect.translate(offset, 0.0), 0.0, true);
+            window.retarget(
+              &rect.translate(offset.0, offset.1),
+              0.0,
+              true,
+            );
           }
         } else if let (true, Some(tile)) = (flies_out, tile) {
           let shown = if window.is_hidden_tab { 0.0 } else { alpha };
-          window.retarget(&tile.rect.translate(offset, 0.0), shown, true);
+          window.retarget(
+            &tile.rect.translate(offset.0, offset.1),
+            shown,
+            true,
+          );
         }
         let miniature = miniatures.get(index).and_then(|rects| {
           rects
@@ -398,7 +392,11 @@ impl Screen {
             window.retarget(&miniature, alpha, snap);
           }
           (Some(rect), _) => {
-            window.retarget(&rect.translate(offset, 0.0), alpha, snap);
+            window.retarget(
+              &rect.translate(offset.0, offset.1),
+              alpha,
+              snap,
+            );
           }
           (None, _) => {
             let target = window.target();
@@ -435,6 +433,35 @@ impl Screen {
     }
 
     self.retarget_workspace_rect(snap);
+  }
+
+  /// Where `style` has a later workspace's scene wait beside the shown
+  /// one, along the way the row runs: a full slide clears the scene; a
+  /// fade stays in place.
+  fn slide(&self, style: OverviewSwitchStyle) -> (f32, f32) {
+    let is_column = matches!(
+      self.scene_chrome().side,
+      OverviewRowSide::Left | OverviewRowSide::Right
+    );
+    let along = |distance: f32| {
+      if is_column {
+        (0.0, distance)
+      } else {
+        (distance, 0.0)
+      }
+    };
+    let (area, view) = if is_column {
+      (self.scene_area.h, self.metrics.view.1)
+    } else {
+      (self.scene_area.w, self.metrics.view.0)
+    };
+    match style {
+      OverviewSwitchStyle::Slide => {
+        along(area + self.metrics.px(SLIDE_GAP))
+      }
+      OverviewSwitchStyle::Fade => (0.0, 0.0),
+      OverviewSwitchStyle::Miniature => along(view * 0.12),
+    }
   }
 
   /// How the exposé spreads a scene of `frame` over the scene area.
@@ -507,6 +534,16 @@ fn ripple_delays(
     delays[index] = rank * step;
   }
   delays
+}
+
+/// `slide` one way or the other, for a workspace that `order` puts
+/// before, at or after the shown one.
+fn slide_offset(slide: (f32, f32), order: Ordering) -> (f32, f32) {
+  match order {
+    Ordering::Less => (-slide.0, -slide.1),
+    Ordering::Equal => (0.0, 0.0),
+    Ordering::Greater => slide,
+  }
 }
 
 #[cfg(test)]

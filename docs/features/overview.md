@@ -37,8 +37,8 @@ where it will on screen. Stack shows every workspace at the same size,
 strips at full length, to move windows between them.
 
 - **Activities**, for arranging the shown workspace: every workspace in
-  miniature in a row along the top, their names under them, and below them
-  the shown workspace large and as laid out. Picking another miniature
+  miniature in a row along the top (or another edge), their names under
+  them, and beside them the shown workspace large and as laid out. Picking another miniature
   slides that workspace in; the title of the picked window shows under it.
 - **Stack**, for arranging across workspaces and scrolling strips: every
   workspace at the same zoom, stacked top to bottom with the selected one
@@ -78,11 +78,21 @@ On the cards, each window shows its app's icon in its middle.
 
 The row of miniatures comes in three sizes (`workspace_row`): a slim
 strip (`"compact"`, the default), larger (`"shown"`), or none
-(`"hidden"`). Hidden, and with `search_hint: false` (the default), the
+(`"hidden"`); `expose.workspace_row` gives the exposé a size of its own.
+Hidden, and with `search_hint: false` (the default), the
 activities and the exposé show nothing but the shown workspace: its windows over its
 wallpaper (on its panel, with a framed backdrop), as far from every edge
-of the screen. Workspaces are still gone through with `←` `→`, the wheel
-and the digit chords, and typing still searches.
+of the screen. Workspaces are still gone through with the arrows along
+the row, the wheel and the digit chords, and typing still searches.
+
+The row sits along the top by default. `expose.workspace_row_position`
+and `activities.workspace_row_position` move it to the `bottom` (just
+over the search line, as Windows' Task View has its desktops), or to the
+`left` or `right`, as a column with each name under its miniature, the
+scene taking the rest of the width. Its miniatures are as large on any
+edge; a column too long for the screen shrinks to fit. The row comes in
+from its own edge as the overview opens, and a newly shown workspace
+slides in along it, from the side its miniature is on.
 
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
 goes through them while it is open (unless a search is on, which it then
@@ -157,10 +167,14 @@ which any key or click closes.
 
 An arrow goes to what lies that way on screen:
 
-- **Activities**: `←` `→` go along the row of workspaces, and `↓` goes
-  down into the shown workspace's windows, which lie below the row. Among
-  the windows, the arrows go to the nearest window that way, and `↑` off
-  their top edge goes back up to the row.
+- **Activities** and **exposé**: `←` `→` go along the row of
+  workspaces, and `↓` goes down into the shown workspace's windows, which
+  lie below the row. Among the windows, the arrows go to the nearest
+  window that way, and `↑` off their top edge goes back up to the row.
+  With the row on another edge, the arrows follow it: along a bottom row
+  `↑` goes into the windows; along a column on the left, `↑` `↓` go
+  through the workspaces, `→` goes into the windows and `←` off their
+  left edge comes back (mirrored on the right).
 - **Stack**: `↑` `↓` go up and down the stack of workspaces. Their
   windows show on the cards themselves, so no arrow points into them:
   `Space` goes in. Among the windows, the arrows go to the nearest window
@@ -438,6 +452,9 @@ keybindings:
 | `expose.largest` | `0.85` | Most of the room's width and height the exposé's windows take together: `0.6` to `1`. |
 | `expose.margin` | `48` | Space the exposé keeps free along the screen's edges, in logical pixels: `8` to `120`. |
 | `activities.margin` | `48` | Space the activities keep free around the large view, in logical pixels: `8` to `120`. |
+| `expose.workspace_row` | `"inherit"` | The exposé's own row of miniatures: `inherit` (as `workspace_row`), `compact`, `shown` or `hidden`. |
+| `expose.workspace_row_position` | `"top"` | Edge the exposé's row sits along: `top`, `bottom`, `left` or `right` (see [Layouts](#layouts)). |
+| `activities.workspace_row_position` | `"top"` | Edge the activities' row sits along: `top`, `bottom`, `left` or `right`. |
 | `stack.zoom` | `0.5` | How large the stack shows a workspace, as a part of the screen's width: `0.2` to `0.9`. |
 
 ### `overview.look`

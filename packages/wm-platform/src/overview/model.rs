@@ -247,6 +247,26 @@ pub struct OverviewStyle {
 }
 
 impl OverviewStyle {
+  /// The row of miniatures `layout` shows, and the edge it sits along.
+  #[must_use]
+  pub fn row(
+    &self,
+    layout: OverviewLayoutMode,
+  ) -> (OverviewWorkspaceRow, OverviewRowSide) {
+    match layout {
+      OverviewLayoutMode::Expose => (
+        self.expose.workspace_row.or(self.workspace_row),
+        self.expose.workspace_row_position,
+      ),
+      OverviewLayoutMode::Activities => {
+        (self.workspace_row, self.activities.workspace_row_position)
+      }
+      OverviewLayoutMode::Stack => {
+        (self.workspace_row, OverviewRowSide::default())
+      }
+    }
+  }
+
   /// Pace of the close if `is_closing`, else of the open.
   #[must_use]
   pub fn zoom_curve(&self, is_closing: bool) -> &OverviewCurve {
@@ -292,6 +312,47 @@ pub enum OverviewWorkspaceRow {
   Hidden,
 }
 
+/// The exposé's own row of miniatures, or the one `workspace_row` sets.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeRow {
+  #[default]
+  Inherit,
+  Compact,
+  Shown,
+  Hidden,
+}
+
+impl OverviewExposeRow {
+  /// The row it shows, given the one `workspace_row` sets.
+  #[must_use]
+  pub fn or(self, shared: OverviewWorkspaceRow) -> OverviewWorkspaceRow {
+    match self {
+      Self::Inherit => shared,
+      Self::Compact => OverviewWorkspaceRow::Compact,
+      Self::Shown => OverviewWorkspaceRow::Shown,
+      Self::Hidden => OverviewWorkspaceRow::Hidden,
+    }
+  }
+}
+
+/// Edge of the screen the row of miniatures sits along.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewRowSide {
+  #[default]
+  Top,
+  /// Over the search line.
+  Bottom,
+  /// A column, the scene taking the rest of the width.
+  Left,
+  Right,
+}
+
 /// How the exposé spreads the shown workspace's windows.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -306,6 +367,12 @@ pub struct OverviewExpose {
   /// Space kept free along the screen's edges, in logical pixels, from 8
   /// to 120.
   pub margin: f32,
+
+  /// Its row of miniatures.
+  pub workspace_row: OverviewExposeRow,
+
+  /// Edge its row of miniatures sits along.
+  pub workspace_row_position: OverviewRowSide,
 }
 
 impl OverviewExpose {
@@ -328,6 +395,8 @@ impl Default for OverviewExpose {
       gap: 28.0,
       largest: 0.85,
       margin: 48.0,
+      workspace_row: OverviewExposeRow::default(),
+      workspace_row_position: OverviewRowSide::default(),
     }
   }
 }
@@ -339,6 +408,9 @@ pub struct OverviewActivities {
   /// Space kept free along the screen's edges, in logical pixels, from 8
   /// to 120.
   pub margin: f32,
+
+  /// Edge its row of miniatures sits along.
+  pub workspace_row_position: OverviewRowSide,
 }
 
 impl OverviewActivities {
@@ -351,7 +423,10 @@ impl OverviewActivities {
 
 impl Default for OverviewActivities {
   fn default() -> Self {
-    Self { margin: 48.0 }
+    Self {
+      margin: 48.0,
+      workspace_row_position: OverviewRowSide::default(),
+    }
   }
 }
 

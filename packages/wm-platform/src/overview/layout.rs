@@ -8,7 +8,9 @@
 
 use std::time::Instant;
 
-use crate::{OverviewCurve, OverviewLayoutMode, OverviewWorkspaceRow};
+use crate::{
+  OverviewCurve, OverviewLayoutMode, OverviewRowSide, OverviewWorkspaceRow,
+};
 
 /// A rectangle with fractional coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -430,8 +432,11 @@ const MINIATURE_WIDTHS: f32 = 2.0;
 /// What the activities and the exposé show around their scene.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SceneChrome {
-  /// The row of miniatures over it, and how large.
+  /// The row of miniatures beside it, and how large.
   pub row: OverviewWorkspaceRow,
+
+  /// Edge the row sits along.
+  pub side: OverviewRowSide,
 
   /// The search field under it, while no search is on.
   pub has_search_line: bool,
@@ -443,6 +448,7 @@ pub(crate) struct SceneChrome {
 impl SceneChrome {
   pub const FULL: Self = Self {
     row: OverviewWorkspaceRow::Shown,
+    side: OverviewRowSide::Top,
     has_search_line: true,
     margin: 48.0,
   };
@@ -458,81 +464,162 @@ impl SceneChrome {
 const ROW_HEIGHT: (f32, f32, f32) = (0.12, 64.0, 170.0);
 const COMPACT_ROW_HEIGHT: (f32, f32, f32) = (0.07, 44.0, 96.0);
 
-/// Every card in miniature in a row along the top, their names under
-/// them, and below them the scene: where the selected workspace shows
-/// large. Without the row or the search line in `chrome`, the scene takes
-/// their room, the cards waiting unseen above the top. Returns the cards'
-/// targets and the scene.
+/// Scale of a row's miniatures: as tall as a part of the overview, which
+/// a long row shrinks from to fit.
+fn row_scale(metrics: &CardMetrics, row: OverviewWorkspaceRow) -> f32 {
+  let (part, least, most) = match row {
+    OverviewWorkspaceRow::Compact => COMPACT_ROW_HEIGHT,
+    OverviewWorkspaceRow::Shown | OverviewWorkspaceRow::Hidden => {
+      ROW_HEIGHT
+    }
+  };
+  let height = (metrics.view.1 * part)
+    .clamp(metrics.px(least), metrics.px(most))
+    .min(metrics.height);
+  height / metrics.height
+}
+
+/// The band `thickness` across along `chrome`'s side of `view` that its
+/// row takes, names included, from `inset` off a side edge (or the top)
+/// to `floor`; without the row, just past that edge.
+fn row_band(
+  chrome: SceneChrome,
+  view: (f32, f32),
+  (inset, floor): (f32, f32),
+  thickness: f32,
+) -> RectF {
+  let (view_width, view_height) = view;
+  let band = match chrome.side {
+    OverviewRowSide::Top => RectF::new(0.0, inset, view_width, thickness),
+    OverviewRowSide::Bottom => {
+      RectF::new(0.0, floor - thickness, view_width, thickness)
+    }
+    OverviewRowSide::Left => {
+      RectF::new(inset, 0.0, thickness, view_height)
+    }
+    OverviewRowSide::Right => RectF::new(
+      view_width - inset - thickness,
+      0.0,
+      thickness,
+      view_height,
+    ),
+  };
+  if chrome.has_row() {
+    return band;
+  }
+  match chrome.side {
+    OverviewRowSide::Top => band.translate(0.0, -band.bottom()),
+    OverviewRowSide::Bottom => band.translate(0.0, view_height - band.y),
+    OverviewRowSide::Left => band.translate(-band.right(), 0.0),
+    OverviewRowSide::Right => band.translate(view_width - band.x, 0.0),
+  }
+}
+
+/// Every card in miniature in a row along `chrome`'s side (a column on
+/// the left or right), each name under its card, and beside them the
+/// scene: where the selected workspace shows large. Without the row or
+/// the search line in `chrome`, the scene takes their room, the cards
+/// waiting unseen past their edge. Returns the cards' targets and the
+/// scene.
 pub(crate) fn activities(
   metrics: &CardMetrics,
   slots: &[CardSlot],
   chrome: SceneChrome,
 ) -> (Targets, RectF) {
   let (view_width, view_height) = metrics.view;
-  let (margin, gap, top) = (
+  let (margin, gap, inset, apart) = (
     metrics.px(chrome.margin),
     metrics.px(16.0),
     metrics.px(18.0),
+    metrics.px(22.0),
   );
   let label = metrics.px(LABEL_GAP + LABEL_HEIGHT);
-
-  // As tall as a part of the overview, shrunk for a long row to fit.
-  let (part, least, most) = match chrome.row {
-    OverviewWorkspaceRow::Compact => COMPACT_ROW_HEIGHT,
-    OverviewWorkspaceRow::Shown | OverviewWorkspaceRow::Hidden => {
-      ROW_HEIGHT
-    }
+  let search_y = metrics.bottom_search_y();
+  let above_search = search_y - metrics.px(16.0);
+  // Lowest the row reaches, and the scene.
+  let (row_floor, scene_floor) = if chrome.has_search_line {
+    (above_search, above_search)
+  } else {
+    (view_height - inset, view_height - margin)
   };
-  let height = (view_height * part)
-    .clamp(metrics.px(least), metrics.px(most))
-    .min(metrics.height);
-  let widths = slots.iter().map(|slot| slot.width).sum::<f32>();
+
   #[allow(clippy::cast_precision_loss)]
-  let gaps = gap * slots.len().saturating_sub(1) as f32;
-  let scale = (height / metrics.height)
-    .min((view_width - 2.0 * margin - gaps) / widths.max(1.0))
+  let count = slots.len() as f32;
+  let gaps = gap * (count - 1.0).max(0.0);
+  let is_column =
+    matches!(chrome.side, OverviewRowSide::Left | OverviewRowSide::Right);
+  // Room along the row for the cards alone, at scale 1 and as they are.
+  let (room, length) = if is_column {
+    (
+      row_floor - inset - gaps - label * count,
+      metrics.height * count,
+    )
+  } else {
+    (
+      view_width - 2.0 * margin - gaps,
+      slots.iter().map(|slot| slot.width).sum::<f32>(),
+    )
+  };
+  let scale = row_scale(metrics, chrome.row)
+    .min(room / length.max(1.0))
     .max(0.01);
 
-  let row_width = widths * scale + gaps;
   let card_height = metrics.height * scale;
-  let (cy, opacity) = if chrome.has_row() {
-    (top + card_height / 2.0, 1.0)
+  let widest =
+    slots.iter().map(|slot| slot.width).fold(0.0, f32::max) * scale;
+  let has_row = chrome.has_row();
+
+  let thickness = if is_column {
+    widest
   } else {
-    (-card_height, 0.0)
+    card_height + label
   };
-  let mut x = (view_width - row_width) / 2.0;
+  let band = row_band(chrome, metrics.view, (inset, row_floor), thickness);
+
+  let mut along = if is_column {
+    let length = (card_height + label) * count + gaps;
+    inset + (row_floor - inset - length).max(0.0) / 2.0
+  } else {
+    (view_width - length * scale - gaps) / 2.0
+  };
   let cards = slots
     .iter()
     .map(|slot| {
-      let width = slot.width * scale;
-      let placement = Placement {
-        opacity,
-        ..Placement::new(x + width / 2.0, cy, scale)
+      let (cx, cy) = if is_column {
+        let cy = along + card_height / 2.0;
+        along += card_height + label + gap;
+        (band.x + band.w / 2.0, cy)
+      } else {
+        let width = slot.width * scale;
+        let cx = along + width / 2.0;
+        along += width + gap;
+        (cx, band.y + card_height / 2.0)
       };
-      x += width + gap;
-      placement
+      Placement {
+        opacity: if has_row { 1.0 } else { 0.0 },
+        ..Placement::new(cx, cy, scale)
+      }
     })
     .collect();
 
-  let search_y = metrics.bottom_search_y();
-  let scene_top = if chrome.has_row() {
-    top + card_height + label + metrics.px(22.0)
-  } else {
-    margin
-  };
-  let scene_bottom = if chrome.has_search_line {
-    search_y - metrics.px(16.0)
-  } else {
-    view_height - margin
-  };
+  let (mut left, mut top, mut right, mut bottom) =
+    (margin, margin, view_width - margin, scene_floor);
+  if has_row {
+    match chrome.side {
+      OverviewRowSide::Top => top = band.bottom() + apart,
+      OverviewRowSide::Bottom => bottom = band.y - apart,
+      OverviewRowSide::Left => left = band.right() + apart,
+      OverviewRowSide::Right => right = band.x - apart,
+    }
+  }
   let scene = RectF::new(
-    margin,
-    scene_top,
-    view_width - 2.0 * margin,
-    (scene_bottom - scene_top).max(0.0),
+    left,
+    top,
+    (right - left).max(0.0),
+    (bottom - top).max(0.0),
   );
 
-  let spotlight_y = scene_top + metrics.px(SPOTLIGHT_INSET);
+  let spotlight_y = top + metrics.px(SPOTLIGHT_INSET);
   (
     Targets {
       cards,
@@ -1358,10 +1445,11 @@ mod tests {
     activities, chrome_opacity, cover_crop, ease_out_back, ease_out_cubic,
     stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
     Placement, RectF, SceneChrome, Spring, SpringRect, Targets, Tile,
-    Zoom, STACK_MAX_WIDTHS,
+    Zoom, LABEL_GAP, LABEL_HEIGHT, STACK_MAX_WIDTHS,
   };
   use crate::{
-    OverviewCurve, OverviewLayoutMode, OverviewStack, OverviewWorkspaceRow,
+    OverviewCurve, OverviewLayoutMode, OverviewRowSide, OverviewStack,
+    OverviewWorkspaceRow,
   };
 
   /// Cards drawn for the stack.
@@ -2088,10 +2176,160 @@ mod tests {
         row: OverviewWorkspaceRow::Hidden,
         has_search_line: false,
         margin,
+        ..SceneChrome::FULL
       };
       let (_, scene) = activities(&metrics, &slots, bare);
       assert_close(scene.y, margin);
       assert_close(1040.0 - scene.bottom(), margin);
+    }
+  }
+
+  const SIDES: [OverviewRowSide; 4] = [
+    OverviewRowSide::Top,
+    OverviewRowSide::Bottom,
+    OverviewRowSide::Left,
+    OverviewRowSide::Right,
+  ];
+
+  /// On any edge, at either size and with or without the search line,
+  /// the row (names included) stays on screen on its edge, clear of the
+  /// scene and the search line, in order along it; the scene keeps its
+  /// margin elsewhere.
+  #[test]
+  fn the_row_sits_along_any_edge() {
+    let metrics = metrics_for(OverviewLayoutMode::Activities);
+    let slots = slots(&metrics, 5);
+    let label = LABEL_GAP + LABEL_HEIGHT;
+    let view = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+
+    for side in SIDES {
+      for row in
+        [OverviewWorkspaceRow::Shown, OverviewWorkspaceRow::Compact]
+      {
+        for has_search_line in [true, false] {
+          let chrome = SceneChrome {
+            row,
+            side,
+            has_search_line,
+            ..SceneChrome::FULL
+          };
+          let case = format!("{side:?} {row:?} {has_search_line}");
+          let (targets, scene) = activities(&metrics, &slots, chrome);
+          let floor = if has_search_line {
+            targets.search_y
+          } else {
+            1040.0
+          };
+
+          let rects = targets
+            .cards
+            .iter()
+            .map(|card| {
+              let rect = card.rect(&metrics);
+              RectF::new(rect.x, rect.y, rect.w, rect.h + label)
+            })
+            .collect::<Vec<_>>();
+          for rect in &rects {
+            assert!(rect.x >= 0.0 && rect.right() <= 1920.0, "{case}");
+            assert!(rect.y >= 0.0 && rect.bottom() <= floor, "{case}");
+            assert!(rect.intersect(&scene).is_none(), "{case} {rect:?}");
+            let is_beside = match side {
+              OverviewRowSide::Top => rect.bottom() < scene.y,
+              OverviewRowSide::Bottom => rect.y > scene.bottom(),
+              OverviewRowSide::Left => rect.right() < scene.x,
+              OverviewRowSide::Right => rect.x > scene.right(),
+            };
+            assert!(is_beside, "{case} {rect:?} {scene:?}");
+          }
+          let is_column =
+            matches!(side, OverviewRowSide::Left | OverviewRowSide::Right);
+          for pair in rects.windows(2) {
+            if is_column {
+              assert!(pair[1].y > pair[0].bottom(), "{case}");
+              assert_close(pair[1].center().0, pair[0].center().0);
+            } else {
+              assert!(pair[1].x > pair[0].right(), "{case}");
+              assert_close(pair[1].y, pair[0].y);
+            }
+          }
+
+          assert!(scene.w > 0.0 && scene.h > 0.0, "{case}");
+          assert!(scene.bottom() <= floor, "{case}");
+          if side != OverviewRowSide::Top {
+            assert_close(scene.y, 48.0);
+          }
+          if side != OverviewRowSide::Left {
+            assert_close(scene.x, 48.0);
+          }
+          if side != OverviewRowSide::Right {
+            assert_close(scene.right(), 1920.0 - 48.0);
+          }
+          if side != OverviewRowSide::Bottom && !has_search_line {
+            assert_close(scene.bottom(), 1040.0 - 48.0);
+          }
+
+          // Zoomed into the scene, the row starts past its own edge.
+          let content = CardView::fitted(&view, &scene).map(&view);
+          let start = Camera::zoom(&content, &view, 0.0);
+          for rect in &rects {
+            let rect = start.apply(rect);
+            let is_past = match side {
+              OverviewRowSide::Top => rect.bottom() <= 0.0,
+              OverviewRowSide::Bottom => rect.y >= 1040.0,
+              OverviewRowSide::Left => rect.right() <= 0.0,
+              OverviewRowSide::Right => rect.x >= 1920.0,
+            };
+            assert!(is_past, "{case} {rect:?}");
+          }
+        }
+      }
+    }
+  }
+
+  /// A column too long for the screen shrinks to fit its height.
+  #[test]
+  fn a_long_column_shrinks_to_fit() {
+    let metrics = metrics_for(OverviewLayoutMode::Activities);
+    let slots = slots(&metrics, 14);
+    let chrome = SceneChrome {
+      side: OverviewRowSide::Left,
+      ..SceneChrome::FULL
+    };
+    let (targets, _) = activities(&metrics, &slots, chrome);
+    let label = LABEL_GAP + LABEL_HEIGHT;
+    for card in &targets.cards {
+      let rect = card.rect(&metrics);
+      assert!(rect.y >= 0.0, "{rect:?}");
+      assert!(rect.bottom() + label <= targets.search_y, "{rect:?}");
+    }
+  }
+
+  /// Without the row, its cards wait unseen past their own edge.
+  #[test]
+  fn a_hidden_row_waits_past_its_edge() {
+    let metrics = metrics_for(OverviewLayoutMode::Activities);
+    let slots = slots(&metrics, 4);
+    for side in SIDES {
+      let chrome = SceneChrome {
+        row: OverviewWorkspaceRow::Hidden,
+        side,
+        ..SceneChrome::FULL
+      };
+      let (targets, scene) = activities(&metrics, &slots, chrome);
+      assert_close(scene.x, 48.0);
+      assert_close(scene.y, 48.0);
+      assert_close(scene.right(), 1920.0 - 48.0);
+      for card in &targets.cards {
+        let rect = card.rect(&metrics);
+        assert_close(card.opacity, 0.0);
+        let is_past = match side {
+          OverviewRowSide::Top => rect.bottom() <= 0.0,
+          OverviewRowSide::Bottom => rect.y >= 1040.0,
+          OverviewRowSide::Left => rect.right() <= 0.0,
+          OverviewRowSide::Right => rect.x >= 1920.0,
+        };
+        assert!(is_past, "{side:?} {rect:?}");
+      }
     }
   }
 

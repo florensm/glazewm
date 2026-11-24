@@ -77,8 +77,8 @@ use crate::{
     },
     scene::Scene,
     state::{
-      all_workspaces, Hit, Interaction, Key, ScreenFocus, SearchField,
-      ShortcutGroup,
+      all_workspaces, Hit, Interaction, Key, RowSides, ScreenFocus,
+      SearchField, ShortcutGroup,
     },
     tab_bars::CardTabBar,
     thumbnails::{Picture, Preview},
@@ -927,6 +927,7 @@ impl Overview {
       .interaction
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
+    self.interaction.row_sides = RowSides::of(&frame.style);
 
     if let Err(err) = self.ensure_screens(frame.screens.len()) {
       tracing::warn!("Failed to open the overview: {err}");
@@ -1020,6 +1021,7 @@ impl Overview {
       .interaction
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
+    self.interaction.row_sides = RowSides::of(&frame.style);
 
     let mut old_screens = std::mem::take(&mut self.screens);
     for screen in &frame.screens {

@@ -21,8 +21,8 @@ use std::{borrow::Cow, ops::Range};
 
 use crate::{
   overview::layout::RectF, Direction, OverviewAction, OverviewInput,
-  OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
-  Point, Rect,
+  OverviewLayoutMode, OverviewRowSide, OverviewScreen, OverviewStyle,
+  OverviewWindow, OverviewWorkspace, Point, Rect,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -437,6 +437,26 @@ pub(crate) struct Interaction {
   /// arrows to move between them. Empty until laid out, which leaves
   /// them where they are on screen.
   pub nav: Vec<(isize, RectF)>,
+
+  /// Edge each layout with a scene has its row of miniatures along,
+  /// which the arrows follow.
+  pub row_sides: RowSides,
+}
+
+/// Edge the exposé's and the activities' rows of miniatures sit along.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RowSides {
+  pub expose: OverviewRowSide,
+  pub activities: OverviewRowSide,
+}
+
+impl RowSides {
+  pub fn of(style: &OverviewStyle) -> Self {
+    Self {
+      expose: style.row(OverviewLayoutMode::Expose).1,
+      activities: style.row(OverviewLayoutMode::Activities).1,
+    }
+  }
 }
 
 impl Interaction {
@@ -470,6 +490,7 @@ impl Interaction {
       drag_threshold,
       digit_workspaces: Vec::new(),
       nav: Vec::new(),
+      row_sides: RowSides::default(),
     }
   }
 
@@ -1151,7 +1172,7 @@ impl Interaction {
       .clone()
       .filter(|index| *index < workspaces.len())
       .collect::<Vec<_>>();
-    let forward = geometry(self.layout).forward;
+    let forward = self.geometry().forward;
     let target = if toward == forward {
       row.first().copied()
     } else if toward == forward.opposite() {
@@ -1171,9 +1192,13 @@ impl Interaction {
   /// workspace, the selected workspace's windows where the layout shows
   /// them apart, or else the screen that way. With nothing that way, it
   /// bumps.
+  fn geometry(&self) -> Geometry {
+    geometry(self.layout, self.row_sides)
+  }
+
   fn arrow(&mut self, toward: Toward, workspaces: &[OverviewWorkspace]) {
     let before = (self.selected(), self.mode, self.selected_window);
-    let geometry = geometry(self.layout);
+    let geometry = self.geometry();
 
     if self.mode == Mode::Windows {
       self.move_window_cursor(toward, workspaces);
@@ -1224,7 +1249,7 @@ impl Interaction {
       None => nav.first().map(|(hwnd, _)| *hwnd),
     };
 
-    let geometry = geometry(self.layout);
+    let geometry = self.geometry();
     if let Some(hwnd) = next {
       self.selected_window = Some(hwnd);
     } else if geometry.windows == Some(toward.opposite()) {
@@ -1523,7 +1548,7 @@ impl Interaction {
     self.step(if is_down { 1 } else { -1 }, workspaces);
 
     if self.selected() == before {
-      let forward = geometry(self.layout).forward;
+      let forward = self.geometry().forward;
       self.nudge =
         Some(if is_down { forward } else { forward.opposite() });
     }
@@ -1677,7 +1702,7 @@ impl Interaction {
   /// The keyboard shortcuts of every step, with the arrows `layout` goes
   /// by.
   pub fn shortcuts(&self) -> Vec<ShortcutGroup> {
-    let geometry = geometry(self.layout);
+    let geometry = self.geometry();
     let workspace_arrows = joined_labels(
       [geometry.forward.opposite(), geometry.forward].map(Command::Move),
     );
@@ -1943,18 +1968,28 @@ impl Geometry {
   }
 }
 
-fn geometry(layout: OverviewLayoutMode) -> Geometry {
-  match layout {
-    OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
-      Geometry {
-        forward: Toward::Right,
-        windows: Some(Toward::Down),
-      }
+/// How the arrows go in `layout`, its row of miniatures along `side`
+/// where it has one: along the row, and from it into the windows.
+fn geometry(layout: OverviewLayoutMode, sides: RowSides) -> Geometry {
+  let side = match layout {
+    OverviewLayoutMode::Expose => sides.expose,
+    OverviewLayoutMode::Activities => sides.activities,
+    OverviewLayoutMode::Stack => {
+      return Geometry {
+        forward: Toward::Down,
+        windows: None,
+      };
     }
-    OverviewLayoutMode::Stack => Geometry {
-      forward: Toward::Down,
-      windows: None,
-    },
+  };
+  let (forward, windows) = match side {
+    OverviewRowSide::Top => (Toward::Right, Toward::Down),
+    OverviewRowSide::Bottom => (Toward::Right, Toward::Up),
+    OverviewRowSide::Left => (Toward::Down, Toward::Right),
+    OverviewRowSide::Right => (Toward::Down, Toward::Left),
+  };
+  Geometry {
+    forward,
+    windows: Some(windows),
   }
 }
 
@@ -2153,12 +2188,12 @@ fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
 mod tests {
   use super::{
     all_workspaces, text_score, Control, Hit, Interaction, Key, Mode,
-    SearchField, Toward, BINDINGS, LOOSE_MATCH, MAX_RESULTS,
+    RowSides, SearchField, Toward, BINDINGS, LOOSE_MATCH, MAX_RESULTS,
   };
   use crate::{
     overview::layout::RectF, Direction, OverviewAction, OverviewInput,
-    OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
-    Point, Rect,
+    OverviewLayoutMode, OverviewRowSide, OverviewScreen, OverviewWindow,
+    OverviewWorkspace, Point, Rect,
   };
 
   /// ID of the monitor of the screen most tests have.
@@ -2679,6 +2714,52 @@ mod tests {
       press(&mut state, &[Key::Right, Key::Enter]),
       Some(focus_window(12))
     );
+  }
+
+  /// Wherever the row sits, the arrows along it step through the
+  /// workspaces, the one pointing away from it goes into the windows, and
+  /// the one back from the windows' edge returns to it.
+  #[test]
+  fn arrows_follow_the_row_to_any_edge() {
+    let key = |toward| match toward {
+      Toward::Left => Key::Left,
+      Toward::Right => Key::Right,
+      Toward::Up => Key::Up,
+      Toward::Down => Key::Down,
+    };
+    let cases = [
+      (OverviewRowSide::Top, Toward::Right, Toward::Down),
+      (OverviewRowSide::Bottom, Toward::Right, Toward::Up),
+      (OverviewRowSide::Left, Toward::Down, Toward::Right),
+      (OverviewRowSide::Right, Toward::Down, Toward::Left),
+    ];
+    for (side, forward, into) in cases {
+      for layout in
+        [OverviewLayoutMode::Activities, OverviewLayoutMode::Expose]
+      {
+        let mut state = single(&workspaces(), layout);
+        state.row_sides = RowSides {
+          expose: side,
+          activities: side,
+        };
+        let case = format!("{side:?} in {layout:?}");
+
+        press(&mut state, &[key(forward.opposite())]);
+        assert_eq!(state.selected(), 0, "{case}");
+        press(&mut state, &[key(forward)]);
+        assert_eq!(state.selected(), 1, "{case}");
+
+        // Across the row is no workspace: off the screen, or a bump.
+        press(&mut state, &[key(into.opposite())]);
+        assert_eq!((state.selected(), state.mode), (1, Mode::Spaces));
+
+        press(&mut state, &[key(into)]);
+        assert_eq!(state.mode, Mode::Windows, "{case}");
+        assert_eq!(state.selected_window, Some(21), "{case}");
+        press(&mut state, &[key(into.opposite())]);
+        assert_eq!(state.mode, Mode::Spaces, "back to the row: {case}");
+      }
+    }
   }
 
   #[test]

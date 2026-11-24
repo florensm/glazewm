@@ -773,17 +773,21 @@ impl Screen {
   /// What the activities and the exposé show around their scene, as the
   /// style has it.
   pub(super) fn scene_chrome(&self) -> SceneChrome {
-    self.style().map_or(SceneChrome::FULL, |style| SceneChrome {
-      row: style.workspace_row,
-      has_search_line: style.search_hint,
-      margin: match self.focus.layout {
-        OverviewLayoutMode::Activities => {
-          style.activities.clamped_margin()
-        }
-        OverviewLayoutMode::Expose | OverviewLayoutMode::Stack => {
-          style.expose.clamped_margin()
-        }
-      },
+    self.style().map_or(SceneChrome::FULL, |style| {
+      let (row, side) = style.row(self.focus.layout);
+      SceneChrome {
+        row,
+        side,
+        has_search_line: style.search_hint,
+        margin: match self.focus.layout {
+          OverviewLayoutMode::Activities => {
+            style.activities.clamped_margin()
+          }
+          OverviewLayoutMode::Expose | OverviewLayoutMode::Stack => {
+            style.expose.clamped_margin()
+          }
+        },
+      }
     })
   }
 
@@ -1633,11 +1637,16 @@ impl Screen {
   #[allow(clippy::cast_precision_loss)]
   fn spotlight_rect(&self) -> Option<RectF> {
     let (width, height) = self.spotlight.as_ref()?.size();
-    let view = self.view();
+    // Over the scene, which a row in a column pushes aside.
+    let middle = if self.focus.layout.has_scene() {
+      self.scene_area.center().0
+    } else {
+      self.view().w / 2.0
+    };
     let margin = spotlight_margin(self.metrics.scale_factor);
     (width > 0).then(|| {
       RectF::new(
-        ((view.w - width as f32) / 2.0).round(),
+        (middle - width as f32 / 2.0).round(),
         (self.spotlight_y.value - margin).round(),
         width as f32,
         height as f32,

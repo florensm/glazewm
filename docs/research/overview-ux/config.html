@@ -173,8 +173,8 @@
     { id: 'expose', label: 'Exposé', layout: 'expose', intro: 'The default: this workspace\'s windows gathered in the middle, the other workspaces in a row.', groups: [
       { title: 'Workspace row', items: [
         { key: 'workspace_row', kind: 'enum', options: ['compact', 'shown', 'hidden'], def: 'compact', shared: 'exposé and activities', help: 'The row of workspace miniatures: slim, larger, or none.' },
-        { key: 'expose.workspace_row', kind: 'enum', options: ['inherit', 'compact', 'shown', 'hidden'], def: 'inherit', isNew: true, help: 'The row\'s size in the exposé only; "inherit" uses workspace_row.' },
-        { key: 'expose.workspace_row_position', kind: 'enum', options: SIDES, def: 'top', isNew: true, help: 'Which edge the row sits on. Bottom is where Windows Task View has its desktops; left or right keeps the full height for windows.' },
+        { key: 'expose.workspace_row', kind: 'enum', options: ['inherit', 'compact', 'shown', 'hidden'], def: 'inherit', help: 'The row\'s size in the exposé only; "inherit" uses workspace_row.' },
+        { key: 'expose.workspace_row_position', kind: 'enum', options: SIDES, def: 'top', help: 'Which edge the row sits on. Bottom is where Windows Task View has its desktops; left or right keeps the full height for windows.' },
         { key: 'search_hint', kind: 'bool', def: false, shared: 'every layout', help: 'The "Type to search" field. Typing searches either way.' },
       ] },
       { title: 'Windows', items: [
@@ -203,7 +203,7 @@
     { id: 'activities', label: 'Activities', layout: 'activities', intro: 'This workspace large and as laid out, so a window dropped there lands where it will on screen. Click a miniature to switch workspace.', groups: [
       { title: 'Workspace row', items: [
         { key: 'workspace_row', kind: 'enum', options: ['compact', 'shown', 'hidden'], def: 'compact', shared: 'exposé and activities', help: 'The row of workspace miniatures: slim, larger, or none.' },
-        { key: 'activities.workspace_row_position', kind: 'enum', options: SIDES, def: 'top', isNew: true, help: 'Which edge the row sits on in the activities.' },
+        { key: 'activities.workspace_row_position', kind: 'enum', options: SIDES, def: 'top', help: 'Which edge the row sits on in the activities.' },
       ] },
       { title: 'Motion', items: [
         { key: 'animation.style', kind: 'enum', options: ['zoom', 'fade', 'none'], def: 'zoom', shared: 'every layout', help: 'How it opens and closes: zoom out of the desktop, fade, or at once.' },

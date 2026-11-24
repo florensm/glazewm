@@ -3261,6 +3261,72 @@ mod tests {
   }
 
   #[test]
+  fn overview_workspace_row_reads_its_size_and_edge_per_layout() {
+    use wm_platform::{
+      OverviewExposeRow, OverviewRowSide, OverviewWorkspaceRow,
+    };
+
+    let parse = |value: serde_json::Value| {
+      serde_json::from_value::<OverviewConfig>(value)
+    };
+    let config = parse(serde_json::json!({
+      "workspace_row": "shown",
+      "expose": {
+        "workspace_row": "hidden",
+        "workspace_row_position": "left",
+      },
+      "activities": { "workspace_row_position": "bottom" },
+    }))
+    .expect("parses");
+    assert_eq!(config.expose.workspace_row, OverviewExposeRow::Hidden);
+    assert_eq!(
+      config.expose.workspace_row_position,
+      OverviewRowSide::Left
+    );
+    assert_eq!(
+      config.activities.workspace_row_position,
+      OverviewRowSide::Bottom
+    );
+    assert_eq!(
+      config.expose.workspace_row.or(config.workspace_row),
+      OverviewWorkspaceRow::Hidden
+    );
+
+    // `inherit` takes the shared row, which can't itself inherit.
+    let inherit = parse(serde_json::json!({
+      "workspace_row": "shown",
+      "expose": { "workspace_row": "inherit" },
+    }))
+    .expect("parses");
+    assert_eq!(
+      inherit.expose.workspace_row.or(inherit.workspace_row),
+      OverviewWorkspaceRow::Shown
+    );
+    assert!(
+      parse(serde_json::json!({ "workspace_row": "inherit" })).is_err()
+    );
+
+    for bad in [
+      serde_json::json!({ "expose": { "workspace_row": "large" } }),
+      serde_json::json!({ "expose": { "workspace_row_position": "middle" } }),
+      serde_json::json!({ "activities": { "workspace_row_position": 3 } }),
+    ] {
+      assert!(parse(bad.clone()).is_err(), "{bad}");
+    }
+
+    let defaults = OverviewConfig::default();
+    assert_eq!(defaults.expose.workspace_row, OverviewExposeRow::Inherit);
+    assert_eq!(
+      defaults.expose.workspace_row_position,
+      OverviewRowSide::Top
+    );
+    assert_eq!(
+      defaults.activities.workspace_row_position,
+      OverviewRowSide::Top
+    );
+  }
+
+  #[test]
   fn overview_window_highlight_reads_partial_settings() {
     let config =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({
