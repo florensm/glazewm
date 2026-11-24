@@ -973,7 +973,7 @@ impl Screen {
         }
       }
 
-      self.draw_stand_ins(&style, force);
+      self.draw_placeholders(&style, force);
     }
 
     self.refresh_overlays(&style, force);
@@ -987,9 +987,9 @@ impl Screen {
     self.is_dirty = true;
   }
 
-  /// Draws the stand-ins of the scenes' minimized windows, unless they
+  /// Draws the placeholders of the scenes' minimized windows, unless they
   /// show that already, or all of them when `force`.
-  fn draw_stand_ins(&mut self, style: &OverviewStyle, force: bool) {
+  fn draw_placeholders(&mut self, style: &OverviewStyle, force: bool) {
     let titles = self
       .workspaces()
       .iter()
@@ -1012,11 +1012,11 @@ impl Screen {
           continue;
         };
         if force {
-          window.preview.forget_stand_in_drawn();
+          window.preview.forget_placeholder_drawn();
         }
         window
           .preview
-          .draw_stand_in(title, scale_factor, style, notify);
+          .draw_placeholder(title, scale_factor, style, notify);
       }
     }
   }

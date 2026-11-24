@@ -944,17 +944,17 @@ pub(crate) fn draw_note(
   );
 }
 
-/// Font size of a stand-in's title, in logical pixels.
-const STAND_IN_TITLE: f32 = 12.0;
+/// Font size of a placeholder's title, in logical pixels.
+const PLACEHOLDER_TITLE: f32 = 12.0;
 
-/// Largest size a stand-in is drawn at, in logical pixels: what shows in
-/// place of a window that renders nothing to a thumbnail, e.g. a
+/// Largest size a placeholder is drawn at, in logical pixels: what shows
+/// in place of a window that renders nothing to a thumbnail, e.g. a
 /// minimized one. It shows smaller, as its window would.
-pub(crate) const STAND_IN_SIZE: (f32, f32) = (640.0, 400.0);
+pub(crate) const PLACEHOLDER_SIZE: (f32, f32) = (640.0, 400.0);
 
-/// Draws a stand-in for window `hwnd` titled `title` over all of
+/// Draws a placeholder for window `hwnd` titled `title` over all of
 /// `surface`: a glass window outline with its app's icon in the middle.
-pub(crate) fn draw_stand_in(
+pub(crate) fn draw_placeholder(
   surface: &mut Surface,
   hwnd: isize,
   title: &str,
@@ -997,7 +997,7 @@ pub(crate) fn draw_stand_in(
   }
 
   // The icon, and the title centered under it, together in the middle.
-  let font_size = units.px(STAND_IN_TITLE);
+  let font_size = units.px(PLACEHOLDER_TITLE);
   let title_height = (font_size * 1.6).round();
   let gap = units.px(8.0);
   let size = units

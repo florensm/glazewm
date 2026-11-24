@@ -98,7 +98,7 @@ impl Ghost {
       .iter()
       .find_map(|workspace| workspace.window(hwnd))
       .is_some_and(|window| window.is_minimized);
-    preview.use_stand_in(is_minimized);
+    preview.use_placeholder(is_minimized);
     let (view_width, view_height) = screen.metrics.view;
     let (x, y) = at.unwrap_or((
       screen.area.x + view_width / 2.0,
@@ -208,7 +208,7 @@ impl Ghost {
     self.is_landing && self.alpha.is_settled()
   }
 
-  /// Draws its picture, and its window's stand-in if it shows one,
+  /// Draws its picture, and its window's placeholder if it shows one,
   /// titled `title`, for a screen at `scale_factor`, unless it shows that
   /// already.
   pub(super) fn draw(
@@ -220,7 +220,7 @@ impl Ghost {
   ) {
     self
       .preview
-      .draw_stand_in(title, scale_factor, style, notify);
+      .draw_placeholder(title, scale_factor, style, notify);
 
     #[allow(clippy::cast_possible_truncation)]
     let size = (
@@ -244,7 +244,7 @@ impl Ghost {
   /// Forgets what its picture shows, so it is drawn anew.
   pub(super) fn forget_drawn(&mut self) {
     self.drawn = None;
-    self.preview.forget_stand_in_drawn();
+    self.preview.forget_placeholder_drawn();
   }
 
   /// Advances it by `dt` seconds. Returns whether it still moves.

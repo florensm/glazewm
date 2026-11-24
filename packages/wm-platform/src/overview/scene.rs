@@ -25,7 +25,7 @@ pub(crate) struct SceneWindow {
   /// it.
   pub is_hidden_tab: bool,
 
-  /// Minimized: only the exposé shows it, as a stand-in where it would
+  /// Minimized: only the exposé shows it, as a placeholder where it would
   /// be restored to.
   pub is_minimized: bool,
 }
@@ -184,7 +184,7 @@ impl Scene {
         scene_window.is_minimized = window.is_minimized;
         is_restyled |= scene_window.preview.restyle(window);
         is_restyled |=
-          scene_window.preview.use_stand_in(window.is_minimized);
+          scene_window.preview.use_placeholder(window.is_minimized);
         scene_window
       })
       .collect::<Vec<_>>();
