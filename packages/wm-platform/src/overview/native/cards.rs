@@ -20,7 +20,7 @@ use crate::{
 const CARD_BORDER_WIDTH: f32 = 1.5;
 
 /// How strongly a window shows during a search it doesn't match.
-const SEARCH_MISS_OPACITY: f32 = 0.25;
+pub(super) const SEARCH_MISS_OPACITY: f32 = 0.25;
 
 /// Where window `hwnd` of `workspace` is on screen: measured for the
 /// displayed workspace's windows in view, so a zoom starts and ends

@@ -142,9 +142,9 @@ pub(crate) struct Scene {
   pub name: String,
   pub windows: Vec<SceneWindow>,
 
-  /// Band the exposé's shelf takes, its label included, while it has
-  /// windows on one.
-  pub shelf: Option<RectF>,
+  /// Band the exposé's shelf takes, its label included, and that label,
+  /// while it has windows on one.
+  pub shelf: Option<(RectF, &'static str)>,
 }
 
 impl Scene {

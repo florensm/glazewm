@@ -380,6 +380,43 @@ pub enum OverviewExposeTitles {
   Always,
 }
 
+/// How the exposé shows a search.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeSearch {
+  /// The matches spread out alone.
+  #[default]
+  Spread,
+  /// Nothing moves; the rest fade where they are.
+  Dim,
+  /// The matches gather in the room, the rest wait on the shelf.
+  Shelf,
+}
+
+/// Whether holding `Alt` in the exposé shows a letter on each window.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeHints {
+  #[default]
+  Off,
+  Alt,
+}
+
+/// Key held in the exposé to enlarge the picked window.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewPeekKey {
+  #[default]
+  None,
+  Ctrl,
+}
+
 /// Where the exposé shows minimized windows.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
@@ -430,6 +467,16 @@ pub struct OverviewExpose {
   pub app_icons: bool,
 
   pub minimized: OverviewExposeMinimized,
+
+  pub search_mode: OverviewExposeSearch,
+
+  pub hints: OverviewExposeHints,
+
+  pub peek_key: OverviewPeekKey,
+
+  /// Whether letting go of the modifier of the keybinding that opened it
+  /// picks the selected window, once the selection moved.
+  pub release_picks: bool,
 }
 
 impl OverviewExpose {
@@ -472,6 +519,10 @@ impl Default for OverviewExpose {
       titles: OverviewExposeTitles::default(),
       app_icons: false,
       minimized: OverviewExposeMinimized::default(),
+      search_mode: OverviewExposeSearch::default(),
+      hints: OverviewExposeHints::default(),
+      peek_key: OverviewPeekKey::default(),
+      release_picks: false,
     }
   }
 }

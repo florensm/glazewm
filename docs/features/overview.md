@@ -290,9 +290,13 @@ best first, each with its app's icon, its title and process with what
 matched lit in `look.colors.search`, and its workspace. The list shows six at
 a time and scrolls to keep its match in view. Windows that don't match
 fade to a quarter, workspaces with none dim as a whole, and in the
-activities' large view the matches grow a little. In the exposé, the
-matches spread out over the room alone, growing as the query narrows,
-and the rest fade out; with no match left, every window stays.
+activities' large view the matches grow a little. In the exposé, as
+`expose.search_mode` has it: the matches spread out over the room alone,
+growing as the query narrows, and the rest fade out (`spread`, the
+default); nothing moves and the rest fade to a quarter where they are
+(`dim`); or the matches gather in the room while the rest wait on the
+shelf along the bottom, under "Not matching" (`shelf`). With no match
+left, every window stays.
 
 - Typing never moves the view: the list goes to the best match, and the
   ring and title tag mark it wherever it shows, but the selected
@@ -319,6 +323,22 @@ and the rest fade out; with no match left, every window stays.
 While carrying a window, stepping through a search's matches aims the
 drop at their workspaces, and `Enter` drops it on the workspace of the
 match the list is on.
+
+#### Keys of the exposé
+
+Three options, all off by default, give the exposé keys of its own:
+
+- `expose.hints: alt`: while `Alt` is held, each window shows a letter,
+  in reading order with a search's matches first, from
+  `asdfgqwertyuiopzxcvbnm` (`H` `J` `K` `L` move); `Alt` + a letter picks
+  its window. A keybinding of your own on that chord wins.
+- `expose.peek_key: ctrl`: holding `Ctrl` enlarges the picked window to
+  most of the screen, the rest dimmed; letting go puts it back.
+- `expose.release_picks: true`: opened by a keybinding whose modifier is
+  still held (e.g. `Alt` of `Alt`+`W`), letting go of it picks the
+  selected window, or workspace, once the selection has moved, as
+  Alt+Tab does; if it hasn't, the overview stays. Until that modifier
+  is let go of, it shows no hints and peeks at nothing.
 
 ### Special workspace
 
@@ -469,6 +489,10 @@ keybindings:
 | `expose.titles` | `"hover"` | Titles on the picked window only (`hover`), or on every window (`always`). |
 | `expose.app_icons` | `false` | Each window's app icon, large in its middle. |
 | `expose.minimized` | `"inline"` | Minimized windows with the others (`inline`), or on a shelf along the bottom (`shelf`). |
+| `expose.search_mode` | `"spread"` | How the exposé shows a search: `spread`, `dim` or `shelf` (see [Search](#search)). |
+| `expose.hints` | `"off"` | `alt`: holding `Alt` letters each window, and `Alt` + a letter picks it (see [Keys of the exposé](#keys-of-the-exposé)). |
+| `expose.peek_key` | `"none"` | `ctrl`: holding `Ctrl` enlarges the picked window. |
+| `expose.release_picks` | `false` | Letting go of the modifier of the keybinding that opened the overview picks, once the selection moved. |
 | `expose.workspace_row` | `"inherit"` | The exposé's own row of miniatures: `inherit` (as `workspace_row`), `compact`, `shown` or `hidden`. |
 | `expose.workspace_row_position` | `"top"` | Edge the exposé's row sits along: `top`, `bottom`, `left` or `right` (see [Layouts](#layouts)). |
 | `activities.workspace_row_position` | `"top"` | Edge the activities' row sits along: `top`, `bottom`, `left` or `right`. |

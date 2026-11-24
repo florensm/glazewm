@@ -3388,6 +3388,50 @@ mod tests {
   }
 
   #[test]
+  fn overview_expose_search_and_keys_read_and_keep_todays_defaults() {
+    use wm_platform::{
+      OverviewExposeHints, OverviewExposeSearch, OverviewPeekKey,
+    };
+
+    let parse = |value: serde_json::Value| {
+      serde_json::from_value::<OverviewConfig>(value)
+    };
+    let expose = parse(serde_json::json!({
+      "expose": {
+        "search_mode": "shelf",
+        "hints": "alt",
+        "peek_key": "ctrl",
+        "release_picks": true,
+      },
+    }))
+    .expect("parses")
+    .expose;
+    assert_eq!(expose.search_mode, OverviewExposeSearch::Shelf);
+    assert_eq!(expose.hints, OverviewExposeHints::Alt);
+    assert_eq!(expose.peek_key, OverviewPeekKey::Ctrl);
+    assert!(expose.release_picks);
+    let dim =
+      parse(serde_json::json!({ "expose": { "search_mode": "dim" } }))
+        .expect("parses");
+    assert_eq!(dim.expose.search_mode, OverviewExposeSearch::Dim);
+
+    for bad in [
+      serde_json::json!({ "expose": { "search_mode": "hide" } }),
+      serde_json::json!({ "expose": { "hints": "ctrl" } }),
+      serde_json::json!({ "expose": { "peek_key": "space" } }),
+      serde_json::json!({ "expose": { "release_picks": 1 } }),
+    ] {
+      assert!(parse(bad.clone()).is_err(), "{bad}");
+    }
+
+    let defaults = OverviewConfig::default().expose;
+    assert_eq!(defaults.search_mode, OverviewExposeSearch::Spread);
+    assert_eq!(defaults.hints, OverviewExposeHints::Off);
+    assert_eq!(defaults.peek_key, OverviewPeekKey::None);
+    assert!(!defaults.release_picks);
+  }
+
+  #[test]
   fn overview_window_highlight_reads_partial_settings() {
     let config =
       serde_json::from_value::<OverviewConfig>(serde_json::json!({

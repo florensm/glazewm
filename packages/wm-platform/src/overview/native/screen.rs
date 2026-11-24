@@ -43,9 +43,10 @@ use crate::{
   },
   platform_impl::composition::OverviewBackdrop,
   tab_bar::layout::TabHit,
-  BorderOverlayParams, OverviewEffects, OverviewExposeTitles,
-  OverviewLayoutMode, OverviewStyle, OverviewWallpaperStyle,
-  OverviewWindow, OverviewWorkspace, OverviewZoomStyle,
+  BorderOverlayParams, OverviewEffects, OverviewExposeHints,
+  OverviewExposeTitles, OverviewLayoutMode, OverviewStyle,
+  OverviewWallpaperStyle, OverviewWindow, OverviewWorkspace,
+  OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -366,6 +367,12 @@ impl Screen {
     let is_redrawn = self.draw_for_layout();
     self.ensure_labels();
     self.retarget(false);
+    // A peeked window grows over the others.
+    if let Some(peeked) =
+      self.focus.peeked.filter(|h| Some(*h) != self.raised)
+    {
+      self.raise(Some(peeked));
+    }
 
     if self.registered_for != Some(self.focus.layout) {
       self.register_thumbnails();
@@ -1342,8 +1349,12 @@ impl Screen {
     let picked = self
       .picked_window()
       .filter(|(card, _)| *card == index && self.focus.layout.has_scene());
-    self.raised = picked.map(|(_, hwnd)| hwnd);
+    self.raise(picked.map(|(_, hwnd)| hwnd));
+  }
 
+  /// Raises scene window `hwnd` over everything else, if any.
+  fn raise(&mut self, hwnd: Option<isize>) {
+    self.raised = hwnd;
     let host = self.hwnd;
     let mut retired = Vec::new();
     if let Some(window) = self.raised_window() {
@@ -1614,6 +1625,7 @@ impl Screen {
     let landing = self.closing_card();
     let (has_titles, has_icons) = self.badges_shown();
     let picked = self.picked_window().map(|(_, hwnd)| hwnd);
+    let hints = self.focus.hints.clone();
     let icons = self.icons;
     let workspaces = self
       .frame
@@ -1661,6 +1673,9 @@ impl Screen {
         if has_icons && !window.is_minimized {
           badges.push(badge(BadgeContent::Icon(hwnd, icons)));
         }
+        if let Some((_, letter)) = hints.iter().find(|(h, _)| *h == hwnd) {
+          badges.push(badge(BadgeContent::Hint(*letter)));
+        }
 
         let params = workspaces
           .get(index)
@@ -1703,10 +1718,17 @@ impl Screen {
       })
   }
 
-  /// How many badges each scene window may show.
+  /// How many badges each scene window may show: a title, an icon, and a
+  /// hint's letter.
   fn badges_per_window(&self) -> usize {
     let (has_titles, has_icons) = self.badges_shown();
-    usize::from(has_titles) + usize::from(has_icons)
+    let has_hints = self.style().is_some_and(|style| {
+      self.focus.layout.spreads_windows()
+        && style.expose.hints == OverviewExposeHints::Alt
+    });
+    usize::from(has_titles)
+      + usize::from(has_icons)
+      + usize::from(has_hints)
   }
 
   /// Where the search box's picture shows, its shadow included.

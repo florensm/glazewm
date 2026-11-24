@@ -306,6 +306,8 @@ impl Screen {
       };
     let tag = self.tag_picture();
     let note = self.note_text();
+    let shelf_text =
+      self.shelf_band().map_or(SHELF_LABEL, |(_, text)| text);
     let max_tag = (560.0 * scale_factor).min(metrics.view.0 * 0.6);
 
     let Some(overlays) = &mut self.overlays else {
@@ -358,8 +360,8 @@ impl Screen {
       }
     }
 
-    // Drawn once, so it's ready whenever a shelf comes.
-    let shelf_label = SHELF_LABEL.to_string();
+    // Drawn ahead, so it's ready whenever a shelf comes.
+    let shelf_label = shelf_text.to_string();
     if overlays.shelf_label.drawn.as_ref() != Some(&shelf_label) {
       let size = note_size(&shelf_label, style, scale_factor);
       overlays.shelf_label.picture.draw(size, |surface| {
@@ -449,7 +451,7 @@ impl Screen {
 
   /// Band the shown workspace's shelf takes in the exposé, while it has
   /// windows on one.
-  pub(super) fn shelf_band(&self) -> Option<RectF> {
+  pub(super) fn shelf_band(&self) -> Option<(RectF, &'static str)> {
     if !self.focus.layout.spreads_windows() {
       return None;
     }
@@ -649,7 +651,7 @@ impl Screen {
 
     // Centered over the shelf, at the top of its band.
     let shelf_target = self.shelf_band().zip(self.overlays.as_ref()).map(
-      |(band, overlays)| {
+      |((band, _), overlays)| {
         let (width, height) =
           to_f32_size(overlays.shelf_label.picture.size());
         let cx = band.center().0;

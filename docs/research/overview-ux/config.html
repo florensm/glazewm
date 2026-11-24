@@ -194,10 +194,10 @@
         { key: 'animation.open_easing', kind: 'easing', def: '', shared: 'every layout', help: 'Its own pace for the open; empty uses the one above.' },
       ] },
       { title: 'Search and keys', items: [
-        { key: 'expose.search_mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', isNew: true, help: 'Click the preview and <b>type</b> (try "glaze"): matches spread out (today), non-matches dim where they are, or matches gather in the middle while the rest wait on a shelf.' },
-        { key: 'expose.hints', kind: 'enum', options: ['off', 'alt'], def: 'off', isNew: true, help: 'Hold <b>Alt</b> in the preview: a letter on every window; Alt+letter picks it.' },
-        { key: 'expose.peek_key', kind: 'enum', options: ['none', 'ctrl'], def: 'none', isNew: true, help: 'Select a window with the arrows, then hold <b>Ctrl</b> to enlarge it, as Mission Control\'s spacebar does.' },
-        { key: 'expose.release_picks', kind: 'bool', def: false, isNew: true, help: 'Open with <b>Alt+W</b>, keep Alt held, move with the arrows, let go of Alt to pick, like Alt+Tab.' },
+        { key: 'expose.search_mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', help: 'Click the preview and <b>type</b> (try "glaze"): matches spread out (today), non-matches dim where they are, or matches gather in the middle while the rest wait on a shelf.' },
+        { key: 'expose.hints', kind: 'enum', options: ['off', 'alt'], def: 'off', help: 'Hold <b>Alt</b> in the preview: a letter on every window; Alt+letter picks it.' },
+        { key: 'expose.peek_key', kind: 'enum', options: ['none', 'ctrl'], def: 'none', help: 'Select a window with the arrows, then hold <b>Ctrl</b> to enlarge it, as Mission Control\'s spacebar does.' },
+        { key: 'expose.release_picks', kind: 'bool', def: false, help: 'Open with <b>Alt+W</b>, keep Alt held, move with the arrows, let go of Alt to pick, like Alt+Tab.' },
       ] },
     ] },
     { id: 'activities', label: 'Activities', layout: 'activities', intro: 'This workspace large and as laid out, so a window dropped there lands where it will on screen. Click a miniature to switch workspace.', groups: [

@@ -20,9 +20,10 @@
 use std::{borrow::Cow, ops::Range};
 
 use crate::{
-  overview::layout::RectF, Direction, OverviewAction, OverviewInput,
-  OverviewLayoutMode, OverviewRowSide, OverviewScreen, OverviewStyle,
-  OverviewWindow, OverviewWorkspace, Point, Rect,
+  overview::layout::RectF, Direction, OverviewAction, OverviewExposeHints,
+  OverviewInput, OverviewLayoutMode, OverviewPeekKey, OverviewRowSide,
+  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
+  Rect,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -441,7 +442,58 @@ pub(crate) struct Interaction {
   /// Edge each layout with a scene has its row of miniatures along,
   /// which the arrows follow.
   pub row_sides: RowSides,
+
+  /// What the exposé's own modifier keys do.
+  pub expose_keys: ExposeKeys,
+
+  /// The modifier of the keybinding that opened it, while still held,
+  /// and the selection then: letting go of it picks once that moved.
+  opener: Option<(Modifier, Selection)>,
+
+  /// Whether `Alt` is held for the exposé's hints.
+  shows_hints: bool,
+
+  /// Whether `Ctrl` is held to peek at the picked window.
+  is_peeking: bool,
 }
+
+/// A modifier key, which the overview follows on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Modifier {
+  Alt,
+  Ctrl,
+  Shift,
+  Win,
+}
+
+/// Workspace, step and window the keyboard is on.
+type Selection = (usize, Mode, Option<isize>);
+
+/// What the exposé's own modifier keys do, as the style has them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExposeKeys {
+  /// Holding `Alt` shows a letter on each window to pick it by.
+  pub hints: bool,
+  /// Holding `Ctrl` enlarges the picked window.
+  pub peek: bool,
+  /// Letting go of the opening keybinding's modifier picks.
+  pub release_picks: bool,
+}
+
+impl ExposeKeys {
+  pub fn of(style: &OverviewStyle) -> Self {
+    let expose = &style.expose;
+    Self {
+      hints: expose.hints == OverviewExposeHints::Alt,
+      peek: expose.peek_key == OverviewPeekKey::Ctrl,
+      release_picks: expose.release_picks,
+    }
+  }
+}
+
+/// Letters the exposé's hints take, in order: no `h` `j` `k` `l`, which
+/// `Alt` moves with.
+const HINT_LETTERS: &str = "asdfgqwertyuiopzxcvbnm";
 
 /// Edge the exposé's and the activities' rows of miniatures sit along.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -491,6 +543,10 @@ impl Interaction {
       digit_workspaces: Vec::new(),
       nav: Vec::new(),
       row_sides: RowSides::default(),
+      expose_keys: ExposeKeys::default(),
+      opener: None,
+      shows_hints: false,
+      is_peeking: false,
     }
   }
 
@@ -656,6 +712,19 @@ impl Interaction {
       return None;
     }
 
+    // A hint's letter picks its window.
+    if let Key::Alt(letter) = key {
+      let hint = self
+        .hints(workspaces)
+        .into_iter()
+        .find(|(_, l)| *l == letter);
+      if let Some((hwnd, _)) = hint {
+        self.mode = Mode::Windows;
+        self.selected_window = Some(hwnd);
+        return self.enter(workspaces);
+      }
+    }
+
     match key {
       Key::Text(text) => {
         self.type_text(text, workspaces);
@@ -668,6 +737,91 @@ impl Interaction {
       }
       _ => self.run(command?, workspaces),
     }
+  }
+
+  /// Notes that `modifier` was held as it opened, e.g. the `Alt` of the
+  /// keybinding that did.
+  pub fn opened_holding(&mut self, modifier: Option<Modifier>) {
+    self.opener = modifier.map(|modifier| (modifier, self.selection()));
+  }
+
+  fn selection(&self) -> Selection {
+    (self.selected(), self.mode, self.selected_window)
+  }
+
+  /// Follows `modifier` going down (`is_fresh` if newly pressed rather
+  /// than held) or up. Letting go of the one held since it opened picks,
+  /// as `Enter` does, once the selection moved and `release_picks` is on;
+  /// until then it shows no hints nor peeks, as Alt+Tab does.
+  pub fn modifier(
+    &mut self,
+    modifier: Modifier,
+    is_down: bool,
+    is_fresh: bool,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
+    // Pressed anew, the opening one was let go of before the overview had
+    // the keyboard to see it.
+    if is_fresh && self.opener.is_some_and(|(held, _)| held == modifier) {
+      self.opener = None;
+    }
+
+    if let Some((_, at)) =
+      self.opener.filter(|(held, _)| *held == modifier)
+    {
+      if is_down {
+        return None;
+      }
+      self.opener = None;
+      let picks = self.expose_keys.release_picks
+        && self.layout == OverviewLayoutMode::Expose
+        && at != self.selection();
+      return if picks { self.enter(workspaces) } else { None };
+    }
+
+    let is_expose = self.layout == OverviewLayoutMode::Expose;
+    match modifier {
+      Modifier::Alt => {
+        self.shows_hints = is_down && is_expose && self.expose_keys.hints;
+      }
+      Modifier::Ctrl => {
+        self.is_peeking = is_down && is_expose && self.expose_keys.peek;
+      }
+      Modifier::Shift | Modifier::Win => {}
+    }
+    None
+  }
+
+  /// The letter on each window of the selected workspace while `Alt`
+  /// shows hints: in reading order, a search's matches first.
+  pub fn hints(
+    &self,
+    workspaces: &[OverviewWorkspace],
+  ) -> Vec<(isize, char)> {
+    if !self.shows_hints || self.layout != OverviewLayoutMode::Expose {
+      return Vec::new();
+    }
+    let is_match =
+      |hwnd: &isize| self.matches.iter().any(|m| m.hwnd == *hwnd);
+    let (matched, rest): (Vec<_>, Vec<_>) = self
+      .nav(workspaces)
+      .iter()
+      .map(|(hwnd, _)| *hwnd)
+      .partition(is_match);
+    matched
+      .into_iter()
+      .chain(rest)
+      .zip(HINT_LETTERS.chars())
+      .collect()
+  }
+
+  /// Window the exposé enlarges while `Ctrl` is held.
+  pub fn peeked(&self) -> Option<isize> {
+    let is_on =
+      self.is_peeking && self.layout == OverviewLayoutMode::Expose;
+    self
+      .selected_window
+      .filter(|_| is_on && self.mode == Mode::Windows)
   }
 
   /// Acts on `input`, a keybinding of the WM's pressed while the overview
@@ -1657,6 +1811,12 @@ impl Interaction {
       }),
       shortcuts: (is_active && self.shows_shortcuts)
         .then(|| self.shortcuts()),
+      hints: if is_active {
+        self.hints(workspaces)
+      } else {
+        Vec::new()
+      },
+      peeked: self.peeked().filter(|_| is_active),
     }
   }
 
@@ -1837,6 +1997,13 @@ pub(crate) struct ScreenFocus {
 
   /// The keyboard shortcuts, while their sheet is open on this screen.
   pub shortcuts: Option<Vec<ShortcutGroup>>,
+
+  /// The exposé's hints, while `Alt` shows them on this screen: each
+  /// window's letter.
+  pub hints: Vec<(isize, char)>,
+
+  /// Window the exposé enlarges while `Ctrl` is held.
+  pub peeked: Option<isize>,
 }
 
 impl ScreenFocus {
@@ -2187,8 +2354,9 @@ fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{
-    all_workspaces, text_score, Control, Hit, Interaction, Key, Mode,
-    RowSides, SearchField, Toward, BINDINGS, LOOSE_MATCH, MAX_RESULTS,
+    all_workspaces, text_score, Control, ExposeKeys, Hit, Interaction,
+    Key, Mode, Modifier, RowSides, SearchField, Toward, BINDINGS,
+    LOOSE_MATCH, MAX_RESULTS,
   };
   use crate::{
     overview::layout::RectF, Direction, OverviewAction, OverviewInput,
@@ -2714,6 +2882,134 @@ mod tests {
       press(&mut state, &[Key::Right, Key::Enter]),
       Some(focus_window(12))
     );
+  }
+
+  /// An exposé with every key option on, on the first workspace, whose
+  /// windows are 11 (left) and 12 (right).
+  fn expose_with_keys() -> Interaction {
+    let mut state = single(&workspaces(), OverviewLayoutMode::Expose);
+    state.expose_keys = ExposeKeys {
+      hints: true,
+      peek: true,
+      release_picks: true,
+    };
+    press(&mut state, &[Key::Left]);
+    state
+  }
+
+  /// Holding `Alt` letters the windows in reading order; `Alt` + a letter
+  /// picks its window. Letting go hides them.
+  #[test]
+  fn alt_shows_hints_that_pick_their_window() {
+    let workspaces = workspaces();
+    let mut state = expose_with_keys();
+    assert!(state.hints(&workspaces).is_empty());
+
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    assert_eq!(state.hints(&workspaces), vec![(11, 'a'), (12, 's')]);
+    assert_eq!(
+      press(&mut state, &[Key::Alt('s')]),
+      Some(focus_window(12))
+    );
+
+    let mut state = expose_with_keys();
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    state.modifier(Modifier::Alt, false, false, &workspaces);
+    assert!(state.hints(&workspaces).is_empty());
+    // Not a hint's letter: as without hints.
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    assert_eq!(press(&mut state, &[Key::Alt('z')]), None);
+
+    // Only in the exposé, and only when on.
+    let mut state = expose_with_keys();
+    state.layout = OverviewLayoutMode::Activities;
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    assert!(state.hints(&workspaces).is_empty());
+    let mut state = expose_with_keys();
+    state.expose_keys.hints = false;
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    assert!(state.hints(&workspaces).is_empty());
+  }
+
+  /// A search's matches get the first letters.
+  #[test]
+  fn hints_letter_matches_first() {
+    let workspaces = workspaces();
+    let mut state = expose_with_keys();
+    press(&mut state, &[Key::Text('e'), Key::Text('d')]);
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    let hints = state.hints(&workspaces);
+    assert_eq!(hints.first(), Some(&(12, 'a')), "{hints:?}");
+  }
+
+  /// Opened by `Alt` + a key, the held `Alt` shows no hints; letting go
+  /// of it picks once the selection moved, as Alt+Tab does, and not if
+  /// it didn't. After that, `Alt` shows hints again.
+  #[test]
+  fn letting_go_of_the_opening_modifier_picks_once_moved() {
+    let workspaces = workspaces();
+    let mut state = expose_with_keys();
+    state.opened_holding(Some(Modifier::Alt));
+    state.modifier(Modifier::Alt, true, false, &workspaces);
+    assert!(state.hints(&workspaces).is_empty(), "still the opener's");
+    assert_eq!(
+      state.modifier(Modifier::Alt, false, false, &workspaces),
+      None
+    );
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    assert!(!state.hints(&workspaces).is_empty());
+
+    let mut state = expose_with_keys();
+    state.opened_holding(Some(Modifier::Alt));
+    press(&mut state, &[Key::Down, Key::Right]);
+    assert_eq!(
+      state.modifier(Modifier::Alt, false, false, &workspaces),
+      Some(focus_window(12))
+    );
+
+    // Off, letting go only ends the hold.
+    let mut state = expose_with_keys();
+    state.expose_keys.release_picks = false;
+    state.opened_holding(Some(Modifier::Alt));
+    press(&mut state, &[Key::Down]);
+    assert_eq!(
+      state.modifier(Modifier::Alt, false, false, &workspaces),
+      None
+    );
+  }
+
+  /// A fresh press of the opening modifier means it was let go of unseen:
+  /// it is a press like any other.
+  #[test]
+  fn a_fresh_press_ends_the_opening_hold() {
+    let workspaces = workspaces();
+    let mut state = expose_with_keys();
+    state.opened_holding(Some(Modifier::Alt));
+    press(&mut state, &[Key::Down]);
+    state.modifier(Modifier::Alt, true, true, &workspaces);
+    assert!(!state.hints(&workspaces).is_empty());
+    assert_eq!(
+      state.modifier(Modifier::Alt, false, false, &workspaces),
+      None
+    );
+  }
+
+  /// Holding `Ctrl` peeks at the picked window, and only that.
+  #[test]
+  fn ctrl_peeks_at_the_picked_window() {
+    let workspaces = workspaces();
+    let mut state = expose_with_keys();
+    state.modifier(Modifier::Ctrl, true, true, &workspaces);
+    assert_eq!(state.peeked(), None, "no window picked");
+
+    press(&mut state, &[Key::Down]);
+    assert_eq!(state.peeked(), Some(11));
+    state.modifier(Modifier::Ctrl, false, false, &workspaces);
+    assert_eq!(state.peeked(), None);
+
+    state.expose_keys.peek = false;
+    state.modifier(Modifier::Ctrl, true, true, &workspaces);
+    assert_eq!(state.peeked(), None);
   }
 
   /// Wherever the row sits, the arrows along it step through the

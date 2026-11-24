@@ -14,11 +14,12 @@ use crate::{
     chrome::note_size,
     expose::{arrange, shelf, Arrangement},
     layout::{CardView, RectF, Tile},
+    native::cards::SEARCH_MISS_OPACITY,
     scene::{Scene, SceneWindow},
     state::ScreenFocus,
   },
-  OverviewExposeMinimized, OverviewRowSide, OverviewStripView,
-  OverviewSwitchStyle, OverviewWorkspace,
+  OverviewExposeMinimized, OverviewExposeSearch, OverviewRowSide,
+  OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -74,8 +75,13 @@ pub(super) fn scene_content(
 struct Spread {
   area: RectF,
   how: Arrangement,
-  /// The shelf minimized windows go on, if they do.
-  shelf: Option<ShelfLook>,
+  /// The shelf windows go on, if any do.
+  shelf: ShelfLook,
+  /// Whether minimized windows go on the shelf.
+  shelves_minimized: bool,
+  search: OverviewExposeSearch,
+  /// The screen's own rect, which a peeked window is enlarged within.
+  view: RectF,
 }
 
 /// Sizes of the exposé's shelf, in physical pixels.
@@ -88,8 +94,27 @@ struct ShelfLook {
 /// Height of the previews on the exposé's shelf, in logical pixels.
 const SHELF_HEIGHT: f32 = 96.0;
 
-/// Label over the exposé's shelf of minimized windows.
+/// Labels over the exposé's shelf: of minimized windows, and of a
+/// search's misses.
 pub(super) const SHELF_LABEL: &str = "Minimized";
+const MISSES_LABEL: &str = "Not matching";
+
+/// Part of the screen's width and height a peeked window takes at most.
+const PEEK_SHARE: (f32, f32) = (0.84, 0.8);
+
+/// How strongly the other windows show while one is peeked at.
+const PEEK_DIM: f32 = 0.22;
+
+/// Where a window settles, and how strongly it shows there, as a part of
+/// its usual strength.
+type Settled = Option<(RectF, f32)>;
+
+/// What the exposé's spread of a scene needs of the search and the
+/// keyboard: the matches, if a search has any, and the window peeked at.
+struct Focused<'a> {
+  matches: Option<&'a [isize]>,
+  peeked: Option<isize>,
+}
 
 /// Where each window of `scene` settles, given its `tiles` as laid out:
 /// there, or spread as `spread` has it. `None` for a window not shown,
@@ -99,13 +124,13 @@ fn scene_rects(
   scene: &mut Scene,
   tiles: &[Option<Tile>],
   spread_as: Option<&Spread>,
-  only: Option<&[isize]>,
-) -> Vec<Option<RectF>> {
+  focused: &Focused,
+) -> Vec<Settled> {
   if let Some(how) = spread_as {
     for window in &mut scene.windows {
       window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
     }
-    let (rects, shelf) = spread_windows(scene, how, only);
+    let (rects, shelf) = spread_windows(scene, how, focused);
     scene.shelf = shelf;
     return rects;
   }
@@ -119,60 +144,111 @@ fn scene_rects(
       let tile = tile.as_ref()?;
       window.preview.tile.crop = tile.crop;
       // Only the exposé shows a stack's other tabs and minimized windows.
-      (!window.is_hidden_tab && !window.is_minimized).then_some(tile.rect)
+      (!window.is_hidden_tab && !window.is_minimized)
+        .then_some((tile.rect, 1.0))
     })
     .collect()
 }
 
-/// Where the exposé shows each window of `scene`, of those in `only` if
-/// given, every tab of a stack and minimized window a window of its own:
-/// minimized ones on a shelf along the bottom if `how` has one. `None`
-/// for a window left out. Also returns the band the shelf takes.
+/// Where the exposé shows each window of `scene`, every tab of a stack
+/// and minimized window a window of its own. During a search, as `how`'s
+/// search mode has it: the matches alone, all with the misses dimmed, or
+/// the misses on the shelf. Minimized windows go on the shelf too if
+/// `how` has them there. A peeked window shows enlarged, the rest dimmed.
+/// `None` for a window left out. Also returns the band the shelf takes,
+/// and its label.
 fn spread_windows(
   scene: &Scene,
   how: &Spread,
-  only: Option<&[isize]>,
-) -> (Vec<Option<RectF>>, Option<RectF>) {
-  let (shelved, shown): (Vec<_>, Vec<_>) = scene
-    .windows
-    .iter()
-    .enumerate()
-    .filter(|(_, window)| {
-      only.is_none_or(|only| only.contains(&window.preview.hwnd))
-    })
-    .map(|(index, window)| {
-      (index, window.preview.screen_rect, window.is_minimized)
-    })
-    .partition(|(_, _, is_minimized)| {
-      how.shelf.is_some() && *is_minimized
-    });
-
-  let screen_rects = |windows: &[(usize, RectF, bool)]| {
-    windows.iter().map(|(_, rect, _)| *rect).collect::<Vec<_>>()
+  focused: &Focused,
+) -> (Vec<Settled>, Option<(RectF, &'static str)>) {
+  let is_miss = |hwnd: isize| {
+    focused
+      .matches
+      .is_some_and(|matches| !matches.contains(&hwnd))
   };
+  let windows = scene.windows.iter().enumerate().filter(|(_, window)| {
+    how.search != OverviewExposeSearch::Spread
+      || !is_miss(window.preview.hwnd)
+  });
+  let is_shelved = |window: &SceneWindow| {
+    let misses = how.search == OverviewExposeSearch::Shelf
+      && is_miss(window.preview.hwnd);
+    misses || (how.shelves_minimized && window.is_minimized)
+  };
+  let (shelved, shown): (Vec<_>, Vec<_>) =
+    windows.partition(|(_, window)| is_shelved(window));
+  let screen_rects = |windows: &[(usize, &SceneWindow)]| {
+    windows
+      .iter()
+      .map(|(_, window)| window.preview.screen_rect)
+      .collect::<Vec<_>>()
+  };
+
   let mut rects = vec![None; scene.windows.len()];
   let mut room = how.area;
   let mut band = None;
-  if let (Some(look), false) = (how.shelf, shelved.is_empty()) {
+  if !shelved.is_empty() {
     let shelf = shelf(
       &screen_rects(&shelved),
       &how.area,
       how.how.gap,
-      look.height,
-      look.label,
+      how.shelf.height,
+      how.shelf.label,
     );
-    for ((index, ..), rect) in shelved.iter().zip(shelf.rects) {
-      rects[*index] = Some(rect);
+    for ((index, _), rect) in shelved.iter().zip(shelf.rects) {
+      rects[*index] = Some((rect, 1.0));
     }
+    let has_misses = shelved
+      .iter()
+      .any(|(_, window)| is_miss(window.preview.hwnd));
+    let label = if has_misses {
+      MISSES_LABEL
+    } else {
+      SHELF_LABEL
+    };
     room = shelf.room;
-    band = Some(shelf.band);
+    band = Some((shelf.band, label));
   }
 
   let slots = arrange(&screen_rects(&shown), &room, &how.how);
-  for ((index, ..), slot) in shown.iter().zip(slots) {
-    rects[*index] = Some(slot);
+  for ((index, window), slot) in shown.iter().zip(slots) {
+    let dims = how.search == OverviewExposeSearch::Dim
+      && is_miss(window.preview.hwnd);
+    let strength = if dims { SEARCH_MISS_OPACITY } else { 1.0 };
+    rects[*index] = Some((slot, strength));
+  }
+
+  let peeked = focused.peeked.and_then(|hwnd| {
+    scene.windows.iter().position(|w| w.preview.hwnd == hwnd)
+  });
+  if let Some(peeked) = peeked {
+    for (index, settled) in rects.iter_mut().enumerate() {
+      if let Some((rect, strength)) = settled {
+        if index == peeked {
+          *rect = peek_rect(
+            &scene.windows[index].preview.screen_rect,
+            &how.view,
+          );
+          *strength = 1.0;
+        } else {
+          *strength *= PEEK_DIM;
+        }
+      }
+    }
   }
   (rects, band)
+}
+
+/// Where a window at `screen_rect` shows while peeked at: as large as
+/// `PEEK_SHARE` of `view` allows, no larger than it is, in its middle.
+fn peek_rect(screen_rect: &RectF, view: &RectF) -> RectF {
+  let scale = (view.w * PEEK_SHARE.0 / screen_rect.w.max(1.0))
+    .min(view.h * PEEK_SHARE.1 / screen_rect.h.max(1.0))
+    .min(1.0);
+  let (w, h) = (screen_rect.w * scale, screen_rect.h * scale);
+  let (cx, cy) = view.center();
+  RectF::new(cx - w / 2.0, cy - h / 2.0, w, h)
 }
 
 /// The windows of `workspace` a search matches, which the exposé
@@ -388,33 +464,22 @@ impl Screen {
       // windows are.
       let spreading = spreads && closing != Some(index);
       let matches = search_matches(workspace, &self.focus);
+      let focused = Focused {
+        matches: matches.as_deref(),
+        peeked: self.focus.peeked,
+      };
       let rects = scene_rects(
         scene,
         &tiles,
         spreading.then_some(&spread_as),
-        matches.as_deref(),
+        &focused,
       );
 
       for ((window, rect), tile) in
         scene.windows.iter_mut().zip(rects).zip(&tiles)
       {
-        if window.is_minimized {
-          // Nowhere on screen to fly out of: it fades in where it
-          // settles.
-          if let (true, Some(rect)) = (flies_out, rect) {
-            window.retarget(
-              &rect.translate(offset.0, offset.1),
-              0.0,
-              true,
-            );
-          }
-        } else if let (true, Some(tile)) = (flies_out, tile) {
-          let shown = if window.is_hidden_tab { 0.0 } else { alpha };
-          window.retarget(
-            &tile.rect.translate(offset.0, offset.1),
-            shown,
-            true,
-          );
+        if flies_out {
+          start_flight(window, rect, tile.as_ref(), offset, alpha);
         }
         let miniature = miniatures.get(index).and_then(|rects| {
           rects
@@ -430,10 +495,10 @@ impl Screen {
           (_, Some(miniature)) if into_miniature => {
             window.retarget(&miniature, alpha, snap);
           }
-          (Some(rect), _) => {
+          (Some((rect, strength)), _) => {
             window.retarget(
               &rect.translate(offset.0, offset.1),
-              alpha,
+              alpha * strength,
               snap,
             );
           }
@@ -444,24 +509,8 @@ impl Screen {
         }
       }
 
-      if let (Some((stagger_ms, within_ms)), true) =
-        (stagger, index == selected)
-      {
-        let centers = scene
-          .windows
-          .iter()
-          .map(|window| window.preview.screen_rect.center())
-          .collect::<Vec<_>>();
-        let from = frame.focused_window.and_then(|hwnd| {
-          scene
-            .windows
-            .iter()
-            .position(|window| window.preview.hwnd == hwnd)
-        });
-        let delays = ripple_delays(&centers, from, stagger_ms, within_ms);
-        for (window, delay) in scene.windows.iter_mut().zip(delays) {
-          window.hold_for(delay / 1000.0);
-        }
+      if let (Some(stagger), true) = (stagger, index == selected) {
+        stagger_flight(scene, frame.focused_window, stagger);
       }
     }
 
@@ -516,17 +565,19 @@ impl Screen {
         readable_floor: expose.clamped_readable_floor(),
         work: RectF::from_rect(&frame.rect),
       },
-      shelf: (expose.minimized == OverviewExposeMinimized::Shelf).then(
-        || ShelfLook {
-          height: self.metrics.px(SHELF_HEIGHT),
-          label: to_f32_size(note_size(
-            SHELF_LABEL,
-            &frame.style,
-            self.metrics.scale_factor,
-          ))
-          .1,
-        },
-      ),
+      shelf: ShelfLook {
+        height: self.metrics.px(SHELF_HEIGHT),
+        label: to_f32_size(note_size(
+          SHELF_LABEL,
+          &frame.style,
+          self.metrics.scale_factor,
+        ))
+        .1,
+      },
+      shelves_minimized: expose.minimized
+        == OverviewExposeMinimized::Shelf,
+      search: expose.search_mode,
+      view: RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1),
     }
   }
 
@@ -593,6 +644,52 @@ fn ripple_delays(
   delays
 }
 
+/// Starts `window` where it flies out of on open, shifted by `offset`:
+/// where it is on screen (its `tile`) at `alpha`, or, minimized and so
+/// nowhere on screen, unseen where it settles (`rect`), to fade in there.
+fn start_flight(
+  window: &mut SceneWindow,
+  rect: Settled,
+  tile: Option<&Tile>,
+  offset: (f32, f32),
+  alpha: f32,
+) {
+  let from = if window.is_minimized {
+    rect.map(|(rect, _)| (rect, 0.0))
+  } else {
+    let shown = if window.is_hidden_tab { 0.0 } else { alpha };
+    tile.map(|tile| (tile.rect, shown))
+  };
+  if let Some((rect, alpha)) = from {
+    window.retarget(&rect.translate(offset.0, offset.1), alpha, true);
+  }
+}
+
+/// Holds each of `scene`'s windows back before it flies out, one after
+/// another out from `focused`: `stagger_ms` apart, all within
+/// `within_ms`.
+fn stagger_flight(
+  scene: &mut Scene,
+  focused: Option<isize>,
+  (stagger_ms, within_ms): (f32, f32),
+) {
+  let centers = scene
+    .windows
+    .iter()
+    .map(|window| window.preview.screen_rect.center())
+    .collect::<Vec<_>>();
+  let from = focused.and_then(|hwnd| {
+    scene
+      .windows
+      .iter()
+      .position(|window| window.preview.hwnd == hwnd)
+  });
+  let delays = ripple_delays(&centers, from, stagger_ms, within_ms);
+  for (window, delay) in scene.windows.iter_mut().zip(delays) {
+    window.hold_for(delay / 1000.0);
+  }
+}
+
 /// `slide` one way or the other, for a workspace that `order` puts
 /// before, at or after the shown one.
 fn slide_offset(slide: (f32, f32), order: Ordering) -> (f32, f32) {
@@ -605,7 +702,7 @@ fn slide_offset(slide: (f32, f32), order: Ordering) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-  use super::{ripple_delays, scene_window_shown};
+  use super::{peek_rect, ripple_delays, scene_window_shown, PEEK_SHARE};
   use crate::overview::{
     layout::{RectF, Tile},
     scene::SceneWindow,
@@ -660,5 +757,20 @@ mod tests {
     assert!((delays[14] - 140.0).abs() < 1e-3, "{delays:?}");
 
     assert_eq!(ripple_delays(&centers, None, 0.0, 140.0), vec![0.0; 3]);
+  }
+
+  /// A peeked window grows to most of the screen, centered, but no larger
+  /// than it is.
+  #[test]
+  fn a_peeked_window_takes_most_of_the_screen() {
+    let view = RectF::new(0.0, 0.0, 1920.0, 1080.0);
+    let large = peek_rect(&RectF::new(0.0, 0.0, 2560.0, 1440.0), &view);
+    assert!((large.h - 1080.0 * PEEK_SHARE.1).abs() < 0.01, "{large:?}");
+    assert!(large.w <= 1920.0 * PEEK_SHARE.0 + 0.01);
+    assert_eq!(large.center(), view.center());
+
+    let small = peek_rect(&RectF::new(50.0, 50.0, 400.0, 300.0), &view);
+    assert!((small.w - 400.0).abs() < 0.01, "{small:?}");
+    assert_eq!(small.center(), view.center());
   }
 }

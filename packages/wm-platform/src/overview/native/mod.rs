@@ -41,10 +41,12 @@ use windows::{
     UI::{
       Controls::WM_MOUSELEAVE,
       Input::KeyboardAndMouse::{
-        GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent,
-        TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0, VK_9, VK_A,
-        VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME,
-        VK_LEFT, VK_OEM_MINUS, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
+        GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture,
+        TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0,
+        VK_9, VK_A, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
+        VK_ESCAPE, VK_F1, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU,
+        VK_LSHIFT, VK_LWIN, VK_MENU, VK_OEM_MINUS, VK_RCONTROL, VK_RETURN,
+        VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE,
         VK_TAB, VK_UP, VK_Z,
       },
       WindowsAndMessaging::{
@@ -54,11 +56,11 @@ use windows::{
         WaitMessage, HTCLIENT, HWND_MESSAGE, IDC_ARROW, IDC_HAND,
         IDC_SIZEALL, MSG, PM_REMOVE, SC_KEYMENU, WA_INACTIVE, WHEEL_DELTA,
         WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR,
-        WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_MBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND, WM_SYSKEYDOWN,
-        WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST,
+        WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND,
+        WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_NOACTIVATE,
+        WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
       },
     },
   },
@@ -78,8 +80,8 @@ use crate::{
     },
     scene::Scene,
     state::{
-      all_workspaces, Hit, Interaction, Key, RowSides, ScreenFocus,
-      SearchField, ShortcutGroup,
+      all_workspaces, ExposeKeys, Hit, Interaction, Key, Modifier,
+      RowSides, ScreenFocus, SearchField, ShortcutGroup,
     },
     tab_bars::CardTabBar,
     thumbnails::{Picture, Preview},
@@ -932,6 +934,9 @@ impl Overview {
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
     self.interaction.row_sides = RowSides::of(&frame.style);
+    self.interaction.expose_keys = ExposeKeys::of(&frame.style);
+    // E.g. the `Alt` of an `Alt` + `W` that opened it.
+    self.interaction.opened_holding(held_modifier());
 
     if let Err(err) = self.ensure_screens(frame.screens.len()) {
       tracing::warn!("Failed to open the overview: {err}");
@@ -1026,6 +1031,7 @@ impl Overview {
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
     self.interaction.row_sides = RowSides::of(&frame.style);
+    self.interaction.expose_keys = ExposeKeys::of(&frame.style);
 
     let mut old_screens = std::mem::take(&mut self.screens);
     for screen in &frame.screens {
@@ -1573,6 +1579,59 @@ impl Overview {
     self.after_input(action);
   }
 
+  /// Handles key message `msg` for virtual key `wparam`. `None` leaves
+  /// it its default handling.
+  ///
+  /// Modifiers alone drive hints, peeking, and picking on letting go of
+  /// the one that opened the overview; `Win` keeps its default handling.
+  /// A key pressed with `Alt` held types nothing: those that aren't the
+  /// overview's keep their default handling too, e.g. `Alt` + `F4`.
+  fn on_key_message(
+    &mut self,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+  ) -> Option<LRESULT> {
+    #[allow(clippy::cast_possible_truncation)]
+    let vk = VIRTUAL_KEY(wparam.0 as u16);
+    let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+
+    if let Some(modifier) = to_modifier(vk) {
+      // Bit 30 of `lparam` is set on a key down that repeats one held.
+      let is_fresh = is_down && lparam.0 & (1 << 30) == 0;
+      self.on_modifier(modifier, is_down, is_fresh);
+      return (modifier != Modifier::Win).then_some(LRESULT(0));
+    }
+    if !is_down {
+      return None;
+    }
+
+    let key = if msg == WM_KEYDOWN {
+      to_key(vk, is_shifted())
+    } else {
+      Some(to_alt_key(vk, is_shifted())?)
+    };
+    if let Some(key) = key {
+      self.on_key(key);
+    }
+    Some(LRESULT(0))
+  }
+
+  fn on_modifier(
+    &mut self,
+    modifier: Modifier,
+    is_down: bool,
+    is_fresh: bool,
+  ) {
+    let action = self.interaction.modifier(
+      modifier,
+      is_down,
+      is_fresh,
+      &self.workspaces,
+    );
+    self.after_input(action);
+  }
+
   fn on_input(&mut self, input: &OverviewInput) {
     let action = self.interaction.input(input, &self.workspaces);
     self.after_input(action);
@@ -1890,21 +1949,8 @@ impl Overview {
       // would otherwise enter menu mode, swallowing the next key
       // press.
       WM_SYSCOMMAND if (wparam.0 & 0xfff0) == SC_KEYMENU as usize => {}
-      WM_KEYDOWN if is_open => {
-        #[allow(clippy::cast_possible_truncation)]
-        if let Some(key) =
-          to_key(VIRTUAL_KEY(wparam.0 as u16), is_shifted())
-        {
-          self.on_key(key);
-        }
-      }
-      // A key pressed with `Alt` held, which types nothing. Those that
-      // aren't the overview's keep their default handling, e.g.
-      // `Alt` + `F4`.
-      WM_SYSKEYDOWN if is_open => {
-        #[allow(clippy::cast_possible_truncation)]
-        let key = to_alt_key(VIRTUAL_KEY(wparam.0 as u16), is_shifted())?;
-        self.on_key(key);
+      WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP if is_open => {
+        return self.on_key_message(msg, wparam, lparam);
       }
       WM_CHAR if is_open => {
         let text = u32::try_from(wparam.0).ok().and_then(char::from_u32);
@@ -1965,6 +2011,44 @@ impl Overview {
 
     Some(LRESULT(0))
   }
+}
+
+/// The modifier `key` is, if it is one.
+fn to_modifier(key: VIRTUAL_KEY) -> Option<Modifier> {
+  match key {
+    VK_MENU | VK_LMENU | VK_RMENU => Some(Modifier::Alt),
+    VK_CONTROL | VK_LCONTROL | VK_RCONTROL => Some(Modifier::Ctrl),
+    VK_SHIFT | VK_LSHIFT | VK_RSHIFT => Some(Modifier::Shift),
+    VK_LWIN | VK_RWIN => Some(Modifier::Win),
+    _ => None,
+  }
+}
+
+/// Whether `modifier` is held down now, wherever the keyboard focus is.
+fn is_held(modifier: Modifier) -> bool {
+  let keys: &[VIRTUAL_KEY] = match modifier {
+    Modifier::Alt => &[VK_MENU],
+    Modifier::Ctrl => &[VK_CONTROL],
+    Modifier::Shift => &[VK_SHIFT],
+    Modifier::Win => &[VK_LWIN, VK_RWIN],
+  };
+  keys.iter().any(|key| {
+    // SAFETY: No preconditions.
+    unsafe { GetAsyncKeyState(i32::from(key.0)) < 0 }
+  })
+}
+
+/// The modifier held now, `Alt` first, as the keybinding that opened the
+/// overview would still hold it.
+fn held_modifier() -> Option<Modifier> {
+  [
+    Modifier::Alt,
+    Modifier::Ctrl,
+    Modifier::Win,
+    Modifier::Shift,
+  ]
+  .into_iter()
+  .find(|modifier| is_held(*modifier))
 }
 
 /// Whether a `Shift` key is held, as of the message being handled.

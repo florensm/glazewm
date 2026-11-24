@@ -9,7 +9,8 @@ use crate::{
   dwm_thumbnail::Thumbnail,
   overview::{
     chrome::{
-      draw_icon_badge, draw_tag, tag_size, TagPicture, ICON_BADGE,
+      draw_icon_badge, draw_note, draw_tag, note_size, tag_size,
+      TagPicture, ICON_BADGE,
     },
     layout::RectF,
     thumbnails::Picture,
@@ -32,6 +33,8 @@ pub(super) enum BadgeContent {
   Title(TagPicture),
   /// A window's app icon; `u64` bumps as icons arrive.
   Icon(isize, u64),
+  /// The letter that picks a window while `Alt` shows hints.
+  Hint(char),
 }
 
 /// A badge on a scene window.
@@ -123,6 +126,13 @@ impl SceneBadges {
               draw_tag(surface, tag, style, scale_factor, notify);
             });
           }
+          BadgeContent::Hint(letter) => {
+            let text = letter.to_ascii_uppercase().to_string();
+            let size = note_size(&text, style, scale_factor);
+            slot.picture.draw(size, |surface| {
+              draw_note(surface, &text, style, scale_factor);
+            });
+          }
           BadgeContent::Icon(hwnd, _) => {
             #[allow(clippy::cast_possible_truncation)]
             let side = px(ICON_BADGE).round().max(1.0) as i32;
@@ -171,6 +181,10 @@ fn badge_rect(
     BadgeContent::Icon(..) => {
       let side = width.min(rect.w.min(rect.h) * ICON_SHARE);
       RectF::new(cx - side / 2.0, cy - side / 2.0, side, side)
+    }
+    // Along its top, clear of the icon and the title.
+    BadgeContent::Hint(_) => {
+      RectF::new(cx - width / 2.0, rect.y + px(12.0), width, height)
     }
   }
 }
