@@ -14,6 +14,13 @@ overview:
   # (arrows, the wheel and alt+digits still go through them).
   workspace_row: "compact"
 
+  expose:
+    # Most of the room the windows take together (up to 1), the space
+    # kept free along the screen's edges, and between windows, in pixels.
+    largest: 0.94
+    margin: 32
+    gap: 24
+
   # Opening the overview by resting the cursor in a corner: 'top_left',
   # 'top_right', 'bottom_left' or 'bottom_right', after `delay_ms`.
   # hot_corner:
@@ -34,8 +41,21 @@ overview:
     # wallpaper) or 'blurred' (the wallpaper blurred and tinted over the
     # whole screen).
     style: "framed"
+    # Wallpaper around the windows on the slab, in pixels.
+    padding: 16
 
   animation:
     # How it opens and closes: 'zoom' (everything zooms out of the
     # workspace on screen, and back into the one picked), 'fade' or 'none'.
     style: "zoom"
+    # The open's own pace, landing with a little give; the close keeps
+    # `easing`. Names and highlights show from 60% open.
+    open_easing: "spring(0.85, 520)"
+    chrome_from: 0.6
+
+  effects:
+    # The picked window grows a little, other cards dim a little while one
+    # is hovered, and the windows fly out 10 ms apart on open.
+    window_lift: 0.04
+    dim: 0.12
+    stagger_ms: 10

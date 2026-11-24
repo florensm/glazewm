@@ -708,7 +708,7 @@ pub struct OverviewConfig {
   pub animation: OverviewAnimationConfig,
 
   /// Flourishes, all off by default but the picked window growing a
-  /// little. Left out of the sample config and the main docs.
+  /// little. The sample config sets only the lift, dim and stagger.
   pub effects: OverviewEffects,
 }
 
