@@ -26,6 +26,7 @@ mod stats;
 
 use std::{
   cell::RefCell,
+  collections::HashMap,
   sync::{mpsc, OnceLock},
   thread,
   time::{Duration, Instant},
@@ -232,14 +233,22 @@ impl NativeOverview {
   ///
   /// `frame` is shown first if it scrolled a workspace's strip (e.g. to
   /// bring the picked window into view), so the zoom lands on the columns
-  /// now on screen.
+  /// now on screen. Otherwise only its windows' looks are, so the zoom
+  /// shows the borders where the pick moved them, laid out as before.
   pub fn hide_on(&mut self, frame: OverviewFrame) {
-    let is_scrolled = self.last_frame.as_ref().is_some_and(|last| {
-      is_strip_scrolled(&last.screens, &frame.screens)
+    let shown = self.last_frame.as_ref().map(|last| {
+      if is_strip_scrolled(&last.screens, &frame.screens) {
+        frame
+      } else {
+        let mut restyled = last.clone();
+        restyled.focused_window = frame.focused_window;
+        restyle_windows(&mut restyled.screens, &frame.screens);
+        restyled
+      }
     });
 
-    if is_scrolled {
-      self.update(frame);
+    if let Some(shown) = shown {
+      self.update(shown);
     }
     self.hide();
   }
@@ -276,6 +285,32 @@ impl NativeOverview {
     // `post_boxed`.
     unsafe {
       PostMessageW(HWND(self.hwnd), msg, WPARAM(wparam), LPARAM(0)).is_ok()
+    }
+  }
+}
+
+/// Gives the windows of `screens` the looks they have in `new`: their
+/// opacity, overlays and border, which a change of focus moves.
+fn restyle_windows(
+  screens: &mut [OverviewScreen],
+  new: &[OverviewScreen],
+) {
+  let looks = new
+    .iter()
+    .flat_map(|screen| &screen.workspaces)
+    .flat_map(|workspace| &workspace.windows)
+    .map(|window| (window.hwnd, window))
+    .collect::<HashMap<_, _>>();
+
+  for window in screens
+    .iter_mut()
+    .flat_map(|screen| &mut screen.workspaces)
+    .flat_map(|workspace| &mut workspace.windows)
+  {
+    if let Some(look) = looks.get(&window.hwnd) {
+      window.opacity = look.opacity;
+      window.overlays.clone_from(&look.overlays);
+      window.border = look.border;
     }
   }
 }
@@ -2262,9 +2297,10 @@ mod tests {
     VK_1, VK_DELETE, VK_F4, VK_H, VK_LEFT, VK_MENU, VK_OEM_MINUS, VK_TAB,
   };
 
-  use super::{is_strip_scrolled, to_alt_key, to_key};
+  use super::{is_strip_scrolled, restyle_windows, to_alt_key, to_key};
   use crate::{
-    overview::state::Key, OverviewScreen, OverviewWorkspace, Rect,
+    overview::state::Key, OverviewOverlay, OverviewOverlayKind,
+    OverviewScreen, OverviewWindow, OverviewWorkspace, Rect,
   };
 
   #[test]
@@ -2339,5 +2375,57 @@ mod tests {
     let elsewhere =
       [old[0].clone(), screen(2, vec![workspace("2", strip(1920))])];
     assert!(!is_strip_scrolled(&old, &elsewhere));
+  }
+
+  fn window(hwnd: isize, x: i32, border: Option<isize>) -> OverviewWindow {
+    OverviewWindow {
+      hwnd,
+      title: String::new(),
+      process_name: String::new(),
+      rect: Rect::from_xy(x, 0, 960, 1040),
+      is_minimized: false,
+      is_hidden_tab: false,
+      is_scrolled_off: false,
+      opacity: if border.is_some() { 255 } else { 200 },
+      overlays: border
+        .map(|hwnd| OverviewOverlay {
+          hwnd,
+          kind: OverviewOverlayKind::Border,
+          outset: [2; 4],
+        })
+        .into_iter()
+        .collect(),
+      border: None,
+    }
+  }
+
+  #[test]
+  fn restyling_takes_the_new_looks_and_keeps_the_layout() {
+    let area = Rect::from_xy(0, 0, 1920, 1040);
+    let with = |windows| OverviewWorkspace {
+      windows,
+      ..workspace("1", area.clone())
+    };
+    let mut shown = [screen(
+      1,
+      vec![with(vec![window(1, 0, Some(11)), window(2, 960, None)])],
+    )];
+
+    // Focus moved from window 1 to window 2, which the WM also moved, and
+    // a window came.
+    let picked = [screen(
+      1,
+      vec![with(vec![
+        window(1, 0, None),
+        window(2, 480, Some(12)),
+        window(3, 1440, None),
+      ])],
+    )];
+    restyle_windows(&mut shown, &picked);
+
+    let windows = &shown[0].workspaces[0].windows;
+    assert_eq!(windows.len(), 2, "no window comes mid-zoom");
+    assert_eq!(windows[0], window(1, 0, None));
+    assert_eq!(windows[1], window(2, 960, Some(12)), "laid out as before");
   }
 }
