@@ -448,9 +448,13 @@ impl Preview {
     }
 
     let clip_rect = to_win32(clip);
+    // Around the window as it lands on whole pixels, so rounding each on
+    // its own doesn't shift the border against it from frame to frame.
+    let snapped = RectF::from_rect(&dest.to_rect());
 
     for index in 0..self.overlays.len() {
-      let mapped = self.overlay_rect(&self.overlays[index].overlay, dest);
+      let mapped =
+        self.overlay_rect(&self.overlays[index].overlay, &snapped);
       let overlay = &mut self.overlays[index];
       let Some(thumbnail) = &mut overlay.thumbnail else {
         continue;

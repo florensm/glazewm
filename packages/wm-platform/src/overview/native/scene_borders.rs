@@ -82,9 +82,12 @@ impl SceneBorders {
         params.width.round().max(1.0) as i32,
         fade(params.color, params.opacity),
       ));
-      let outset = params.width.round() * border.scale;
+      // On whole pixels around the window as it lands on them, so the
+      // ring doesn't shift against it from frame to frame.
+      let outset = (params.width.round() * border.scale).round();
+      let snapped = RectF::from_rect(&border.rect.to_rect());
       ring.place(
-        &border.rect.inset(-outset),
+        &snapped.inset(-outset),
         border.scale,
         clip,
         border.opacity,
