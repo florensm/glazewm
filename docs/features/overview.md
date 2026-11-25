@@ -443,8 +443,8 @@ show it.
 | `none` | At once. | At once. |
 
 `animation.easing` paces both, as any animation's `easing` does: a
-spring (`spring`, the default, settling as fast as it can without
-overshooting, or `spring(damping_ratio, stiffness, epsilon)`), which
+spring (`spring(1, 1200)` by default, settling as fast as it can without
+overshooting; any `spring(damping_ratio, stiffness, epsilon)`), which
 takes as long as it needs to settle whatever `animation.open_ms` and
 `animation.close_ms` say, a named curve (`ease_out`, `snappy` for a fast
 start and a crisp stop, ...) or `cubic_bezier(x1, y1, x2, y2)`.
@@ -560,15 +560,15 @@ keybindings:
 | Option | Default | |
 | --- | --- | --- |
 | `style` | `"zoom"` | How it opens and closes: `zoom`, `fade` or `none` (see [Zoom](#zoom)). |
-| `easing` | `"spring"` | Pace of the open and close: any animation easing. A spring ignores the two lengths below. |
-| `open_easing` | `"spring(0.85, 520)"` | Pace of the open alone, landing with a little give; `null` opens at `easing`'s. The close keeps `easing`. |
+| `easing` | `"spring(1, 1200)"` | Pace of the open and close: any animation easing. A spring ignores the two lengths below. |
+| `open_easing` | `"spring(1, 1400)"` | Pace of the open alone, quick off the mark so the zoom moves on its first frame; `null` opens at `easing`'s. The close keeps `easing`. |
 | `open_ms` | `280` | Length of the open; `0` opens it at once. |
 | `close_ms` | `220` | Length of the close, into the picked workspace; `0` closes it at once. |
 | `switch` | `"slide"` | How the activities change the workspace they show large: `slide`, `fade` or `miniature`. |
 | `switch_ms` | `260` | About how long cards and windows take to move to a new selection or layout; `0` moves them at once. |
 | `highlight_ms` | `140` | How long highlights take to settle onto what they mark next and to fade; `0` snaps them. |
 | `bounce` | `0` | How far cards and windows overshoot before settling: `0` (not at all) to `0.8` (wobbly). The zooms go by `easing` instead. |
-| `chrome_from` | `0.6` | How far open the zoom is when names and highlights start to fade in: `0` (at once) to `0.95`. |
+| `chrome_from` | `0.3` | How far open the zoom is when names and highlights start to fade in: `0` (at once) to `0.95`. |
 
 For flourishes such as a glow around the selection or particles where a
 window lands, see [Experimental effects](#experimental-effects).
@@ -694,7 +694,7 @@ Not in this version:
 
 Flourishes under `overview.effects`. They still work, but aren't part of
 the overview's settled look and may change. All are off but
-`window_lift`, `dim` and `stagger_ms`, which the sample config sets too.
+`window_lift` and `dim`, which the sample config sets too.
 
 | Option | Default | |
 | --- | --- | --- |
@@ -706,7 +706,7 @@ the overview's settled look and may change. All are off but
 | `open_particles` | `"none"` | Off the shown workspace as the overview settles open. |
 | `exit_particles` | `"none"` | Off the windows of each workspace zoomed into on close. |
 | `jelly` | `false` | A card wobbling as a window lands on it. |
-| `stagger_ms` | `10` | Delay between cards popping in on open, and between the exposé's windows flying out from the focused one, each popping as it goes. All start within half of `animation.open_ms`. |
+| `stagger_ms` | `0` | Delay between cards popping in on open, and between the exposé's windows flying out from the focused one, each popping as it goes. All start within half of `animation.open_ms`. |
 | `lean` | `0` | How far a hovered card leans toward the cursor, in logical pixels. |
 | `dim` | `0.12` | How much other cards dim while one is hovered: `0` to `1`. |
 | `squash` | `0` | How much a dragged window stretches with its speed: `0` to `1`. |

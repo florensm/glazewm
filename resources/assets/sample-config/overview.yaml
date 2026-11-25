@@ -48,14 +48,16 @@ overview:
     # How it opens and closes: 'zoom' (everything zooms out of the
     # workspace on screen, and back into the one picked), 'fade' or 'none'.
     style: "zoom"
-    # The open's own pace, landing with a little give; the close keeps
-    # `easing`. Names and highlights show from 60% open.
-    open_easing: "spring(0.85, 520)"
-    chrome_from: 0.6
+    # Stiff springs, so the zoom moves from its first frame: the open's
+    # own pace, and the close's. Names and highlights show from 30% open.
+    open_easing: "spring(1, 1400)"
+    easing: "spring(1, 1200)"
+    chrome_from: 0.3
 
   effects:
-    # The picked window grows a little, other cards dim a little while one
-    # is hovered, and the windows fly out 10 ms apart on open.
+    # The picked window grows a little, and other cards dim a little while
+    # one is hovered. The windows fly out as one on open; `stagger_ms`
+    # sends them out one after another instead.
     window_lift: 0.04
     dim: 0.12
-    stagger_ms: 10
+    stagger_ms: 0

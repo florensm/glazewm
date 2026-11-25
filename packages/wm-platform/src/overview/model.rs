@@ -1016,12 +1016,11 @@ impl OverviewEffects {
 impl Default for OverviewEffects {
   fn default() -> Self {
     // Calm, as an OS's own overview: the picked window growing a
-    // little, the other cards dimming a little under the cursor, and the
-    // windows flying out just apart. The rest is there to turn on.
+    // little and the other cards dimming a little under the cursor, the
+    // windows flying out as one. The rest is there to turn on.
     Self {
       window_lift: 0.04,
       dim: 0.12,
-      stagger_ms: 10,
       ..Self::NONE
     }
   }

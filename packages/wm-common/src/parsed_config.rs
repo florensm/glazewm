@@ -907,11 +907,14 @@ impl Default for OverviewAnimationConfig {
   fn default() -> Self {
     Self {
       style: OverviewZoomStyle::default(),
-      easing: EasingFunction::Spring(SpringParams::default()),
-      // Landing with a little give.
+      // Stiffer than other animations' springs, so the zoom moves on its
+      // first frame rather than seeming to start late.
+      easing: EasingFunction::Spring(SpringParams {
+        stiffness: 1200.,
+        ..SpringParams::default()
+      }),
       open_easing: Some(EasingFunction::Spring(SpringParams {
-        damping_ratio: 0.85,
-        stiffness: 520.,
+        stiffness: 1400.,
         ..SpringParams::default()
       })),
       open_ms: 280,
@@ -920,7 +923,7 @@ impl Default for OverviewAnimationConfig {
       switch_ms: 260,
       highlight_ms: 140,
       bounce: 0.0,
-      chrome_from: 0.6,
+      chrome_from: 0.3,
     }
   }
 }
@@ -3221,7 +3224,7 @@ mod tests {
     ));
     assert_eq!(
       config.animation.easing,
-      EasingFunction::Spring(SpringParams::default()),
+      easing("spring(1, 1200)").expect("parses"),
       "the close keeps its own"
     );
 
@@ -3259,15 +3262,15 @@ mod tests {
     assert!((defaults.expose.gap - 24.0).abs() < 1e-6);
     assert!((defaults.activities.clamped_margin() - 48.0).abs() < 1e-6);
     assert!((defaults.wallpaper.padding - 16.0).abs() < 1e-6);
-    assert!((defaults.animation.clamped_chrome_from() - 0.6).abs() < 1e-6);
+    assert!((defaults.animation.clamped_chrome_from() - 0.3).abs() < 1e-6);
     assert_eq!(
       defaults.animation.open_easing(),
-      &easing("spring(0.85, 520)").expect("parses"),
+      &easing("spring(1, 1400)").expect("parses"),
       "as the docs write it"
     );
     assert!((defaults.effects.window_lift - 0.04).abs() < 1e-6);
     assert!((defaults.effects.dim - 0.12).abs() < 1e-6);
-    assert_eq!(defaults.effects.stagger_ms, 10);
+    assert_eq!(defaults.effects.stagger_ms, 0);
 
     // Unset, the open takes the close's pace.
     let unset = parse(serde_json::json!({
