@@ -1823,6 +1823,7 @@ impl Interaction {
       keeps_window_in_view: self.picked_by != PickedBy::Mouse,
       marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
+      matches: self.matches.iter().map(|found| found.hwnd).collect(),
       search: self.search_field(workspaces),
       search_current: self.current_match().and_then(|hwnd| {
         let index =
@@ -2015,6 +2016,9 @@ pub(crate) struct ScreenFocus {
   /// Search query, whose matches show on every screen.
   pub query: String,
 
+  /// Windows matching `query`, as the search counts and lists them.
+  pub matches: Vec<isize>,
+
   /// The search field.
   pub search: SearchField,
 
@@ -2036,7 +2040,7 @@ pub(crate) struct ScreenFocus {
 impl ScreenFocus {
   /// Whether `window` matches the search query.
   pub fn is_match(&self, window: &OverviewWindow) -> bool {
-    match_score(window, &self.query).is_some()
+    self.matches.contains(&window.hwnd)
   }
 }
 
@@ -2340,16 +2344,8 @@ fn find(
     })
 }
 
-/// Where `query` sits in the window's title or process name, lower being
-/// better; `None` when it is in neither.
-fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
-  if query.is_empty() {
-    return None;
-  }
-  lowercase_match_score(window, &query.to_lowercase())
-}
-
-/// `match_score` for a `query` already in lower case.
+/// Where `query`, in lower case, sits in the window's title or process
+/// name, lower being better; `None` when it is in neither.
 fn lowercase_match_score(
   window: &OverviewWindow,
   query: &str,
@@ -3499,6 +3495,17 @@ mod tests {
 
     assert_eq!(found("tea"), [1], "the loose \"ticket details\" drops");
     assert_eq!(found("vsc"), [3], "loose, with nothing exact");
+
+    // What the screens show matches what the search counts.
+    let mut state = single(&workspaces, OverviewLayoutMode::Expose);
+    press_on(&mut state, &workspaces, &typed("tea"));
+    let focus = state.focus(0, &workspaces);
+    let shown = workspaces[0]
+      .windows
+      .iter()
+      .filter(|window| focus.is_match(window))
+      .count();
+    assert_eq!(shown, focus.search.hits);
   }
 
   #[test]
