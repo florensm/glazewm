@@ -120,11 +120,14 @@ struct Focused<'a> {
 /// Where each window of `scene` settles, given its `tiles` as laid out:
 /// there, or spread as `spread` has it. `None` for a window not shown,
 /// e.g. a stack's other tab where it isn't spread. Crops each preview as
-/// it then shows, and notes where its shelf is.
+/// it then shows, and notes where its shelf is. With `whole`, a window
+/// reaching past what the scene shows shows whole, e.g. landing from the
+/// exposé, which spreads them whole: cropped then, it would stretch.
 fn scene_rects(
   scene: &mut Scene,
   tiles: &[Option<Tile>],
   spread_as: Option<&Spread>,
+  whole: bool,
   focused: &Focused,
 ) -> Vec<Settled> {
   if let Some(how) = spread_as {
@@ -144,10 +147,15 @@ fn scene_rects(
     .zip(tiles)
     .map(|(window, tile)| {
       let tile = tile.as_ref()?;
-      window.preview.tile.crop = tile.crop;
+      let (rect, crop) = if whole {
+        (tile.whole(), RectF::new(0.0, 0.0, 1.0, 1.0))
+      } else {
+        (tile.rect, tile.crop)
+      };
+      window.preview.tile.crop = crop;
       // Only the exposé shows a stack's other tabs and minimized windows.
       (!window.is_hidden_tab && !window.is_minimized)
-        .then_some((tile.rect, 1.0))
+        .then_some((rect, 1.0))
     })
     .collect()
 }
@@ -531,6 +539,7 @@ impl Screen {
         scene,
         &tiles,
         spreading.then_some(&spread_as),
+        spreads,
         &focused,
       );
 
@@ -841,8 +850,10 @@ fn ripple_delays(
 }
 
 /// Starts `window` where it flies out of on open, shifted by `offset`:
-/// where it is on screen (its `tile`) at `alpha`, or, minimized and so
-/// nowhere on screen, unseen where it settles (`rect`), to fade in there.
+/// where it is on screen (its `tile`, whole, as the exposé shows it, so a
+/// column reaching past the screen's edge isn't squeezed into the part on
+/// screen) at `alpha`, or, minimized and so nowhere on screen, unseen
+/// where it settles (`rect`), to fade in there.
 fn start_flight(
   window: &mut SceneWindow,
   rect: Settled,
@@ -854,7 +865,7 @@ fn start_flight(
     rect.map(|(rect, _)| (rect, 0.0))
   } else {
     let shown = if window.is_hidden_tab { 0.0 } else { alpha };
-    tile.map(|tile| (tile.rect, shown))
+    tile.map(|tile| (tile.whole(), shown))
   };
   if let Some((rect, alpha)) = from {
     window.retarget(&rect.translate(offset.0, offset.1), alpha, true);

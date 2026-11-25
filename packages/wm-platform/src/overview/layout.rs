@@ -919,6 +919,21 @@ pub(crate) struct Tile {
   pub crop: RectF,
 }
 
+impl Tile {
+  /// Where the whole window shows, the part past its card's content
+  /// included.
+  pub fn whole(&self) -> RectF {
+    let w = self.rect.w / self.crop.w.max(f32::EPSILON);
+    let h = self.rect.h / self.crop.h.max(f32::EPSILON);
+    RectF::new(
+      self.rect.x - self.crop.x * w,
+      self.rect.y - self.crop.y * h,
+      w,
+      h,
+    )
+  }
+}
+
 /// The zoom the overview opens with: at progress 0 it shows `from` filling
 /// `to`, and at 1 everything sits where it belongs.
 ///
@@ -1645,6 +1660,23 @@ mod tests {
 
     assert_close(tile.rect.x, metrics.tile_area().x);
     assert_rect_close(&tile.crop, &RectF::new(0.5, 0.0, 0.5, 1.0));
+  }
+
+  /// A window reaching past the workspace shows whole where it really
+  /// reaches, at the tile's scale, the part past the edge included.
+  #[test]
+  fn a_cropped_tile_knows_its_whole_window() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let view = CardView::new(&metrics, &area, &area);
+    let window = RectF::new(-200.0, 100.0, 400.0, 800.0);
+
+    let tile = view.tile(&window).unwrap_or_else(|| unreachable!());
+    assert_rect_close(&tile.whole(), &view.map(&window));
+
+    let inside = RectF::new(300.0, 100.0, 400.0, 800.0);
+    let tile = view.tile(&inside).unwrap_or_else(|| unreachable!());
+    assert_rect_close(&tile.whole(), &tile.rect);
   }
 
   #[test]
