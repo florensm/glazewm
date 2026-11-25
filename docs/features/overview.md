@@ -591,7 +591,10 @@ moves things around and never redraws pixels:
   backdrop and border overlays, placed and scaled as the window is, and
   every preview takes its window's `transparency`, which DWM's thumbnails
   don't carry. They hide while a zoom moves everything, sparing DWM half
-  the thumbnails in motion, and fade in once it rests. The overlays of
+  the thumbnails in motion, and fade in once it rests, but for the
+  focused window's, which ride with it throughout: a pick focuses the
+  picked window before the zoom into it, so it zooms in already looking
+  active. The overlays of
   windows off screen are hidden, which DWM
   composes for no thumbnail; cloaked instead, they showed in previews as
   small, stale boxes.

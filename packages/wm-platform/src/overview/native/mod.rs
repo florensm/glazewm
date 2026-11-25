@@ -575,6 +575,10 @@ struct PlaceContext {
   chrome: f32,
   /// How strongly windows' border and backdrop overlays show.
   overlays: f32,
+  /// Window whose overlays show in full regardless, zooms included: the
+  /// focused one, which a pick makes the picked one, so its border and
+  /// backdrop ride with it.
+  active: Option<isize>,
   /// How strongly the overview shows over the desktop as a whole: the
   /// openness while it fades in or out, else fully.
   presence: f32,
@@ -586,13 +590,25 @@ struct PlaceContext {
   entrance: Option<(Entrance, f32)>,
 }
 
+impl PlaceContext {
+  /// How strongly window `hwnd`'s border and backdrop overlays show.
+  fn overlays_of(&self, hwnd: isize) -> f32 {
+    if self.active == Some(hwnd) {
+      1.0
+    } else {
+      self.overlays
+    }
+  }
+}
+
 /// Places card `index`'s thumbnails where its animation has it now.
 fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   let PlaceContext {
     camera,
     fade,
     chrome: _,
-    overlays,
+    overlays: _,
+    active: _,
     presence,
     view,
     zoom_card,
@@ -629,7 +645,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
         &dest,
         view,
         preview.zoomed_opacity(openness) * alpha,
-        *overlays,
+        context.overlays_of(preview.hwnd),
       );
     } else {
       preview.hide();

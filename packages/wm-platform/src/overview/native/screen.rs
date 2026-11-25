@@ -1528,6 +1528,7 @@ impl Screen {
       } else {
         self.overlays_alpha.value
       },
+      active: self.frame.as_ref().and_then(|frame| frame.focused_window),
       presence: self.presence(),
       entrance: self
         .entrance
@@ -1793,7 +1794,7 @@ impl Screen {
             &rect,
             &view,
             opacity,
-            context.overlays,
+            context.overlays_of(window.preview.hwnd),
           );
         } else {
           window.preview.hide();
