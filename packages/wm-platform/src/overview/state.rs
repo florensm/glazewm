@@ -2075,6 +2075,9 @@ fn home_special(workspaces: &[OverviewWorkspace]) -> Option<usize> {
 /// The windows matching `query` on every screen, best first, then in
 /// order. The special workspace's windows count once, on the screen
 /// showing it if any does, else on the first.
+///
+/// Letters in order only count while no window holds the query as typed:
+/// beside real matches they are noise ("tea" finding "Ticket details").
 fn find_matches(
   query: &str,
   workspaces: &[OverviewWorkspace],
@@ -2111,6 +2114,9 @@ fn find_matches(
     })
     .collect::<Vec<_>>();
 
+  if matches.iter().any(|(score, _)| *score < LOOSE_MATCH) {
+    matches.retain(|(score, _)| *score < LOOSE_MATCH);
+  }
   matches.sort_by_key(|(score, _)| *score);
   matches.into_iter().map(|(_, found)| found).collect()
 }
@@ -2364,9 +2370,9 @@ fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{
-    all_workspaces, text_score, Control, ExposeKeys, Hit, Interaction,
-    Key, Mode, Modifier, Orientation, SearchField, Toward, BINDINGS,
-    LOOSE_MATCH, MAX_RESULTS,
+    all_workspaces, find_matches, text_score, Control, ExposeKeys, Hit,
+    Interaction, Key, Mode, Modifier, Orientation, SearchField, Toward,
+    BINDINGS, LOOSE_MATCH, MAX_RESULTS,
   };
   use crate::{
     overview::layout::RectF, Direction, OverviewAction, OverviewInput,
@@ -3447,6 +3453,31 @@ mod tests {
     assert_eq!(text_score(code, "csv"), None, "not in order");
     assert_eq!(text_score(code, "vsx"), None);
     assert_eq!(text_score("terminal", "t"), Some(0));
+  }
+
+  #[test]
+  fn letters_in_order_only_match_without_an_exact_match() {
+    let at = |hwnd, title: &str| {
+      window(hwnd, title, Rect::from_xy(0, 0, 960, 540))
+    };
+    let workspaces = vec![OverviewWorkspace {
+      is_displayed: true,
+      windows: vec![
+        at(1, "Chat | Microsoft Teams"),
+        at(2, "Ticket details"),
+        at(3, "Visual Studio Code"),
+      ],
+      ..card("1")
+    }];
+    let found = |query: &str| {
+      find_matches(query, &workspaces)
+        .iter()
+        .map(|found| found.hwnd)
+        .collect::<Vec<_>>()
+    };
+
+    assert_eq!(found("tea"), [1], "the loose \"ticket details\" drops");
+    assert_eq!(found("vsc"), [3], "loose, with nothing exact");
   }
 
   #[test]
