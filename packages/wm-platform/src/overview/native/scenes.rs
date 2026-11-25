@@ -271,6 +271,22 @@ fn search_matches(
   (!matches.is_empty()).then_some(matches)
 }
 
+/// Where each of `scene`'s windows shows with its workspace laid out
+/// over `area`, as `frame` shows the workspace.
+fn scene_tiles(
+  scene: &Scene,
+  workspace: &OverviewWorkspace,
+  frame: &ScreenFrame,
+  area: &RectF,
+) -> Vec<Option<Tile>> {
+  let view = CardView::fitted(&scene_content(workspace, frame), area);
+  scene
+    .windows
+    .iter()
+    .map(|window| view.tile(&window.preview.screen_rect))
+    .collect()
+}
+
 /// The windows a search gathers in `home`'s room, as positions of a
 /// scene and of its window: every window of `home`, and the matches of
 /// the other scenes, which `matches` holds by scene.
@@ -401,6 +417,20 @@ impl Screen {
     slide: (f32, f32),
   ) {
     let selected = self.focus.selected;
+    // Zooming into it, its windows come in where they land, with the
+    // zoom, rather than from the side.
+    if self.closing_card().is_some() {
+      self.scene_shown = Some(selected);
+      if let Some(scene) = self.scenes.get_mut(selected) {
+        for window in &mut scene.windows {
+          if window.alpha.value <= 0.05 {
+            let target = window.target();
+            window.appear_from(&target);
+          }
+        }
+      }
+      return;
+    }
     if style == OverviewSwitchStyle::Miniature {
       self.seed_scene_from_card(true);
       return;
@@ -434,7 +464,7 @@ impl Screen {
       return;
     };
 
-    if self.retarget_gathering(snap) {
+    if self.hold_for_pick(snap) || self.retarget_gathering(snap) {
       return;
     }
 
@@ -472,10 +502,14 @@ impl Screen {
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
     {
-      // Out of sight and staying so: where it would settle is worked out
-      // once it's selected, and spreading every workspace's windows on
-      // each open held up the zoom's start.
-      if index != selected && !scene.is_seen() {
+      // Zooming into another workspace, this one fades where it is. Out
+      // of sight and staying so, where it would settle is worked out once
+      // it's selected: spreading every workspace's windows on each open
+      // held up the zoom's start.
+      if closing.is_some_and(|closing| closing != index) {
+        scene.fade_in_place(snap);
+        continue;
+      } else if index != selected && !scene.is_seen() {
         scene.keep_hidden(snap);
         continue;
       }
@@ -483,13 +517,7 @@ impl Screen {
       let offset = slide_offset(slide, index.cmp(&selected));
       let alpha = if index == selected { 1.0 } else { 0.0 };
 
-      let content = scene_content(workspace, frame);
-      let view = CardView::fitted(&content, &scene_area);
-      let tiles = scene
-        .windows
-        .iter()
-        .map(|window| view.tile(&window.preview.screen_rect))
-        .collect::<Vec<_>>();
+      let tiles = scene_tiles(scene, workspace, frame, &scene_area);
 
       // A scene being zoomed into lands as laid out, where the real
       // windows are.
@@ -552,6 +580,23 @@ impl Screen {
     }
 
     self.retarget_workspace_rect(snap);
+  }
+
+  /// While the WM carries out a sent pick, holds every scene still but
+  /// for fading out where they are those that won't land. Returns whether
+  /// it does.
+  fn hold_for_pick(&mut self, snap: bool) -> bool {
+    let Some(card) =
+      self.picked_card.filter(|_| self.closing_card().is_none())
+    else {
+      return false;
+    };
+    for (index, scene) in self.scenes.iter_mut().enumerate() {
+      if index != card {
+        scene.fade_in_place(snap);
+      }
+    }
+    true
   }
 
   /// Points every scene's windows where a search gathers them, while it

@@ -821,6 +821,13 @@ struct Screen {
   /// a zoom moves them, fading in once it rests.
   overlays_alpha: Spring,
 
+  /// How strongly its own drawing (the search, highlights, names) shows
+  /// once a pick is sent: it goes at once, not over the zoom into it.
+  dismiss: Spring,
+
+  /// Card a sent pick lands on, while the WM carries it out.
+  picked_card: Option<usize>,
+
   /// The sheet of keyboard shortcuts, what it lists while open, and how
   /// far it is faded in.
   sheet: Option<Picture>,
@@ -1677,8 +1684,11 @@ impl Overview {
             "Overview picked {action:?}; waiting for the WM."
           );
           self.pending_pick = Some((action.clone(), Instant::now()));
-          for screen in &mut self.screens {
-            screen.is_picked = true;
+          let cards = (0..self.screens.len())
+            .map(|index| self.closing_card(index, &action))
+            .collect::<Vec<_>>();
+          for (screen, card) in self.screens.iter_mut().zip(cards) {
+            screen.commit_pick(card);
           }
         }
       }

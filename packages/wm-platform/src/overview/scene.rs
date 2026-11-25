@@ -262,6 +262,16 @@ impl Scene {
     }
   }
 
+  /// Fades its windows out where they are now, e.g. as the overview
+  /// zooms into another workspace.
+  pub fn fade_in_place(&mut self, snap: bool) {
+    for window in &mut self.windows {
+      // Stopped there, not drifting on as it fades.
+      window.rect.hold();
+      window.alpha.aim(0.0, snap);
+    }
+  }
+
   /// Advances every window by `dt` seconds. Returns whether any is still
   /// moving.
   pub fn step(&mut self, dt: f32) -> bool {
@@ -312,6 +322,30 @@ mod tests {
 
   /// A held window stays where it is until its turn, then pops on its
   /// way: larger for a moment, settling back.
+  /// A scene fading in place heads nowhere: its windows stop where they
+  /// are now, mid-flight included, and fade out there.
+  #[test]
+  fn a_scene_fading_in_place_stays_where_it_is() {
+    let mut scene = Scene {
+      windows: vec![window()],
+      ..Scene::default()
+    };
+    let far = RectF::new(900.0, 500.0, 400.0, 300.0);
+    scene.windows[0].retarget(&far, 1.0, true);
+    scene.windows[0].retarget(
+      &RectF::new(0.0, 0.0, 400.0, 300.0),
+      1.0,
+      false,
+    );
+    scene.step(0.05);
+    let here = scene.windows[0].rect();
+
+    scene.fade_in_place(false);
+    scene.step(1.0);
+    assert_eq!(scene.windows[0].rect(), here);
+    assert!(scene.windows[0].alpha.value < 0.01);
+  }
+
   #[test]
   fn a_held_window_waits_its_turn_then_pops() {
     let mut window = window();

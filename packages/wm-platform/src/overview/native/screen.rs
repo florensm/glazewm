@@ -88,6 +88,10 @@ static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
 /// workspace, in milliseconds.
 const SCROLL_SETTLE_MS: f32 = 140.0;
 
+/// How long the search, highlights and names take to go once a pick is
+/// sent, in milliseconds: quick, as an answer to the key or click.
+const DISMISS_MS: f32 = 140.0;
+
 /// Furthest the stack scrolls past its first or last workspace, in
 /// workspaces, before springing back.
 const SCROLL_OVERSHOOT: f32 = 0.2;
@@ -169,6 +173,8 @@ impl Screen {
       spotlight_y: Spring::new(0.0, 0.0, 0.25),
       spotlight_alpha: Spring::new(0.0, 0.0, 0.002),
       overlays_alpha: Spring::new(1.0, 0.0, 0.002),
+      dismiss: Spring::new(1.0, DISMISS_MS, 0.002),
+      picked_card: None,
       sheet: None,
       sheet_drawn: None,
       sheet_alpha: Spring::new(0.0, 0.0, 0.002),
@@ -447,6 +453,8 @@ impl Screen {
     self.scenes.clear();
     self.scene_shown = None;
     self.gather_home = None;
+    self.dismiss.snap(1.0);
+    self.picked_card = None;
     self.is_picked = false;
     self.card_targets.clear();
     self.pointer = None;
@@ -1424,15 +1432,17 @@ impl Screen {
     let is_switching =
       focus.layout.has_scene() && index != self.focus.selected;
     self.focus = focus;
-    if is_switching {
-      self.retarget(false);
-    }
-
-    self.hold();
+    self.picked_card = None;
     self.entrance = None;
     let zoom =
       self.trimmed(Zoom::close(index, self.openness(), duration_ms));
     self.zoom = Some((zoom, self.frame_time.start(Instant::now())));
+
+    // Once zooming, so the workspace closed on comes in where it lands.
+    if is_switching {
+      self.retarget(false);
+    }
+    self.hold();
     // Spread windows head back to where they really are.
     if self.focus.layout.spreads_windows() {
       self.retarget_scenes(false);
@@ -1468,8 +1478,28 @@ impl Screen {
   fn raise_picked(&mut self, index: usize) {
     let picked = self
       .picked_window()
-      .filter(|(card, _)| *card == index && self.focus.layout.has_scene());
-    self.raise(picked.map(|(_, hwnd)| hwnd));
+      .filter(|(card, _)| *card == index && self.focus.layout.has_scene())
+      .map(|(_, hwnd)| hwnd);
+    // Raised already on the pick, while the WM carried it out.
+    if picked.is_none() || picked != self.raised {
+      self.raise(picked);
+    }
+  }
+
+  /// Takes in that a pick landing on card `card` was sent: its own
+  /// drawing goes at once, the picked window rises, and what won't land
+  /// fades where it is, while the WM carries the pick out.
+  pub(super) fn commit_pick(&mut self, card: Option<usize>) {
+    self.is_picked = true;
+    self.picked_card = card;
+    self.dismiss.aim(0.0, false);
+    if let Some(card) = card {
+      self.raise_picked(card);
+    }
+    if self.focus.layout.has_scene() {
+      self.retarget_scenes(false);
+    }
+    self.is_dirty = true;
   }
 
   /// Raises scene window `hwnd` over everything else, if any.
@@ -1522,7 +1552,7 @@ impl Screen {
       chrome: chrome_opacity(
         self.openness(),
         self.style().map_or(0.0, |style| style.chrome_from),
-      ),
+      ) * self.dismiss.value,
       overlays: if self.zoom.is_some() {
         0.0
       } else {
@@ -1601,6 +1631,7 @@ impl Screen {
       self.overlays_alpha.target = 1.0;
     }
     is_moving |= self.overlays_alpha.step(dt);
+    is_moving |= self.dismiss.step(dt);
 
     if let Some((zoom, started)) = self.zoom {
       is_moving = true;

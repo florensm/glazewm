@@ -655,7 +655,11 @@ windows never take it when clicked, so the keys go to whichever monitor
 has the keyboard. When a pick changes focus, the WM switches
 workspace and focuses the new window (scrolling its strip into view)
 right away, and the overview's zoom into that workspace waits for it (at
-most 400ms), so it heads to where the windows land. The cards hold still
+most 400ms), so it heads to where the windows land. Meanwhile the
+search, highlights and names go at once, the picked window rises over
+the rest, and windows of other workspaces fade out where they are; a
+workspace zoomed into from another one doesn't slide in, its windows
+fading in where they land with the zoom. The cards hold still
 meanwhile, so it heads straight there even while the layout would still
 be moving (e.g. the stack panning to the picked window). A strip
 centered on its picked window stays so while the WM scrolls the real
