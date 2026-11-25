@@ -1,0 +1,508 @@
+<title>Pick Transitions</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: a workbench — the stage large on the left, the styles as a picker beside it, a side-by-side strip below. */
+:root {
+  --bg: #eef0f4;
+  --panel: #ffffff;
+  --ink: #1b1e27;
+  --muted: #5c6273;
+  --line: #d6dae3;
+  --accent: #2f6fd6;
+  --accent-soft: #dbe6fa;
+  --wait: #c98a1b;
+  --zoom: #2f6fd6;
+  --settle: #2e9e6b;
+  --display: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12141b; --panel: #1a1d26; --ink: #e6e8ef; --muted: #9aa1b3; --line: #2b303d;
+    --accent: #89b4fa; --accent-soft: #23304a; --wait: #e2b04a; --zoom: #89b4fa; --settle: #6fd3a2;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12141b; --panel: #1a1d26; --ink: #e6e8ef; --muted: #9aa1b3; --line: #2b303d;
+  --accent: #89b4fa; --accent-soft: #23304a; --wait: #e2b04a; --zoom: #89b4fa; --settle: #6fd3a2;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 22px; }
+header h1 { font: 600 30px/1.15 var(--display); letter-spacing: .01em; margin: 0 0 6px; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 70ch; }
+header code, .note code { font: 13px var(--mono); background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+.bench { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; align-items: start; }
+@media (max-width: 900px) { .bench { grid-template-columns: minmax(0, 1fr); } }
+.stagecol { display: grid; gap: 10px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+
+/* The mock monitor: a deliberately single dark look, as the overview is. */
+.screen { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 8px; background: #0b0d14; max-width: 100%; }
+.world { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; transform-origin: 0 0; }
+.wall { position: absolute; inset: -40px; background:
+  radial-gradient(60% 70% at 20% 30%, #3a4f8f 0%, transparent 60%),
+  radial-gradient(50% 60% at 85% 75%, #6a3f86 0%, transparent 65%),
+  linear-gradient(160deg, #1b2440, #120f22); }
+.tint { position: absolute; inset: 0; background: #0a0c14; }
+.strip { position: absolute; top: 22px; left: 0; right: 0; display: flex; justify-content: center; gap: 22px; }
+.mini { width: 176px; height: 99px; border-radius: 9px; background: rgba(255,255,255,.07); border: 2px solid rgba(255,255,255,.10); position: relative; }
+.mini span { position: absolute; left: 8px; bottom: 5px; font: 600 15px var(--body); color: #cfd5e6; }
+.mini.on { border-color: #89b4fa; }
+.mini i { position: absolute; background: rgba(255,255,255,.22); border-radius: 2px; }
+.win { position: absolute; border-radius: 9px; overflow: hidden; background: #1e2130; box-shadow: 0 10px 30px rgba(0,0,0,.45); transform-origin: 50% 50%; }
+.win .bar { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font: 500 14px var(--body); color: #d8dcea; background: rgba(0,0,0,.28); white-space: nowrap; }
+.win .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.win .body { position: absolute; inset: 30px 0 0 0; }
+.win.active { box-shadow: 0 0 0 4px #89b4fa, 0 0 22px rgba(137,180,250,.45), 0 10px 30px rgba(0,0,0,.45); }
+.k-term .body { background: #0f1512; background-image: repeating-linear-gradient(180deg, transparent 0 22px, rgba(120,220,150,.18) 22px 26px); background-size: 60% 100%; background-repeat: no-repeat; background-position: 24px 18px; }
+.k-code .body { background: linear-gradient(90deg, #181a24 0 56px, #1f2232 56px 220px, #232637 220px); }
+.k-code .body::after { content: ""; position: absolute; inset: 20px 30px 20px 250px; background: repeating-linear-gradient(180deg, transparent 0 18px, rgba(137,180,250,.25) 18px 22px, transparent 22px 30px, rgba(250,179,135,.22) 30px 34px); }
+.k-web .body { background: #f3f4f8; }
+.k-web .body::after { content: ""; position: absolute; inset: 26px 40px; background: linear-gradient(#dfe3ee 0 40px, transparent 40px), repeating-linear-gradient(180deg, transparent 0 60px, #e7e9f1 60px 70px); }
+.k-notes .body { background: #2a2618; background-image: repeating-linear-gradient(180deg, transparent 0 26px, rgba(255,220,120,.18) 26px 28px); }
+.k-music .body { background: linear-gradient(160deg, #1d3a2a, #121212 60%); }
+.k-chat .body { background: #313338; background-image: repeating-linear-gradient(180deg, transparent 0 44px, rgba(255,255,255,.07) 44px 70px); }
+.shade { position: absolute; inset: 0; background: #05060b; pointer-events: none; }
+.badge { position: absolute; left: 10px; top: 40px; min-width: 34px; height: 34px; padding: 0 10px; border-radius: 9px; background: rgba(24,26,36,.92); color: #fff; font: 600 19px/34px var(--body); text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+.ring { position: absolute; border: 4px solid #89b4fa; border-radius: 14px; pointer-events: none; }
+.tag { position: absolute; transform: translateX(-50%); padding: 6px 14px; border-radius: 9px; background: rgba(24,26,36,.94); color: #e6e9f4; font: 500 16px var(--body); white-space: nowrap; }
+.shelflabel { position: absolute; left: 0; right: 0; text-align: center; font: 600 14px var(--body); letter-spacing: .08em; text-transform: uppercase; color: #aab1c6; }
+.search { position: absolute; left: 520px; width: 560px; top: 148px; border-radius: 12px; background: rgba(22,24,34,.96); box-shadow: 0 12px 36px rgba(0,0,0,.5); overflow: hidden; }
+.search .q { display: flex; justify-content: space-between; padding: 12px 18px; font: 500 20px var(--body); color: #89b4fa; border-bottom: 1px solid rgba(255,255,255,.08); }
+.search .q small { color: #9aa1b3; font-size: 15px; }
+.search .row { display: flex; gap: 12px; align-items: center; padding: 7px 18px; font: 15px var(--body); color: #cdd3e3; }
+.search .row.on { background: rgba(137,180,250,.16); }
+.search .row b { color: #89b4fa; font-weight: 600; }
+.search .row em { margin-left: auto; font-style: normal; color: #9aa1b3; }
+.key { position: absolute; right: 26px; bottom: 22px; padding: 8px 16px; border-radius: 9px; font: 600 18px var(--mono); color: #fff; background: rgba(137,180,250,.85); }
+.phaseflag { position: absolute; left: 22px; bottom: 20px; font: 500 15px var(--mono); color: #cfd5e6; background: rgba(10,12,20,.7); padding: 5px 10px; border-radius: 7px; }
+
+/* Controls. */
+.controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 12px 14px; }
+.controls .grow { flex: 1 1 220px; min-width: 0; }
+button, select { font: 500 14px var(--body); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+button:focus-visible, select:focus-visible, input:focus-visible, .style:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 6px 10px; }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+label.inline { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.num { font: 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; min-width: 6ch; display: inline-block; }
+.phases { position: relative; height: 22px; border-radius: 5px; overflow: hidden; display: flex; background: var(--line); }
+.phases div { height: 100%; display: grid; place-items: center; font: 500 11px var(--mono); color: var(--panel); white-space: nowrap; overflow: hidden; }
+.phases .pre { background: color-mix(in srgb, var(--muted) 40%, transparent); color: var(--ink); }
+.phases .w { background: var(--wait); } .phases .z { background: var(--zoom); } .phases .s { background: var(--settle); } .phases .h { background: color-mix(in srgb, var(--muted) 25%, transparent); color: var(--ink); }
+.playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+
+/* Style picker. */
+.styles { display: grid; gap: 8px; padding: 10px; }
+.styles h2, .compare h2, .notes h2 { font: 600 13px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 4px 4px 2px; }
+.style { text-align: left; display: grid; gap: 3px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font: inherit; color: inherit; }
+.style[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.style strong { font: 600 15px var(--body); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.style strong small { font: 500 11px var(--mono); color: var(--muted); letter-spacing: .03em; }
+.style span { font-size: 13px; color: var(--muted); line-height: 1.45; }
+.settings { display: grid; gap: 10px; padding: 12px 14px; }
+.settings .row2 { display: grid; grid-template-columns: 120px minmax(0, 1fr) 7ch; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
+
+/* Side by side. */
+.compare { padding: 12px 14px; display: grid; gap: 10px; }
+.grid5 { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.cell { display: grid; gap: 6px; min-width: 0; }
+.cell button { justify-self: start; padding: 2px 0; border: 0; background: none; font: 600 13px var(--body); color: var(--ink); }
+.cell button:hover { color: var(--accent); }
+.notes { padding: 12px 14px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 9px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+th { font: 600 12px var(--body); color: var(--muted); letter-spacing: .05em; text-transform: uppercase; border-top: 0; }
+td:first-child { font-weight: 600; white-space: nowrap; }
+.pill { display: inline-block; font: 500 11px var(--mono); padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .screen { scroll-behavior: auto; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Pick Transitions</h1>
+    <p>The same moment in each style. In the exposé with <code>search_scope: all</code>, you have typed <code>code</code>. Two VS Code windows from workspaces 2 and 3 are gathered in the room, and workspace 1's windows wait on the shelf. You press <b>Enter</b> on <i>scenes.rs — glazewm</i>, which lives on workspace 2 next to Firefox and Spotify. Scrub, slow it down, or change how long the WM takes to switch.</p>
+  </header>
+
+  <div class="bench">
+    <div class="stagecol">
+      <div class="screen" id="main" aria-label="Preview of the selected transition"></div>
+      <div class="panel controls">
+        <button class="primary" id="play" type="button">Pause</button>
+        <button id="replay" type="button">Replay</button>
+        <div class="grow"><input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Scrub through the transition"></div>
+        <span class="num" id="clock">0 ms</span>
+        <div class="seg" role="group" aria-label="Speed">
+          <button type="button" data-speed="1" aria-pressed="true">1×</button>
+          <button type="button" data-speed="0.5" aria-pressed="false">½×</button>
+          <button type="button" data-speed="0.2" aria-pressed="false">⅕×</button>
+        </div>
+        <label class="inline"><input type="checkbox" id="loop" checked> Loop</label>
+      </div>
+      <div class="phases" id="phases" aria-hidden="true"></div>
+    </div>
+
+    <div class="panel">
+      <div class="styles" id="styles"><h2>Style</h2></div>
+      <div class="settings">
+        <div class="row2"><span>Scope</span>
+          <div class="seg" role="group" aria-label="Search scope" id="scope">
+            <button type="button" data-v="all" aria-pressed="true">all</button>
+            <button type="button" data-v="workspace" aria-pressed="false">workspace</button>
+          </div><span></span></div>
+        <div class="row2"><span>Search mode</span>
+          <div class="seg" role="group" aria-label="Search mode" id="mode">
+            <button type="button" data-v="shelf" aria-pressed="true">shelf</button>
+            <button type="button" data-v="spread" aria-pressed="false">spread</button>
+            <button type="button" data-v="dim" aria-pressed="false">dim</button>
+          </div><span></span></div>
+        <div class="row2"><label for="wait">WM switching</label><input id="wait" type="range" min="0" max="400" step="10" value="150"><span class="num" id="waitv">150 ms</span></div>
+        <div class="row2"><label for="zoom">Zoom</label><input id="zoom" type="range" min="200" max="800" step="10" value="380"><span class="num" id="zoomv">380 ms</span></div>
+        <div class="row2"><label for="settle">Light up</label><input id="settle" type="range" min="100" max="600" step="10" value="260"><span class="num" id="settlev">260 ms</span></div>
+      </div>
+    </div>
+  </div>
+
+  <section class="panel compare">
+    <h2>Side by side, on the same clock</h2>
+    <div class="grid5" id="grid"></div>
+  </section>
+
+  <section class="panel notes">
+    <h2>What each takes in GlazeWM</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Style</th><th>How it is built</th><th>Cost</th></tr></thead>
+        <tbody>
+          <tr><td>Current build</td><td>Today's code: the overview holds still until the WM has switched, then switches workspace with a slide while it zooms.</td><td><span class="pill">none</span></td></tr>
+          <tr><td>Fade in place</td><td>A fade for the search box, rings and labels as soon as you press Enter. Workspaces that won't land fade where they are. The target's other windows fade in at their real spots, carried by the zoom.</td><td><span class="pill">small</span></td></tr>
+          <tr><td>Dim, then light up</td><td>As fade in place, but the target's windows come in darkened. DWM thumbnails can't be darkened, so each one gets a translucent black picture over it, scaled with it like the highlight pictures. The overview stays up for the light-up time after the zoom, then hides. Focus is already on the picked window, so typing works during that time.</td><td><span class="pill">medium</span></td></tr>
+          <tr><td>Spotlight</td><td>Dim, then light up, plus everything except the pick darkens right on Enter and the pick lifts slightly. This covers the WM's switching time with motion.</td><td><span class="pill">medium</span></td></tr>
+          <tr><td>Window first</td><td>Only the picked window flies home. Its neighbours fade and grow in around it afterwards, while the overview stays up for that time.</td><td><span class="pill">medium</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const STYLES = [
+    { id: 'current', name: 'Current build', tag: 'today', text: 'Holds still while the WM switches, then slides workspaces while it zooms. The search box fades over the zoom.' },
+    { id: 'fade', name: 'Fade in place', tag: 'proposed', text: 'The search box goes on Enter. Other workspaces fade where they are, and the target\'s other windows fade in at their real spots.' },
+    { id: 'dim', name: 'Dim, then light up', tag: 'your idea', text: 'Zooms into the whole workspace with the other windows darkened, then lights them up once the pick has landed.' },
+    { id: 'spotlight', name: 'Spotlight', tag: 'variant', text: 'Everything except the pick darkens on Enter and the pick lifts slightly. Then the same zoom and light-up.' },
+    { id: 'first', name: 'Window first', tag: 'variant', text: 'Only the picked window flies home. The rest of its workspace fades in around it afterwards.' },
+  ];
+
+  // The desktop, in physical pixels of a 1600x900 monitor.
+  const WS = [
+    [ { id: 'term', app: 'Windows Terminal', title: 'pwsh — ~/glazewm', kind: 'term', dot: '#6fd3a2', r: { x: 10, y: 10, w: 780, h: 880 } },
+      { id: 'ffd', app: 'Firefox', title: 'std::collections — Rust', kind: 'web', dot: '#ff9a3c', r: { x: 810, y: 10, w: 780, h: 435 } },
+      { id: 'notes', app: 'Notes', title: 'Overview ideas', kind: 'notes', dot: '#f5d06b', r: { x: 810, y: 455, w: 780, h: 435 } } ],
+    [ { id: 'vsg', app: 'VS Code', title: 'scenes.rs — glazewm', kind: 'code', dot: '#4aa3ff', r: { x: 10, y: 10, w: 950, h: 880 } },
+      { id: 'ffg', app: 'Firefox', title: 'Pull requests · glazewm', kind: 'web', dot: '#ff9a3c', r: { x: 970, y: 10, w: 620, h: 435 } },
+      { id: 'spot', app: 'Spotify', title: 'Spotify Premium', kind: 'music', dot: '#1ed760', r: { x: 970, y: 455, w: 620, h: 435 } } ],
+    [ { id: 'vsd', app: 'VS Code', title: 'config.yaml — dotfiles', kind: 'code', dot: '#4aa3ff', r: { x: 10, y: 10, w: 1000, h: 880 } },
+      { id: 'disc', app: 'Discord', title: '#general', kind: 'chat', dot: '#8c9eff', r: { x: 1020, y: 10, w: 570, h: 880 } } ],
+  ];
+  const ALL = WS.flatMap((wins, ws) => wins.map((w) => ({ ...w, ws })));
+  const byId = Object.fromEntries(ALL.map((w) => [w.id, w]));
+  const MATCHES = ['vsg', 'vsd'];
+  const PICK = 'vsg', TARGET = 1;
+  const SCREEN = { x: 0, y: 0, w: 1600, h: 900 };
+  const ROOM = { x: 80, y: 290, w: 1440, h: 560 };
+  const PRE = 700, HOLD = 700;
+
+  const cfg = { style: 'dim', scope: 'all', mode: 'shelf', W: 150, Z: 380, S: 260, speed: 1 };
+
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const lerpR = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), w: lerp(a.w, b.w, t), h: lerp(a.h, b.h, t) });
+  const smooth = (t) => t * t * (3 - 2 * t);
+  function bezier(x1, y1, x2, y2) {
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    const X = (t) => ((ax * t + bx) * t + cx) * t, Y = (t) => ((ay * t + by) * t + cy) * t, dX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+    return (x) => {
+      if (x <= 0) return 0; if (x >= 1) return 1;
+      let t = x;
+      for (let i = 0; i < 8; i++) { const e = X(t) - x, d = dX(t); if (Math.abs(e) < 1e-5 || Math.abs(d) < 1e-6) break; t -= e / d; }
+      return Y(clamp(t));
+    };
+  }
+  // The overview's default `zoom_easing`.
+  const EASE = bezier(0.22, 1, 0.36, 1);
+
+  function arrange(rects, area, gap = 28) {
+    const n = rects.length; if (!n) return [];
+    let best = null;
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols), cw = (area.w - gap * (cols - 1)) / cols, ch = (area.h - gap * (rows - 1)) / rows;
+      const scale = Math.min(0.55, ...rects.map((r) => Math.min(cw / r.w, ch / r.h)));
+      if (!best || scale > best.scale) best = { cols, rows, cw, ch, scale };
+    }
+    const { cols, rows, cw, ch, scale } = best;
+    const totalH = rows * ch + (rows - 1) * gap, y0 = area.y + (area.h - totalH) / 2;
+    return rects.map((r, i) => {
+      const row = Math.floor(i / cols), col = i % cols, inRow = Math.min(cols, n - row * cols);
+      const rowW = inRow * cw + (inRow - 1) * gap, x0 = area.x + (area.w - rowW) / 2;
+      const w = r.w * scale, h = r.h * scale;
+      return { x: x0 + col * (cw + gap) + (cw - w) / 2, y: y0 + row * (ch + gap) + (ch - h) / 2, w, h };
+    });
+  }
+  function shelfRects(rects, y) {
+    const h = 88, gap = 18, ws = rects.map((r) => (r.w / r.h) * h);
+    const total = ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
+    let x = ROOM.x + (ROOM.w - total) / 2;
+    return rects.map((_, i) => { const o = { x, y, w: ws[i], h }; x += ws[i] + gap; return o; });
+  }
+
+  // Where each window shows the moment Enter is pressed, for the scope and search mode.
+  function layout() {
+    const home = cfg.scope === 'all' ? 0 : TARGET;
+    const homeWins = WS[home].map((w) => w.id);
+    const gathered = cfg.scope === 'all' ? MATCHES.filter((id) => byId[id].ws !== home) : [];
+    const isMatch = (id) => MATCHES.includes(id);
+    const start = {};
+    let room = [], shelf = [];
+    const homeMatches = homeWins.filter(isMatch), homeMisses = homeWins.filter((id) => !isMatch(id));
+    if (cfg.mode === 'shelf') { room = [...homeMatches, ...gathered]; shelf = homeMisses; }
+    else if (cfg.mode === 'spread') { room = [...homeMatches, ...gathered]; }
+    else { room = [...homeWins, ...gathered]; }
+    const area = shelf.length ? { ...ROOM, h: ROOM.h - 140 } : ROOM;
+    arrange(room.map((id) => byId[id].r), area).forEach((r, i) => {
+      const id = room[i];
+      start[id] = { r, a: cfg.mode === 'dim' && !isMatch(id) ? 0.25 : 1 };
+    });
+    shelfRects(shelf.map((id) => byId[id].r), ROOM.y + ROOM.h - 96).forEach((r, i) => { start[shelf[i]] = { r, a: 1 }; });
+    return { home, start, hasShelf: shelf.length > 0, shelfY: ROOM.y + ROOM.h - 96 - 30, gathered: new Set(gathered) };
+  }
+
+  // The zoom carries the room's picture of the target workspace onto the whole screen.
+  const s0 = Math.min(ROOM.w / SCREEN.w, ROOM.h / SCREEN.h);
+  const M = { w: SCREEN.w * s0, h: SCREEN.h * s0, x: ROOM.x + (ROOM.w - SCREEN.w * s0) / 2, y: ROOM.y };
+  const mapped = (r) => ({ x: M.x + r.x * s0, y: M.y + r.y * s0, w: r.w * s0, h: r.h * s0 });
+  function camera(ep) {
+    const P = lerpR(M, SCREEN, ep), k = P.w / M.w;
+    return (r) => ({ x: P.x + (r.x - M.x) * k, y: P.y + (r.y - M.y) * k, w: r.w * k, h: r.h * k });
+  }
+
+  const usesSettle = (style) => ['dim', 'spotlight', 'first'].includes(style);
+  const total = (style) => PRE + cfg.W + cfg.Z + (usesSettle(style) ? cfg.S : 0) + HOLD;
+
+  // Everything shown at `t` ms after Enter (negative before it), in `style`.
+  function frame(style, L, t) {
+    const { W, Z, S } = cfg;
+    const tz = clamp((t - W) / Z), ep = EASE(tz);
+    const ts = usesSettle(style) ? smooth(clamp((t - W - Z) / S)) : 1;
+    const after = Math.max(0, t);
+    const dismiss = smooth(clamp(after / 140)), fadeOut = smooth(clamp(after / 170));
+    const instant = style !== 'current';
+    const chrome = t < 0 ? 1 : instant ? 1 - dismiss : 1 - clamp(ep * 1.8);
+    const presence = 1 - ep;
+    const cam = camera(ep);
+    const slide = ROOM.w + 48;
+    const wins = {};
+
+    for (const w of ALL) {
+      const st = L.start[w.id];
+      const isPick = w.id === PICK, isMate = w.ws === TARGET && !isPick;
+      let r = st ? st.r : mapped(w.r), a = st ? st.a : 0, bright = 1, scale = 1;
+
+      if (t >= 0) {
+        if (isPick) {
+          r = lerpR(st.r, mapped(w.r), ep); a = lerp(st.a, 1, ep);
+          if (style === 'spotlight') scale = 1 + 0.035 * dismiss * (1 - ep);
+        } else if (isMate) {
+          const target = mapped(w.r);
+          if (style === 'first') {
+            a = st ? st.a * (1 - fadeOut) : 0;
+            if (ts > 0 && tz >= 1) { r = target; a = ts; scale = lerp(0.96, 1, ts); }
+            else if (st) r = st.r;
+          } else if (st) {
+            r = lerpR(st.r, target, ep); a = lerp(st.a, 1, ep);
+          } else if (style === 'current') {
+            r = { ...target, x: target.x + slide * (1 - ep) }; a = ep;
+          } else if (style === 'fade') {
+            r = target; a = ep;
+          } else {
+            r = target; a = clamp(ep / 0.3);
+          }
+          if (style === 'dim' || style === 'spotlight') bright = lerp(1, 0.35, dismiss) + (1 - lerp(1, 0.35, dismiss)) * ts;
+        } else if (st) {
+          if (style === 'current') {
+            const dir = w.ws < TARGET ? -1 : 1;
+            r = { ...st.r, x: st.r.x + dir * slide * ep }; a = st.a * (1 - ep);
+          } else if (style === 'spotlight') {
+            bright = 1 - 0.7 * dismiss; a = st.a * (1 - clamp(tz / 0.4));
+          } else {
+            a = st.a * (1 - fadeOut);
+          }
+        }
+      }
+      wins[w.id] = { r: cam(r), a, bright, scale, z: isPick ? 3 : isMate ? 2 : 1 };
+    }
+
+    const pick = wins[PICK].r;
+    let phase = 'Searching';
+    if (t >= 0 && t < W) phase = 'Enter · WM switching';
+    else if (t >= W && tz < 1) phase = 'Zooming in';
+    else if (tz >= 1 && usesSettle(style) && ts < 1) phase = style === 'first' ? 'Neighbours coming in' : 'Lighting up';
+    else if (tz >= 1) phase = 'On the desktop';
+    return {
+      wins, chrome, presence, phase, pick,
+      darken: style === 'spotlight' && t >= 0 ? 0.25 * dismiss * (1 - ep) : 0,
+      keyOn: t > -120 && t < 260,
+    };
+  }
+
+  class Stage {
+    constructor(el, opts = {}) {
+      this.el = el; this.small = !!opts.small; this.style = opts.style || null;
+      el.innerHTML = '';
+      const world = document.createElement('div'); world.className = 'world'; this.world = world;
+      world.innerHTML = `<div class="wall"></div><div class="tint"></div>
+        <div class="strip">${WS.map((wins, k) => `<div class="mini" data-k="${k}">${wins.map((w) => `<i style="left:${4 + w.r.x * 0.105}px;top:${4 + w.r.y * 0.098}px;width:${w.r.w * 0.105 - 3}px;height:${w.r.h * 0.098 - 3}px"></i>`).join('')}<span>${k + 1}</span></div>`).join('')}</div>`;
+      this.wall = world.querySelector('.wall'); this.tint = world.querySelector('.tint'); this.strip = world.querySelector('.strip');
+      this.wins = {};
+      for (const w of ALL) {
+        const d = document.createElement('div');
+        d.className = `win k-${w.kind}`;
+        d.innerHTML = `<div class="bar"><span class="dot" style="background:${w.dot}"></span>${w.title}</div><div class="body"></div><div class="shade"></div><div class="badge">${w.ws + 1}</div>`;
+        world.append(d);
+        this.wins[w.id] = { el: d, shade: d.querySelector('.shade'), badge: d.querySelector('.badge') };
+      }
+      const make = (cls, html = '') => { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; world.append(d); return d; };
+      this.shelfLabel = make('shelflabel', 'Not matching');
+      this.ring = make('ring'); this.tag = make('tag', byId[PICK].title);
+      this.search = make('search', `<div class="q"><span>code</span><small>1 of 2</small></div>
+        <div class="row on"><span class="dot" style="width:12px;height:12px;border-radius:50%;background:#4aa3ff"></span><span>scenes.rs — glazewm · VS <b>Code</b></span><em>2</em></div>
+        <div class="row"><span class="dot" style="width:12px;height:12px;border-radius:50%;background:#4aa3ff"></span><span>config.yaml — dotfiles · VS <b>Code</b></span><em>3</em></div>`);
+      this.key = make('key', 'Enter');
+      this.flag = this.small ? null : make('phaseflag');
+      el.append(world);
+      const fit = () => { world.style.transform = `scale(${el.clientWidth / 1600})`; };
+      new ResizeObserver(fit).observe(el); fit();
+    }
+    render(style, L, t) {
+      const f = frame(style, L, t);
+      this.wall.style.filter = `blur(${(14 * f.presence).toFixed(1)}px)`;
+      this.tint.style.opacity = (0.5 * f.presence + f.darken).toFixed(3);
+      this.strip.style.opacity = f.chrome.toFixed(3);
+      this.strip.querySelectorAll('.mini').forEach((m) => m.classList.toggle('on', +m.dataset.k === L.home));
+      for (const w of ALL) {
+        const s = f.wins[w.id], v = this.wins[w.id];
+        const st = v.el.style;
+        st.left = s.r.x + 'px'; st.top = s.r.y + 'px'; st.width = s.r.w + 'px'; st.height = s.r.h + 'px';
+        st.opacity = s.a.toFixed(3); st.zIndex = s.z;
+        st.transform = s.scale !== 1 ? `scale(${s.scale.toFixed(4)})` : '';
+        st.visibility = s.a < 0.003 ? 'hidden' : 'visible';
+        v.shade.style.opacity = (1 - s.bright).toFixed(3);
+        v.el.classList.toggle('active', w.id === PICK);
+        // Fixed-size chrome inside a scaled window: keep the bar readable.
+        const k = s.r.w / w.r.w;
+        v.el.querySelector('.bar').style.cssText = `transform:scale(${Math.max(k, 0.0001)});transform-origin:0 0;width:${100 / Math.max(k, 0.0001)}%;height:30px`;
+        v.el.querySelector('.body').style.top = 30 * k + 'px';
+        v.badge.style.opacity = (L.gathered.has(w.id) ? f.chrome : 0).toFixed(3);
+      }
+      const p = f.pick, g = 8;
+      Object.assign(this.ring.style, { left: p.x - g + 'px', top: p.y - g + 'px', width: p.w + 2 * g + 'px', height: p.h + 2 * g + 'px', opacity: f.chrome.toFixed(3) });
+      Object.assign(this.tag.style, { left: p.x + p.w / 2 + 'px', top: p.y + p.h + 14 + 'px', opacity: f.chrome.toFixed(3) });
+      Object.assign(this.shelfLabel.style, { top: L.shelfY + 'px', opacity: (L.hasShelf ? f.chrome : 0).toFixed(3) });
+      this.search.style.opacity = f.chrome.toFixed(3);
+      this.key.style.opacity = f.keyOn ? '1' : '0';
+      if (this.flag) this.flag.textContent = f.phase;
+    }
+  }
+
+  // Page wiring.
+  const $ = (id) => document.getElementById(id);
+  const main = new Stage($('main'));
+  const stylesEl = $('styles');
+  STYLES.forEach((s) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'style'; b.dataset.id = s.id;
+    b.innerHTML = `<strong>${s.name} <small>${s.tag}</small></strong><span>${s.text}</span>`;
+    b.onclick = () => { cfg.style = s.id; sync(); restart(); };
+    stylesEl.append(b);
+  });
+  const grid = $('grid');
+  const minis = STYLES.map((s) => {
+    const cell = document.createElement('div'); cell.className = 'cell';
+    const btn = document.createElement('button'); btn.type = 'button'; btn.textContent = s.name;
+    btn.onclick = () => { cfg.style = s.id; sync(); restart(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+    const scr = document.createElement('div'); scr.className = 'screen'; scr.setAttribute('aria-label', s.name);
+    cell.append(btn, scr); grid.append(cell);
+    return { style: s.id, stage: new Stage(scr, { small: true }) };
+  });
+
+  let L = layout(), clock = 0, playing = true, last = performance.now();
+  const longest = () => Math.max(...STYLES.map((s) => total(s.id)));
+
+  function phasesBar() {
+    const T = longest(), pct = (v) => (100 * v / T) + '%';
+    const settle = usesSettle(cfg.style) ? cfg.S : 0;
+    const rest = T - PRE - cfg.W - cfg.Z - settle;
+    $('phases').innerHTML = `<div class="pre" style="width:${pct(PRE)}">search</div><div class="w" style="width:${pct(cfg.W)}">${cfg.W >= 60 ? 'WM' : ''}</div><div class="z" style="width:${pct(cfg.Z)}">zoom</div>${settle ? `<div class="s" style="width:${pct(settle)}">light up</div>` : ''}<div class="h" style="width:${pct(rest)}"></div><span class="playhead" id="head"></span>`;
+  }
+  function sync() {
+    stylesEl.querySelectorAll('.style').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.id === cfg.style)));
+    for (const [id, key] of [['scope', 'scope'], ['mode', 'mode']]) $(id).querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === cfg[key])));
+    document.querySelectorAll('[data-speed]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.speed === cfg.speed)));
+    $('settle').disabled = !usesSettle(cfg.style);
+    phasesBar();
+  }
+  function draw() {
+    const t = clock - PRE;
+    main.render(cfg.style, L, t);
+    for (const m of minis) m.stage.render(m.style, L, t);
+    const T = longest();
+    $('scrub').value = String(Math.round((clock / T) * 1000));
+    $('clock').textContent = `${Math.round(t)} ms`;
+    const head = $('head'); if (head) head.style.left = `calc(${(100 * clock) / T}% - 1px)`;
+  }
+  function restart() { clock = 0; playing = true; $('play').textContent = 'Pause'; draw(); }
+  function tick(now) {
+    const dt = Math.min(64, now - last); last = now;
+    if (playing) {
+      clock += dt * cfg.speed;
+      if (clock >= longest()) {
+        if ($('loop').checked) clock = 0; else { clock = longest(); playing = false; $('play').textContent = 'Play'; }
+      }
+      draw();
+    }
+    requestAnimationFrame(tick);
+  }
+
+  $('play').onclick = () => { if (!playing && clock >= longest()) clock = 0; playing = !playing; $('play').textContent = playing ? 'Pause' : 'Play'; };
+  $('replay').onclick = restart;
+  $('scrub').oninput = (e) => { playing = false; $('play').textContent = 'Play'; clock = (+e.target.value / 1000) * longest(); draw(); };
+  document.querySelectorAll('[data-speed]').forEach((b) => { b.onclick = () => { cfg.speed = +b.dataset.speed; sync(); }; });
+  for (const id of ['scope', 'mode']) $(id).querySelectorAll('button').forEach((b) => { b.onclick = () => { cfg[id] = b.dataset.v; L = layout(); sync(); restart(); }; });
+  for (const [id, key] of [['wait', 'W'], ['zoom', 'Z'], ['settle', 'S']]) {
+    $(id).oninput = (e) => { cfg[key] = +e.target.value; $(id + 'v').textContent = `${cfg[key]} ms`; sync(); draw(); };
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === ' ' && !['INPUT', 'SELECT', 'BUTTON'].includes(document.activeElement?.tagName)) { e.preventDefault(); $('play').click(); }
+  });
+
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { playing = false; clock = PRE + cfg.W + cfg.Z * 0.5; $('play').textContent = 'Play'; }
+  sync(); draw(); requestAnimationFrame(tick);
+})();
+</script>
