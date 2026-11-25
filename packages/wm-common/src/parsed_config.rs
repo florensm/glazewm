@@ -3407,7 +3407,8 @@ mod tests {
   #[test]
   fn overview_expose_search_and_keys_read_and_keep_todays_defaults() {
     use wm_platform::{
-      OverviewExposeHints, OverviewExposeSearch, OverviewPeekKey,
+      OverviewExposeHints, OverviewExposeSearch,
+      OverviewExposeSearchScope, OverviewPeekKey,
     };
 
     let parse = |value: serde_json::Value| {
@@ -3416,6 +3417,7 @@ mod tests {
     let expose = parse(serde_json::json!({
       "expose": {
         "search_mode": "shelf",
+        "search_scope": "all",
         "hints": "alt",
         "peek_key": "ctrl",
         "release_picks": true,
@@ -3424,6 +3426,7 @@ mod tests {
     .expect("parses")
     .expose;
     assert_eq!(expose.search_mode, OverviewExposeSearch::Shelf);
+    assert_eq!(expose.search_scope, OverviewExposeSearchScope::All);
     assert_eq!(expose.hints, OverviewExposeHints::Alt);
     assert_eq!(expose.peek_key, OverviewPeekKey::Ctrl);
     assert!(expose.release_picks);
@@ -3434,6 +3437,7 @@ mod tests {
 
     for bad in [
       serde_json::json!({ "expose": { "search_mode": "hide" } }),
+      serde_json::json!({ "expose": { "search_scope": "monitor" } }),
       serde_json::json!({ "expose": { "hints": "ctrl" } }),
       serde_json::json!({ "expose": { "peek_key": "space" } }),
       serde_json::json!({ "expose": { "release_picks": 1 } }),
@@ -3443,6 +3447,10 @@ mod tests {
 
     let defaults = OverviewConfig::default().expose;
     assert_eq!(defaults.search_mode, OverviewExposeSearch::Spread);
+    assert_eq!(
+      defaults.search_scope,
+      OverviewExposeSearchScope::Workspace
+    );
     assert_eq!(defaults.hints, OverviewExposeHints::Off);
     assert_eq!(defaults.peek_key, OverviewPeekKey::None);
     assert!(!defaults.release_picks);

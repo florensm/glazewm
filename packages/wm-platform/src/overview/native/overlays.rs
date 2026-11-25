@@ -451,17 +451,19 @@ impl Screen {
   }
 
   /// Band the shown workspace's shelf takes in the exposé, while it has
-  /// windows on one.
+  /// windows on one: the one a search gathers matches in, while it does.
   pub(super) fn shelf_band(&self) -> Option<(RectF, &'static str)> {
     if !self.focus.layout.spreads_windows() {
       return None;
     }
-    self.scenes.get(self.focus.selected)?.shelf
+    let shown = self.gathering_in().unwrap_or(self.focus.selected);
+    self.scenes.get(shown)?.shelf
   }
 
   /// What shows where the shown workspace has no windows.
   pub(super) fn note_text(&self) -> Option<String> {
-    if !self.focus.layout.has_scene() {
+    // A search's matches gathered from elsewhere fill it.
+    if !self.focus.layout.has_scene() || self.gather_home.is_some() {
       return None;
     }
 
@@ -510,16 +512,18 @@ impl Screen {
     hwnd: isize,
     context: &PlaceContext,
   ) -> Option<RectF> {
-    if self.focus.layout.has_scene() && index == self.focus.selected {
-      let window = self
-        .scenes
-        .get(index)?
-        .windows
-        .iter()
+    // In the scene for the shown workspace, or for a window a search
+    // gathered from another.
+    let shown = self.scenes.get(index).and_then(|scene| {
+      scene.windows.iter().find(|window| {
         // Not a stack's other tab, outside the exposé.
-        .find(|window| {
-          window.preview.hwnd == hwnd && window.alpha.target > 0.0
-        })?;
+        window.preview.hwnd == hwnd && window.alpha.target > 0.0
+      })
+    });
+    if self.focus.layout.has_scene()
+      && (index == self.focus.selected || shown.is_some())
+    {
+      let window = shown?;
       let landing =
         (self.closing_card() == Some(index)).then_some(context.fade);
       let (rect, _) = scene_window_shown(window, landing);

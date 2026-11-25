@@ -18,8 +18,9 @@ use crate::{
     scene::{Scene, SceneWindow},
     state::ScreenFocus,
   },
-  OverviewExposeMinimized, OverviewExposeSearch, OverviewRowSide,
-  OverviewStripView, OverviewSwitchStyle, OverviewWorkspace,
+  OverviewExposeMinimized, OverviewExposeSearch,
+  OverviewExposeSearchScope, OverviewRowSide, OverviewStripView,
+  OverviewSwitchStyle, OverviewWorkspace,
 };
 
 /// Where a scene window shows now, before the camera, and how strongly.
@@ -130,7 +131,8 @@ fn scene_rects(
     for window in &mut scene.windows {
       window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
     }
-    let (rects, shelf) = spread_windows(scene, how, focused);
+    let windows = scene.windows.iter().collect::<Vec<_>>();
+    let (rects, shelf) = spread_windows(&windows, how, focused);
     scene.shelf = shelf;
     return rects;
   }
@@ -150,7 +152,7 @@ fn scene_rects(
     .collect()
 }
 
-/// Where the exposé shows each window of `scene`, every tab of a stack
+/// Where the exposé shows each of `windows`, every tab of a stack
 /// and minimized window a window of its own. During a search, as `how`'s
 /// search mode has it: the matches alone, all with the misses dimmed, or
 /// the misses on the shelf. Minimized windows go on the shelf too if
@@ -158,7 +160,7 @@ fn scene_rects(
 /// `None` for a window left out. Also returns the band the shelf takes,
 /// and its label.
 fn spread_windows(
-  scene: &Scene,
+  windows: &[&SceneWindow],
   how: &Spread,
   focused: &Focused,
 ) -> (Vec<Settled>, Option<(RectF, &'static str)>) {
@@ -167,17 +169,18 @@ fn spread_windows(
       .matches
       .is_some_and(|matches| !matches.contains(&hwnd))
   };
-  let windows = scene.windows.iter().enumerate().filter(|(_, window)| {
-    how.search != OverviewExposeSearch::Spread
-      || !is_miss(window.preview.hwnd)
-  });
+  let candidates =
+    windows.iter().copied().enumerate().filter(|(_, window)| {
+      how.search != OverviewExposeSearch::Spread
+        || !is_miss(window.preview.hwnd)
+    });
   let is_shelved = |window: &SceneWindow| {
     let misses = how.search == OverviewExposeSearch::Shelf
       && is_miss(window.preview.hwnd);
     misses || (how.shelves_minimized && window.is_minimized)
   };
   let (shelved, shown): (Vec<_>, Vec<_>) =
-    windows.partition(|(_, window)| is_shelved(window));
+    candidates.partition(|(_, window)| is_shelved(window));
   let screen_rects = |windows: &[(usize, &SceneWindow)]| {
     windows
       .iter()
@@ -185,7 +188,7 @@ fn spread_windows(
       .collect::<Vec<_>>()
   };
 
-  let mut rects = vec![None; scene.windows.len()];
+  let mut rects = vec![None; windows.len()];
   let mut room = how.area;
   let mut band = None;
   if !shelved.is_empty() {
@@ -219,17 +222,15 @@ fn spread_windows(
     rects[*index] = Some((slot, strength));
   }
 
-  let peeked = focused.peeked.and_then(|hwnd| {
-    scene.windows.iter().position(|w| w.preview.hwnd == hwnd)
-  });
+  let peeked = focused
+    .peeked
+    .and_then(|hwnd| windows.iter().position(|w| w.preview.hwnd == hwnd));
   if let Some(peeked) = peeked {
     for (index, settled) in rects.iter_mut().enumerate() {
       if let Some((rect, strength)) = settled {
         if index == peeked {
-          *rect = peek_rect(
-            &scene.windows[index].preview.screen_rect,
-            &how.view,
-          );
+          *rect =
+            peek_rect(&windows[index].preview.screen_rect, &how.view);
           *strength = 1.0;
         } else {
           *strength *= PEEK_DIM;
@@ -268,6 +269,32 @@ fn search_matches(
     .map(|window| window.hwnd)
     .collect::<Vec<_>>();
   (!matches.is_empty()).then_some(matches)
+}
+
+/// The windows a search gathers in `home`'s room, as positions of a
+/// scene and of its window: every window of `home`, and the matches of
+/// the other scenes, which `matches` holds by scene.
+fn gathered_windows(
+  scenes: &[Scene],
+  matches: &[Option<Vec<isize>>],
+  home: usize,
+) -> Vec<(usize, usize)> {
+  scenes
+    .iter()
+    .enumerate()
+    .flat_map(|(index, scene)| {
+      let matches =
+        matches.get(index).and_then(Option::as_deref).unwrap_or(&[]);
+      scene
+        .windows
+        .iter()
+        .enumerate()
+        .filter(move |(_, window)| {
+          index == home || matches.contains(&window.preview.hwnd)
+        })
+        .map(move |(position, _)| (index, position))
+    })
+    .collect()
 }
 
 impl Screen {
@@ -407,6 +434,10 @@ impl Screen {
       return;
     };
 
+    if self.retarget_gathering(snap) {
+      return;
+    }
+
     let selected = self.focus.selected;
     let previous = self.scene_shown;
     let slide = self.slide(style);
@@ -521,6 +552,126 @@ impl Screen {
     }
 
     self.retarget_workspace_rect(snap);
+  }
+
+  /// Points every scene's windows where a search gathers them, while it
+  /// gathers the matches of every workspace. Returns whether it does.
+  fn retarget_gathering(&mut self, snap: bool) -> bool {
+    let Some(home) = self.sync_gather_home() else {
+      return false;
+    };
+    // Kept as the one shown, so the workspace selected meanwhile comes in
+    // from it once the gathering ends.
+    self.scene_shown = Some(home);
+    self.retarget_gathered(home, snap);
+    self.retarget_workspace_rect(snap);
+    true
+  }
+
+  /// The workspace whose room a search gathers the matches of every
+  /// workspace in (`expose.search_scope: all`), while it has any: the one
+  /// shown as the gathering began, which stepping through the matches
+  /// leaves in place. Notes it, or that none gathers.
+  fn sync_gather_home(&mut self) -> Option<usize> {
+    let gathers = self.focus.layout.spreads_windows()
+      && self.closing_card().is_none()
+      && self.style().is_some_and(|style| {
+        style.expose.search_scope == OverviewExposeSearchScope::All
+      })
+      && self
+        .workspaces()
+        .iter()
+        .any(|workspace| search_matches(workspace, &self.focus).is_some());
+
+    let home = gathers
+      .then(|| {
+        self
+          .gathering_in()
+          .or(self.scene_shown)
+          .unwrap_or(self.focus.selected)
+      })
+      .filter(|home| *home < self.scenes.len());
+
+    self.gather_home = home
+      .and_then(|home| self.workspaces().get(home))
+      .map(|workspace| workspace.name.clone());
+    home
+  }
+
+  /// The workspace whose room a search gathers every workspace's matches
+  /// in, while it does.
+  pub(super) fn gathering_in(&self) -> Option<usize> {
+    let name = self.gather_home.as_ref()?;
+    self
+      .workspaces()
+      .iter()
+      .position(|workspace| workspace.name == *name)
+  }
+
+  /// Points every scene's windows where a search gathers them in `home`'s
+  /// room: `home`'s own as the search mode has them, every other
+  /// workspace's matches with them, and the rest hidden.
+  fn retarget_gathered(&mut self, home: usize, snap: bool) {
+    let Some(frame) = &self.frame else {
+      return;
+    };
+    let spread_as = self.spread_as(frame);
+    let matches = frame
+      .workspaces
+      .iter()
+      .map(|workspace| search_matches(workspace, &self.focus))
+      .collect::<Vec<_>>();
+    let all = matches
+      .iter()
+      .flatten()
+      .flatten()
+      .copied()
+      .collect::<Vec<_>>();
+    let focused = Focused {
+      matches: Some(&all),
+      peeked: self.focus.peeked,
+    };
+
+    let members = gathered_windows(&self.scenes, &matches, home);
+    let (rects, band) = {
+      let windows = members
+        .iter()
+        .map(|&(scene, window)| &self.scenes[scene].windows[window])
+        .collect::<Vec<_>>();
+      spread_windows(&windows, &spread_as, &focused)
+    };
+
+    let mut targets = self
+      .scenes
+      .iter()
+      .map(|scene| vec![None; scene.windows.len()])
+      .collect::<Vec<_>>();
+    for (&(scene, window), rect) in members.iter().zip(rects) {
+      targets[scene][window] = rect;
+    }
+
+    for (index, (scene, targets)) in
+      self.scenes.iter_mut().zip(targets).enumerate()
+    {
+      scene.shelf = if index == home { band } else { None };
+
+      for (window, target) in scene.windows.iter_mut().zip(targets) {
+        let Some((rect, strength)) = target else {
+          let target = window.target();
+          window.retarget(&target, 0.0, snap);
+          continue;
+        };
+
+        window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
+        let is_unseen = window.alpha.value <= 0.05;
+        window.retarget(&rect, strength, snap);
+        // Fades in where it settles, rather than flying in from wherever
+        // its workspace left it.
+        if is_unseen && !snap {
+          window.appear_from(&rect);
+        }
+      }
+    }
   }
 
   /// Where `style` has a later workspace's scene wait beside the shown
@@ -702,12 +853,49 @@ fn slide_offset(slide: (f32, f32), order: Ordering) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-  use super::{peek_rect, ripple_delays, scene_window_shown, PEEK_SHARE};
+  use super::{
+    gathered_windows, peek_rect, ripple_delays, scene_window_shown,
+    PEEK_SHARE,
+  };
   use crate::overview::{
     layout::{RectF, Tile},
-    scene::SceneWindow,
+    scene::{Scene, SceneWindow},
     thumbnails::Preview,
   };
+
+  fn scene(hwnds: &[isize]) -> Scene {
+    let windows = hwnds
+      .iter()
+      .map(|&hwnd| {
+        let tile = Tile {
+          rect: RectF::default(),
+          crop: RectF::new(0.0, 0.0, 1.0, 1.0),
+        };
+        SceneWindow::new(Preview::new(hwnd, tile), (0.0, 0.0), 300.0, 0.0)
+      })
+      .collect();
+    Scene {
+      windows,
+      ..Scene::default()
+    }
+  }
+
+  /// The home workspace brings every window, for its misses to wait on
+  /// its shelf; the others only their matches.
+  #[test]
+  fn a_search_gathers_home_whole_and_the_others_matches() {
+    let scenes = [scene(&[11, 12]), scene(&[21, 22]), scene(&[31])];
+    let matches = [None, Some(vec![22]), Some(vec![31])];
+
+    assert_eq!(
+      gathered_windows(&scenes, &matches, 0),
+      vec![(0, 0), (0, 1), (1, 1), (2, 0)]
+    );
+    assert_eq!(
+      gathered_windows(&scenes, &matches, 1),
+      vec![(1, 0), (1, 1), (2, 0)]
+    );
+  }
 
   #[test]
   fn a_landing_window_reaches_where_it_settles_as_the_zoom_ends() {

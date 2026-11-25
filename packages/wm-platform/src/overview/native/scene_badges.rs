@@ -35,6 +35,9 @@ pub(super) enum BadgeContent {
   Icon(isize, u64),
   /// The letter that picks a window while `Alt` shows hints.
   Hint(char),
+  /// The name of the workspace a window a search gathered from another
+  /// one is on.
+  Workspace(String),
 }
 
 /// A badge on a scene window.
@@ -133,6 +136,12 @@ impl SceneBadges {
               draw_note(surface, &text, style, scale_factor);
             });
           }
+          BadgeContent::Workspace(name) => {
+            let size = note_size(name, style, scale_factor);
+            slot.picture.draw(size, |surface| {
+              draw_note(surface, name, style, scale_factor);
+            });
+          }
           BadgeContent::Icon(hwnd, _) => {
             #[allow(clippy::cast_possible_truncation)]
             let side = px(ICON_BADGE).round().max(1.0) as i32;
@@ -159,7 +168,8 @@ impl SceneBadges {
 
 /// Where a badge `size` big shows on a window at `rect`: a title over the
 /// window's bottom edge (under it, if the window is too short), an icon
-/// in its middle, shrunk to fit.
+/// in its middle, shrunk to fit, and a workspace's name in its top-left
+/// corner.
 #[allow(clippy::cast_precision_loss)]
 fn badge_rect(
   content: &BadgeContent,
@@ -185,6 +195,9 @@ fn badge_rect(
     // Along its top, clear of the icon and the title.
     BadgeContent::Hint(_) => {
       RectF::new(cx - width / 2.0, rect.y + px(12.0), width, height)
+    }
+    BadgeContent::Workspace(_) => {
+      RectF::new(rect.x + px(10.0), rect.y + px(10.0), width, height)
     }
   }
 }

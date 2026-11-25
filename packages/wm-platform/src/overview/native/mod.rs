@@ -762,6 +762,10 @@ struct Screen {
   /// newly selected one's out of its card.
   scene_shown: Option<usize>,
 
+  /// Name of the workspace whose room a search's matches from every
+  /// workspace gather in, while they do (`expose.search_scope: all`).
+  gather_home: Option<String>,
+
   /// Whether a pick was sent, after which a workspace shown anew shows in
   /// its scene at once rather than flying out of its card, for the zoom
   /// into it to set off from there.

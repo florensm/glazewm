@@ -311,6 +311,15 @@ default); nothing moves and the rest fade to a quarter where they are
 shelf along the bottom, under "Not matching" (`shelf`). With no match
 left, every window stays.
 
+With `expose.search_scope: "all"`, the room takes in the matches of
+every workspace of its monitor too, each tagged with its workspace's
+name, laid out with the shown workspace's windows as the search mode
+has them (only the shown workspace's misses wait on the shelf or dim).
+The room stays put while stepping through the matches, even to another
+workspace's; pointing at one puts the list on it, and picking one goes
+to its workspace, zooming into it there. Clearing the query brings the
+selected workspace back as a switch to it would.
+
 - Typing never moves the view: the list goes to the best match, and the
   ring and title tag mark it wherever it shows, but the selected
   workspace, window and monitor stay where they are.
@@ -503,6 +512,7 @@ keybindings:
 | `expose.app_icons` | `false` | Each window's app icon, large in its middle. |
 | `expose.minimized` | `"inline"` | Minimized windows with the others (`inline`), or on a shelf along the bottom (`shelf`). |
 | `expose.search_mode` | `"spread"` | How the exposé shows a search: `spread`, `dim` or `shelf` (see [Search](#search)). |
+| `expose.search_scope` | `"workspace"` | Whose matches the exposé's room shows: the shown workspace's, or `all` the monitor's workspaces' (see [Search](#search)). |
 | `expose.hints` | `"off"` | `alt`: holding `Alt` letters each window, and `Alt` + a letter picks it (see [Keys of the exposé](#keys-of-the-exposé)). |
 | `expose.peek_key` | `"none"` | `ctrl`: holding `Ctrl` enlarges the picked window. |
 | `expose.release_picks` | `false` | Letting go of the modifier of the keybinding that opened the overview picks, once the selection moved. |

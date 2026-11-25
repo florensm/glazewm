@@ -414,6 +414,19 @@ pub enum OverviewExposeSearch {
   Shelf,
 }
 
+/// Which windows the exposé's search gathers in its room.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewExposeSearchScope {
+  /// The shown workspace's.
+  #[default]
+  Workspace,
+  /// Every workspace's on the monitor.
+  All,
+}
+
 /// Whether holding `Alt` in the exposé shows a letter on each window.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
@@ -489,6 +502,8 @@ pub struct OverviewExpose {
 
   pub search_mode: OverviewExposeSearch,
 
+  pub search_scope: OverviewExposeSearchScope,
+
   pub hints: OverviewExposeHints,
 
   pub peek_key: OverviewPeekKey,
@@ -539,6 +554,7 @@ impl Default for OverviewExpose {
       app_icons: false,
       minimized: OverviewExposeMinimized::default(),
       search_mode: OverviewExposeSearch::default(),
+      search_scope: OverviewExposeSearchScope::default(),
       hints: OverviewExposeHints::default(),
       peek_key: OverviewPeekKey::default(),
       release_picks: false,

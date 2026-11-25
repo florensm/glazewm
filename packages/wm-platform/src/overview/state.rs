@@ -1579,14 +1579,17 @@ impl Interaction {
         self.picked_by = PickedBy::Mouse;
         changed = true;
       }
+    }
 
-      // Pointing at a match puts the list on it too.
-      if let Some(index) =
-        self.matches.iter().position(|found| found.hwnd == hwnd)
-      {
-        changed |= self.match_index != Some(index);
-        self.match_index = Some(index);
-      }
+    // Pointing at a match puts the list on it too, wherever it shows, e.g.
+    // gathered from another workspace by the exposé's search.
+    let pointed_match = hit
+      .window
+      .filter(|_| self.mode != Mode::Carrying && !is_left_down)
+      .and_then(|hwnd| self.matches.iter().position(|m| m.hwnd == hwnd));
+    if let Some(index) = pointed_match {
+      changed |= self.match_index != Some(index);
+      self.match_index = Some(index);
     }
 
     let pressed_window = self
@@ -3267,6 +3270,28 @@ mod tests {
       false,
     );
     assert_eq!(state.selected_window, Some(21));
+  }
+
+  /// A match pointed at elsewhere than the shown workspace, e.g. gathered
+  /// into its room by the exposé's search, takes the list, but not the
+  /// selection.
+  #[test]
+  fn pointing_at_a_match_anywhere_puts_the_list_on_it() {
+    let mut state = interaction();
+    press(&mut state, &typed("er"));
+    let selected = (state.selected(), state.selected_window);
+
+    for hwnd in [11, 12] {
+      let hit = Hit {
+        workspace: Some(0),
+        window: Some(hwnd),
+        ..Hit::default()
+      };
+      state.mouse_move((10.0, 10.0), hit, false);
+      assert_eq!(state.current_match(), Some(hwnd));
+    }
+    assert_eq!(state.selected(), selected.0);
+    assert_eq!(state.selected_window, selected.1);
   }
 
   #[test]

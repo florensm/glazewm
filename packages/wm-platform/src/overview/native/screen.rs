@@ -48,9 +48,10 @@ use crate::{
   platform_impl::composition::OverviewBackdrop,
   tab_bar::layout::TabHit,
   BorderOverlayParams, OverviewEffects, OverviewExposeHints,
-  OverviewExposeTitles, OverviewLayoutMode, OverviewStack,
-  OverviewStackDirection, OverviewStyle, OverviewWallpaperStyle,
-  OverviewWindow, OverviewWorkspace, OverviewZoomStyle,
+  OverviewExposeSearchScope, OverviewExposeTitles, OverviewLayoutMode,
+  OverviewStack, OverviewStackDirection, OverviewStyle,
+  OverviewWallpaperStyle, OverviewWindow, OverviewWorkspace,
+  OverviewZoomStyle,
 };
 
 /// Registers `card`'s thumbnails on `host`: its tab bars under its
@@ -147,6 +148,7 @@ impl Screen {
       scenes: Vec::new(),
       scene_area: RectF::default(),
       scene_shown: None,
+      gather_home: None,
       is_picked: false,
       scene_borders: SceneBorders::default(),
       scene_badges: SceneBadges::default(),
@@ -444,6 +446,7 @@ impl Screen {
     }
     self.scenes.clear();
     self.scene_shown = None;
+    self.gather_home = None;
     self.is_picked = false;
     self.card_targets.clear();
     self.pointer = None;
@@ -1767,6 +1770,7 @@ impl Screen {
     let (has_titles, has_icons) = self.badges_shown();
     let picked = self.picked_window().map(|(_, hwnd)| hwnd);
     let hints = self.focus.hints.clone();
+    let gathered_in = self.gathering_in();
     let icons = self.icons;
     let workspaces = self
       .frame
@@ -1822,6 +1826,13 @@ impl Screen {
         if let Some((_, letter)) = hints.iter().find(|(h, _)| *h == hwnd) {
           badges.push(badge(BadgeContent::Hint(*letter)));
         }
+        let from_elsewhere = gathered_in.is_some_and(|home| home != index);
+        if let Some(workspace) =
+          workspaces.get(index).filter(|_| from_elsewhere)
+        {
+          badges
+            .push(badge(BadgeContent::Workspace(workspace.label.clone())));
+        }
 
         let params = workspaces
           .get(index)
@@ -1864,17 +1875,24 @@ impl Screen {
       })
   }
 
-  /// How many badges each scene window may show: a title, an icon, and a
-  /// hint's letter.
+  /// How many badges each scene window may show: a title, an icon, a
+  /// hint's letter, and its workspace's name when a search gathers it
+  /// from there.
   fn badges_per_window(&self) -> usize {
     let (has_titles, has_icons) = self.badges_shown();
-    let has_hints = self.style().is_some_and(|style| {
-      self.focus.layout.spreads_windows()
-        && style.expose.hints == OverviewExposeHints::Alt
+    let expose = self
+      .style()
+      .filter(|_| self.focus.layout.spreads_windows())
+      .map(|style| style.expose);
+    let has_hints = expose
+      .is_some_and(|expose| expose.hints == OverviewExposeHints::Alt);
+    let gathers = expose.is_some_and(|expose| {
+      expose.search_scope == OverviewExposeSearchScope::All
     });
     usize::from(has_titles)
       + usize::from(has_icons)
       + usize::from(has_hints)
+      + usize::from(gathers)
   }
 
   /// Where the search box's picture shows, its shadow included.
@@ -2045,17 +2063,36 @@ impl Screen {
   }
 
   /// What of the shown workspace's scene is under (`x`, `y`): the
-  /// topmost of its windows there, or else `area` itself.
+  /// topmost of its windows there (or of those a search gathered from
+  /// other workspaces, of theirs), or else `area` itself.
   fn hit_scene(&self, x: f32, y: f32, area: &RectF) -> Hit {
     let selected = self.focus.selected;
-    let hovered = self.scenes.get(selected).and_then(|scene| {
-      scene.windows.iter().rev().find(|window| {
-        window.alpha.target > 0.0 && window.rect().contains(x, y)
-      })
+    let scenes = if self.gather_home.is_some() {
+      0..self.scenes.len()
+    } else {
+      selected..selected + 1
+    };
+    // Later scenes' windows are registered over earlier ones'.
+    let hovered = scenes.rev().find_map(|index| {
+      let window =
+        self
+          .scenes
+          .get(index)?
+          .windows
+          .iter()
+          .rev()
+          .find(|window| {
+            window.alpha.target > 0.0 && window.rect().contains(x, y)
+          })?;
+      Some((index, window))
     });
+    // The room itself is the shown workspace's, a gathering search's home.
+    let shown = self.gathering_in().unwrap_or(selected);
+    let index = hovered.map_or(shown, |(index, _)| index);
+    let hovered = hovered.map(|(_, window)| window);
 
     if hovered.is_some() || area.contains(x, y) {
-      let workspace = self.workspaces().get(selected);
+      let workspace = self.workspaces().get(index);
       let point = if self.focus.layout.spreads_windows() {
         // The same spot on the window as it really is, so a drop lands
         // beside it as one there would; nowhere off the windows.
@@ -2080,7 +2117,7 @@ impl Screen {
       };
 
       Hit {
-        workspace: Some(selected),
+        workspace: Some(index),
         window: hovered.map(|window| window.preview.hwnd),
         control: None,
         point,

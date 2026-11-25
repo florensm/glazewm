@@ -66,6 +66,7 @@
   #screen .ovs-search .q { color: var(--cfg-search, #89b4fa); }
   #screen .ovs-search .n { color: var(--cfg-subtext, #b4b4bc); opacity: 1; }
   .cfg-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(var(--inv)); min-width: 64px; height: 64px; padding: 0 14px; border-radius: 16px; background: #ffd84a; color: #1b1500; font: 800 40px/64px "JetBrains Mono", monospace; text-align: center; box-shadow: 0 6px 22px rgba(0,0,0,.45); opacity: calc(var(--chrome) * var(--show-hints, 0)); transition: opacity .12s; }
+  .cfg-ws { position: absolute; left: 14px; top: 14px; transform: scale(var(--inv)); transform-origin: 0 0; min-width: 36px; height: 36px; padding: 0 10px; border-radius: 10px; background: var(--cfg-surface, #2a2a30); color: #fff; font: 700 20px/36px system-ui, sans-serif; text-align: center; box-shadow: 0 4px 14px rgba(0,0,0,.4); opacity: var(--chrome); }
   .cfg-min .ovs-frame { background: var(--cfg-surface, #2a2a30) !important; opacity: .92; }
   .cfg-min .ovs-body, .cfg-min .ovs-title { visibility: hidden; }
   .cfg-minicon { position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 30px; display: grid; place-items: center; color: #fff; font: 800 56px/1 system-ui, sans-serif; box-shadow: 0 8px 26px rgba(0,0,0,.4); }
@@ -195,6 +196,7 @@
       ] },
       { title: 'Search and keys', items: [
         { key: 'expose.search_mode', kind: 'enum', options: ['spread', 'dim', 'shelf'], def: 'spread', help: 'Click the preview and <b>type</b> (try "glaze"): matches spread out (today), non-matches dim where they are, or matches gather in the middle while the rest wait on a shelf.' },
+        { key: 'expose.search_scope', kind: 'enum', options: ['workspace', 'all'], def: 'workspace', help: 'Type in the preview (try "code"): the shown workspace\'s matches alone, or every workspace\'s gathered in the room, each from elsewhere tagged with its workspace. Goes with any search mode.' },
         { key: 'expose.hints', kind: 'enum', options: ['off', 'alt'], def: 'off', help: 'Hold <b>Alt</b> in the preview: a letter on every window; Alt+letter picks it.' },
         { key: 'expose.peek_key', kind: 'enum', options: ['none', 'ctrl'], def: 'none', help: 'Select a window with the arrows, then hold <b>Ctrl</b> to enlarge it, as Mission Control\'s spacebar does.' },
         { key: 'expose.release_picks', kind: 'bool', def: false, help: 'Open with <b>Alt+W</b>, keep Alt held, move with the arrows, let go of Alt to pick, like Alt+Tab.' },
@@ -360,9 +362,25 @@
     { wins: scenario(1, 'tiled'), apps: [4], min: new Set() },
   ];
   let desk = freshDesk(), cur = 0;
-  const pv = { query: '', sel: -1, alt: false, moved: false, byAlt: false, peeking: false, drag: null, press: null, hintOf: new Map(), lastPick: -1 };
-  const titleOf = (i) => APPS[desk[cur].apps[i] % APPS.length].title;
-  const hay = (i) => (APPS[desk[cur].apps[i] % APPS.length].name + ' ' + titleOf(i)).toLowerCase();
+  const pv = { query: '', sel: -1, alt: false, moved: false, byAlt: false, peeking: false, drag: null, press: null, hintOf: new Map(), lastPick: -1, afterClose: null };
+  // What the stage shows, as [desk, window] pairs: the current desk's
+  // windows and, while a search gathers (`expose.search_scope: all`), the
+  // other desks' matches.
+  let view = desk[cur].wins.map((_, i) => [cur, i]);
+  const appAt = (d, k) => APPS[desk[d].apps[k] % APPS.length];
+  const hayAt = (d, k) => (appAt(d, k).name + ' ' + appAt(d, k).title).toLowerCase();
+  const isHit = (d, k, q) => { const s = hayAt(d, k); let j = 0; for (const c of s) if (c === q[j]) j++; return s.includes(q) || j === q.length; };
+  const titleOf = (i) => appAt(...view[i]).title;
+  const hay = (i) => hayAt(...view[i]);
+  const deskHits = (d, q) => desk[d].wins.map((_, k) => k).filter((k) => isHit(d, k, q));
+  function viewOf() {
+    const own = desk[cur].wins.map((_, k) => [cur, k]);
+    const q = pv.query.toLowerCase();
+    if (!q || previewLayout() !== 'expose' || state['expose.search_scope'] !== 'all') return own;
+    const others = desk.flatMap((_, d) => (d === cur ? [] : deskHits(d, q).map((k) => [d, k])));
+    return own.some(([d, k]) => isHit(d, k, q)) || others.length ? own.concat(others) : own;
+  }
+  const isGathered = () => view.some(([d]) => d !== cur);
 
   function params() {
     const v = state, which = previewLayout(), { open, close } = anims();
@@ -390,8 +408,7 @@
   function matches() {
     if (!pv.query || previewLayout() !== 'expose') return null;
     const q = pv.query.toLowerCase();
-    const fuzzy = (s) => { let k = 0; for (const c of s) if (c === q[k]) k++; return k === q.length; };
-    return desk[cur].wins.map((_, i) => i).filter((i) => hay(i).includes(q) || fuzzy(hay(i)))
+    return view.map((_, i) => i).filter((i) => isHit(...view[i], q))
       .sort((a, b) => (hay(a).includes(q) ? 0 : 1) - (hay(b).includes(q) ? 0 : 1));
   }
 
@@ -465,7 +482,8 @@
     stage.wins.forEach((w, i) => {
       w.el.classList.toggle('cfg-min', stage.minimized.has(i));
       const app = w.app;
-      w.deco.innerHTML = (stage.minimized.has(i) ? `<div class="cfg-minicon" style="background:${app.tint}">${app.name[0]}</div>` : '') + '<div class="cfg-hint"></div>';
+      const from = view[i] && view[i][0] !== cur ? `<div class="cfg-ws">${view[i][0] + 1}</div>` : '';
+      w.deco.innerHTML = (stage.minimized.has(i) ? `<div class="cfg-minicon" style="background:${app.tint}">${app.name[0]}</div>` : '') + '<div class="cfg-hint"></div>' + from;
     });
     [...stage.strip.children].forEach((m, k) => {
       m.classList.toggle('on', k === cur);
@@ -474,12 +492,33 @@
     });
     paint();
   }
-  function rebuild() { stage.setParams(params()); afterBuild(); }
+  function rebuild() { stage.setParams(params()); if (!regather()) afterBuild(); }
   function setDesk() {
-    stage.apps = desk[cur].apps; stage.minimized = new Set(desk[cur].min);
-    stage.setWindows(desk[cur].wins.map((r) => ({ ...r })));
+    view = viewOf();
+    stage.apps = view.map(([d, k]) => desk[d].apps[k]);
+    stage.minimized = new Set(view.map(([d, k], i) => (desk[d].min.has(k) ? i : -1)).filter((i) => i >= 0));
+    stage.setWindows(view.map(([d, k]) => ({ ...desk[d].wins[k] })));
     afterBuild();
   }
+  // Brings the other desks' matches in, or sends them off, as the query
+  // changes: those staying move on from where they are, those coming fade
+  // in. Returns whether the stage's windows changed.
+  function regather() {
+    const next = viewOf();
+    if (next.length === view.length && next.every(([d, k], i) => d === view[i][0] && k === view[i][1])) return false;
+    const before = new Map(view.map(([d, k], i) => [`${d}:${k}`, stage.targetOf(stage.wins[i], i)]));
+    pv.sel = -1; stage.setHover(-1);
+    setDesk();
+    stage.wins.forEach((w, i) => {
+      const from = before.get(`${view[i][0]}:${view[i][1]}`);
+      if (from) { w.morphFrom = from; w.morphM = new Motion(0); w.morphM.aim(1, bouncy(460)); }
+      else { w.fade = new Motion(0); w.fade.aim(1, bouncy(460)); }
+    });
+    stage.kick();
+    return true;
+  }
+  // Back to the current desk alone, once a gathering search closed.
+  const ungather = () => { if (isGathered()) pv.afterClose = setDesk; };
 
   // Per-frame state the stage doesn't keep: fades, hints, glow, shelf line, colors.
   function paint() {
@@ -570,22 +609,25 @@
     const r = stage.targetOf(stage.wins[i], i);
     if (state['effects.ripples']) stage.ripple(r.x + r.w / 2, r.y + r.h / 2);
     burst(state['effects.exit_particles'], r, 28);
+    const [d] = view[i], title = titleOf(i);
     pv.query = ''; pv.peeking = false; pv.lastPick = i; paint();
-    stage.close(i); say(`<b>${titleOf(i)}</b> picked ${how}.`);
+    stage.close(i); say(`<b>${title}</b> picked ${how}` + (d !== cur ? `, on workspace ${d + 1}.` : '.'));
+    // A window gathered from another desk goes there, as in the WM.
+    if (d !== cur) pv.afterClose = () => { cur = d; setDesk(); }; else ungather();
   }
-  function cancel() { pv.query = ''; pv.peeking = false; paint(); stage.close(-1); say('Closed without a pick.'); }
-  function open(byAlt = false) { if (stage.isOpen) return; pv.query = ''; pv.sel = -1; pv.moved = false; pv.byAlt = byAlt; pv.peeking = false; stage.open(); paint(); say(helpText()); }
+  function cancel() { pv.query = ''; pv.peeking = false; paint(); stage.close(-1); ungather(); say('Closed without a pick.'); }
+  function open(byAlt = false) { if (stage.isOpen) return; if (pv.afterClose) { const then = pv.afterClose; pv.afterClose = null; then(); } pv.query = ''; pv.sel = -1; pv.moved = false; pv.byAlt = byAlt; pv.peeking = false; stage.open(); paint(); say(helpText()); }
   function closeWindow(i) {
     const r = stage.targetOf(stage.wins[i], i);
     burst(state['effects.close_particles'], r, 30);
     stage.fadeWindow(i, 0);
-    const d = desk[cur];
+    const [dk, k] = view[i], d = desk[dk];
+    say(`<b>Closed</b> ${titleOf(i)}.`);
     setTimeout(() => {
-      d.wins.splice(i, 1); d.apps.splice(i, 1);
-      d.min = new Set([...d.min].filter((x) => x !== i).map((x) => (x > i ? x - 1 : x)));
+      d.wins.splice(k, 1); d.apps.splice(k, 1);
+      d.min = new Set([...d.min].filter((x) => x !== k).map((x) => (x > k ? x - 1 : x)));
       pv.sel = -1; setDesk(); stage.relayout(bouncy(420), 12); paint();
     }, 220);
-    say(`<b>Closed</b> ${titleOf(i)}.`);
   }
   function miniRect(k) {
     const m = stage.strip.children[k]; if (!m) return null;
@@ -594,22 +636,22 @@
   }
   function moveTo(i, k) {
     const m = miniRect(k); if (!m) return;
-    const r = desk[cur].wins[i];
+    const [from, j] = view[i], r = desk[from].wins[j];
     const s = Math.min(m.w / W, m.h / H), dest = { x: m.x + r.x * s, y: m.y + r.y * s, w: r.w * s, h: r.h * s };
     const w = stage.wins[i]; w.morphFrom = stage.targetOf(w, i); w.morphM = new Motion(0); w.morphM.aim(1, bouncy(500));
     stage.t.rects[i] = dest; stage.fadeWindow(i, 0); stage.kick();
     if (state['effects.ripples']) stage.ripple(m.x + m.w / 2, m.y + m.h / 2);
     burst(state['effects.drop_particles'], m, 26);
     if (state['effects.jelly']) { m.el.classList.remove('cfg-jelly'); void m.el.offsetWidth; m.el.classList.add('cfg-jelly'); }
-    const d = desk[cur], to = desk[k];
+    const d = desk[from], to = desk[k];
+    say(`<b>${titleOf(i)}</b> moved to workspace ${k + 1}.`);
     setTimeout(() => {
-      to.wins.push({ ...d.wins[i] }); to.apps.push(d.apps[i]);
-      if (d.min.has(i)) to.min.add(to.wins.length - 1);
-      d.wins.splice(i, 1); d.apps.splice(i, 1);
-      d.min = new Set([...d.min].filter((x) => x !== i).map((x) => (x > i ? x - 1 : x)));
+      to.wins.push({ ...d.wins[j] }); to.apps.push(d.apps[j]);
+      if (d.min.has(j)) to.min.add(to.wins.length - 1);
+      d.wins.splice(j, 1); d.apps.splice(j, 1);
+      d.min = new Set([...d.min].filter((x) => x !== j).map((x) => (x > j ? x - 1 : x)));
       setDesk(); stage.relayout(bouncy(420), 12);
     }, 380);
-    say(`<b>${titleOf(i)}</b> moved to workspace ${k + 1}.`);
   }
   // Activities: show workspace `k` large, coming in as animation.switch says.
   function switchTo(k) {
@@ -684,7 +726,7 @@
       const { i } = pv.drag, m = miniAt(e); pv.drag = null;
       [...stage.strip.children].forEach((x) => x.classList.remove('cfg-drop'));
       endDragFx(i);
-      if (m >= 0 && m !== cur) moveTo(i, m);
+      if (m >= 0 && m !== cur && m !== view[i][0]) moveTo(i, m);
       else { stage.relayout(bouncy(500)); say('Dropped nowhere: back home.'); }
       return;
     }
@@ -718,11 +760,11 @@
     if (e.altKey && state['expose.hints'] === 'alt') { const i = pv.hintOf.get(letter); e.preventDefault(); if (i != null) pick(i, `with Alt+${letter.toUpperCase()}`); return; }
     if (e.key.startsWith('Arrow')) { e.preventDefault(); arrow(e.key); return; }
     if (e.key === 'Enter') { e.preventDefault(); const hits = matches(); const i = pv.sel >= 0 && (!hits || hits.includes(pv.sel)) ? pv.sel : hits && hits[0]; if (i != null && i >= 0) pick(i, 'with Enter'); return; }
-    if (e.key === 'Escape') { e.preventDefault(); if (pv.query) { pv.query = ''; stage.relayout(); paint(); } else cancel(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); if (pv.query) { pv.query = ''; if (!regather()) stage.relayout(); paint(); } else cancel(); return; }
     if (e.key === 'Delete') { e.preventDefault(); if (pv.sel >= 0) closeWindow(pv.sel); return; }
-    if (e.key === 'Backspace') { e.preventDefault(); pv.query = pv.query.slice(0, -1); stage.relayout(bouncy(460), 10); paint(); return; }
+    if (e.key === 'Backspace') { e.preventDefault(); pv.query = pv.query.slice(0, -1); if (!regather()) stage.relayout(bouncy(460), 10); paint(); return; }
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && previewLayout() === 'expose' && (e.key !== ' ' || pv.query)) {
-      e.preventDefault(); pv.query += e.key; stage.relayout(bouncy(460), 10);
+      e.preventDefault(); pv.query += e.key; if (!regather()) stage.relayout(bouncy(460), 10);
       const hits = matches(); if (hits && hits.length) { pv.sel = hits[0]; stage.setHover(hits[0]); }
       paint();
     }
@@ -822,6 +864,7 @@
   function onStage(s) {
     $('play').textContent = previewOpen() ? 'Close' : 'Open';
     if (s === 'opened' && !isStack()) { burst(state['effects.open_particles'], stage.t.slab, 40); paint(); }
+    if (s === 'closed' && pv.afterClose) { const then = pv.afterClose; pv.afterClose = null; then(); }
     if (s === 'closed' && !isStack()) paint();
     if (loop && (s === 'opened' || s === 'closed')) {
       clearTimeout(loopT);
