@@ -52,6 +52,9 @@ pub(crate) enum Key {
   Enter,
   Space,
   Backspace,
+
+  /// `Backspace` with `Ctrl` held.
+  CtrlBackspace,
   Delete,
   Tab,
 
@@ -87,6 +90,7 @@ impl Key {
       Self::Enter => "\u{23ce}".into(),
       Self::Space => "Space".into(),
       Self::Backspace => "\u{232b}".into(),
+      Self::CtrlBackspace => "Ctrl+\u{232b}".into(),
       Self::Delete => "Del".into(),
       Self::Tab => "Tab".into(),
       Self::BackTab => "\u{21e7}Tab".into(),
@@ -118,6 +122,9 @@ enum Command {
   Previous,
   Space,
   Back,
+
+  /// Clear a search's whole query; nothing without one.
+  ClearSearch,
   Move(Toward),
   First,
   Last,
@@ -151,6 +158,7 @@ const BINDINGS: &[(Command, &[Key])] = &[
   (Command::Previous, &[Key::BackTab]),
   (Command::Space, &[Key::Space]),
   (Command::Back, &[Key::Backspace]),
+  (Command::ClearSearch, &[Key::CtrlBackspace]),
   (Command::Move(Toward::Left), &[Key::Left, Key::Alt('h')]),
   (Command::Move(Toward::Right), &[Key::Right, Key::Alt('l')]),
   (Command::Move(Toward::Up), &[Key::Up, Key::Alt('k')]),
@@ -309,6 +317,11 @@ pub(crate) struct SearchField {
   /// The matches the list shows, from match `first` on.
   pub results: Vec<SearchResult>,
   pub first: usize,
+
+  /// Whether it lists its matches: not in the exposé, whose matching
+  /// windows spread out as the results themselves, so the list would
+  /// only cover them.
+  pub lists: bool,
 }
 
 /// A match as the search box lists it.
@@ -885,6 +898,7 @@ impl Interaction {
       Command::Next => self.layout = self.layout.next(),
       Command::Previous => self.layout = self.layout.previous(),
       Command::Space => return self.space(workspaces),
+      Command::ClearSearch => {}
       Command::Back => match self.mode {
         Mode::Carrying => {
           self.carried = None;
@@ -933,7 +947,7 @@ impl Interaction {
   ) -> bool {
     match command {
       // The pick stays on the match gone to.
-      Command::Cancel => self.end_search(),
+      Command::Cancel | Command::ClearSearch => self.end_search(),
       Command::Back => {
         self.query.pop();
         self.follow_search(workspaces);
@@ -1833,13 +1847,15 @@ impl Interaction {
     workspaces: &[OverviewWorkspace],
   ) -> SearchField {
     let current = self.match_position();
+    let lists =
+      self.is_searching() && self.layout != OverviewLayoutMode::Expose;
     let first =
       current.map_or(0, |index| (index + 1).saturating_sub(MAX_RESULTS));
     let results = self
       .matches
       .iter()
       .skip(first)
-      .take(MAX_RESULTS)
+      .take(if lists { MAX_RESULTS } else { 0 })
       .filter_map(|found| {
         let workspace = workspaces.get(found.workspace)?;
         let window = workspace.window(found.hwnd)?;
@@ -1862,6 +1878,7 @@ impl Interaction {
       current,
       results,
       first,
+      lists,
     }
   }
 
@@ -1938,6 +1955,10 @@ impl Interaction {
           Shortcut::new(&Command::Enter.label(), "go to the match"),
           Shortcut::new(&Command::Back.label(), "erase"),
           Shortcut::new(&Command::Cancel.label(), "clear"),
+          Shortcut::new(
+            &Command::ClearSearch.label(),
+            "clear, staying open",
+          ),
         ],
       },
     ]
@@ -4373,6 +4394,34 @@ mod tests {
 
     press(&mut state, &[Key::Escape]);
     assert_eq!(field(&state), SearchField::default());
+  }
+
+  #[test]
+  fn the_expose_searches_without_a_list() {
+    let workspaces = workspaces();
+    let mut state = single(&workspaces, OverviewLayoutMode::Expose);
+    press_on(&mut state, &workspaces, &[Key::Text('e')]);
+
+    let field = state.search_field(&workspaces);
+    assert!(!field.lists);
+    assert!(field.results.is_empty());
+    assert_eq!((field.hits, field.current), (3, Some(0)), "still counted");
+  }
+
+  #[test]
+  fn ctrl_backspace_clears_the_query_and_stays_open() {
+    let mut state = interaction();
+    press(&mut state, &typed("edit"));
+    assert!(state.is_searching());
+
+    assert_eq!(press(&mut state, &[Key::CtrlBackspace]), None);
+    assert!(!state.is_searching());
+    assert_eq!(state.query, "");
+
+    // Without a query, it neither steps back nor closes.
+    let mode = state.mode;
+    assert_eq!(press(&mut state, &[Key::CtrlBackspace]), None);
+    assert_eq!(state.mode, mode);
   }
 
   #[test]

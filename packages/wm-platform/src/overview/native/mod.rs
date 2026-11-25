@@ -1747,7 +1747,7 @@ impl Overview {
     }
 
     let key = if msg == WM_KEYDOWN {
-      to_key(vk, is_shifted())
+      to_key(vk, is_shifted(), is_ctrl_held())
     } else {
       Some(to_alt_key(vk, is_shifted())?)
     };
@@ -2197,10 +2197,21 @@ fn is_shifted() -> bool {
   unsafe { GetKeyState(i32::from(VK_SHIFT.0)) < 0 }
 }
 
+/// Whether a `Ctrl` key is held, as of the message being handled.
+fn is_ctrl_held() -> bool {
+  // SAFETY: No preconditions.
+  unsafe { GetKeyState(i32::from(VK_CONTROL.0)) < 0 }
+}
+
 /// The overview's key for a key press that types nothing, if it acts on
 /// it. Typed characters arrive as `WM_CHAR` instead.
-fn to_key(key: VIRTUAL_KEY, is_shifted: bool) -> Option<Key> {
+fn to_key(
+  key: VIRTUAL_KEY,
+  is_shifted: bool,
+  is_ctrl: bool,
+) -> Option<Key> {
   match key {
+    VK_BACK if is_ctrl => Some(Key::CtrlBackspace),
     VK_LEFT if is_shifted => Some(Key::ShiftLeft),
     VK_RIGHT if is_shifted => Some(Key::ShiftRight),
     VK_LEFT => Some(Key::Left),
@@ -2240,7 +2251,7 @@ fn to_alt_key(key: VIRTUAL_KEY, is_shifted: bool) -> Option<Key> {
   match chord {
     Some(chord) if is_shifted => Some(Key::AltShift(chord)),
     Some(chord) => Some(Key::Alt(chord)),
-    None => to_key(key, is_shifted),
+    None => to_key(key, is_shifted, false),
   }
 }
 
@@ -2324,7 +2335,8 @@ unsafe extern "system" fn screen_proc(
 #[cfg(test)]
 mod tests {
   use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_1, VK_DELETE, VK_F4, VK_H, VK_LEFT, VK_MENU, VK_OEM_MINUS, VK_TAB,
+    VK_1, VK_BACK, VK_DELETE, VK_F4, VK_H, VK_LEFT, VK_MENU, VK_OEM_MINUS,
+    VK_TAB,
   };
 
   use super::{is_strip_scrolled, restyle_windows, to_alt_key, to_key};
@@ -2335,13 +2347,16 @@ mod tests {
 
   #[test]
   fn keys_that_type_are_left_to_their_characters() {
-    assert_eq!(to_key(VK_H, false), None);
-    assert_eq!(to_key(VK_1, false), None);
-    assert_eq!(to_key(VK_OEM_MINUS, false), None);
+    assert_eq!(to_key(VK_H, false, false), None);
+    assert_eq!(to_key(VK_1, false, false), None);
+    assert_eq!(to_key(VK_OEM_MINUS, false, false), None);
 
-    assert_eq!(to_key(VK_DELETE, false), Some(Key::Delete));
-    assert_eq!(to_key(VK_TAB, false), Some(Key::Tab));
-    assert_eq!(to_key(VK_TAB, true), Some(Key::BackTab));
+    assert_eq!(to_key(VK_DELETE, false, false), Some(Key::Delete));
+    assert_eq!(to_key(VK_TAB, false, false), Some(Key::Tab));
+    assert_eq!(to_key(VK_TAB, true, false), Some(Key::BackTab));
+
+    assert_eq!(to_key(VK_BACK, false, false), Some(Key::Backspace));
+    assert_eq!(to_key(VK_BACK, false, true), Some(Key::CtrlBackspace));
   }
 
   #[test]

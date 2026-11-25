@@ -293,15 +293,17 @@ around its edges shows which.
 
 Typing goes to the search from anywhere: there is no key to start one.
 It matches window titles and process names, on every monitor: where
-they hold the query as typed, best where it comes first, and after those
-where they hold its letters in order with gaps ("vsc" finds "Visual
-Studio Code"), best where they're closest together. While
+they hold the query as typed, best where it comes first; only when no
+window does, where they hold its letters in order with gaps ("vsc" finds
+"Visual Studio Code"), best where they're closest together. While
 idle, a "Type to search" field sits at the bottom of every monitor; once
 something is typed, a search box takes its place near the top: the
 query, which match it is on (e.g. "2 of 5"), and a list of the matches,
 best first, each with its app's icon, its title and process with what
 matched lit in `look.colors.search`, and its workspace. The list shows six at
-a time and scrolls to keep its match in view. Windows that don't match
+a time and scrolls to keep its match in view. The exposé shows the field
+alone, without the list: its matching windows are the results, and a
+list would only cover them. Windows that don't match
 fade to a quarter, workspaces with none dim as a whole, and in the
 activities' large view the matches grow a little. In the exposé, as
 `expose.search_mode` has it: the matches spread out over the room alone,
@@ -334,7 +336,8 @@ selected workspace back as a switch to it would.
   nothing. A minimized match is restored as it is gone to, as
   `toggle-minimized` would.
 - `Backspace` takes back a character, and `Escape` clears the query,
-  leaving the selection where the last step put it. With no query left
+  leaving the selection where the last step put it. `Ctrl`+`Backspace`
+  clears it too, but never closes the overview. With no query left
   they do what they always do: `Backspace` steps back, `Escape` closes.
 - `Space` types a space once there is a query, for titles of several
   words. To pick up a match with `Space`, step to it and clear the query

@@ -1597,6 +1597,10 @@ const SPOTLIGHT: (f32, f32, f32, f32, f32, f32, f32) =
 /// row's app icon, and the gap after it, in logical pixels.
 const SPOTLIGHT_INNER: (f32, f32, f32) = (18.0, 24.0, 12.0);
 
+/// Width of the search box while it shows its field alone, in logical
+/// pixels.
+const SPOTLIGHT_FIELD_WIDTH: f32 = 420.0;
+
 /// The keys the search box's footer names, and what each does.
 const SPOTLIGHT_HINTS: [(&str, &str); 3] = [
   ("\u{2191} \u{2193}", "step and show"),
@@ -1614,9 +1618,13 @@ pub(crate) fn spotlight_size(
 ) -> (i32, i32) {
   let px = |length: f32| length * scale_factor;
   let (width, shadow, field, list_padding, row, footer, _) = SPOTLIGHT;
-  let rows = search.results.len().max(1) as f32;
-  let height =
-    field + 1.0 + 2.0 * list_padding + rows * row + 1.0 + footer;
+  let (width, height) = if search.lists {
+    let rows = search.results.len().max(1) as f32;
+    let list = 1.0 + 2.0 * list_padding + rows * row + 1.0 + footer;
+    (width, field + list)
+  } else {
+    (SPOTLIGHT_FIELD_WIDTH, field)
+  };
   let width = px(width).min(max_width - px(2.0 * 16.0)).max(px(240.0));
 
   (
@@ -1744,6 +1752,9 @@ pub(crate) fn draw_spotlight(
     0,
     with_alpha(style.accent, 0.9),
   );
+  if !search.lists {
+    return Vec::new();
+  }
 
   let rule = |surface: &mut Surface, top: i32| {
     let line = Rect::from_xy(card.left, top, card.width(), px(1.0).max(1));
@@ -1995,7 +2006,8 @@ mod tests {
 
   use super::{
     draw_search, draw_spotlight, find_ignoring_case,
-    find_letters_ignoring_case, search_hits, spotlight_size,
+    find_letters_ignoring_case, round, search_hits, spotlight_size,
+    SPOTLIGHT,
   };
   use crate::{
     overview::state::{SearchField, SearchResult},
@@ -2081,10 +2093,17 @@ mod tests {
         workspace: "1".to_string(),
       }],
       first: 0,
+      lists: true,
     };
     let no_match = SearchField {
       query: "zzz".to_string(),
+      lists: true,
       ..SearchField::default()
+    };
+    let field_only = SearchField {
+      lists: false,
+      results: Vec::new(),
+      ..searching.clone()
     };
 
     for search in [SearchField::default(), searching.clone()] {
@@ -2093,7 +2112,13 @@ mod tests {
       assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
     }
 
-    for search in [searching, no_match] {
+    // The field alone is only as tall as the field.
+    let (_, listed_height) = spotlight_size(&searching, 1.0, 1920.0);
+    let (_, field_height) = spotlight_size(&field_only, 1.0, 1920.0);
+    assert!(field_height < listed_height);
+    assert_eq!(field_height, round(SPOTLIGHT.2 + 2.0 * SPOTLIGHT.1));
+
+    for search in [searching, no_match, field_only] {
       let (width, height) = spotlight_size(&search, 1.0, 1920.0);
       let mut surface = Surface::new(width, height).expect("surface");
       let rows = draw_spotlight(
